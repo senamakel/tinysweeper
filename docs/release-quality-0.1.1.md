@@ -65,10 +65,28 @@ buyer charge even though the displayed bill did. The latter exhausted the
 ledger conservatively and left reviews incomplete. These require regression
 coverage at their respective client/SDK boundaries.
 
+An additional regression reproduced budget admission failing before any
+spend: two concurrent calls each reserved $0.60 against a $1 limit, although
+their eventual charges were much smaller. Correct settlement and serialized
+admission within each scoped ledger are both needed; raising the ceiling
+would conceal the problem. A scoped queue trades some latency for affordable
+complete reviews while keeping cancellation and independent scopes separate.
+
+Fresh-head approval also needs verification. The deployed binary suppresses a
+second approval when its previous verdict was approval, even after the PR head
+changes. Merge checks correctly reject that stale approval. A regression must
+pin suppression to a known matching commit, preserving incomplete-review
+withdrawals and avoiding an additional GitHub API request.
+
 Memory's health endpoint was reachable after the configuration repair, but
 answer requests still timed out. Reachability alone does not prove useful
 memory retrieval. The index also remained cold until dimension-correct
 embedding requests could be deployed.
+
+At 21:46 UTC, Cortex still logged repeated provider timeouts and marked its
+answer role unhealthy after five failures, despite a healthy container check.
+Fresh production reviews must therefore distinguish successful indexing from
+useful memory retrieval rather than treating container health as both.
 
 ## Interpretation
 

@@ -86,6 +86,9 @@ memory retrieval. After the dimension repair, indexing progressed but another in
 the provider's 8,192-token limit. PR #206 bounds inputs at 8,000 UTF-8 bytes
 and batches by a conservative byte bound. Regression tests preserve dense
 source, multibyte text, whitespace prefixes, gaps, and trailing newlines.
+A live diagnostic with deterministic dense ASCII text reproduced rejection
+at 12,000 bytes and success at 8,000 bytes (6,070 measured tokens, 1,024
+dimensions, 20 microdollars charged).
 
 At 21:46 UTC, Cortex still logged repeated provider timeouts and marked its
 answer role unhealthy after five failures, despite a healthy container check.
@@ -101,15 +104,42 @@ The combined candidate includes PRs #201–#206 and the immutable OpenHuman
 commit `c9f1ce06`. Its monetary queue, reasoning wire format, hard limit,
 cancellation, and independent scopes pass all 16 gateway parity tests. The
 combined library suite passes 2,294 tests with four existing live tests ignored.
+Clippy with warnings denied and the all-feature/all-target check also pass.
 OpenHuman #7354 remains open; its tested billing changes are pinned without
 claiming upstream merge or fully green upstream CI. A known floating-point
 rounding edge can conservatively add one microdollar to a provider USD charge.
 
-Three fresh recordings are running against the original labeled fixtures.
-Their binary was built at `dd225938`, which includes PRs #201–#205. Retrieval
-is disabled as in the baseline, so the later indexing-only #206 does not
-change their review path. Source, SDK pin, and binary digest are recorded
-with the run artifacts. Results must be complete before comparing quality.
+Three fresh recordings completed at source `dd225938`, including PRs
+#201–#205 before the security scope follow-up. Retrieval was disabled as in
+the baseline. Eight of nine final proposals were complete; the clean case in
+run 1 failed description schema validation (`missing field rule`). Its scorer
+reports zero spend on failure, but the 46 recorded calls actually total
+$0.015204. The baseline had nine complete proposals.
+
+| Run | Boundary labels matched | Clean-case scorer false positives | Clean duplicates | Recorded cost |
+| --- | --- | --- | --- | --- |
+| 1 | 2/2 | failed case | unknown | $0.055296 including failed-case recordings |
+| 2 | 1/2 | 4 | 0 | $0.054780 |
+| 3 | 1/2 | 4 | 0 | $0.056561 |
+
+Successful cases took 315–789 seconds, versus much shorter baseline cases.
+These results do not establish better precision, recall, or latency. Some
+scorer false positives describe actual body omissions or optional contract
+limitations, so the labels need careful interpretation. The new recordings
+also exposed generic tests/style notes in the security lane; PR #202 now
+filters explicitly out-of-scope model proposals with a structured decision,
+while preserving scanner facts and failing open on uncertain metadata. That
+follow-up requires its own fresh live validation. The full audited scorecards
+and completeness data are in
+[`evals/reports/2026-10-10-candidate-comparison.json`](../evals/reports/2026-10-10-candidate-comparison.json).
+
+A separate read-only candidate review of PR #204's exact `8598a26b` head
+completed all five lanes with no findings or unanswered units, costing
+$0.024905. Its unmodified proposal was published by the existing deterministic
+`app::apply` path on the server after the model calls returned. GitHub recorded
+a real App approval clearing the earlier incorrect objection. With all 17
+checks passing, independent CodeRabbit approval, and no unresolved threads,
+#204 merged normally at `128b3eff`.
 
 ## Interpretation
 

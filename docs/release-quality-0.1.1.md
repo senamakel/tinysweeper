@@ -40,6 +40,14 @@ counts. Those duplicates were summary notes, whereas #195 groups inline
 findings. Its regression tests demonstrate safer grouping, but this corpus
 shows no deduplication improvement from that change.
 
+PR #203 extends concern grouping to below-gate summary notes. Strict replays
+of the same three recordings reduce each clean-case duplicate count from one
+to zero. Recall, false positives, and forbidden hits stay unchanged. Original
+observations remain in the proposal for audit; only the strongest matching
+note is displayed. This is a measured display improvement, not a claim of
+better model precision. Full scorecards are in
+[`evals/reports/2026-10-10-summary-dedupe.json`](../evals/reports/2026-10-10-summary-dedupe.json).
+
 ## Production evidence and fixes
 
 Production initially could not reach the memory engine, requested an embedding

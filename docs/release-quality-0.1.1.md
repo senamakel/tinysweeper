@@ -62,8 +62,9 @@ a shell regression executes the actual remote deployment script.
 Fresh reviews then revealed two further issues: embedding requests omitted the
 configured dimensions, and budget settlement did not receive the gateway's
 buyer charge even though the displayed bill did. The latter exhausted the
-ledger conservatively and left reviews incomplete. These require regression
-coverage at their respective client/SDK boundaries.
+ledger conservatively and left reviews incomplete. The dimension regression is fixed and deployed at `648a9ff0`: a diagnostic
+request returned the configured 1,024-wide vector. The SDK settlement and
+scoped admission fixes are tested together in the release candidate.
 
 An additional regression reproduced budget admission failing before any
 spend: two concurrent calls each reserved $0.60 against a $1 limit, although
@@ -74,19 +75,41 @@ complete reviews while keeping cancellation and independent scopes separate.
 
 Fresh-head approval also needs verification. The deployed binary suppresses a
 second approval when its previous verdict was approval, even after the PR head
-changes. Merge checks correctly reject that stale approval. A regression must
-pin suppression to a known matching commit, preserving incomplete-review
-withdrawals and avoiding an additional GitHub API request.
+changes. Merge checks correctly reject that stale approval. PR #205 pins
+suppression to a known matching commit, preserves incomplete-review
+withdrawals, and avoids an additional GitHub API request. Its regressions
+cover moved heads, unknown heads, and preserving decisive review metadata.
 
 Memory's health endpoint was reachable after the configuration repair, but
 answer requests still timed out. Reachability alone does not prove useful
-memory retrieval. The index also remained cold until dimension-correct
-embedding requests could be deployed.
+memory retrieval. After the dimension repair, indexing progressed but another input exceeded
+the provider's 8,192-token limit. PR #206 bounds inputs at 8,000 UTF-8 bytes
+and batches by a conservative byte bound. Regression tests preserve dense
+source, multibyte text, whitespace prefixes, gaps, and trailing newlines.
 
 At 21:46 UTC, Cortex still logged repeated provider timeouts and marked its
 answer role unhealthy after five failures, despite a healthy container check.
-Fresh production reviews must therefore distinguish successful indexing from
-useful memory retrieval rather than treating container health as both.
+During 22:10–22:26 UTC, extraction completed 113 jobs, but TinySweeper still
+logged recall and answer timeouts, with no successful recalled-memory event.
+The mounted answer model was already `flash`. The evidence does not establish
+the upstream cause. Memory failures produce partial/unavailable context; they
+do not directly account for missing file coverage in model verdicts.
+
+## Candidate validation
+
+The combined candidate includes PRs #201–#206 and the immutable OpenHuman
+commit `c9f1ce06`. Its monetary queue, reasoning wire format, hard limit,
+cancellation, and independent scopes pass all 16 gateway parity tests. The
+combined library suite passes 2,294 tests with four existing live tests ignored.
+OpenHuman #7354 remains open; its tested billing changes are pinned without
+claiming upstream merge or fully green upstream CI. A known floating-point
+rounding edge can conservatively add one microdollar to a provider USD charge.
+
+Three fresh recordings are running against the original labeled fixtures.
+Their binary was built at `dd225938`, which includes PRs #201–#205. Retrieval
+is disabled as in the baseline, so the later indexing-only #206 does not
+change their review path. Source, SDK pin, and binary digest are recorded
+with the run artifacts. Results must be complete before comparing quality.
 
 ## Interpretation
 

@@ -102,7 +102,8 @@ do not directly account for missing file coverage in model verdicts.
 
 The combined candidate now includes PRs #201–#209 and the immutable OpenHuman
 billing/physical-timeout integration `84a31e90`. Its monetary queue, reasoning wire format, hard limit,
-cancellation, and independent scopes pass all 16 gateway parity tests. The
+cancellation, and independent scopes pass all 19 gateway parity tests, including physical timeout and conservative
+unknown-charge fallback cases. The
 combined library suite including #209 passes 2,316 tests with four existing live
 tests ignored.
 Clippy with warnings denied and the all-feature/all-target check also pass.
@@ -162,3 +163,16 @@ but they are separate from model recall and precision. A release should report
 which fixes are verified and retain these live baseline results. A small
 three-case corpus cannot establish general review quality, and low spend is
 not evidence of a complete review.
+
+The native budget-capacity wait fix merged through TinyInference #75 and
+TinyAgents #377 after fresh approvals and green CI. OpenHuman #7360 publishes
+the tested SDK integration `e91a4742`, including two actual wire regressions
+for fallback after a temporary wait and cancellation without dispatch. That
+SDK PR remains behind the documented #7354/#7358 dependency gates; the
+TinySweeper parallel-admission follow-up is still being validated.
+
+A complete fresh review of #202 incorrectly claimed that `crate::falsify`
+was missing after reading only `src/falsify.rs`. That exact path is absent,
+but `src/falsify/mod.rs` exists. The lookup response was accurate; the model
+overgeneralized it. The proposal was retained as evidence and was not
+published. Bounded directory-list lookup support is under investigation.

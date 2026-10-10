@@ -103,8 +103,8 @@ do not directly account for missing file coverage in model verdicts.
 The combined candidate now includes PRs #201–#209 and the immutable OpenHuman
 billing/physical-timeout integration `84a31e90`. Its monetary queue, reasoning wire format, hard limit,
 cancellation, and independent scopes pass all 16 gateway parity tests. The
-combined library suite after #208 passes 2,314 tests with four existing live
-tests ignored; the later #209 summary-only patch awaits combined verification.
+combined library suite including #209 passes 2,316 tests with four existing live
+tests ignored.
 Clippy with warnings denied and the all-feature/all-target check also pass.
 OpenHuman #7354 remains open; its tested billing changes are pinned without
 claiming upstream merge or fully green upstream CI. A known floating-point

@@ -146,6 +146,101 @@
       ],
       "route": "deep/deep",
       "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85"
+    },
+    {
+      "number": 201,
+      "head_sha": "3d4d21a41b73471ee13569bbb44fafc2e8f5c9f5",
+      "cost_usd": 0.011149,
+      "unreviewed": [],
+      "skipped": null,
+      "lanes": [
+        {
+          "lane": "critique",
+          "summary": "Reviewed 5 files; 0 findings.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.005994
+        },
+        {
+          "lane": "security",
+          "summary": "Reviewed 4 files; 0 findings. 1 file was not security-reviewed: docs/modules/harness/README.md (prose or tabular data).",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.004029
+        },
+        {
+          "lane": "tests",
+          "summary": "The change adds a `gateway` value to `models.reasoning_effort` that omits the reasoning block from the wire, and the new parity test earns its keep: it drives the adapter against the FakeGateway and fails if a `reasoning` key reappears in the request body, if the `usage` opt-in is dropped, or if the completion errors. The config type's contract comment, the module README and the repo's own `.tinysweeper.toml` are updated consistently with the code; I saw no evidence of a closed-set validation that could reject the new value (the field is a free `String` with a catch-all forward arm), and nothing else in the reachable diff misbehaves. Safe to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000846
+        },
+        {
+          "lane": "commits",
+          "summary": "Nothing sensitive found in what this pull request commits.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.0
+        },
+        {
+          "lane": "description",
+          "summary": "The description matches the diff: `reasoning_options` gains a `\"gateway\"` arm returning an empty object so no `reasoning` block is sent, the repo's ladder config selects it, the option is documented in the README and the field's doc comment, and a new parity test asserts the `reasoning` key is absent while the `usage` accounting block is still sent. Existing `off`/effort arms are untouched, and the PR body states the change, the behaviour change and the verification as the repository's rules require. No defects found; safe to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000136
+        }
+      ],
+      "route": "deep/deep",
+      "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85",
+      "published": true
+    },
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "cost_usd": 0.041169,
+      "unreviewed": [],
+      "skipped": null,
+      "lanes": [
+        {
+          "lane": "critique",
+          "summary": "Reviewed 6 files; 1 finding.",
+          "findings": 1,
+          "unanswered": [],
+          "cost_usd": 0.021796000000000003
+        },
+        {
+          "lane": "security",
+          "summary": "Reviewed 4 files; 0 findings. 2 files were not security-reviewed: docs/modules/falsify/README.md (prose or tabular data), docs/modules/lanes/README.md (prose or tabular data).",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.017217
+        },
+        {
+          "lane": "tests",
+          "summary": "The change adds a security-scope channel to the falsify pass and wires falsification with repository evidence into the security lane's round-one and coverage proposals, with tests covering the reject path, the keep-on-ambiguity path, the fail-open path, stale-summary replacement, cross-lane isolation of the critique protocol, and scanner-finding preservation. I could not fully verify the `rejection_reason` precondition that the test `malformed_scope_metadata_fails_open_instead_of_silencing_a_security_bug` depends on \u2014 my lookups for `src/falsify/types.rs` and `crowdsec.rs` returned no content \u2014 but the tests in the diff otherwise assert observable outcomes and would fail on regression.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000302
+        },
+        {
+          "lane": "commits",
+          "summary": "Nothing sensitive found in what this pull request commits.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.0
+        },
+        {
+          "lane": "description",
+          "summary": "The description matches the diff. Every claim maps to code visible in the change: the security lane now runs the falsifier on round-one and coverage proposals with the diff plus the repository lookups the reviewers read (filter_with on outcome.findings and on new_findings), scope is assessed in the same call via security__schema, a rejection requires a unique index-matched out_of_scope verdict with a nonempty reason and all three attack-chain fields empty (rejection_reason, duplicate/mismatch handling in mod.rs), missing/uncertain/duplicate/contradictory/malformed metadata and model failures fail open, scanner findings enter only after filtering and never appear in the falsify prompt, a coverage pass whose proposals all fail stops with StopReason::NonSurviving, critique keeps INSTRUCTIONS and _schema unchanged, and any rejection replaces the pre-filter prose. The tests added implement each described behavior, and the body honestly discloses that fresh live validation is pending. No description/drift defect and no reachable misbehavior introduced by the diff was found.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000512
+        }
+      ],
+      "route": "deep/deep",
+      "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85",
+      "published": false,
+      "audit": "False critical missing-module claim: src/falsify.rs is absent but src/falsify/mod.rs exists. Exact-path miss is correct; generalizing to module absence is incorrect. Complete actual proposal retained, not published. No provider/falsifier response capture; failure mode not yet established."
     }
   ]
 }

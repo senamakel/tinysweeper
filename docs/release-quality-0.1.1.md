@@ -100,10 +100,11 @@ do not directly account for missing file coverage in model verdicts.
 
 ## Candidate validation
 
-The combined candidate includes PRs #201–#206 and the immutable OpenHuman
-commit `c9f1ce06`. Its monetary queue, reasoning wire format, hard limit,
+The combined candidate now includes PRs #201–#209 and the immutable OpenHuman
+billing/physical-timeout integration `84a31e90`. Its monetary queue, reasoning wire format, hard limit,
 cancellation, and independent scopes pass all 16 gateway parity tests. The
-combined library suite passes 2,294 tests with four existing live tests ignored.
+combined library suite after #208 passes 2,314 tests with four existing live
+tests ignored; the later #209 summary-only patch awaits combined verification.
 Clippy with warnings denied and the all-feature/all-target check also pass.
 OpenHuman #7354 remains open; its tested billing changes are pinned without
 claiming upstream merge or fully green upstream CI. A known floating-point
@@ -140,6 +141,19 @@ $0.024905. Its unmodified proposal was published by the existing deterministic
 a real App approval clearing the earlier incorrect objection. With all 17
 checks passing, independent CodeRabbit approval, and no unresolved threads,
 #204 merged normally at `128b3eff`.
+
+Two subsequent live recordings used the security scope follow-up and read-only
+git archives at the original reviewed TinySweeper commits, recording genuine
+lookups rather than fabricating context. Both proposals were complete. On the
+kernel/summary case, the falsifier rejected the invalid temporary-borrow claim
+and explicitly removed a generic truncation contract issue from the security
+lane; the legitimate optional truncation finding remained in critique. Both
+security lanes had no summary notes, and forbidden hits stayed zero. The
+scorer still reported four clean-case false positives, including body omissions
+and contract preferences that its labels do not cover. This is evidence for
+specific noise fixes, not a general precision or latency improvement. Full
+scorecards and actual rejection decisions are in
+[`evals/reports/2026-10-10-security-scope-live.json`](../evals/reports/2026-10-10-security-scope-live.json).
 
 ## Interpretation
 

@@ -185,7 +185,9 @@
           "case": "ts-0045-kernel-bypass-hallucination",
           "proposal_available": false,
           "error": "lane description: the model's response did not match the schema: missing field `rule`",
-          "actual_spend_unknown": true
+          "actual_spend_unknown": false,
+          "recorded_paid_cost_usd": 0.015204,
+          "cost_reporting_bug": "Scorecard zero differs from actual cassette usage"
         },
         {
           "case": "ts-0068-description-anchored-to-code",

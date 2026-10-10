@@ -1,0 +1,151 @@
+{
+  "mode": "actual read-only review proposals; deterministic app::apply only after completed model calls",
+  "source": {
+    "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85",
+    "sdk_commit": "c9f1ce0656a16d2cd94407ff5c1f1b866bda8815",
+    "binary_sha256": "a24ea64869919499d67c82b23691d7ff3a34671baecc0d8b28a0d7ab10806ced",
+    "prepared_at_utc": "2026-10-10T22:56:55.827623+00:00",
+    "security_scope_commit": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+    "retrieval_enabled": false
+  },
+  "reviews": [
+    {
+      "number": 204,
+      "head_sha": "8598a26b4b40f015dbd5d06a5560dee1f3f4c178",
+      "cost_usd": 0.024905,
+      "unreviewed": [],
+      "skipped": null,
+      "lanes": [
+        {
+          "lane": "critique",
+          "summary": "Reviewed 5 files; 0 findings.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.012546
+        },
+        {
+          "lane": "security",
+          "summary": "Reviewed 4 files; 0 findings. 1 file was not security-reviewed: docs/modules/harness/README.md (prose or tabular data).",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.011137000000000003
+        },
+        {
+          "lane": "tests",
+          "summary": "The change adds a per-ledger async mutex so that paid work sharing a scoped budget is admitted serially, acquiring admission in `complete_ladder` and after the non-agentic fallback in `review`, and set on `scoped_budget`. The three new tests exercise the reachable paths (concurrent affordable completions admitted after settlement, unbounded fan-out still refused before dispatch, a fresh scope not blocked by its parent's queue, and a cancelled waiter releasing admission without dispatching), and each asserts on observable behaviour \u2014 provider request count, per-call usage, and the error on the denied call \u2014 rather than on the mutex. I found no defect worth blocking on.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000446
+        },
+        {
+          "lane": "commits",
+          "summary": "Nothing sensitive found in what this pull request commits.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.0
+        },
+        {
+          "lane": "description",
+          "summary": "The body matches the diff. The new `budget_admission` mutex in `GatewayModel` serialises scoped completions (`complete_ladder`) and agentic reviews (acquired after the non-agentic fallback, with the deadlock comment the body paraphrases), `scoped_budget` mints a fresh queue per scope while plain clones share the `Arc`, unscoped models keep `budget_admission: None` and stay concurrent, and cancellation behaviour is exercised by the added tests. Exactly five new queue/budget regressions appear in the diff, matching the count claimed, the hard-limit and affordability scenarios match the two `parity_test.rs` tests, and the SDK metadata rev bump to `c9f1ce0656a16d2cd94407ff5c1f1b866bda8815` is disclosed with rationale, including why `Cargo.lock` stays valid (metadata-only change). Nothing significant in the diff goes unmentioned and nothing described is absent from the diff.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000337
+        }
+      ],
+      "route": "flash/deep",
+      "source_commit": "dd22593890d04c886f3b8fb470ba7737055ef055"
+    },
+    {
+      "number": 201,
+      "head_sha": "93e7581feafbe9f1c4fe212b3318da4f9a77fe13",
+      "cost_usd": 0.010204,
+      "unreviewed": [],
+      "skipped": null,
+      "lanes": [
+        {
+          "lane": "critique",
+          "summary": "Reviewed 5 files; 0 findings.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.005259999999999999
+        },
+        {
+          "lane": "security",
+          "summary": "Reviewed 4 files; 0 findings. 1 file was not security-reviewed: docs/modules/harness/README.md (prose or tabular data).",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.003962
+        },
+        {
+          "lane": "tests",
+          "summary": "The change adds a `gateway` value for `models.reasoning_effort` that omits the provider-specific reasoning block so a relay chooses the per-route protocol. The stated invariant is pinned by the new test: `gateway_reasoning_policy_omits_provider_specific_controls` drives the real adapter over HTTP against `FakeGateway` and asserts the recorded request body has no `reasoning` key while `usage.include` still reaches the wire, so a regression that forwarded `gateway` through the catch-all effort arm would fail it. The docs and the `.tinysweeper.toml` deployment change match the implementation, and the merge into `provider_options` keeps the provider pin and usage accounting intact for the new empty-object arm. The change looks sound to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000781
+        },
+        {
+          "lane": "commits",
+          "summary": "Nothing sensitive found in what this pull request commits.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.0
+        },
+        {
+          "lane": "description",
+          "summary": "The description matches the diff: it adds a `gateway` reasoning-effort mode that omits the reasoning block, selects it in `.tinysweeper.toml`, documents it in the harness README and the config field docs, and adds a parity test asserting the `reasoning` key is absent while usage accounting is still included; the `off`, empty, and effort-passthrough arms are untouched. No defects found; the change looks sound to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000111
+        }
+      ],
+      "route": "deep/deep",
+      "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85"
+    },
+    {
+      "number": 205,
+      "head_sha": "de3b2e8e78f5c91280e02826f3a2f3ac837be26b",
+      "cost_usd": 0.028283,
+      "unreviewed": [],
+      "skipped": null,
+      "lanes": [
+        {
+          "lane": "critique",
+          "summary": "Reviewed 5 files; 0 findings.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.015366
+        },
+        {
+          "lane": "security",
+          "summary": "Reviewed 5 files; 0 findings.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.010746
+        },
+        {
+          "lane": "tests",
+          "summary": "The change threads the actually-reviewed commit through `own_review_state` as a new `OwnReview { event, head_sha }` so a repeated approval is suppressed only for the exact commit already approved, while a changed or unknown head gets a fresh verdict. Every invariant the new comments claim is pinned by a test that fails without it: same-head suppression (`an_approval_that_already_stands_is_not_restated`), changed-head refresh (`a_clean_changed_head_receives_a_fresh_approval`, which fails under the old head-blind suppression), unknown-metadata refresh (`an_approval_without_a_known_reviewed_head_is_refreshed`), and the verdict's commit surviving later advisory comments (`own_review_metadata_keeps_the_verdict_commit_after_later_comments`, plus malformed-`commit_id` handling). The mock was updated in step \u2014 seeding captures the current head, pushes retain the reviewed commit, and comment-while-standing-verdict keeps the old entry \u2014 so the mock still mirrors GitHub's semantics the multi-push test relies on. The adapter parses `commit_id` defensively (null, non-string, empty all map to unknown, which errs toward re-approving rather than skipping). No defects found; safe to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.001447
+        },
+        {
+          "lane": "commits",
+          "summary": "Nothing sensitive found in what this pull request commits.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.0
+        },
+        {
+          "lane": "description",
+          "summary": "The change carries the reviewed commit alongside the standing verdict through the existing review-history read and suppresses a repeated approval only when the previous approval's commit matches the current head, exactly as the description states; changed, unknown, and same-head paths are each covered by in-crate tests, and the GitHub, mock, and port definitions stay consistent with no extra API request. The diff matches the description and looks sound to merge.",
+          "findings": 0,
+          "unanswered": [],
+          "cost_usd": 0.000357
+        }
+      ],
+      "route": "deep/deep",
+      "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85"
+    }
+  ]
+}

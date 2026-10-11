@@ -357,3 +357,22 @@ The strict-schema #206 trial finished in 139.600 seconds for $0.082698,
 with no posted findings but twelve unanswered units. It was withheld.
 The small successful provider probe therefore did not establish full-review
 reliability, and changing the operator setting alone is not a proven fix.
+
+
+The strict-schema #215 trial took 221.056 seconds for $0.124005, with seven
+unanswered units and three posted findings. It was withheld. Two findings
+asserted unsupported requirements for the human-readable recording report;
+the mutable-checkout warning concerns caller-controlled changes after the
+preflight rather than the already guarded fresh-head comparison.
+A captured strict-schema #206 diagnostic took 167.193 seconds for $0.079244,
+with nine unanswered units and no posted findings. It was also withheld.
+Actual request metadata contains `json_schema` with `strict: true`; HTTP 200
+responses from OpenRouter's OpenAI provider nevertheless contain concatenated
+JSON objects. Some objects are duplicates and others differ. The gateway
+client relays the upstream response bytes unchanged. No parser relaxation or
+schema-mode deployment follows from these results.
+
+After the checkout security fix, the combined candidate passed 2,327 library
+tests and 13 CLI tests, feature Clippy with warnings denied, all-feature/all-target
+checking, formatting and the OpenHuman pin assertion. These are local candidate
+checks; they do not stand in for release publication or deployment receipts.

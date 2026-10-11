@@ -41,7 +41,7 @@ cd /opt/tinysweeper
 git clone --recurse-submodules https://github.com/tinyhumansai/tinysweeper .
 
 cp .env.example .env && chmod 600 .env
-$EDITOR .env               # see "Configuration" below .tinysweeper.toml is tracked
+$EDITOR .env               # see "Configuration" below; .tinysweeper.toml is tracked
 
 # nginx: the port 80 block first, so certbot can answer the challenge.
 sudo install -m 644 deploy/nginx/sweeper.tinyhumans.ai.conf /etc/nginx/sites-available/

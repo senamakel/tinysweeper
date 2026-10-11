@@ -100,11 +100,11 @@ do not directly account for missing file coverage in model verdicts.
 
 ## Candidate validation
 
-The combined candidate now includes PRs #201–#209 and the immutable OpenHuman
-billing/physical-timeout integration `84a31e90`. Its monetary queue, reasoning wire format, hard limit,
+The combined candidate at `031fdc3b` includes PRs #201–#211 and the immutable
+OpenHuman billing/physical-timeout/capacity integration `e91a4742`. Its monetary queue, reasoning wire format, hard limit,
 cancellation, and independent scopes pass all 19 gateway parity tests, including physical timeout and conservative
 unknown-charge fallback cases. The
-combined library suite including #209 passes 2,316 tests with four existing live
+combined library suite passes 2,323 tests with four existing live
 tests ignored.
 Clippy with warnings denied and the all-feature/all-target check also pass.
 OpenHuman #7354 remains open; its tested billing changes are pinned without
@@ -169,10 +169,36 @@ TinyAgents #377 after fresh approvals and green CI. OpenHuman #7360 publishes
 the tested SDK integration `e91a4742`, including two actual wire regressions
 for fallback after a temporary wait and cancellation without dispatch. That
 SDK PR remains behind the documented #7354/#7358 dependency gates; the
-TinySweeper parallel-admission follow-up is still being validated.
+TinySweeper #210 validates parallel admission with real HTTP barriers:
+two affordable calls dispatch concurrently, while a third waits for settlement.
 
 A complete fresh review of #202 incorrectly claimed that `crate::falsify`
 was missing after reading only `src/falsify.rs`. That exact path is absent,
 but `src/falsify/mod.rs` exists. The lookup response was accurate; the model
 overgeneralized it. The proposal was retained as evidence and was not
-published. Bounded directory-list lookup support is under investigation.
+published. PR #211 adds bounded, sanitized directory-list evidence instead of guessing
+module filenames. Its canonical cassettes were recorded from actual calls;
+24 historical lookup outcomes were repaired by querying the exact original
+Git tree. Original model answers were preserved. Strict replay has zero
+misses and zero loose matches, but boundary recall remains 0/2 and one
+critique unit remains unanswered. The untouched baseline is incomparable
+because the genuine evidence and prompt fingerprints changed.
+
+
+## Final route comparison
+
+With identical source `031fdc3b` and immutable PR heads, routing every review
+tier through `deep` completed #202 in 183 seconds ($0.043477) and #207 in
+191 seconds ($0.043528), with no unanswered units. Keeping scan on `flash`
+took 462 and 491 seconds respectively and left one unit unanswered in each.
+The deep #207 proposal was clean and published normally, clearing the earlier
+changes request. The deep #202 review falsely claimed a singleton out-of-scope
+assessment occurred in the fail-open test; the actual array contains only
+duplicate/conflicting assessments and intentionally incomplete metadata. That
+proposal was retained without publishing its incorrect objection.
+
+Fresh historical-tree recordings of the final source with scan still on
+`flash` produced another false critical temporary-String lifetime claim on
+#45, and a medium unsupported-reasoning-effort observation on #68. Both left
+the tests lane unanswered. These results support the routing reliability
+change and demonstrate why broad accuracy claims would be premature.

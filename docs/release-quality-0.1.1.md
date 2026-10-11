@@ -402,3 +402,10 @@ two-feedback-round limit. Complete trial receipts are retained in
 [`two-repair-trials.json`](../evals/reports/2026-10-11-two-repair-trials.json).
 The earlier “clean” operator characterization was corrected; no approval was
 fabricated and no failing conclusion was changed in the proposal.
+
+
+The prepared immutable-evidence fix is now integrated into the local 0.1.1
+release candidate (`715248cf`). That candidate passed 2,329 library tests,
+13 CLI tests, feature Clippy with warnings denied, all-feature/all-target
+checking, formatting and the pin assertion. The source fix and release
+remain unpublished while the review-limit exception is pending.

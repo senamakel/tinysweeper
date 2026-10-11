@@ -376,3 +376,6 @@ After the checkout security fix, the combined candidate passed 2,327 library
 tests and 13 CLI tests, feature Clippy with warnings denied, all-feature/all-target
 checking, formatting and the OpenHuman pin assertion. These are local candidate
 checks; they do not stand in for release publication or deployment receipts.
+
+Wire hashes and all three strict-mode trial receipts are retained in
+[`strict-schema-trials.json`](../evals/reports/2026-10-11-strict-schema-trials.json).

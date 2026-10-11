@@ -165,3 +165,10 @@ Reads and searches use Git's file allowlist, excluding ignored local files,
 and Git metadata uses the hardened runner that disables fsmonitor hooks and
 ambient configuration injection. Without `--tree`, the CLI continues to read
 through the forge API.
+
+
+A CLI `review --tree` preflight still requires the matching clean live head,
+but subsequent local reads use committed Git objects at that full SHA. Edits
+or deletions after validation cannot change the evidence, and ignored files
+have no blob in that tree. Search, listing and submodule lookups fall through
+to the existing forge reader at the fresh reviewed head.

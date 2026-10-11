@@ -310,3 +310,10 @@ async fn a_secret_in_the_working_tree_never_reaches_a_model_request() {
         }
     }
 }
+
+#[test]
+fn committed_evidence_rejects_symbolic_and_option_like_revisions() {
+    for head in ["HEAD", "main", "--output=private", "", "abc"] {
+        assert!(super::GitTree::at_revision(".", head).is_err());
+    }
+}

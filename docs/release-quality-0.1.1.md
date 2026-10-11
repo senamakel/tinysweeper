@@ -100,11 +100,11 @@ do not directly account for missing file coverage in model verdicts.
 
 ## Candidate validation
 
-The combined candidate at `031fdc3b` includes PRs #201–#211 and the immutable
+The combined candidate at `eb5fcc8e` includes PRs #201–#213 and the immutable
 OpenHuman billing/physical-timeout/capacity integration `e91a4742`. Its monetary queue, reasoning wire format, hard limit,
 cancellation, and independent scopes pass all 19 gateway parity tests, including physical timeout and conservative
 unknown-charge fallback cases. The
-combined library suite passes 2,323 tests with four existing live
+combined library suite passes 2,327 tests and 11 CLI tests with four existing live
 tests ignored.
 Clippy with warnings denied and the all-feature/all-target check also pass.
 OpenHuman #7354 remains open; its tested billing changes are pinned without
@@ -202,3 +202,129 @@ Fresh historical-tree recordings of the final source with scan still on
 #45, and a medium unsupported-reasoning-effort observation on #68. Both left
 the tests lane unanswered. These results support the routing reliability
 change and demonstrate why broad accuracy claims would be premature.
+
+
+The full same-source, same-head route comparison covers five PRs:
+
+| PR | Flash scan seconds / unanswered | Deep scan seconds / unanswered |
+| --- | --- | --- |
+| #202 | 462 / 1 | 183 / 0 |
+| #203 | 387 / 2 | 208 / 0 |
+| #206 | 549 / 2 | 230 / 0 |
+| #207 | 491 / 1 | 191 / 0 |
+| #208 | 570 / 2 | 138 / 0 |
+
+Together these deep attempts cost $0.168760 versus $0.140736 for flash scan.
+The deep #206 description lane still falsely claimed merged tree chunks
+escaped the input bound; an independent exact-source probe combined eight
+3,024-byte definitions and returned four 6,048-byte chunks that reconstruct
+the complete source. The existing aggregate guard already enforces the cap.
+The follow-up enables the description lane's existing bounded read-only
+lookup flow, while keeping its findings in the review summary. The falsifier
+also receives anchored source lines rather than just a path and claim text.
+Both changes have actual failing-then-passing regressions; their fresh live
+validation must be reported separately from these earlier comparisons.
+
+
+## Provider outage and structured refusals
+
+Surplus fell below the gateway's $0.50 minimum balance during the final
+follow-up trials. Those exhausted-provider proposals had unanswered units and
+were retained without approval. The existing OpenRouter account restored the
+same `openai/gpt-5.6-luna` model under a verified $1.80 per million output-token
+ceiling, preferring the OpenAI endpoint. The production gateway was validated
+before replacement and an actual authenticated probe returned HTTP 200 with
+$0.0000086 reported usage. Its previous container remains available for rollback. The existing per-machine
+private environment and normal renderer retain the fallback on later installs.
+The flash route also returned HTTP 200 from `z-ai/glm-5.3-flash` through
+OpenRouter, with $0.00000876 reported usage.
+Embedding fallback was added only after three same-text comparisons against
+stored production vectors established the same `text-embedding-3-large` space.
+Cosine similarities were 0.999999, 1.0, and 0.999712 across public YAML and two
+UTF-8 Rust sources; all vectors have 1,024 dimensions. The index signature stays
+`ladder:vectors-oai3:1024`, and no reindex was performed. Total probe cost was
+$0.00014885. The final private TLS endpoint returned HTTP 200 with the expected
+model, 1,024 dimensions, and $0.00000117 usage. This proves endpoint recovery,
+not useful retrieval. Workspace commit `f230807` passed the native configuration
+guard and deployed through the normal fleet helpers on both reachable hosts.
+The earlier rejected configuration was corrected without bypassing that guard.
+Embedding prices were verified from the provider catalog; the native embedding
+configuration does not support an enforced price ceiling.
+
+Fresh reviews of #202, #206 and #212 using source `eb5fcc8e` and that fallback
+had zero posted findings but respectively three, two and one unanswered units.
+An additional diagnostic #212 run confirmed `InvalidJson` after one physical
+attempt. These are incomplete reviews, not clean approvals. TinySweeper was not
+requesting any of Embed's existing bounded structured repair attempts; the
+follow-up adds one repair under the same budget and timeout boundaries.
+
+The gateway configuration synced to the reachable Mac mini and robot1.
+Dragonfly refused SSH, so its synchronization remains unverified.
+
+
+The independently verified final three-case strict replay has zero cassette
+misses, zero loose matches, zero unusable replies and no unanswered units.
+Current tapes represent $0.284131 of actual calls; retaining the archived first
+attempt brings total known recording spend to $0.406248. Boundary recall is
+still 0/2, and two findings are unscored because labels are not exhaustive.
+The repeated boundary case produced no security finding and did not invoke
+the falsifier, so its absent earlier false finding is not evidence that the
+new falsifier removed it. The unchanged baseline remains incomparable.
+
+
+## Bounded JSON repair trials
+
+Source `0c4e627a`, binary SHA-256
+`91f0f405b8094397a65698e08e965331a1314f441d592f3f27e477fb787d00ba`,
+adds one JSON-mode repair and preserves aggregate charges across attempts.
+The combined suite passed 2,325 feature tests and 11 CLI tests, default
+Clippy, formatting, and all-feature/all-target checking.
+
+| PR | Seconds | Known cost | Unanswered | Posted-eligible findings |
+| --- | ---: | ---: | ---: | ---: |
+| #202 | 213.113 | $0.142210 | 0 | 0 |
+| #206 | 180.603 | $0.101520 | 1 | 0 |
+| #212 | 36.095 | $0.005106 | 0 | 0 |
+| #213 | 193.031 | $0.162734 | 0 | 0 |
+| #214 | 196.711 | $0.073208 | 0 | 1 false |
+
+Complete clean proposals for #202, #212 and #213 were published through
+normal apply after model calls returned; those PRs merged normally. #214
+merged with an independent exact-head CodeRabbit approval. Its model Tests
+claim that provider charges were lost was disproven by the upstream gateway
+normalizer and the actual two-attempt wire regression; that proposal was
+withheld. #206 remained incomplete and was also withheld.
+
+A diagnostic #206 attempt took 140.803 seconds, cost $0.079958, and left
+two unanswered units plus a false oversized-line test claim. Transparent
+response capture showed multiple replies containing two concatenated JSON
+objects, despite `finish_reason: stop`; strict parsing correctly rejected
+them. The single-line splitter and its fresh regression test directly
+disprove the reported defect. These outcomes remain in the audit, including
+failed attempts. They do not establish a general precision improvement.
+
+
+## Lookup response contract and checkout evidence
+
+Source `68252333` aligns the lookup-enabled schema with its multi-turn prompt:
+one JSON object, provisional summary, and empty findings while asking for
+evidence. A regression failed on the contradictory original schema and passes
+after the fix. The CLI now also accepts a clean checkout pinned to the live
+head, so operator trials can search the same evidence as server reviews.
+Parser and Git-integrity regressions cover wrong heads, tracked modifications,
+and untracked files; submodule ignore settings cannot hide dirty state.
+
+The 93 fresh canonical responses replay strictly with no cassette misses or
+loose matches and no unanswered units. They cost $0.082564 total: $0.037610
+for OpenCompany, $0.027266 for #45, and $0.017688 for #68. The boundary case
+matched E1 with an exclusive-bound finding and `next()` replacement, while
+still missing E2. Its explanation contains a confused sentence about pins at
+the boundary. The exhaustive clean #45 case produced two false findings,
+including a self-contradictory Python-attribute claim; #68 had no findings.
+All output is retained, with labels and baseline unchanged. This isolated
+match does not establish stable recall or a general precision improvement.
+
+The forge-only #206 review completed in 282.544 seconds for $0.189602 with
+no unanswered units, but asserted a conditional HIGH without inspecting its
+consumer. It was withheld. That outcome prompted a separate trial using a
+clean matching checkout; it must not be substituted for the earlier result.

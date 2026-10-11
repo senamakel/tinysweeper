@@ -188,7 +188,6 @@ impl Lane for Security {
                 let extracted_rules = input.extracted_rules;
                 let prior_findings = input.prior_findings;
                 let retrieved_context = input.retrieved_context;
-                let memory_context = input.memory_context;
                 let redaction_note = input.redaction_note;
                 let input = &input;
                 let diffs = input.diffs;
@@ -208,7 +207,6 @@ impl Lane for Security {
                         extracted_rules,
                         prior_findings,
                         retrieved_context,
-                        memory_context,
                         redaction_note,
                         asking,
                         changed_paths,
@@ -254,7 +252,6 @@ async fn review_group(
     extracted_rules: &[String],
     prior_findings: &[String],
     retrieved_context: &str,
-    memory_context: &str,
     redaction_note: &str,
     asking: runner::Asking<'_>,
     changed_paths: &[String],
@@ -274,7 +271,6 @@ async fn review_group(
         focus_paths: group_paths,
         scanner_evidence: &scanner_evidence,
         retrieved_context,
-        memory_context,
         redaction_note,
         ..PromptInputs::new(LaneId::Security, config)
     };
@@ -679,7 +675,6 @@ mod tests {
                 reviewed_evidence,
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note,
                 e2e: None,
                 tree: None,
@@ -1203,7 +1198,6 @@ mod tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "",
                 e2e: None,
                 tree: None,
@@ -1432,7 +1426,6 @@ mod tests {
             None,
             &[],
             &[],
-            "",
             "",
             "",
             runner::Asking {

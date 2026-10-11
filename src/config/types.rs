@@ -240,9 +240,6 @@ pub struct Config {
     pub embeddings: Embeddings,
     /// How much repository context a review retrieves, and what it costs.
     pub retrieval: Retrieval,
-    /// The long-lived memory engine: what the reviewer remembers about a
-    /// repository between pull requests.
-    pub memory: Memory,
     /// Model Context Protocol access for repository-aware agents.
     pub mcp: Mcp,
     /// Per-lane overrides, keyed by lane id.
@@ -1044,123 +1041,6 @@ where
              same host is not authorization, so nothing is followed by default",
         )),
     }
-}
-
-/// The long-lived memory of a repository, and how a review consults it.
-///
-/// A separate section from `[retrieval]` because it is a different thing. The
-/// index is rebuilt from the tree on every push and learns nothing; memory
-/// accumulates — the repository's stated conventions, the findings the
-/// reviewer published, and what the maintainers did with them — and is
-/// consulted by *question* as well as by query. See `docs/modules/memory`.
-///
-/// Off by default. An engine is a network dependency with a credential, and a
-/// deployment that has not named one reviews exactly as it did before this
-/// existed.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Memory {
-    /// Whether a memory engine is configured at all.
-    pub enabled: bool,
-    /// The engine. Only `cortex` exists today; the field is here so a second
-    /// one is a value rather than a schema change.
-    pub provider: String,
-    /// The engine's base URL, e.g. `https://api-v1.cortexdb.ai` or a
-    /// self-hosted `http://127.0.0.1:3141`. Plain HTTP is accepted for loopback
-    /// only: the bearer must not cross a network in the clear.
-    pub endpoint: String,
-    /// Environment variable holding the engine's API key. Never the key.
-    pub api_key_env: String,
-    /// Accept a plain `http://` endpoint on a host that is not loopback.
-    ///
-    /// Off by default, because the bearer then crosses whatever network sits
-    /// between the server and the engine in the clear. The one deployment it
-    /// exists for is an engine on the same Docker network as the server —
-    /// `http://cortexdb:3141` — where that network never leaves the host. It
-    /// is a statement the operator makes about their network, not a
-    /// convenience, and `doctor` reports it.
-    pub allow_private_http: bool,
-    /// Remember the repository's source, chunked as the index chunks it.
-    ///
-    /// The one ingest that costs real money on a large repository, and the
-    /// one the index already half-covers, so it has its own switch.
-    pub ingest_code: bool,
-    /// Remember the repository's instruction files and guides, one section
-    /// per heading. These are the *pointers* a reviewer should hold: the
-    /// conventions, the invariants, the "never do this here" notes.
-    pub ingest_conventions: bool,
-    /// Which files count as conventions, as repo-relative globs.
-    pub convention_files: Vec<String>,
-    /// Character ceiling on one remembered convention section. Longer
-    /// sections are split at paragraph boundaries rather than truncated.
-    pub convention_section_chars: usize,
-    /// Remember what the reviewer published and what became of it.
-    pub remember_reviews: bool,
-    /// Remember the repository's issues and pull requests — open and closed
-    /// — and everything anybody said on them: comments, inline review
-    /// comments and reviews, from humans and from other review agents alike.
-    ///
-    /// Fed live from webhooks while the server runs, and by the backfill
-    /// (`tinysweeper memory backfill`, or `POST /admin/memory/…`) for the
-    /// history before it did. The reviewer's own comments are never
-    /// remembered here: its findings live in the `reviews` section already,
-    /// and remembering its own prose would be remembering an echo.
-    pub ingest_discussions: bool,
-    /// Character ceiling on one remembered remark or issue body. Longer
-    /// bodies are cut, with the cut marked. It is quoted back into a prompt,
-    /// so it is also a bound on how much of a stranger's text one remark can
-    /// carry there.
-    pub discussion_chars: usize,
-    /// How long the server waits after a discussion event before re-reading
-    /// the conversation it was about, so a review bot posting twenty inline
-    /// comments in one go costs one re-read rather than twenty.
-    pub discussion_debounce_secs: u64,
-    /// Token ceiling on the remembered context handed to one lane.
-    pub context_tokens: usize,
-    /// How many recollections one review asks for, per section.
-    pub max_recollections: usize,
-    /// Whether a review asks the engine grounded questions as well as
-    /// recalling by query.
-    pub ask: bool,
-    /// The questions a review asks, in order. Each names the section it is
-    /// put to; `{paths}` in its text is replaced by the changed paths and
-    /// `{title}` by the pull request title. Each answer is bounded by
-    /// [`Memory::answer_chars`] and the whole block by
-    /// [`Memory::context_tokens`].
-    pub questions: Vec<MemoryQuestion>,
-    /// Character ceiling on one grounded answer.
-    pub answer_chars: usize,
-    /// The model the engine writes answers with, in the engine's own
-    /// naming. Empty leaves it to the engine's default.
-    ///
-    /// Worth setting on a self-hosted engine whose default is a reasoning
-    /// tier: measured, the same grounded answer took a minute there and
-    /// seconds from a fast tier, and a review waits for its answers.
-    pub answer_model: String,
-    /// How many keywords the query put to the engine carries.
-    ///
-    /// The memory query is a short bag of the change's own identifiers and
-    /// file stems — not the index's four-thousand-character bag of words
-    /// and not the question's sentence. Measured against a live engine, a
-    /// two-dozen-keyword query answers in about a second where a sentence
-    /// naming a path could take the engine's whole two-minute deadline.
-    pub query_terms: usize,
-}
-
-/// One question a review puts to the memory engine.
-///
-/// Scoped to a section, and that is measured rather than tidy: an engine's
-/// ranked recall over one section answers "which rule applies here?" with the
-/// rule, while the same question over a whole repository's memory comes back
-/// with whatever was written first. The section is the difference between a
-/// pointer and a listing.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MemoryQuestion {
-    /// Which section to ask: `code`, `conventions` or `reviews`.
-    pub section: String,
-    /// The question. `{paths}` and `{title}` are filled in per review.
-    pub ask: String,
 }
 
 /// Model work that is not a lane.

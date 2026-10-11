@@ -30,7 +30,6 @@ use crate::error::Result;
 use crate::findings::concern::Concern;
 use crate::findings::types::Finding;
 use crate::forge::types::{IssueComment, RepoId, ReviewComment, ReviewThread};
-use crate::memory::ingest::{Outcome, classify};
 use crate::ports::forge::ForgeRead;
 
 /// The marker key carrying a finding's fingerprint.
@@ -562,19 +561,23 @@ pub fn title_in(body: &str) -> Option<String> {
 
 /// Fingerprints of our own threads a maintainer pushed back on.
 ///
-/// The outcome is [`classify`]'s, the same reading memory records: resolved
-/// by someone with write access without the code changing (rejected or
-/// dismissed), or answered by a maintainer and left open (disputed). A thread
+/// Resolved by someone with write access without the code changing, or
+/// answered by a maintainer and left open. A thread
 /// somebody else opened contributes nothing, and neither does a resolve by
 /// the pull request's own author.
 fn declined_fingerprints(threads: &[ReviewThread]) -> BTreeSet<String> {
     threads
         .iter()
         .filter(|thread| {
-            matches!(
-                classify(thread),
-                Some(Outcome::Rejected | Outcome::Dismissed | Outcome::Disputed)
-            )
+            if thread.is_resolved {
+                // A contributor can resolve their own thread; only a resolver
+                // with repository write access can decline the finding.
+                !thread.is_outdated && thread.resolved_by_has_write_access
+            } else {
+                thread.comments.iter().skip(1).any(|comment| {
+                    !comment.bot && !is_own_login(&comment.author) && comment.maintainer
+                })
+            }
         })
         .filter_map(|thread| thread.comments.first())
         .filter(|opener| is_own_login(&opener.author))
@@ -1320,7 +1323,7 @@ mod tests {
     #[tokio::test]
     async fn a_resolve_by_someone_without_write_access_is_not_a_decline() {
         // The pull request's own author may resolve our thread; that is not a
-        // maintainer saying no, and `memory::ingest::classify` says the same.
+        // maintainer saying no, so it cannot suppress the finding as rejected.
         let resolved_by_author = load_sockets_with_threads(vec![answered(true, false)]).await;
         assert!(!resolved_by_author.repeats_concern(&reworded_and_moved()));
     }

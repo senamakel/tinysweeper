@@ -51,7 +51,7 @@ cargo check --locked --all-features --all-targets
 
 The default build is offline: it links no HTTP client and the test suite never
 touches the network. Anything that needs the network goes behind a feature
-(`harness`, `github`, `sentry`, `cortex`, `serve`).
+(`harness`, `github`, `sentry`, `serve`).
 
 ## Coding Style & Naming Conventions
 

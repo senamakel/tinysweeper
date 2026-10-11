@@ -92,7 +92,6 @@ impl Lane for Tests {
             new_evidence: &evidence,
             changed_paths: &changed_paths,
             retrieved_context: input.retrieved_context,
-            memory_context: input.memory_context,
             redaction_note: input.redaction_note,
             ..PromptInputs::new(LaneId::Tests, input.config)
         });
@@ -389,7 +388,6 @@ mod lane_tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "",
                 e2e: None,
                 tree: None,

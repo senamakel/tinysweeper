@@ -15,7 +15,7 @@ never be told about, and how it handles the difference.
 | The title or body is edited | `pull_request: edited` | Yes |
 | A label is added or removed | `pull_request: labeled`, `unlabeled` | Yes |
 | Someone comments on the pull request | `issue_comment: created` | Yes, only when the comment starts with `@tinysweeper` |
-| Someone comments on a line of the diff | `pull_request_review_comment: created` | Remembered, but waits for the next code push |
+| Someone comments on a line of the diff | `pull_request_review_comment: created` | No; waits for the next code push |
 | A review is submitted | `pull_request_review: submitted` | Yes |
 | A check run finishes | `check_suite: completed` | Yes |
 | A repository's `ui-preview` job hands over its manifest | `POST /preview/sessions/{id}/finish` — not a webhook | Yes; see [modules/preview](modules/preview/README.md) |
@@ -24,40 +24,12 @@ never be told about, and how it handles the difference.
 `issue_comment` fires for issues *and* pull requests; the payload distinguishes
 them only by `issue.pull_request` being present. `webhook::route` filters on
 exactly that. Inline review comments are different: their `created`, `edited`,
-and `deleted` deliveries never start a model review. Supported comment changes
-are still re-read into memory, so a later `pull_request: synchronize` review can
-reconcile the conversation against changed code. A maintainer can deliberately
+and `deleted` deliveries never start a model review. A later `pull_request: synchronize` review reads the current conversation
+against changed code. A maintainer can deliberately
 request an unchanged-code rerun with an `@tinysweeper` issue comment.
 Operators can also deliberately queue a full review through
 `POST /admin/reviews/{owner}/{name}`; deferring inline replies does not change
 that route.
-
-### What memory listens to
-
-With `[memory]` **and** `memory.ingest_discussions` both on, a second decision
-is taken on every delivery beside routing: `webhook::remember_trigger` asks
-whether it touched a conversation, and if so the server re-reads that issue or
-pull request — its body and every comment, inline review comment and review
-on it — and remembers it. `[memory]` alone is not enough: a deployment that
-wants code and conventions remembered but not conversations turns memory on
-and sets `memory.ingest_discussions = false`. The trigger runs
-*before* the bot guard, deliberately: it exists to remember what other agents
-said, and their comments arrive from a `Bot` sender. The reviewer's own
-activity is the one sender skipped.
-
-| Event | Actions that trigger a re-read |
-| --- | --- |
-| `issues` | `opened`, `edited`, `closed`, `reopened`, `labeled`, `unlabeled`, `typed`, `untyped` |
-| `issue_comment` | `created`, `edited` |
-| `pull_request` | `opened`, `edited`, `closed`, `reopened`, `ready_for_review`, `labeled`, `unlabeled` |
-| `pull_request_review_comment` | `created`, `edited` |
-| `pull_request_review` | `submitted`, `edited`, `dismissed` |
-
-`deleted` is never a trigger: memory is append-only about what was said.
-Re-reads are debounced per conversation (`memory.discussion_debounce_secs`),
-and they write to the engine only, never to GitHub, so no loop can form. The
-history from before the server was listening comes from a backfill — see
-`docs/modules/memory/README.md`.
 
 A comment event carries no head SHA, so the server resolves it from the API
 rather than assuming `pull_request.head.sha` exists.

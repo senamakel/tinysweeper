@@ -141,21 +141,6 @@ submodules = [
     "tinyhumansai/tinyflows",
 ]
 
-# The memory engine: the CortexDB the production box already runs, shared
-# with the other services on it. Cortex publishes port 3141 on the Docker
-# host gateway; it is on a separate network, so its container name does not
-# resolve here. Compose maps host.docker.internal to that gateway.
-# Enabling it makes the server refuse to boot without CORTEX_API_KEY, so a local `serve` needs the
-# key in the environment (the compose file forwards it).
-[memory]
-enabled = true
-endpoint = "http://host.docker.internal:3141"
-allow_private_http = true
-# The engine's own default answer tier is `reasoning`, measured at a minute
-# per grounded answer — longer than a review waits. `flash` answered the
-# same questions, cited, in seconds.
-answer_model = "flash"
-
 # Agent-facing repository research and issue creation. The bearer is supplied
 # only by the deployment environment; this switch merely mounts the route.
 # The two product repositories are here for Teeny, the Discord bot, which

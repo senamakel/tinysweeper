@@ -161,7 +161,9 @@ The operator CLI accepts `review --tree /path/to/checkout` to supply the same
 read-only tree evidence used by server reviews. The checkout must match the
 live PR head and have no tracked, submodule, or untracked changes. A mismatch
 fails before review; no target build, dependency installation, or script runs.
-Reads and searches use Git's file allowlist, excluding ignored local files,
-and Git metadata uses the hardened runner that disables fsmonitor hooks and
-ambient configuration injection. Without `--tree`, the CLI continues to read
-through the forge API.
+Local reads use committed Git objects at that full SHA, so edits or deletions
+after validation cannot change the evidence. Ignored, untracked files have no blob in
+that tree. Git metadata uses the hardened runner that disables fsmonitor
+hooks and ambient configuration injection. Search, listing and submodule
+lookups fall through to the existing forge reader at the fresh reviewed
+head. Without `--tree`, the CLI continues to read through the forge API.

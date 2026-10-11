@@ -164,9 +164,31 @@ pub async fn local_review(
 /// The working directory may sit on another commit entirely, so a lookup
 /// answered from disk would describe the wrong tree. Reads go through
 /// `git show`; search is not offered.
-struct GitTree {
+pub struct GitTree {
     dir: std::path::PathBuf,
     range: ResolvedRange,
+}
+
+impl GitTree {
+    /// Read through Git objects at an immutable full commit SHA.
+    ///
+    /// Symbolic revisions are rejected so later checkout changes cannot move
+    /// the evidence. Searches and listing remain available through a chained
+    /// forge reader rather than reading the mutable working directory.
+    pub fn at_revision(dir: impl Into<std::path::PathBuf>, head: &str) -> Result<Self> {
+        if !matches!(head.len(), 40 | 64) || !head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(crate::Error::Git(
+                "review evidence requires a full commit SHA".into(),
+            ));
+        }
+        Ok(Self {
+            dir: dir.into(),
+            range: ResolvedRange {
+                head_sha: head.to_string(),
+                ..Default::default()
+            },
+        })
+    }
 }
 
 #[async_trait::async_trait]

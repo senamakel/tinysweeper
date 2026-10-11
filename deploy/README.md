@@ -22,7 +22,6 @@ rolls a new image.
 | Public name | `https://sweeper.tinyhumans.ai`, Cloudflare-proxied to the host's nginx |
 | App port | `127.0.0.1:8081` (8080 belongs to another service on the box) |
 | MongoDB | `127.0.0.1:27017`, loopback only |
-| CortexDB | The box's `cortex` container, reached as `http://cortexdb:3141` on `tinysweeper_default`; `127.0.0.1:3141` on the host |
 
 The box is shared with other services and its own nginx on 80/443, which is
 why this stack publishes nothing but a loopback port and the vhost is a file
@@ -42,7 +41,7 @@ cd /opt/tinysweeper
 git clone --recurse-submodules https://github.com/tinyhumansai/tinysweeper .
 
 cp .env.example .env && chmod 600 .env
-$EDITOR .env               # see "Configuration" below (CORTEX_API_KEY included); .tinysweeper.toml is tracked
+$EDITOR .env               # see "Configuration" below; .tinysweeper.toml is tracked
 
 # nginx: the port 80 block first, so certbot can answer the challenge.
 sudo install -m 644 deploy/nginx/sweeper.tinyhumans.ai.conf /etc/nginx/sites-available/
@@ -58,80 +57,13 @@ continues to validate its bearer, and no model route is exposed on public
 ports. Install this nginx file before using the shipped HTTPS model endpoints.
 This satisfies Embed's TLS requirement for bearer routes outside loopback.
 
-### The memory engine, before the first `up`
-
-`.tinysweeper.toml` turns `[memory]` on against
-`http://host.docker.internal:3141`. The server refuses to boot when an enabled
-engine cannot be reached, so configure `CORTEX_API_KEY` in `.env` first.
-
-The shared CortexDB container (`cortex`) lives on a separate Docker network.
-It publishes port 3141 on both `127.0.0.1` and the Docker host gateway
-`172.17.0.1`; Compose maps `host.docker.internal` to that gateway. This avoids
-an extra network attachment that disappears whenever Cortex is recreated.
-TinySweeper neither defines nor starts the shared engine. Keep its bearer in
-`.env`; do not print the container environment to recover credentials.
-
-Isolation between the services sharing the engine is by CortexDB scope, not by
-network or key: tinysweeper writes under `owner:<org>/repo:<name>/section:…`,
-teeny under `agent:…`, and scope ids are what keep one service's memories out
-of another's recall.
-
-This engine embeds at 1024 dimensions. Until 2026-09-13 tinysweeper used a
-separate 3072-dimensional CortexDB stack in `/opt/cortexdb` (container
-`cortexdb-cortexdb-1`, port 3142, volume `teeny_cortexdb-data`); its two
-tinysweeper scopes (443 events) were moved with `POST /v1/export` on the old
-side and `POST /v1/import` on the new, re-embedded on import, and the stack was
-taken down. The export and the import receipts are in `~/cortex-migration/` on
-the box, and the old volume is still there — it is the only copy of the
-pre-migration data, so leave it until nobody wants the rollback.
-
-A host without a shared engine (a replacement box, a laptop) runs its own
-CortexDB, publishes port 3141 on the Docker host gateway, and sets the
-key in `.env`. The minimum is one container against any OpenAI-compatible
-endpoint `$U` that serves an embedding model and a chat model — the ladder
-serves them as `vectors-oai3` (1024-dimensional) and `flash`:
-
-```sh
-docker run -d --name cortex --restart unless-stopped \
-  -p 127.0.0.1:3141:3141 -p 172.17.0.1:3141:3141 -v cortex-data:/data \
-  -e CORTEX_API_KEY=<bearer> -e CORTEX_DEPLOYMENT_PRESET=on_prem_enterprise -e CORTEX_BIND_ALL=1 \
-  -e CORTEX_EMBEDDING_URL=$U -e CORTEX_EMBEDDING_MODEL=vectors-oai3 -e CORTEX_EMBEDDING_DIMS=1024 \
-  -e CORTEX_LLM_URL=$U -e CORTEX_LLM_MODEL=flash \
-  -e CORTEX_ENRICHMENT_URL=$U -e CORTEX_ENRICHMENT_MODEL=flash \
-  -e CORTEX_ANSWER_PROVIDER=openai -e CORTEX_ANSWER_URL=$U -e CORTEX_ANSWER_MODEL=flash \
-  -e CORTEX_VERIFIER_URL=$U -e CORTEX_VERIFIER_MODEL=flash \
-  -e OPENAI_API_KEY=<endpoint key> -e LLM_API_KEY=<endpoint key> \
-  cortexdb/cortexdb:latest 3141 /data
-```
-
-The embedding size is pinned by the first write and cannot change afterwards,
-so pick it before ingesting anything. A checkout that wants no engine at all
-edits `[memory] enabled = false` out of the mounted config — there is
-deliberately no environment switch, because a config that says memory is on
-and a server that quietly runs without it is the failure this refuses.
+Start the stack and verify the server:
 
 ```sh
 cd /opt/tinysweeper
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --wait
 curl -fsS https://sweeper.tinyhumans.ai/healthz
 ```
-
-### Backfilling the memory, once per repository
-
-Webhooks keep the engine's `discussions` section current from the moment the
-server is up; the history before that — every earlier issue and pull request
-and what was said on them, the reviewer's own remarks excluded — is walked
-once, from any machine that holds the admin token:
-
-```sh
-TINYSWEEPER_SERVER_URL=https://sweeper.tinyhumans.ai \
-TINYSWEEPER_ADMIN_TOKEN=… scripts/memory-backfill.sh tinyhumansai/tinysweeper
-```
-
-It prints a `resume_from`; a later run with `--since <that>` walks only what
-changed, which is the thing to do after the server has been down for a while.
-One walk per repository runs at a time; the first over a busy repository takes
-minutes and stays well inside the installation's hourly API budget.
 
 ## Configuration
 
@@ -149,7 +81,6 @@ overlay reads:
 | `TINYSWEEPER_MCP_TOKEN` | Dedicated bearer for `/mcp`. Unset means the MCP router is not mounted. Keep it separate from the admin and preview credentials. |
 | `TINYSWEEPER_ALLOWED_ORG` | Organisation manual reviews are bounded to. Defaults to `tinyhumansai`. |
 | `LANGFUSE_*` | Optional tracing; see the README. |
-| `CORTEX_API_KEY` | The shared CortexDB's bearer, the value the `cortex` container was started with. Required while `[memory]` is on. |
 
 `.env` is the only file on the box that is not in git; `.tinysweeper.toml` is
 tracked. Back `.env` up somewhere with the same care as the App's private key,
@@ -203,6 +134,16 @@ sudo nginx -t && sudo systemctl reload nginx
 This is deliberate: a `git pull` in the deploy path would make the box's
 manifest follow whatever is on `main` at the moment of the click, and a config
 change is a thing to do with eyes on it.
+
+## Upgrading to 0.1.2
+
+Repository memory was removed in 0.1.2. Remove `[memory]` and any
+`[[memory.questions]]` tables from the mounted `.tinysweeper.toml` before
+deploying; the new image rejects them as unknown configuration. Remove
+`CORTEX_API_KEY` from TinySweeper's environment and Compose forwarding.
+The `memory` CLI command and `/admin/memory/` endpoints were retired, so
+remove calls to them from operator scripts. Mongo retrieval and per-head
+review state remain available.
 
 ## Operating it
 

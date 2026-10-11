@@ -579,62 +579,6 @@ max_impact = 20
 # forge. Name the vendored libraries a reviewed repository's code calls into.
 submodules = []
 
-# The memory engine: what the reviewer remembers about a repository between
-# pull requests. Off until an endpoint is named; see docs/modules/memory.
-[memory]
-enabled = false
-provider = "cortex"
-endpoint = ""
-api_key_env = "CORTEX_API_KEY"
-# Plain http:// is loopback-only unless this says the engine sits on a private
-# network that never leaves the host, such as the server's own Docker network.
-allow_private_http = false
-ingest_code = true
-ingest_conventions = true
-# Globs, repo-relative. The defaults are the files a repository uses to tell
-# its contributors — human or otherwise — how it wants to be worked on.
-convention_files = [
-    "AGENTS.md",
-    "CLAUDE.md",
-    "CONTRIBUTING.md",
-    "README.md",
-    ".cursorrules",
-    ".github/copilot-instructions.md",
-    ".github/CONTRIBUTING.md",
-    "docs/**/*.md",
-    "**/AGENTS.md",
-    "**/CLAUDE.md",
-]
-convention_section_chars = 2000
-remember_reviews = true
-# Issues and pull requests, open and closed, and everything said on them.
-ingest_discussions = true
-discussion_chars = 2000
-discussion_debounce_secs = 20
-context_tokens = 3000
-max_recollections = 8
-ask = true
-answer_chars = 1500
-# The engine's own model name for answers; empty is the engine's default.
-answer_model = ""
-# Keywords per memory query: file stems and the change's identifiers.
-query_terms = 24
-# Each question is put to one section of the repository's memory. Measured
-# against a live engine: a question over one section is answered with the
-# rule and its file; the same question over the whole repository comes back
-# with whatever was written first.
-[[memory.questions]]
-section = "conventions"
-ask = "Which conventions, invariants or rules stated in this repository's own documentation apply to changes under {paths}? Quote the rule and name the file it comes from."
-
-[[memory.questions]]
-section = "reviews"
-ask = "Which earlier review findings about {paths} did the maintainers reject, dispute or resolve without changing the code, and what reason did they give?"
-
-[[memory.questions]]
-section = "discussions"
-ask = "What was decided or explained in earlier issues and pull requests about {paths} or about {title}: problems reported, reasons given, approaches rejected? Name the issue or pull request each comes from."
-
 # Agent-facing repository questions and issue creation. The endpoint is absent
 # until enabled and its bearer is read only from `token_env`.
 [mcp]

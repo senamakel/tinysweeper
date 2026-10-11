@@ -17,7 +17,7 @@ use crate::automerge::policy::MergeApproved;
 use crate::error::{Error, Result};
 use crate::forge::types::{
     ChangedFile, CheckRun, CheckStatus, Commit, Issue, IssueComment, OwnReview, PullRequest,
-    PullRequestContext, Remark, RepoId, ReviewComment, ReviewEvent, ReviewThread, ReviewVerdict,
+    PullRequestContext, RepoId, ReviewComment, ReviewEvent, ReviewThread, ReviewVerdict,
     TreeListing,
 };
 
@@ -152,32 +152,6 @@ pub trait ForgeRead: Send + Sync {
     /// List open issues, most recently updated first.
     async fn open_issues(&self, repo: &RepoId, limit: usize) -> Result<Vec<Issue>>;
 
-    /// Every issue **and pull request** touched since `since` (RFC 3339, or
-    /// everything when `None`), open or closed, least recently updated first,
-    /// up to `limit`.
-    ///
-    /// The one listing that covers a repository's whole conversation history,
-    /// which is what the memory backfill walks: a closed issue and a merged
-    /// pull request are where the decisions live, and the open-only reads
-    /// beside this one never see them. Ascending by update time so a caller
-    /// that stops at `limit` can resume from the last `updated_at` it saw
-    /// without a gap. `Issue::pull_request` says which each entry is.
-    async fn issues_updated_since(
-        &self,
-        repo: &RepoId,
-        since: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<Issue>>;
-
-    /// The whole conversation on one issue or pull request, oldest first.
-    ///
-    /// Issue comments always; inline review comments and submitted reviews
-    /// too when `pull_request` is set, because only a pull request has them
-    /// and asking GitHub for a plain issue's reviews is a 404. One method
-    /// rather than three because the reader wants one timeline, and because
-    /// it is read-only: nothing here is trusted for anything but remembering.
-    async fn remarks(&self, repo: &RepoId, number: u64, pull_request: bool) -> Result<Vec<Remark>>;
-
     /// The commit a branch currently points at.
     ///
     /// `None` when the branch is not there, which is an ordinary answer: a pull
@@ -192,11 +166,8 @@ pub trait ForgeRead: Send + Sync {
 
     /// The repository's default branch name.
     ///
-    /// Exists so memory ingest can be gated on it: the reviewer's memory of a
-    /// repository is repository-wide, so it is fed from the default branch
-    /// only. Feeding it from whichever base a pull request happens to target
-    /// would let a release branch's snapshot replace `main`'s, and an older
-    /// base roll the memory backwards.
+    /// MCP reads code and documentation from this branch; e2e evidence also
+    /// uses it for workflows whose trigger runs from the default branch.
     async fn default_branch(&self, repo: &RepoId) -> Result<String>;
 
     /// List open pull requests, oldest first.

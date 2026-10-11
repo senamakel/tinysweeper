@@ -66,7 +66,7 @@ model call and no finding (`missing_harness = "skip"`, the default).
 ## Evidence
 
 Everything a lane sees today is in `LaneInput`: the diffs, the changed files'
-content, the retrieved neighbourhood, the memory. `e2e` needs three things the
+content and the retrieved neighbourhood. `e2e` needs three things the
 input does not carry, all gathered by `src/app/review.rs` before the lane
 runs, all deterministic, all through `ForgeRead`.
 
@@ -203,7 +203,7 @@ Candidate coverage (lexical, verify before trusting):
     mentions: /preview/sessions  (added at src/server/routes.rs:88)
 ```
 
-Then the diff, then the retrieved context, memory and rules exactly as every
+Then the diff, then the retrieved context and rules exactly as every
 other lane. The instructions ask for a decision per behavioural change:
 covered, uncovered-but-coverable, or unobservable — and for the last, why
 (needs a third party, needs hardware, is internal refactoring with no

@@ -7,7 +7,8 @@
   file.
 - `src/bin/tinysweeper.rs` — the CLI. Every subcommand is declared even when its
   milestone has not landed, so scripts and runbooks can be written against a
-  stable surface. `src/server/` is the only production surface: tinysweeper is
+  stable surface. Explicitly removed integrations are excluded: Cortex-backed
+  memory and its CLI commands were retired in 0.1.2. `src/server/` is the only production surface: tinysweeper is
   not distributed or run as a GitHub Action. The two deliberate exceptions are
   operator buttons in *this* repository: `.github/workflows/manual-review.yml`,
   which POSTs to the deployed server's `/admin/reviews` route, and
@@ -51,7 +52,7 @@ cargo check --locked --all-features --all-targets
 
 The default build is offline: it links no HTTP client and the test suite never
 touches the network. Anything that needs the network goes behind a feature
-(`harness`, `github`, `sentry`, `cortex`, `serve`).
+(`harness`, `github`, `sentry`, `serve`).
 
 ## Coding Style & Naming Conventions
 

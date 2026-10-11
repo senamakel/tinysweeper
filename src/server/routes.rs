@@ -29,11 +29,8 @@ use crate::server::admin::{self, AdminAuth};
 use crate::server::auth::AppAuth;
 use crate::server::failure;
 use crate::server::indexing::{IndexBackend, index_in_background};
-use crate::server::manual::{self, FullReviews, MergeReport, Merges, Remembers, Triages};
+use crate::server::manual::{self, FullReviews, MergeReport, Merges, Triages};
 use crate::server::mcp;
-use crate::server::memory::{
-    BackfillStart, BackfillStatus, MemoryBackend, ingest_in_background, remember_in_background,
-};
 use crate::server::model::{GatewayModelFactory, ResolvedModels};
 use crate::server::preview::{
     self, FinishReply, FinishRequest, Previews, StartReply, StartRequest,
@@ -105,6 +102,12 @@ const _: () = assert!(
     "every phase of a lease-held review must give up before the lease does"
 );
 
+const _: () = assert!(
+    super::auth::REVIEW_READ_MARGIN.as_secs()
+        > REVIEW_DEADLINE.as_secs() + METADATA_ALLOWANCE.as_secs() + PUBLISH_DEADLINE.as_secs(),
+    "cached review credentials must outlast every phase that can retain the reader"
+);
+
 /// How many repositories may be indexed at once.
 ///
 /// Lower than the review cap and for a different reason. A review is mostly
@@ -169,9 +172,6 @@ struct AppState {
     /// provider. `None` runs every review diff-only, which is what tinysweeper
     /// did before an index existed.
     index: Option<Arc<IndexBackend>>,
-    /// The memory engine, when `[memory]` names one. `None` reviews without
-    /// memory, which is what tinysweeper did before an engine existed.
-    memory: Option<Arc<MemoryBackend>>,
     /// Bounds concurrent indexing separately from concurrent reviewing: a
     /// delivery burst must not turn into a burst of full indexes.
     index_permits: Arc<Semaphore>,
@@ -256,18 +256,6 @@ pub async fn serve_with_model_factory(
         }
     };
 
-    // Same shape as the index: off is a choice, unreachable is a boot failure.
-    let memory = match MemoryBackend::open(&config.config).await? {
-        Some(backend) => {
-            tracing::info!(engine = "cortex", "memory is on");
-            Some(Arc::new(backend))
-        }
-        None => {
-            tracing::info!("memory is disabled: no engine configured");
-            None
-        }
-    };
-
     let admin_auth = config.admin_auth.clone();
     let state = AppState {
         config: Arc::new(config),
@@ -277,7 +265,6 @@ pub async fn serve_with_model_factory(
         auth: Arc::new(auth),
         permits: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
         index: index.clone(),
-        memory,
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
@@ -326,15 +313,6 @@ pub async fn serve_with_model_factory(
     let triages: Arc<dyn Triages> = Arc::new(TriageDispatch {
         state: manual_state.clone(),
     });
-    // Only when there is an engine: the routes then answer 503 instead of
-    // 404, so an operator learns the deployment has no memory rather than
-    // that they mistyped the path.
-    let remembers: Option<Arc<dyn Remembers>> = manual_state.memory.is_some().then(|| {
-        Arc::new(MemoryDispatch {
-            state: manual_state.clone(),
-        }) as Arc<dyn Remembers>
-    });
-
     // The periodic sweep, spawned only when it has both a switch and an
     // interval. It is what makes triage automatic rather than a button: a
     // duplicate opened at midnight is labelled by morning without anybody
@@ -347,7 +325,6 @@ pub async fn serve_with_model_factory(
         dispatch,
         merges,
         triages,
-        remembers,
     ) {
         app = app.merge(routes);
         tracing::info!(
@@ -578,24 +555,6 @@ async fn receive(
             return (StatusCode::BAD_REQUEST, "unparseable payload").into_response();
         }
     };
-
-    // Memory listens to every delivery that touches a conversation,
-    // independently of what the delivery is routed to below — including the
-    // ones routed to nothing, which is where every other agent's comment
-    // lands. Spawned and forgotten: it reads GitHub and writes the engine,
-    // never the other way round, so nothing about the delivery waits on it.
-    if let (Some(backend), Some(conversation)) =
-        (&state.memory, webhook::remember_trigger(&event, &payload))
-        && state.config.config.memory.ingest_discussions
-    {
-        tokio::spawn(remember_in_background(
-            backend.clone(),
-            Arc::new(state.config.config.clone()),
-            state.auth.clone(),
-            state.index_permits.clone(),
-            conversation,
-        ));
-    }
 
     // Routing is pure — headers and the parsed body, no I/O — so the two
     // outcomes that do no work are answered without touching the database at
@@ -1317,97 +1276,6 @@ impl FullReviews for ManualDispatch {
     }
 }
 
-/// The memory backfill button's way into the engine.
-///
-/// The installation is resolved from the repository, as the review button
-/// does; the token it mints is a read token, used for nothing but listing
-/// conversations. The walk runs in the background because it is minutes
-/// long; one conversation is remembered inline because it is one request.
-struct MemoryDispatch {
-    state: AppState,
-}
-
-impl MemoryDispatch {
-    async fn read_token(&self, repo: &RepoId) -> Result<String> {
-        let installation = self
-            .state
-            .auth
-            .installation_for_repo(&repo.owner, &repo.name)
-            .await?;
-        self.state.auth.installation_token(installation).await
-    }
-
-    fn backend(&self) -> Result<Arc<MemoryBackend>> {
-        self.state
-            .memory
-            .clone()
-            .ok_or_else(|| Error::Forge("no memory engine is configured".into()))
-    }
-}
-
-#[async_trait::async_trait]
-impl Remembers for MemoryDispatch {
-    async fn remember(
-        &self,
-        repo: &RepoId,
-        number: u64,
-        pull_request: bool,
-    ) -> Result<crate::memory::DiscussionReport> {
-        let backend = self.backend()?;
-        let token = self.read_token(repo).await?;
-        backend
-            .remember_conversation(
-                &self.state.config.config,
-                repo,
-                number,
-                pull_request,
-                &token,
-            )
-            .await
-    }
-
-    async fn backfill(
-        &self,
-        repo: &RepoId,
-        since: Option<String>,
-        limit: usize,
-    ) -> Result<BackfillStart> {
-        let backend = self.backend()?;
-        // Resolved and minted once up front, so a repository the app is not
-        // installed on is a plain error to the operator rather than a
-        // backfill that fails only once the background task gets around to
-        // it. The token itself is not carried into the walk: `run_backfill`
-        // re-mints per chunk from `installation`, since a walk long enough to
-        // renew several times cannot ride on one snapshot of it.
-        let installation = self
-            .state
-            .auth
-            .installation_for_repo(&repo.owner, &repo.name)
-            .await?;
-        self.state.auth.installation_token(installation).await?;
-        let started = match backend.start_backfill(repo, since.clone(), limit) {
-            BackfillStart::Started(status) => status,
-            running @ BackfillStart::AlreadyRunning(_) => return Ok(running),
-        };
-        let config = Arc::new(self.state.config.config.clone());
-        let repo = repo.clone();
-        let auth = self.state.auth.clone();
-        tokio::spawn(async move {
-            // Not on the index permit pool: `run_backfill` serializes walks
-            // on a lock of its own, so a minutes-long walk never holds a
-            // permit that code ingestion and live re-reads are waiting for.
-            backend
-                .run_backfill(&config, &repo, since.as_deref(), limit, &auth, installation)
-                .await;
-        });
-        Ok(BackfillStart::Started(started))
-    }
-
-    async fn status(&self, repo: &RepoId) -> Result<Option<BackfillStatus>> {
-        Ok(self.backend()?.backfill_status(repo))
-    }
-}
-
 /// The manual auto-merge button's way into the policy.
 ///
 /// Unlike the review button this answers synchronously. There is no model in
@@ -1533,11 +1401,6 @@ pub enum Mode {
 /// review is an extra opinion, not a reset, and destroying the record would
 /// make the *next* webhook review duplicate its comments too.
 ///
-/// Memory is deliberately untouched by this flag: it is the repository's
-/// accumulated knowledge — conventions, and what became of earlier findings —
-/// not this pull request's incremental state, and a manual full review wants
-/// "you said this before and they said no" exactly as much as an ordinary
-/// one does.
 fn config_for(base: &Config, mode: Mode) -> std::borrow::Cow<'_, Config> {
     match mode {
         Mode::Incremental => std::borrow::Cow::Borrowed(base),
@@ -2217,12 +2080,6 @@ async fn review_inner(
     // against whatever the index holds right now, and `crate::retrieve` says so
     // in the check-run summary when that is nothing. See `server::indexing`.
     //
-    // This uses the *deployment's* configuration, not the repository's own
-    // overlay fetched below — a pre-existing tradeoff this pull request does
-    // not change. Memory ingestion, spawned after the overlay below, does not
-    // repeat it: `paths.ignore` is repository-overridable, and starting
-    // ingestion before the overlay is read would persist paths the repository
-    // explicitly excluded into an external store the deployment does not own.
     if let Some(backend) = &state.index {
         tokio::spawn(index_in_background(
             backend.clone(),
@@ -2326,61 +2183,6 @@ async fn review_inner(
             .await;
         }
 
-        // Memory is fed from the *base* tip, not the head: what the
-        // repository has committed to, not what this pull request proposes.
-        // See `server::memory`. Spawned only now, under `overlay.config`
-        // rather than the deployment's own, so a repository's own
-        // `paths.ignore` — which is repository-overridable — is honored
-        // before anything from an excluded path is persisted into the
-        // engine.
-        //
-        // Skipped entirely when the overlay could not be read or applied:
-        // `overlay.config` is then only a fallback, not the repository's
-        // actual policy, and ingesting under it risks persisting paths the
-        // repository excludes. A later delivery for the same base tip that
-        // successfully loads the real overlay still ingests normally — this
-        // delivery just does not, rather than ingesting under a policy that
-        // might be wrong.
-        //
-        // And only from the default branch. Memory is repository-wide, so a
-        // pull request against a release branch must not replace `main`'s
-        // snapshot, and an older base must not roll the memory backwards; the
-        // ingest forgets a section before rewriting it, so either would.
-        if overlay.unavailable {
-            tracing::warn!(
-                %repo,
-                "skipping memory ingestion: the repository's own configuration could not be read"
-            );
-        } else if let Some(backend) = &state.memory {
-            let default_branch = {
-                use crate::ports::forge::ForgeRead;
-                forge.default_branch(&repo_id).await
-            };
-            match default_branch {
-                Ok(branch) if branch == pull_request.base_ref => {
-                    tokio::spawn(ingest_in_background(
-                        backend.clone(),
-                        Arc::new(overlay.config.clone()),
-                        state.index_permits.clone(),
-                        repo_id.clone(),
-                        pull_request.base_sha.clone(),
-                        read_token.clone(),
-                    ));
-                }
-                Ok(branch) => tracing::debug!(
-                    %repo,
-                    base = %pull_request.base_ref,
-                    default = %branch,
-                    "skipping memory ingestion: the base is not the default branch"
-                ),
-                Err(err) => tracing::warn!(
-                    %repo,
-                    %err,
-                    "skipping memory ingestion: could not read the default branch"
-                ),
-            }
-        }
-
         // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
         // reaches the release below. Without it the `?` on the outcome is not
         // the only way out — an unwind skips everything — and the lease
@@ -2423,8 +2225,13 @@ async fn review_inner(
                 // umbrella-check mechanism exists to prevent.
                 let publish = std::panic::AssertUnwindSafe(async {
                     let write_token = state.auth.installation_token(installation).await?;
+                    // The review reader has already been held across all the
+                    // model calls. Rebuild the publisher's reader with the
+                    // credential acquired now so live-head validation and
+                    // later dedupe reads have the same lifetime as writes.
+                    let read = crate::forge::github::GitHubRead::new(&write_token)?;
                     let write = crate::forge::github::GitHubWrite::new(&write_token)?;
-                    crate::app::apply(&forge, &write, &config, &proposal, Some(&state.store)).await
+                    crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
                 })
                 .catch_unwind();
                 tokio::time::timeout(PUBLISH_DEADLINE, publish)
@@ -2535,8 +2342,7 @@ async fn run_lanes(
 
     // The mode is layered on top of the *effective* config, so a repository's
     // own `.tinysweeper.toml` still governs a manual review — a full run is the
-    // same policy with no memory, not the deployment's policy instead.
-    let recaller = state.memory.as_ref().map(|backend| backend.recaller());
+    // same policy, not the deployment's policy instead.
 
     let config = config_for(config, run.mode);
 
@@ -2605,7 +2411,6 @@ async fn run_lanes(
             Some(&state.store),
             state.knowledge.as_deref(),
             retriever.as_ref(),
-            recaller.as_ref(),
             tree,
         )
         .await
@@ -3093,7 +2898,7 @@ mod tests {
     #[test]
     fn a_full_review_turns_the_incremental_path_off_and_changes_nothing_else() {
         // This is the whole of what "full" means. `review.incremental` gates
-        // both halves of the memory in `crate::app::review`: the prior findings
+        // both halves of the incremental state in `crate::app::review`: the prior findings
         // read off the pull request, and the remembered state in the store —
         // and it also gates the write-back, so a manual run does not overwrite
         // what the webhook path remembers.
@@ -3105,7 +2910,7 @@ mod tests {
         assert!(!full.review.incremental);
         assert_eq!(
             full.models.budget_usd_per_pr, base.models.budget_usd_per_pr,
-            "a full review is the same review with no memory, not a different policy"
+            "a full review is the same review with incremental reuse disabled"
         );
 
         let incremental = config_for(&base, Mode::Incremental);

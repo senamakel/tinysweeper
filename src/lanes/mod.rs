@@ -75,10 +75,6 @@ pub struct LaneInput<'a> {
     /// `crate::harness::prompt`. Empty when retrieval is off, degraded, or
     /// found nothing, in which case the lane reviews the diff alone.
     pub retrieved_context: &'a str,
-    /// What the reviewer remembers about this repository, rendered by
-    /// `crate::memory::recall`. Volatile, suffix-only, for the same reasons as
-    /// [`Self::retrieved_context`]. Empty when no engine is configured.
-    pub memory_context: &'a str,
     /// One sentence saying a value was masked out of `diffs` before this lane
     /// ever saw it, from `crate::evidence::redact::Redactions::note`. Empty
     /// when nothing was redacted. Volatile and placed right after the diff

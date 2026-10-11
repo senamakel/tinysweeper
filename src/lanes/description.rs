@@ -93,7 +93,6 @@ impl Lane for Description {
             new_evidence: &evidence,
             changed_paths: &changed_paths,
             pull_request_text: &pull_request_text,
-            memory_context: input.memory_context,
             redaction_note: input.redaction_note,
             ..PromptInputs::new(LaneId::Description, input.config)
         });
@@ -289,7 +288,6 @@ mod tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "",
                 e2e: None,
                 tree: None,
@@ -364,12 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recalled_memory_reaches_the_description_prompt() {
-        // Regression: `PromptInputs`'s `..Default`-style spread left
-        // `memory_context` unset here, so `PromptInputs::new`'s empty string
-        // silently won — recalled conventions and earlier rejected
-        // description findings never reached this lane even though the
-        // review path had already recalled them.
+    async fn pull_request_description_reaches_only_the_untrusted_prompt_suffix() {
         let model = MockModel::always(json!({"summary": "Fine.", "findings": []}));
         let config = config();
         let pr = pull_request("A real description of the change, long enough to pass the gate.");
@@ -387,7 +380,6 @@ mod tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "- **rejected — an earlier finding**\n  Maintainer's reply: no.",
                 redaction_note: "",
                 e2e: None,
                 tree: None,
@@ -402,11 +394,15 @@ mod tests {
             .next()
             .expect("the lane called the model");
         assert!(
-            request
-                .messages
-                .iter()
-                .any(|m| m.content.contains("an earlier finding")),
-            "the recalled memory must reach the description prompt: {request:?}"
+            request.messages[1]
+                .content
+                .contains("A real description of the change")
+        );
+        assert!(request.messages[1].content.contains("pull-request"));
+        assert!(
+            !request.messages[0]
+                .content
+                .contains("A real description of the change")
         );
     }
 

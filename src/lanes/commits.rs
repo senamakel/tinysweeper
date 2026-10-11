@@ -194,7 +194,6 @@ mod tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "",
                 e2e: None,
                 tree: None,

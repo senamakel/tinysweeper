@@ -29,7 +29,6 @@ pub mod failure;
 pub mod indexing;
 pub mod manual;
 pub mod mcp;
-pub mod memory;
 pub mod model;
 pub mod preview;
 pub mod routes;

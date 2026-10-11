@@ -75,16 +75,6 @@ and [docs/modules/preview/README.md](docs/modules/preview/README.md).
   preferences is treated as a defect.
 - **Offline by default.** The default build links no HTTP client, and the test
   suite never touches the network.
-- **It remembers.** With a [CortexDB](https://cortexdb.ai) engine configured,
-  the reviewer keeps a memory of each repository — its guides, one item per
-  heading; its code; what the maintainers did with every earlier finding; and
-  every issue and pull request, open or closed, with everything anybody said
-  on them, other review bots included but the reviewer's own remarks excluded
-  — and asks it cited questions before it reads the diff. A finding a
-  maintainer rejected on pull request 40 is remembered *as rejected* on pull
-  request 41. See
-  [docs/modules/memory/README.md](docs/modules/memory/README.md).
-
 ## How it runs
 
 tinysweeper is a **GitHub App**: one server, installed on as many repositories
@@ -108,14 +98,6 @@ cargo build --release --features all
 cp .env.example .env    # fill it in
 ./target/release/tinysweeper serve
 ```
-
-The checkout's `.tinysweeper.toml` is the production config: it turns
-`[memory]` on against `http://cortexdb:3141`, a name that only resolves inside
-the Compose stack, and the server refuses to boot when an enabled engine is
-unreachable. A server run straight from the checkout therefore points
-`memory.endpoint` at the engine's host port (`http://127.0.0.1:3141`, loopback,
-so no `allow_private_http` needed) or sets `memory.enabled = false`. See
-[deploy/README.md](deploy/README.md) for the engine itself.
 
 The App needs `checks:write`, `contents:read`, `issues:write`,
 `pull_requests:write` and `metadata:read`, and a webhook pointed at
@@ -243,7 +225,6 @@ code path.
 - [docs/modules/overview/README.md](docs/modules/overview/README.md) — the change map: what gets drawn, and why nothing in it comes from a model
 - [docs/modules/summary/README.md](docs/modules/summary/README.md) — the durable PR review hub, its lifecycle, structured narrative, and deterministic policy fields
 - [docs/modules/preview/README.md](docs/modules/preview/README.md) — the UI preview: the brain in the server, the hands in the repository's CI, and what crosses between them
-- [docs/modules/memory/README.md](docs/modules/memory/README.md) — the memory engine: what is remembered, what is asked, and what a rejected finding means
 - `docs/` — module documentation and design notes
 
 ## License

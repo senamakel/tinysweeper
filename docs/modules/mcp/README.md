@@ -56,8 +56,7 @@ The server exposes four tools:
 
 The idempotency claims, index and issue history are persistent across MCP
 requests. The claim closes the concurrency and GitHub search-index delay;
-history catches older duplicates. The existing Cortex memory remains available
-to review and can be backfilled through the established admin route.
+history catches older duplicates.
 
 ## Security model
 

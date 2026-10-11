@@ -176,7 +176,6 @@ impl Lane for E2e {
             new_evidence: &assembled,
             changed_paths: &changed_paths,
             retrieved_context: input.retrieved_context,
-            memory_context: input.memory_context,
             redaction_note: input.redaction_note,
             ..PromptInputs::new(LaneId::E2e, input.config)
         });
@@ -420,7 +419,6 @@ mod lane_tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "",
                 e2e: evidence,
                 tree: None,
@@ -704,7 +702,6 @@ mod lane_tests {
                 reviewed_evidence: "",
                 prior_findings: &[],
                 retrieved_context: "",
-                memory_context: "",
                 redaction_note: "1 credential value was removed from this diff before you saw \
                                   it and appears as `<redacted, N chars>`.",
                 e2e: Some(&evidence),

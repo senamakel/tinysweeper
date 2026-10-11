@@ -26,6 +26,13 @@ use crate::error::{Error, Result};
 /// two thirds of the way through has already spent the money.
 const RENEW_MARGIN: Duration = Duration::from_secs(5 * 60);
 
+/// Minimum remaining lifetime of credentials retained across review lanes.
+///
+/// Unlike an ordinary request, the review retains its reader through model
+/// calls and post-lane thread planning. Cover the complete bounded run, not
+/// just its first request; routes asserts this against the phase budgets.
+pub(crate) const REVIEW_READ_MARGIN: Duration = Duration::from_secs(30 * 60);
+
 #[derive(Debug, Serialize)]
 struct Claims {
     iat: u64,
@@ -187,9 +194,8 @@ impl AppAuth {
     /// An installation token that will still be valid `margin` from now,
     /// from cache when the cached one is, minted afresh otherwise.
     ///
-    /// For a caller that holds one token across a long run of requests — a
-    /// memory backfill chunk is minutes of reads — and cannot re-mint in the
-    /// middle. `installation_token` is this with the default margin.
+    /// For a caller that holds one token across a long run of requests and
+    /// cannot re-mint in the middle. `installation_token` uses the default margin.
     pub async fn installation_token_good_for(
         &self,
         installation: u64,
@@ -199,9 +205,26 @@ impl AppAuth {
     }
 
     /// An installation token that cannot mutate the reviewed repository.
+    ///
+    /// Cached tokens must cover a complete review, since model tools and
+    /// post-lane reads keep using the same reader throughout it.
     pub async fn review_read_token(&self, installation: u64) -> Result<String> {
-        self.token(installation, TokenScope::ReviewRead, RENEW_MARGIN)
+        self.token(installation, TokenScope::ReviewRead, REVIEW_READ_MARGIN)
             .await
+    }
+
+    async fn cached_token(
+        &self,
+        installation: u64,
+        scope: TokenScope,
+        margin: Duration,
+    ) -> Option<String> {
+        self.cache
+            .lock()
+            .await
+            .get(&(installation, scope))
+            .filter(|cached| cached.expires > SystemTime::now() + margin)
+            .map(|cached| cached.token.clone())
     }
 
     async fn token(
@@ -210,10 +233,8 @@ impl AppAuth {
         scope: TokenScope,
         margin: Duration,
     ) -> Result<String> {
-        if let Some(cached) = self.cache.lock().await.get(&(installation, scope))
-            && cached.expires > SystemTime::now() + margin
-        {
-            return Ok(cached.token.clone());
+        if let Some(token) = self.cached_token(installation, scope, margin).await {
+            return Ok(token);
         }
 
         let jwt = self.app_jwt()?;
@@ -433,6 +454,48 @@ mod tests {
                 }
             }))
         );
+    }
+
+    #[tokio::test]
+    async fn a_cached_read_token_that_expires_during_review_is_renewed() {
+        let auth = auth("1");
+        auth.cache.lock().await.insert(
+            (42, TokenScope::ReviewRead),
+            CachedToken {
+                token: "expires-during-lanes".into(),
+                expires: SystemTime::now() + Duration::from_secs(10 * 60),
+            },
+        );
+        assert_eq!(
+            auth.cached_token(42, TokenScope::ReviewRead, REVIEW_READ_MARGIN)
+                .await,
+            None,
+            "ten minutes cannot cover a fifteen-minute review and its metadata reads"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_cache_keeps_fresh_read_tokens_separate_from_write_tokens() {
+        let auth = auth("1");
+        let now = SystemTime::now();
+        let mut cache = auth.cache.lock().await;
+        cache.insert(
+            (42, TokenScope::ReviewRead),
+            CachedToken {
+                token: "fresh-read".into(),
+                expires: now + Duration::from_secs(3600),
+            },
+        );
+        cache.insert(
+            (42, TokenScope::Full),
+            CachedToken {
+                token: "write".into(),
+                expires: now + Duration::from_secs(10 * 60),
+            },
+        );
+        drop(cache);
+        assert_eq!(auth.review_read_token(42).await.unwrap(), "fresh-read");
+        assert_eq!(auth.installation_token(42).await.unwrap(), "write");
     }
 
     fn base64_decode(text: &str) -> Option<Vec<u8>> {

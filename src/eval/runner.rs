@@ -268,7 +268,6 @@ async fn review_case(
         Some(&store),
         None,
         None,
-        None,
         Some(tree),
     )
     .await

@@ -148,15 +148,6 @@ enum Command {
         dry_run: bool,
     },
 
-    /// Feed, query and inspect the memory engine (`[memory]`).
-    ///
-    /// The server does all of this on its own once `[memory]` names an engine;
-    /// these are the operator's buttons for seeding a repository ahead of its
-    /// first review, checking what the engine holds, and asking it a question
-    /// the way a review would. Requires the `cortex` feature.
-    #[command(subcommand)]
-    Memory(MemoryCommand),
-
     /// UI previews: plan the user flows of a pull request, or render a gallery.
     ///
     /// The browser itself runs in the reviewed repository's CI
@@ -285,112 +276,6 @@ enum PreviewCommand {
         /// Path to the config file. Defaults to discovery from the repo root.
         #[arg(long)]
         config: Option<std::path::PathBuf>,
-    },
-}
-
-/// The memory commands.
-#[derive(Debug, Subcommand)]
-enum MemoryCommand {
-    /// Remember a checkout: its code, and its instruction files as conventions.
-    Ingest {
-        /// The repository, as `owner/name`. Names the scope; nothing is fetched.
-        #[arg(long)]
-        repo: String,
-
-        /// The checkout to read. Defaults to the current directory.
-        #[arg(long, default_value = ".")]
-        dir: std::path::PathBuf,
-
-        /// Path to the config file. Defaults to discovery from `--dir`.
-        #[arg(long)]
-        config: Option<std::path::PathBuf>,
-    },
-
-    /// Recall what the engine holds for a query, section by section.
-    Recall {
-        /// The repository, as `owner/name`.
-        #[arg(long)]
-        repo: String,
-
-        /// The query, in the words a diff would use.
-        query: String,
-
-        /// How many recollections per section.
-        #[arg(long, default_value_t = 5)]
-        limit: usize,
-    },
-
-    /// Ask the engine a grounded question about one section of a repository.
-    Ask {
-        /// The repository, as `owner/name`.
-        #[arg(long)]
-        repo: String,
-
-        /// Which section to ask: `code`, `conventions`, `reviews` or
-        /// `discussions`.
-        #[arg(long, default_value = "conventions")]
-        section: String,
-
-        /// Keywords that gather the evidence, in place of the question's own
-        /// words — what a review does. Without it the question itself is
-        /// the query, which is the raw form and the slow one on a large
-        /// engine.
-        #[arg(long)]
-        evidence: Option<String>,
-
-        /// The question. `{paths}` is left as-is: this is the raw form.
-        question: String,
-    },
-
-    /// Remember a repository's issues and pull requests — open and closed —
-    /// and everything anybody said on them, read from GitHub.
-    ///
-    /// The server does this live from webhooks; this is for the history
-    /// before it was listening, or for a repository it has never seen. Reads
-    /// with `GITHUB_TOKEN` and writes nothing to GitHub. Needs `github`.
-    Backfill {
-        /// The repository, as `owner/name`. Fetched from GitHub.
-        #[arg(long)]
-        repo: String,
-
-        /// Only conversations updated after this RFC 3339 instant. The
-        /// previous run printed the value to pass here.
-        #[arg(long)]
-        since: Option<String>,
-
-        /// How many conversations to walk at most, oldest change first.
-        #[arg(long, default_value_t = tinysweeper::memory::discussions::DEFAULT_BACKFILL_LIMIT)]
-        limit: usize,
-
-        /// One issue or pull request instead of a walk.
-        #[arg(long, conflicts_with_all = ["since", "limit"])]
-        number: Option<u64>,
-
-        /// With `--number`: it is a pull request, so read its review
-        /// comments and reviews too.
-        #[arg(long, requires = "number")]
-        pull_request: bool,
-
-        /// Path to the config file. Defaults to discovery from the current
-        /// directory.
-        #[arg(long)]
-        config: Option<std::path::PathBuf>,
-    },
-
-    /// Forget everything the engine holds for a repository, or one section.
-    Forget {
-        /// The repository, as `owner/name`.
-        #[arg(long)]
-        repo: String,
-
-        /// Only this section: `code`, `conventions` or `reviews`.
-        #[arg(long)]
-        section: Option<String>,
-
-        /// Actually do it. Without this the command reports what it would
-        /// forget and stops.
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -561,7 +446,6 @@ async fn dispatch(command: Command) -> Result<()> {
             dry_run,
         } => run_pr_triage(&repo, pr, config, dry_run).await,
         Command::Sentry { config, dry_run } => run_sentry(config, dry_run).await,
-        Command::Memory(command) => run_memory(command).await,
         Command::Eval(command) => run_eval(command).await,
         Command::LocalReview {
             base,
@@ -616,7 +500,6 @@ async fn run_review(
         &loaded.config,
         &repo_id,
         pr,
-        None,
         None,
         None,
         None,
@@ -1482,226 +1365,6 @@ async fn run_sentry(config_path: Option<std::path::PathBuf>, dry_run: bool) -> R
     Ok(())
 }
 
-/// Drive the memory engine by hand.
-///
-/// Every command builds the same `CortexMemory` the server does, from the same
-/// `[memory]` section, so what the operator sees here is what a review sees.
-#[cfg(feature = "cortex")]
-async fn run_memory(command: MemoryCommand) -> Result<()> {
-    use tinysweeper::memory::cortex::CortexMemory;
-    use tinysweeper::memory::{Ingestor, MemoryScope, MemorySection};
-    use tinysweeper::ports::memory::Memory as _;
-
-    fn open(
-        root: &std::path::Path,
-        config: Option<&std::path::Path>,
-    ) -> Result<(tinysweeper::config::types::Config, CortexMemory)> {
-        let loaded = tinysweeper::config::load_validated(root, config)?;
-        if !loaded.config.memory.enabled {
-            return Err(tinysweeper::Error::config(
-                "`memory.enabled = false`; name an engine under [memory] first",
-            ));
-        }
-        let memory = CortexMemory::from_config(&loaded.config.memory)?;
-        Ok((loaded.config, memory))
-    }
-
-    // `MemoryScope`'s own parser only checks for the first `/`, so a value
-    // like `a/b/c` builds a scope `RepoId::parse` would reject — a
-    // noncanonical key that ingest, recall, ask and forget would each treat
-    // differently. Canonicalizing through `RepoId` here is what keeps every
-    // memory command keying on the same string the review path uses.
-    fn canonical_repo(repo: &str) -> Result<String> {
-        tinysweeper::forge::RepoId::parse(repo)
-            .map(|id| id.to_string())
-            .ok_or_else(|| tinysweeper::Error::config(format!("`{repo}` is not `owner/name`")))
-    }
-
-    match command {
-        MemoryCommand::Ingest { repo, dir, config } => {
-            let repo = canonical_repo(&repo)?;
-            let (config, memory) = open(&dir, config.as_deref())?;
-            memory.health().await?;
-            let ingestor = Ingestor::new(&memory, &config.memory, &config.paths.ignore)?;
-            let report = ingestor.ingest_checkout(&repo, &dir).await?;
-            println!("{}", report.summary());
-            for line in &report.unreadable {
-                println!("  skipped {line}");
-            }
-        }
-        MemoryCommand::Recall { repo, query, limit } => {
-            let repo = canonical_repo(&repo)?;
-            let (_, memory) = open(std::path::Path::new("."), None)?;
-            for section in MemorySection::ALL {
-                let scope = MemoryScope::section(&repo, section);
-                let hits = memory.recall(&scope, &query, limit).await?;
-                println!("## {} ({})", section.as_str(), hits.len());
-                for hit in hits {
-                    let item = hit.item;
-                    println!(
-                        "- [{}] {}{}",
-                        item.kind.as_str(),
-                        item.title,
-                        item.path
-                            .as_deref()
-                            .map(|p| format!("  ({p})"))
-                            .unwrap_or_default()
-                    );
-                    for line in item.body.lines().take(6) {
-                        println!("    {line}");
-                    }
-                }
-            }
-        }
-        MemoryCommand::Ask {
-            repo,
-            section,
-            evidence,
-            question,
-        } => {
-            let repo = canonical_repo(&repo)?;
-            let (_, memory) = open(std::path::Path::new("."), None)?;
-            let section = MemorySection::parse(&section).ok_or_else(|| {
-                tinysweeper::Error::config(format!(
-                    "`{section}` is not a section; use code, conventions, reviews or discussions"
-                ))
-            })?;
-            let mut ask = tinysweeper::memory::Ask::new(&question);
-            if let Some(keywords) = &evidence {
-                ask = ask.with_evidence(keywords);
-            }
-            let answer = memory
-                .answer(&MemoryScope::section(&repo, section), &ask)
-                .await?;
-            if !answer.is_grounded() {
-                println!("(nothing relevant is remembered)");
-                return Ok(());
-            }
-            println!("{}", answer.answer);
-            if let Some(model) = &answer.model {
-                println!("\n— {model}");
-            }
-            for citation in &answer.citations {
-                println!(
-                    "  cites {}{}",
-                    citation.id,
-                    citation
-                        .path
-                        .as_deref()
-                        .map(|p| format!(" ({p})"))
-                        .unwrap_or_default()
-                );
-            }
-        }
-        MemoryCommand::Backfill {
-            repo,
-            since,
-            limit,
-            number,
-            pull_request,
-            config,
-        } => {
-            let repo_id = tinysweeper::forge::RepoId::parse(&repo).ok_or_else(|| {
-                tinysweeper::Error::config(format!("`{repo}` is not `owner/name`"))
-            })?;
-            let (config, memory) = open(std::path::Path::new("."), config.as_deref())?;
-            memory.health().await?;
-            let report = backfill_discussions(
-                &memory,
-                &config.memory,
-                &repo_id,
-                since.as_deref(),
-                limit,
-                number.map(|n| (n, pull_request)),
-            )
-            .await?;
-            println!("{}", report.summary());
-            for line in &report.failed {
-                println!("  failed {line}");
-            }
-            if let Some(at) = &report.resume_from {
-                println!("next time: --since {at}");
-            }
-            // A walk with skipped conversations is not a complete import and
-            // offers no safe cursor; say so with the exit code, as the
-            // server-side script does, so automation cannot mistake it.
-            if !report.failed.is_empty() {
-                return Err(tinysweeper::Error::config(format!(
-                    "{} conversation(s) could not be remembered; rerun without --since to retry them",
-                    report.failed.len()
-                )));
-            }
-        }
-        MemoryCommand::Forget { repo, section, yes } => {
-            let repo = canonical_repo(&repo)?;
-            let (_, memory) = open(std::path::Path::new("."), None)?;
-            let scope = match section.as_deref().map(MemorySection::parse) {
-                None => MemoryScope::repo(&repo),
-                Some(Some(section)) => MemoryScope::section(&repo, section),
-                Some(None) => {
-                    return Err(tinysweeper::Error::config(format!(
-                        "`{}` is not a section; use code, conventions, reviews or discussions",
-                        section.unwrap_or_default()
-                    )));
-                }
-            };
-            if !yes {
-                println!("would forget everything under {scope}; pass --yes to do it");
-                return Ok(());
-            }
-            let gone = memory.forget(&scope).await?;
-            println!("forgot {gone} memories under {scope}");
-        }
-    }
-    Ok(())
-}
-
-/// Walk GitHub for `memory backfill`. Split out so the `github` requirement
-/// is one function's, not the whole memory command's.
-#[cfg(all(feature = "cortex", feature = "github"))]
-async fn backfill_discussions(
-    memory: &dyn tinysweeper::ports::memory::Memory,
-    config: &tinysweeper::config::types::Memory,
-    repo: &tinysweeper::forge::RepoId,
-    since: Option<&str>,
-    limit: usize,
-    one: Option<(u64, bool)>,
-) -> Result<tinysweeper::memory::DiscussionReport> {
-    let forge = tinysweeper::forge::github::GitHubRead::from_env()?;
-    let discussions = tinysweeper::memory::Discussions::new(memory, &forge, config);
-    match one {
-        Some((number, pull_request)) => {
-            discussions
-                .remember_number(repo, number, pull_request)
-                .await
-        }
-        None => discussions.backfill(repo, since, limit).await,
-    }
-}
-
-#[cfg(all(feature = "cortex", not(feature = "github")))]
-async fn backfill_discussions(
-    _memory: &dyn tinysweeper::ports::memory::Memory,
-    _config: &tinysweeper::config::types::Memory,
-    _repo: &tinysweeper::forge::RepoId,
-    _since: Option<&str>,
-    _limit: usize,
-    _one: Option<(u64, bool)>,
-) -> Result<tinysweeper::memory::DiscussionReport> {
-    Err(tinysweeper::Error::FeatureDisabled(
-        "reading conversations from GitHub",
-        "github",
-    ))
-}
-
-#[cfg(not(feature = "cortex"))]
-async fn run_memory(_command: MemoryCommand) -> Result<()> {
-    Err(tinysweeper::Error::FeatureDisabled(
-        "driving the memory engine",
-        "cortex",
-    ))
-}
-
 #[cfg(not(all(feature = "sentry", feature = "github")))]
 async fn run_sentry(_config_path: Option<std::path::PathBuf>, _dry_run: bool) -> Result<()> {
     // Name the feature that is actually missing. "sentry" first because it is
@@ -2125,34 +1788,10 @@ mod tests {
         dispatch(cli.command).await.expect("validates the config");
     }
 
-    #[cfg(feature = "cortex")]
-    #[tokio::test]
-    async fn a_noncanonical_repo_is_rejected_before_any_memory_scope_is_built() {
-        // `MemoryScope`'s parser only checks for the first `/`, so `a/b/c`
-        // would otherwise build a scope `RepoId::parse` rejects — every
-        // memory command must canonicalize `--repo` first, and fail before
-        // opening the engine or reading a config, so this needs neither.
-        for command in [
-            MemoryCommand::Recall {
-                repo: "a/b/c".into(),
-                query: "x".into(),
-                limit: 5,
-            },
-            MemoryCommand::Ask {
-                repo: "a/b/c".into(),
-                section: "conventions".into(),
-                evidence: None,
-                question: "x".into(),
-            },
-            MemoryCommand::Forget {
-                repo: "a/b/c".into(),
-                section: None,
-                yes: false,
-            },
-        ] {
-            let err = run_memory(command).await.unwrap_err().to_string();
-            assert!(err.contains("is not `owner/name`"), "{err}");
-        }
+    #[test]
+    fn removed_memory_command_is_not_available() {
+        let error = Cli::try_parse_from(["tinysweeper", "memory", "recall"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
     #[cfg(feature = "serve")]

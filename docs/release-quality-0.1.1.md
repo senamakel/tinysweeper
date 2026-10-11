@@ -379,3 +379,26 @@ checks; they do not stand in for release publication or deployment receipts.
 
 Wire hashes and all three strict-mode trial receipts are retained in
 [`strict-schema-trials.json`](../evals/reports/2026-10-11-strict-schema-trials.json).
+
+
+### Two bounded repairs and the remaining snapshot issue
+
+The two-repair candidate (`360d3c24`, binary SHA-256 `7dc00948…`) completed
+both new JSON-object reviews with zero unanswered units. #215 took 363.176
+seconds for $0.190012; #216 took 261.528 seconds for $0.069967. Zero new
+comments did **not** make #215 clean: its critique lane retained one deduplicated
+HIGH finding and a failing conclusion. Normal apply preserved that failure
+and did not approve the PR. The operator receipt and publishing guard now
+check lane conclusions in addition to comment counts. #216 had no blocked
+lane or deduplicated finding and merged after genuine approval and green CI.
+
+A separate checkout-mutation regression reproduced the remaining consistency
+issue: after validation, changing a working file changed what the supposedly
+pinned reader returned. The prepared Git-object reader fixes that, and both
+mutation and deletion assertions pass alongside 2,220 library tests and
+13 CLI tests with the GitHub feature. That prepared local fix (`e5362646`)
+has not been pushed to #215 pending an exception to the PR merger skill's
+two-feedback-round limit. Complete trial receipts are retained in
+[`two-repair-trials.json`](../evals/reports/2026-10-11-two-repair-trials.json).
+The earlier “clean” operator characterization was corrected; no approval was
+fabricated and no failing conclusion was changed in the proposal.

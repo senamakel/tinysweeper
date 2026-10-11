@@ -1,0 +1,186 @@
+{
+  "binary_commit": "c4709cf55bcf607333e8440986a5f865b31f5bd7",
+  "mode": "live fixture tree, retrieval disabled",
+  "deep_route": "max-reasoning",
+  "limitations": [
+    "Some calls rejected reasoning object with HTTP400; incomplete review is not a model-quality comparison.",
+    "Scoring includes findings below posting threshold."
+  ],
+  "scorecard": {
+    "corpus_digest": "1ac521af047a4286",
+    "config_digest": "ca1c07831173942e",
+    "loose_replays": 0,
+    "cases": [
+      {
+        "id": "oc-2313-round-boundary-leaks",
+        "true_positives": 0,
+        "missed": [
+          "E1",
+          "E2"
+        ],
+        "false_positives": 0,
+        "unscored": 1,
+        "exhaustive": false,
+        "duplicates": 0,
+        "forbidden_hits": [],
+        "optional_hits": 0,
+        "judged": [
+          {
+            "lane": "tests",
+            "path": "crates/opencompany-core/src/hivemind/episode.rs",
+            "line": 737,
+            "title": "Round-loop behaviour change ships with no test that would fail on regression",
+            "verdict": "unscored",
+            "reason": "the case does not claim to list every true finding"
+          }
+        ],
+        "cost_usd": 0.006613999999999999,
+        "over_budget": false,
+        "input_tokens": 229472,
+        "output_tokens": 54028,
+        "cached_tokens": 69696,
+        "wall_secs": 326.629156523,
+        "models": [
+          "flash",
+          "deepseek-v4-pro",
+          "glm-5.3-flash"
+        ],
+        "lane_costs": {
+          "commits": 0.0,
+          "critique": 0.004314,
+          "description": 0.000193,
+          "security": 0.001663,
+          "tests": 0.00042
+        }
+      },
+      {
+        "id": "ts-0045-kernel-bypass-hallucination",
+        "true_positives": 0,
+        "missed": [],
+        "false_positives": 3,
+        "unscored": 0,
+        "exhaustive": true,
+        "duplicates": 1,
+        "forbidden_hits": [],
+        "optional_hits": 1,
+        "judged": [
+          {
+            "lane": "description",
+            "path": "(pull request description)",
+            "line": null,
+            "title": "Describe the compose, embeddings, and env-var changes the diff makes",
+            "verdict": "false_positive",
+            "reason": "nothing is expected in (pull request description)"
+          },
+          {
+            "lane": "security",
+            "path": "src/findings/summarise.rs",
+            "line": 21,
+            "title": "Respect the character limit when no space is found",
+            "verdict": "true_positive",
+            "matched": "E1",
+            "reason": "path, line and wording all matched"
+          },
+          {
+            "lane": "critique",
+            "path": "src/findings/summarise.rs",
+            "line": 21,
+            "title": "Enforce length limit even when no space is found",
+            "verdict": "duplicate",
+            "matched": "E1",
+            "reason": "`E1` was already claimed"
+          },
+          {
+            "lane": "security",
+            "path": "src/findings/summarise.rs",
+            "line": 30,
+            "title": "Handle sentence terminators beyond period-space",
+            "verdict": "false_positive",
+            "reason": "landed on `E2` but did not mention [\"shorten\", \"None|no space|no-space|branch|arm\"]"
+          },
+          {
+            "lane": "security",
+            "path": "src/findings/summarise.rs",
+            "line": 49,
+            "title": "Assert the exact limit in the truncation test",
+            "verdict": "false_positive",
+            "reason": "2 expectation(s) in this file, none within 3 lines"
+          }
+        ],
+        "cost_usd": 0.005769000000000001,
+        "over_budget": false,
+        "input_tokens": 120735,
+        "output_tokens": 59884,
+        "cached_tokens": 45120,
+        "wall_secs": 451.340193578,
+        "models": [
+          "flash",
+          "deepseek-v4-pro",
+          "glm-5.3-flash"
+        ],
+        "lane_costs": {
+          "commits": 0.0,
+          "critique": 0.0027090000000000005,
+          "description": 6.2e-05,
+          "security": 0.0028970000000000003,
+          "tests": 8.3e-05
+        }
+      },
+      {
+        "id": "ts-0068-description-anchored-to-code",
+        "true_positives": 0,
+        "missed": [],
+        "false_positives": 0,
+        "unscored": 3,
+        "exhaustive": false,
+        "duplicates": 0,
+        "forbidden_hits": [],
+        "optional_hits": 0,
+        "judged": [
+          {
+            "lane": "security",
+            "path": "src/harness/pricing.rs",
+            "line": 356,
+            "title": "Define `unpriced` before calling it in the test",
+            "verdict": "unscored",
+            "reason": "the case does not claim to list every true finding"
+          },
+          {
+            "lane": "security",
+            "path": "src/harness/pricing.rs",
+            "line": 372,
+            "title": "Define `completion_cost` before calling it in the test",
+            "verdict": "unscored",
+            "reason": "the case does not claim to list every true finding"
+          },
+          {
+            "lane": "critique",
+            "path": "src/harness/pricing.rs",
+            "line": 385,
+            "title": "Fix the cached-cost test so it actually asserts caching reduces cost",
+            "verdict": "unscored",
+            "reason": "the case does not claim to list every true finding"
+          }
+        ],
+        "cost_usd": 0.007233000000000001,
+        "over_budget": false,
+        "input_tokens": 162728,
+        "output_tokens": 70370,
+        "cached_tokens": 59648,
+        "wall_secs": 779.089874542,
+        "models": [
+          "flash",
+          "deepseek-v4-pro",
+          "glm-5.3-flash"
+        ],
+        "lane_costs": {
+          "commits": 0.0,
+          "critique": 0.004136,
+          "description": 6.8e-05,
+          "security": 0.002942,
+          "tests": 7.1e-05
+        }
+      }
+    ]
+  }
+}

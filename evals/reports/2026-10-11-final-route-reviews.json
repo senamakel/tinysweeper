@@ -1,0 +1,603 @@
+{
+  "candidate": {
+    "source_commit": "031fdc3b9e5375726f5ad2276c7a47f1868fb9fc",
+    "sdk_commit": "e91a47423acfd74c90f9a2b6d1d1da4c5c25e047",
+    "binary_sha256": "fb2b06fec8dbaa5be4a8052e3dd959467bfde06f020aa636088de2684ec72329",
+    "prepared_at_utc": "2026-10-10T23:47:58.151454+00:00",
+    "retrieval_enabled": false,
+    "lookup_list_commit": "4272354b60dd77d66289a39a41f8752f74e3e365",
+    "native_wait_commit": "128a744a90f306ba110cdd1b96249a5f0be275cd"
+  },
+  "reviews": [
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "started_at_utc": "2026-10-10T23:47:59.159543+00:00",
+      "wall_secs": 461.992,
+      "exit_code": 0,
+      "cost_usd": 0.033963,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 1,
+      "skipped": null,
+      "attempt": "final-pr-202",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 203,
+      "head_sha": "169ade06158c01a9be5cafdfebe7e11fbee1d28a",
+      "started_at_utc": "2026-10-10T23:55:41.713038+00:00",
+      "wall_secs": 387.3,
+      "exit_code": 0,
+      "cost_usd": 0.016093,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 2,
+      "skipped": null,
+      "attempt": "final-pr-203",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 206,
+      "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+      "started_at_utc": "2026-10-10T23:56:10.469380+00:00",
+      "wall_secs": 548.58,
+      "exit_code": 0,
+      "cost_usd": 0.031781,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 2,
+      "skipped": null,
+      "attempt": "final-pr-206",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 207,
+      "head_sha": "bb39851a066ed447066a81e08f059e98fa9087d2",
+      "started_at_utc": "2026-10-10T23:47:59.171963+00:00",
+      "wall_secs": 490.775,
+      "exit_code": 0,
+      "cost_usd": 0.03745400000000001,
+      "unreviewed": 0,
+      "findings": 2,
+      "unanswered": 1,
+      "skipped": null,
+      "attempt": "final-pr-207",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 208,
+      "head_sha": "c1f1cbddcb7a13e07e049c1012fff721f19affee",
+      "started_at_utc": "2026-10-11T00:02:09.608946+00:00",
+      "wall_secs": 570.48,
+      "exit_code": 0,
+      "cost_usd": 0.021445000000000002,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 2,
+      "skipped": null,
+      "attempt": "final-pr-208",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 210,
+      "head_sha": "128a744a90f306ba110cdd1b96249a5f0be275cd",
+      "started_at_utc": "2026-10-11T00:05:19.587286+00:00",
+      "wall_secs": 516.988,
+      "exit_code": 0,
+      "cost_usd": 0.044111999999999985,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 2,
+      "skipped": null,
+      "attempt": "final-pr-210",
+      "route_trial": "scan_flash"
+    },
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "started_at_utc": "2026-10-10T23:55:35.287563+00:00",
+      "wall_secs": 183.054,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.043476999999999995,
+      "unreviewed": 0,
+      "findings": 1,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-202",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 203,
+      "head_sha": "169ade06158c01a9be5cafdfebe7e11fbee1d28a",
+      "started_at_utc": "2026-10-11T00:06:38.866200+00:00",
+      "wall_secs": 207.818,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.019802,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-203",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 206,
+      "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+      "started_at_utc": "2026-10-11T00:06:38.817461+00:00",
+      "wall_secs": 230.124,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.027389999999999998,
+      "unreviewed": 0,
+      "findings": 1,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-206",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 207,
+      "head_sha": "bb39851a066ed447066a81e08f059e98fa9087d2",
+      "started_at_utc": "2026-10-10T23:55:35.319226+00:00",
+      "wall_secs": 191.469,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.043528,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-207",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 208,
+      "head_sha": "c1f1cbddcb7a13e07e049c1012fff721f19affee",
+      "started_at_utc": "2026-10-11T00:10:07.192938+00:00",
+      "wall_secs": 137.942,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.034563,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-208",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 211,
+      "head_sha": "f18bbf9f2b45189368479a1a4a4bab4af2a94cdc",
+      "started_at_utc": "2026-10-11T00:10:29.485277+00:00",
+      "wall_secs": 181.604,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.040069,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-211",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 212,
+      "head_sha": "21711f626bd7a253a4532ca6e12de25cd78fef94",
+      "started_at_utc": "2026-10-11T00:09:27.150580+00:00",
+      "wall_secs": 66.608,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.0029829999999999995,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-pr-212",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 210,
+      "head_sha": "3e4494a717e8c8241fb6801266748018f79d408d",
+      "started_at_utc": "2026-10-11T00:10:00.397602+00:00",
+      "wall_secs": 150.287,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.023853000000000003,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-current-pr-210",
+      "route_trial": "all_deep"
+    },
+    {
+      "number": 212,
+      "head_sha": "51945185a264a5c38c25c96d6b6097657da7cdc2",
+      "started_at_utc": "2026-10-11T00:13:27.756902+00:00",
+      "wall_secs": 108.682,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.003734,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "attempt": "final-deep-current-pr-212",
+      "route_trial": "all_deep"
+    }
+  ],
+  "interpretation": "All attempts retained. Complete clean proposals can be published through deterministic apply; false or incomplete verdicts were not published. Different routing configurations are explicitly labeled; no general precision claim.",
+  "false_claims": [
+    {
+      "pr": 202,
+      "trial": "all_deep",
+      "claim": "singleton out-of-scope assessment in fail-open keep loop",
+      "evidence": "Exact d346 source line294 has two conflicting entries; line295 has two duplicate entries. No valid singleton occurs in that loop."
+    },
+    {
+      "pr": 207,
+      "trial": "scan_flash",
+      "claim": "stalled placeholder consumes missing reply, and timeout introduces unbounded overall duration",
+      "evidence": "Fixture deliberately consumes one response slot per physical request; existing server deadline remains bounded and prior physical deadline was longer."
+    },
+    {
+      "pr": 206,
+      "trial": "all_deep",
+      "claim": "merged tree nodes escape embedding input bound",
+      "evidence": "Exact846 tree::emit checks entire contiguous group against split_ceiling(), then splits preserving whitespace. Independent runtime probe combined8x3024byte definitions and returned4x6048byte chunks reconstructing all24192bytes; all20existingtree tests passed."
+    }
+  ],
+  "strict_canonical_replay": {
+    "source": "fceb3fd8 is anchored follow-up; prior source031 replayed211 records before anchor change",
+    "recordings_source": "f18bbf9f",
+    "loose_replays": 0,
+    "cassette_misses": 0,
+    "case_errors": 0,
+    "boundary_labels_matched": 0,
+    "boundary_labels_total": 2,
+    "unanswered_units": 1,
+    "cost_usd": 0.320452,
+    "comparison_to_untouched_baseline": "incomparable"
+  },
+  "grounded_candidate": {
+    "source_head": "eb5fcc8ec69ab417ace10f953464a81527603630",
+    "sdk_pin": "e91a47423acfd74c90f9a2b6d1d1da4c5c25e047",
+    "binary_sha256": "bed9db1eb75be8bffaa12fa1292a9c26d9ad276e97b99eb43715d2181676e028",
+    "version": "tinysweeper 0.1.1",
+    "prepared_at_utc": "2026-10-11T00:27:38.210478+00:00",
+    "source_fixes": [
+      "03b5d6f7 anchored falsifier locations",
+      "aabba337 bounded read-only description evidence"
+    ],
+    "tests_log": "release-0-1-1/target/final-grounded-feature-tests.log"
+  },
+  "grounded_attempts": [
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "started_at_utc": "2026-10-11T00:27:39.216711+00:00",
+      "wall_secs": 16.125,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.0,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 12,
+      "skipped": null,
+      "attempt": "grounded-pr-202",
+      "provider_failover": "Surplus below minimum balance",
+      "complete": false
+    },
+    {
+      "number": 206,
+      "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+      "started_at_utc": "2026-10-11T00:27:39.261816+00:00",
+      "wall_secs": 14.29,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.0,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 20,
+      "skipped": null,
+      "attempt": "grounded-pr-206",
+      "provider_failover": "Surplus below minimum balance",
+      "complete": false
+    },
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "started_at_utc": "2026-10-11T00:37:13.303207+00:00",
+      "wall_secs": 128.759,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.09142697,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 3,
+      "skipped": null,
+      "attempt": "grounded-or-pr-202",
+      "provider_failover": "OpenRouter same-model fallback",
+      "complete": false
+    },
+    {
+      "number": 206,
+      "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+      "started_at_utc": "2026-10-11T00:37:13.259348+00:00",
+      "wall_secs": 184.226,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.11833841999999999,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 2,
+      "skipped": null,
+      "attempt": "grounded-or-pr-206",
+      "provider_failover": "OpenRouter same-model fallback",
+      "complete": false
+    },
+    {
+      "number": 212,
+      "head_sha": "51945185a264a5c38c25c96d6b6097657da7cdc2",
+      "started_at_utc": "2026-10-11T00:39:22.863608+00:00",
+      "wall_secs": 51.153,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.00939698,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 1,
+      "skipped": null,
+      "attempt": "grounded-or-pr-212",
+      "provider_failover": "OpenRouter same-model fallback",
+      "complete": false
+    },
+    {
+      "number": 212,
+      "head_sha": "51945185a264a5c38c25c96d6b6097657da7cdc2",
+      "started_at_utc": "2026-10-11T00:42:37.605032+00:00",
+      "wall_secs": 70.094,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.01202512,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 1,
+      "skipped": null,
+      "attempt": "grounded-debug-pr-212",
+      "provider_failover": "OpenRouter same-model fallback",
+      "complete": false
+    }
+  ],
+  "production_gateway_fallback": {
+    "verified_http_status": 200,
+    "answered_model": "openai/gpt-5.6-luna",
+    "reported_probe_cost_usd": 8.6e-06,
+    "provider": "openrouter",
+    "preferred_provider": "openai",
+    "maximum_cost_per_million": 1.8,
+    "surplus_balance_below_minimum": true,
+    "embedding_route_fallback_added": false,
+    "flash_probe": {
+      "http_status": 200,
+      "answered_model": "z-ai/glm-5.3-flash",
+      "reported_cost_usd": 8.76e-06
+    },
+    "persistence": "Existing per-machine private environment and normal ladder-up renderer; public workspace config synced to robot1."
+  },
+  "grounded_attempts_interpretation": "All incomplete attempts retained; none published as approval. Zero reported-known charge on exhausted-provider attempts does not prove zero total reserved cost. OpenRouter attempts revealed malformed structured replies with no allowed repair, requiring a separately tested bounded repair.",
+  "grounded_strict_canonical_replay": {
+    "binary_sha256": "bed9db1eb75be8bffaa12fa1292a9c26d9ad276e97b99eb43715d2181676e028",
+    "cases": 3,
+    "cassette_misses": 0,
+    "loose_replays": 0,
+    "unusable_replies": 0,
+    "unanswered_units": 0,
+    "cost_usd": 0.284130974228,
+    "boundary_labels_matched": 0,
+    "boundary_labels_total": 2,
+    "unscored_findings": 2,
+    "forbidden_matches": 0,
+    "duplicates": 0,
+    "recording_total_known_paid_including_archived_first_attempt_usd": 0.406247920412,
+    "comparison_to_untouched_baseline": "incomparable",
+    "interpretation": "All current cases complete; no broad recall improvement. Nonexhaustive labels do not score unlisted findings as correct. Repeat produced no security finding or falsifier call, so removal of the earlier false security claim cannot be causally attributed to falsification."
+  },
+  "grounded_note_audit": [
+    {
+      "pr": 206,
+      "claim": "Blank source suppresses fallback",
+      "verdict": "false",
+      "evidence": "Public chunk_bytes skips wholly blank files before grammar; both splitter paths intentionally skip them; the earlier grammar fallback also excluded blank source."
+    },
+    {
+      "pr": 206,
+      "claim": "A byte ceiling smaller than a UTF-8 scalar can be exceeded",
+      "verdict": "valid preexisting non-production API edge",
+      "evidence": "pieces preserves an indivisible character when the configured ceiling cannot hold it. Production uses8000; scalar width is at most4. Not introduced by206 and does not substantiate provider rejection under production settings."
+    },
+    {
+      "pr": 202,
+      "claim": "Surviving-count summary is not precisely asserted",
+      "verdict": "minor valid test coverage gap",
+      "evidence": "Mixed-survivor test checks findings and stale prose; production summary correctly computes findings.len(). Main209 tests critique prose, not this security count."
+    }
+  ],
+  "repaired_candidate": {
+    "source_commit": "0c4e627a918bbdbd70a7614ceccd2bc90966f00b",
+    "sdk_commit": "e91a47423acfd74c90f9a2b6d1d1da4c5c25e047",
+    "binary_sha256": "91f0f405b8094397a65698e08e965331a1314f441d592f3f27e477fb787d00ba",
+    "prepared_at_utc": "2026-10-11T01:01:29.301420+00:00",
+    "structured_json_object_repair_attempts": 1,
+    "repair_source": "8638df26b19fb66b665a0e5f446229e96867d93e",
+    "retrieval_enabled": false,
+    "review_credentials": "scoped installation read token; write minted only after completed proposal"
+  },
+  "repaired_reviews": [
+    {
+      "number": 202,
+      "head_sha": "d3460fee470841daaa6e860d3cb35f67e17a8230",
+      "started_at_utc": "2026-10-11T01:01:34.197610+00:00",
+      "wall_secs": 213.113,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.1422099,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null
+    },
+    {
+      "number": 206,
+      "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+      "started_at_utc": "2026-10-11T01:01:34.206882+00:00",
+      "wall_secs": 180.603,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.10151974000000001,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 1,
+      "skipped": null
+    },
+    {
+      "number": 212,
+      "head_sha": "51945185a264a5c38c25c96d6b6097657da7cdc2",
+      "started_at_utc": "2026-10-11T01:04:35.347602+00:00",
+      "wall_secs": 36.095,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.0051059600000000005,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null
+    },
+    {
+      "number": 213,
+      "head_sha": "23eda7a6f13d7d574b399ace7e482721ad289e8f",
+      "started_at_utc": "2026-10-11T01:05:07.834761+00:00",
+      "wall_secs": 193.031,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.16273419000000003,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null
+    },
+    {
+      "number": 214,
+      "head_sha": "8638df26b19fb66b665a0e5f446229e96867d93e",
+      "started_at_utc": "2026-10-11T01:05:11.989791+00:00",
+      "wall_secs": 196.711,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.0732084,
+      "unreviewed": 0,
+      "findings": 1,
+      "unanswered": 0,
+      "skipped": null
+    }
+  ],
+  "diagnostic_206": {
+    "number": 206,
+    "head_sha": "846ac0f4fa3ed9c3e0320e5aebba0bddb5a9be2a",
+    "started_at_utc": "2026-10-11T01:06:53.126984+00:00",
+    "wall_secs": 140.803,
+    "exit_code": 0,
+    "config": "evals/runs/diagnostic-all-deep-config.toml",
+    "cost_usd": 0.07995758,
+    "unreviewed": 0,
+    "findings": 1,
+    "unanswered": 2,
+    "skipped": null
+  },
+  "repaired_interpretation": {
+    "clean_complete_published": [
+      202,
+      212,
+      213
+    ],
+    "false_214_charge_claim_withheld": true,
+    "206_incomplete_withheld": true,
+    "general_precision_gain_proven": false
+  },
+  "embedding_compatibility": {
+    "summary.json": {
+      "stored_signature": "ladder:vectors-oai3:1024",
+      "response_model": "text-embedding-3-large",
+      "dimensions": 1024,
+      "cosine": 0.9999987889403602,
+      "max_absolute_difference": 0.00018310546875,
+      "usage": {
+        "prompt_tokens": 6,
+        "total_tokens": 6,
+        "cost": 7.8e-07,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 7.8e-07,
+          "upstream_inference_prompt_cost": 7.8e-07,
+          "upstream_inference_completions_cost": 0
+        }
+      },
+      "provenance_repo": "tinyhumansai/tinysweeper",
+      "provenance_path": ".github/ISSUE_TEMPLATE/config.yml",
+      "response_id": "gen-emb-1791680355-7T26rRDxkgh7ginC2FH2"
+    },
+    "source-summary.json": {
+      "results": [
+        {
+          "repo": "tinyhumansai/tinysweeper",
+          "path": "src/knowledge/extract.rs",
+          "signature": "ladder:vectors-oai3:1024",
+          "source_bytes": 3229,
+          "contains_multibyte": true,
+          "dims": 1024,
+          "cosine": 1.0,
+          "max_absolute_difference": 0.0,
+          "stored_exact_half_fraction": 1.0
+        },
+        {
+          "repo": "tinyhumansai/tinysweeper",
+          "path": "src/chunk/lines.rs",
+          "signature": "ladder:vectors-oai3:1024",
+          "source_bytes": 1668,
+          "contains_multibyte": true,
+          "dims": 1024,
+          "cosine": 0.9997119290277415,
+          "max_absolute_difference": 0.002841949462890625,
+          "stored_exact_half_fraction": 1.0
+        }
+      ],
+      "model": "text-embedding-3-large",
+      "usage": {
+        "prompt_tokens": 1139,
+        "total_tokens": 1139,
+        "cost": 0.00014807,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00014807,
+          "upstream_inference_prompt_cost": 0.00014807,
+          "upstream_inference_completions_cost": 0
+        }
+      }
+    }
+  },
+  "embedding_endpoint_probe": {
+    "http_status": 200,
+    "model": "text-embedding-3-large",
+    "dimensions": 1024,
+    "cost_usd": 1.17e-06,
+    "workspace_commit": "f230807",
+    "synced_hosts": [
+      "macmini",
+      "robot1"
+    ],
+    "dragonfly": "SSH refused; unverified",
+    "native_embedding_price_ceiling_supported": false
+  }
+}

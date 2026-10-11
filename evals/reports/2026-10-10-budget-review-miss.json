@@ -1,0 +1,51 @@
+{
+  "native_pr": {
+    "headRefOid": "ef7a75acb63a490aa2aad078bb0bf56251baa964",
+    "reviews": [
+      {
+        "id": "PRR_kwDOUI5MxM8AAAABRrO1Fg",
+        "author": {
+          "login": "tinysweeper"
+        },
+        "authorAssociation": "NONE",
+        "body": "tinysweeper found nothing blocking. Approving.\n\n```\n             $0.0131 \u00b7 198,403 in / 9,504 out \u00b7 18,400 cached (9%) \u00b7 flash, gpt-5.6-luna, , glm-5.3-flash\ncritique:    $0.0074 \u00b7 86,047 in  / 3,920 out \u00b7 5,008 cached (6%)  \u00b7 gpt-5.6-luna,\nsecurity:    $0.0054 \u00b7 74,909 in  / 1,453 out \u00b7 9,040 cached (12%) \u00b7 gpt-5.6-luna,\ntests:       $0.0001 \u00b7 13,617 in  / 638 out   \u00b7 1,920 cached (14%) \u00b7 glm-5.3-flash\ndescription: $0.0001 \u00b7 13,585 in  / 1,589 out \u00b7 1,856 cached (14%) \u00b7 glm-5.3-flash\n```\n<!-- tinysweeper:state v=1 sha=ef7a75acb63a490aa2aad078bb0bf56251baa964 -->",
+        "submittedAt": "2026-10-10T23:13:49Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "APPROVED",
+        "commit": {
+          "oid": "ef7a75acb63a490aa2aad078bb0bf56251baa964"
+        }
+      },
+      {
+        "id": "PRR_kwDOUI5MxM8AAAABRrPY8w",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "",
+        "submittedAt": "2026-10-10T23:17:45Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "APPROVED",
+        "commit": {
+          "oid": "ef7a75acb63a490aa2aad078bb0bf56251baa964"
+        }
+      }
+    ],
+    "title": "feat(llm): wait for live budget capacity without serializing affordable calls",
+    "url": "https://github.com/tinyhumansai/tinyinference/pull/75"
+  },
+  "audited_head": "ef7a75acb63a490aa2aad078bb0bf56251baa964",
+  "root_finding": "Temporary reserve_wait admission used fail-fast reserve and persisted ledger.refusal; after admission later RPC failure could be translated into BudgetExceeded by Embed, suppressing healthy fallback. Cancellation of queued admission could leave the same marker.",
+  "evidence": [
+    "Native temporary-refusal regression failed before fix.",
+    "Actual SDK wire regression failed: a primary HTTP 400 after queued admission was incorrectly terminal BudgetExceeded and healthy fallback was unused.",
+    "Native fix uses silent atomic admission for temporary waits; 617 LLM unit tests pass, preserving real fail-fast refusal history.",
+    "Actual SDK wire regressions pass: queued admission permits the healthy fallback after a primary HTTP 400; canceling a wait dispatches no request and charges nothing. SDK library 190, two capacity wire tests, ten budget fanout tests and twelve route tests pass."
+  ],
+  "limitation": "This is a cross-repository API compatibility defect; the original native-only review did not contain the SDK caller code. Preserve as a specific missed defect, not a general recall estimate.",
+  "fix_commit": "9b583f92336cebf0be57ed42976d0321095639ef",
+  "integration_commit": "e91a47423acfd74c90f9a2b6d1d1da4c5c25e047",
+  "sdk_pr": "https://github.com/tinyhumansai/openhuman/pull/7360"
+}

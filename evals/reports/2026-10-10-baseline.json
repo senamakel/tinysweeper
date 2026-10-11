@@ -1,0 +1,549 @@
+{
+  "date": "2026-10-10",
+  "binary_commit": "c4709cf55bcf607333e8440986a5f865b31f5bd7",
+  "mode": "live recording; fixture tree; retrieval and memory disabled",
+  "model_routes": {
+    "flash": "flash",
+    "deep": "deep"
+  },
+  "max_cost_usd_per_case": 1,
+  "runs": [
+    {
+      "run": 1,
+      "corpus_digest": "1ac521af047a4286",
+      "config_digest": "1244fb3a09b3040a",
+      "cases": [
+        {
+          "id": "oc-2313-round-boundary-leaks",
+          "true_positives": 2,
+          "missed": [],
+          "false_positives": 0,
+          "unscored": 3,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [
+            {
+              "lane": "security",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 463,
+              "title": "Add focused coverage for concurrent rounds",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            },
+            {
+              "lane": "critique",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 489,
+              "title": "Include pins at the round watermark",
+              "verdict": "true_positive",
+              "matched": "E1",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            },
+            {
+              "lane": "security",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 526,
+              "title": "Keep elsewhere context at the round snapshot",
+              "verdict": "true_positive",
+              "matched": "E2",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            },
+            {
+              "lane": "critique",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 565,
+              "title": "Prevent partial round appends from escaping without state",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            },
+            {
+              "lane": "security",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 565,
+              "title": "Handle partial round appends before returning",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            }
+          ],
+          "cost_usd": 0.023773,
+          "over_budget": false,
+          "input_tokens": 371751,
+          "output_tokens": 21892,
+          "cached_tokens": 34323,
+          "wall_secs": 190.338061316,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.013749,
+            "description": 0.000203,
+            "security": 0.00936,
+            "tests": 0.000424
+          }
+        },
+        {
+          "id": "ts-0045-kernel-bypass-hallucination",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 4,
+          "unscored": 0,
+          "exhaustive": true,
+          "duplicates": 1,
+          "forbidden_hits": [],
+          "optional_hits": 1,
+          "judged": [
+            {
+              "lane": "description",
+              "path": "(pull request description)",
+              "line": null,
+              "title": "Describe the Mongo bypass and compose changes, or split them out",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in (pull request description)"
+            },
+            {
+              "lane": "tests",
+              "path": "src/findings/mod.rs",
+              "line": 6,
+              "title": "Add docs/modules/summarise/README.md for the new module",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in src/findings/mod.rs"
+            },
+            {
+              "lane": "critique",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Keep the ellipsis within the requested limit",
+              "verdict": "true_positive",
+              "matched": "E1",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Reserve space for the truncation marker",
+              "verdict": "duplicate",
+              "matched": "E1",
+              "reason": "`E1` was already claimed"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 30,
+              "title": "Recognize non-period sentence terminators",
+              "verdict": "false_positive",
+              "reason": "landed on `E2` but did not mention [\"shorten\", \"None|no space|no-space|branch|arm\"]"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 60,
+              "title": "Keep the repeated string alive during the test",
+              "verdict": "false_positive",
+              "reason": "2 expectation(s) in this file, none within 3 lines"
+            }
+          ],
+          "cost_usd": 0.017672999999999998,
+          "over_budget": false,
+          "input_tokens": 236054,
+          "output_tokens": 21952,
+          "cached_tokens": 55319,
+          "wall_secs": 125.800036876,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.009474,
+            "description": 6.3e-05,
+            "security": 0.007897999999999999,
+            "tests": 0.000214
+          }
+        },
+        {
+          "id": "ts-0068-description-anchored-to-code",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 0,
+          "unscored": 0,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [],
+          "cost_usd": 0.014496,
+          "over_budget": false,
+          "input_tokens": 203798,
+          "output_tokens": 12551,
+          "cached_tokens": 43915,
+          "wall_secs": 77.731391235,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.008012,
+            "description": 6.8e-05,
+            "security": 0.006315,
+            "tests": 7.6e-05
+          }
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "corpus_digest": "1ac521af047a4286",
+      "config_digest": "1244fb3a09b3040a",
+      "cases": [
+        {
+          "id": "oc-2313-round-boundary-leaks",
+          "true_positives": 1,
+          "missed": [
+            "E2"
+          ],
+          "false_positives": 0,
+          "unscored": 0,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [
+            {
+              "lane": "tests",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 487,
+              "title": "Round-of-many behaviour has no test at width > 1",
+              "verdict": "true_positive",
+              "matched": "E1",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            }
+          ],
+          "cost_usd": 0.016772000000000002,
+          "over_budget": false,
+          "input_tokens": 296396,
+          "output_tokens": 14343,
+          "cached_tokens": 87200,
+          "wall_secs": 68.910784977,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.009319000000000001,
+            "description": 0.000192,
+            "security": 0.007038999999999999,
+            "tests": 0.000204
+          }
+        },
+        {
+          "id": "ts-0045-kernel-bypass-hallucination",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 3,
+          "unscored": 0,
+          "exhaustive": true,
+          "duplicates": 1,
+          "forbidden_hits": [],
+          "optional_hits": 1,
+          "judged": [
+            {
+              "lane": "description",
+              "path": "(pull request description)",
+              "line": null,
+              "title": "Describe the deployment changes, not just the summarise helper",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in (pull request description)"
+            },
+            {
+              "lane": "security",
+              "path": "docker-compose.yml",
+              "line": 112,
+              "title": "Preserve startup when App credentials are absent",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in docker-compose.yml"
+            },
+            {
+              "lane": "critique",
+              "path": "docker-compose.yml",
+              "line": 123,
+              "title": "Handle deployments without a host configuration file",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in docker-compose.yml"
+            },
+            {
+              "lane": "critique",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Reserve space for the ellipsis",
+              "verdict": "true_positive",
+              "matched": "E1",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Count the ellipsis within the length limit",
+              "verdict": "duplicate",
+              "matched": "E1",
+              "reason": "`E1` was already claimed"
+            }
+          ],
+          "cost_usd": 0.013568000000000002,
+          "over_budget": false,
+          "input_tokens": 213905,
+          "output_tokens": 17877,
+          "cached_tokens": 93026,
+          "wall_secs": 79.399067708,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.007293,
+            "description": 6.6e-05,
+            "security": 0.006129000000000001,
+            "tests": 6.1e-05
+          }
+        },
+        {
+          "id": "ts-0068-description-anchored-to-code",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 0,
+          "unscored": 2,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [
+            {
+              "lane": "critique",
+              "path": "src/config/types.rs",
+              "line": 397,
+              "title": "Default reasoning effort for existing configurations",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            },
+            {
+              "lane": "tests",
+              "path": "src/harness/openrouter.rs",
+              "line": 328,
+              "title": "Test asserting the config-to-gateway wire never exercises the wire",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            }
+          ],
+          "cost_usd": 0.013275,
+          "over_budget": false,
+          "input_tokens": 205004,
+          "output_tokens": 14036,
+          "cached_tokens": 69190,
+          "wall_secs": 88.511738329,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.006608,
+            "description": 6.8e-05,
+            "security": 0.006499,
+            "tests": 7.8e-05
+          }
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "corpus_digest": "1ac521af047a4286",
+      "config_digest": "1244fb3a09b3040a",
+      "cases": [
+        {
+          "id": "oc-2313-round-boundary-leaks",
+          "true_positives": 0,
+          "missed": [
+            "E1",
+            "E2"
+          ],
+          "false_positives": 0,
+          "unscored": 2,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [
+            {
+              "lane": "security",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 436,
+              "title": "Add focused tests for concurrent-round execution",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            },
+            {
+              "lane": "tests",
+              "path": "crates/opencompany-core/src/hivemind/episode.rs",
+              "line": 463,
+              "title": "Add a test exercising a round wider than one",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            }
+          ],
+          "cost_usd": 0.015707000000000002,
+          "over_budget": false,
+          "input_tokens": 307567,
+          "output_tokens": 14238,
+          "cached_tokens": 87314,
+          "wall_secs": 70.06763788,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.008433000000000001,
+            "description": 0.000194,
+            "security": 0.00665,
+            "tests": 0.000412
+          }
+        },
+        {
+          "id": "ts-0045-kernel-bypass-hallucination",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 4,
+          "unscored": 0,
+          "exhaustive": true,
+          "duplicates": 1,
+          "forbidden_hits": [],
+          "optional_hits": 1,
+          "judged": [
+            {
+              "lane": "description",
+              "path": "(pull request description)",
+              "line": null,
+              "title": "Describe the deployment changes in the PR body",
+              "verdict": "false_positive",
+              "reason": "nothing is expected in (pull request description)"
+            },
+            {
+              "lane": "tests",
+              "path": "src/findings/summarise.rs",
+              "line": 7,
+              "title": "shorten can return limit+1 characters despite its contract",
+              "verdict": "false_positive",
+              "reason": "2 expectation(s) in this file, none within 3 lines"
+            },
+            {
+              "lane": "critique",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Reserve room for the ellipsis",
+              "verdict": "true_positive",
+              "matched": "E1",
+              "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 20,
+              "title": "Reserve space for the ellipsis",
+              "verdict": "duplicate",
+              "matched": "E1",
+              "reason": "`E1` was already claimed"
+            },
+            {
+              "lane": "critique",
+              "path": "src/findings/summarise.rs",
+              "line": 30,
+              "title": "Recognize non-period sentence terminators",
+              "verdict": "false_positive",
+              "reason": "landed on `E2` but did not mention [\"shorten\", \"None|no space|no-space|branch|arm\"]"
+            },
+            {
+              "lane": "security",
+              "path": "src/findings/summarise.rs",
+              "line": 57,
+              "title": "Bind the repeated title before borrowing it",
+              "verdict": "false_positive",
+              "reason": "2 expectation(s) in this file, none within 3 lines"
+            }
+          ],
+          "cost_usd": 0.015823000000000004,
+          "over_budget": false,
+          "input_tokens": 226559,
+          "output_tokens": 22493,
+          "cached_tokens": 95683,
+          "wall_secs": 138.295268051,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.009086,
+            "description": 6.3e-05,
+            "security": 0.006585,
+            "tests": 7.1e-05
+          }
+        },
+        {
+          "id": "ts-0068-description-anchored-to-code",
+          "true_positives": 0,
+          "missed": [],
+          "false_positives": 0,
+          "unscored": 1,
+          "exhaustive": false,
+          "duplicates": 0,
+          "forbidden_hits": [],
+          "optional_hits": 0,
+          "judged": [
+            {
+              "lane": "critique",
+              "path": "src/harness/openrouter.rs",
+              "line": 31,
+              "title": "Default the reasoning effort for existing configurations",
+              "verdict": "unscored",
+              "reason": "the case does not claim to list every true finding"
+            }
+          ],
+          "cost_usd": 0.012583999999999998,
+          "over_budget": false,
+          "input_tokens": 212600,
+          "output_tokens": 11633,
+          "cached_tokens": 74547,
+          "wall_secs": 77.142605431,
+          "models": [
+            "flash",
+            "gpt-5.6-luna",
+            "glm-5.3-flash"
+          ],
+          "lane_costs": {
+            "commits": 0.0,
+            "critique": 0.005932,
+            "description": 6.6e-05,
+            "security": 0.006496999999999999,
+            "tests": 7.2e-05
+          }
+        }
+      ]
+    }
+  ]
+}

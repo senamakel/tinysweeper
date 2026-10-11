@@ -1,0 +1,184 @@
+{
+  "mode": "fresh live recording with read-only git archives at original reviewed commits; no contributor code executed",
+  "source_commit": "2b1207dbaa8d5a267be99f22e440684e6ddb4f85",
+  "primary_tiers": "deep/deep; existing fallback unchanged",
+  "limitations": [
+    "Two different-context trials; not a controlled estimate of general precision or latency.",
+    "Current corpus labels omit genuine description omissions and contract preferences."
+  ],
+  "cases": [
+    {
+      "case": "ts-0045-kernel-bypass-hallucination",
+      "tree_commit": "df1cfa3a57727980f024cd97b58233a8abc7e61c",
+      "scorecard": {
+        "corpus_digest": "d293f025c3592b53",
+        "config_digest": "e201c05f0acfa048",
+        "loose_replays": 0,
+        "cases": [
+          {
+            "id": "ts-0045-kernel-bypass-hallucination",
+            "true_positives": 0,
+            "missed": [],
+            "false_positives": 4,
+            "unscored": 0,
+            "exhaustive": true,
+            "duplicates": 0,
+            "forbidden_hits": [],
+            "optional_hits": 1,
+            "judged": [
+              {
+                "lane": "description",
+                "path": "(pull request description)",
+                "line": null,
+                "title": "Describe the deployment and entrypoint changes in the PR body",
+                "verdict": "false_positive",
+                "reason": "nothing is expected in (pull request description)"
+              },
+              {
+                "lane": "critique",
+                "path": ".tinysweeper.toml",
+                "line": 36,
+                "title": "Keep embeddings disabled by default",
+                "verdict": "false_positive",
+                "reason": "nothing is expected in .tinysweeper.toml"
+              },
+              {
+                "lane": "critique",
+                "path": "docker-compose.yml",
+                "line": 122,
+                "title": "Provide the mounted configuration file",
+                "verdict": "false_positive",
+                "reason": "nothing is expected in docker-compose.yml"
+              },
+              {
+                "lane": "critique",
+                "path": "src/findings/summarise.rs",
+                "line": 20,
+                "title": "Keep truncated output within the requested limit",
+                "verdict": "true_positive",
+                "matched": "E1",
+                "reason": "path, line and wording all matched (a summary note, below the posting gate)"
+              },
+              {
+                "lane": "critique",
+                "path": "src/findings/summarise.rs",
+                "line": 30,
+                "title": "Recognize sentence terminators beyond period-space",
+                "verdict": "false_positive",
+                "reason": "landed on `E2` but did not mention [\"shorten\", \"None|no space|no-space|branch|arm\"]"
+              }
+            ],
+            "cost_usd": 0.017234999999999993,
+            "over_budget": false,
+            "input_tokens": 268612,
+            "output_tokens": 25786,
+            "cached_tokens": 84285,
+            "wall_secs": 509.963244272,
+            "models": [
+              "flash",
+              "gpt-5.6-luna",
+              "glm-5.3-flash",
+              "deepseek-v4.1-flash"
+            ],
+            "lane_costs": {
+              "commits": 0.0,
+              "critique": 0.011706999999999995,
+              "description": 7.5e-05,
+              "security": 0.005404999999999999,
+              "tests": 1.3e-05
+            }
+          }
+        ]
+      },
+      "complete": true,
+      "recorded_genuine_lookups": 228,
+      "falsifier_decisions": [
+        {
+          "cassette": "0041-8fee03319ec880db.json",
+          "model": "glm-5.3-flash",
+          "value": {
+            "incorrect": [],
+            "security_scope": [
+              {
+                "attacker_input": "",
+                "dangerous_operation": "",
+                "index": 1,
+                "reason": "The finding is a generic correctness/contract observation: `shorten` takes `limit` characters via `text.chars().take(limit)` and then appends `\u2026`, yielding up to `limit + 1` characters, which conflicts with the doc comment's 'at most `limit` characters' and the downstream title ceiling. It asserts no attacker-controlled input, no dangerous operation, and no security consequence \u2014 only an off-by-one length violation, which belongs in a correctness lane.",
+                "security_impact": "",
+                "verdict": "out_of_scope"
+              }
+            ]
+          }
+        },
+        {
+          "cassette": "0025-f1047f111a39a54d.json",
+          "model": "deepseek-v4.1-flash",
+          "value": {
+            "incorrect": [
+              {
+                "index": 1,
+                "reason": "The diff shows `\"caf\u00e9 \".repeat(40).as_str()` as the *last* element of the array literal, and the array is consumed by the same `for ... in [...]` expression. Temporaries in Rust live until the end of the enclosing statement, which here is the whole `for` loop, so the borrow is valid and the test compiles. In fact this exact construct is a test that presumably passes; nothing in the diff shows a temporary-value-dropped-while-borrowed error."
+              }
+            ]
+          }
+        }
+      ],
+      "security_summary_notes": []
+    },
+    {
+      "case": "ts-0068-description-anchored-to-code",
+      "tree_commit": "f57624fe521b3596c4be81f6b62d20bcc0d2a4aa",
+      "scorecard": {
+        "corpus_digest": "5b335ed0a7c995d0",
+        "config_digest": "e201c05f0acfa048",
+        "loose_replays": 0,
+        "cases": [
+          {
+            "id": "ts-0068-description-anchored-to-code",
+            "true_positives": 0,
+            "missed": [],
+            "false_positives": 0,
+            "unscored": 1,
+            "exhaustive": false,
+            "duplicates": 0,
+            "forbidden_hits": [],
+            "optional_hits": 0,
+            "judged": [
+              {
+                "lane": "tests",
+                "path": "src/harness/openrouter.rs",
+                "line": 324,
+                "title": "Cover the config-to-request wire the new test only claims to assert",
+                "verdict": "unscored",
+                "reason": "the case does not claim to list every true finding"
+              }
+            ],
+            "cost_usd": 0.013865,
+            "over_budget": false,
+            "input_tokens": 233847,
+            "output_tokens": 49313,
+            "cached_tokens": 57355,
+            "wall_secs": 512.559937296,
+            "models": [
+              "flash",
+              "gpt-5.6-luna",
+              "glm-5.3-flash",
+              "deepseek-v4.1-flash"
+            ],
+            "lane_costs": {
+              "commits": 0.0,
+              "critique": 0.005444,
+              "description": 1.3e-05,
+              "security": 0.0070999999999999995,
+              "tests": 0.00126
+            }
+          }
+        ]
+      },
+      "complete": true,
+      "recorded_genuine_lookups": 230,
+      "falsifier_decisions": [],
+      "security_summary_notes": []
+    }
+  ]
+}

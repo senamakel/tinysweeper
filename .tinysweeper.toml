@@ -56,7 +56,7 @@ step that interpolates untrusted context into a shell.
 # body is the upstream's, so `model` comes back as whatever answered
 # (`deepseek/deepseek-v4-flash`, `gpt-5.6-luna`) and the cost line is what the
 # marketplace charged: OpenRouter's `usage.cost` or Surplus's
-# `buyer_cost_micro`, both read by `harness::openrouter::gateway_cost`.
+# `buyer_cost_micro`, both normalized by Embed before budget settlement.
 #
 # `deep` is the ladder that reads logic — a mechanical rename is verified
 # before the fan-out and the reviewer looks up what the changed lines call

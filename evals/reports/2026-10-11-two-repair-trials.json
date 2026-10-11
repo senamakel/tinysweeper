@@ -1,0 +1,57 @@
+{
+  "candidate_source": "360d3c245f3c4e18aadf5d313fa82f6f59f4790f",
+  "candidate_sha256": "7dc00948d9918f007efa34cf205dbb2e248e0a909fc7f4d21e8030b3e4931b0f",
+  "structured_output": "json_object",
+  "owner_repairs": 2,
+  "trials": [
+    {
+      "tree": "/home/enamakel/work/libraries/tinysweeper/worktrees/lookup-response-contract",
+      "number": 215,
+      "head_sha": "0a549f36bd818d430dcfbd1c03c2f1a9b9f5ee65",
+      "started_at_utc": "2026-10-11T02:08:14.887058+00:00",
+      "wall_secs": 363.176,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.19001173999999998,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "lane_conclusions": {
+        "critique": "failure",
+        "security": "success",
+        "tests": "success",
+        "commits": "neutral",
+        "description": "success"
+      },
+      "deduped": 1,
+      "blocked": true
+    },
+    {
+      "tree": "/home/enamakel/work/libraries/tinysweeper/worktrees/bounded-structured-repair",
+      "number": 216,
+      "head_sha": "e183d902b08e5f08f796f12e6da6e13d588258a1",
+      "started_at_utc": "2026-10-11T02:08:15.415097+00:00",
+      "wall_secs": 261.528,
+      "exit_code": 0,
+      "config": "evals/runs/live-after-all-deep-config.toml",
+      "cost_usd": 0.06996747,
+      "unreviewed": 0,
+      "findings": 0,
+      "unanswered": 0,
+      "skipped": null,
+      "lane_conclusions": {
+        "critique": "success",
+        "security": "success",
+        "tests": "success",
+        "commits": "neutral",
+        "description": "success"
+      },
+      "deduped": 0,
+      "blocked": false
+    }
+  ],
+  "interpretation": "Both trials completed with no unanswered units. PR215 is blocked despite zero new comments because one deduplicated HIGH finding survives; normal apply preserved its failing check. PR216 passed every lane. This is completeness evidence, not a general precision claim.",
+  "approval_guard": "Require successful or neutral lane conclusions as well as no findings/unanswered units before publishing a clean proposal.",
+  "remaining_race_regression": "Actual RED on0a549f36 and GREEN on e5362646 using immutable Git objects. Operator authorized one extra215round, but215 merged externally first at03:08:59UTC asd9f20d5a without the fix; a follow-up PR is required."
+}

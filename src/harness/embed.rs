@@ -717,6 +717,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_schema_requires_every_declared_field_on_the_actual_wire() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        let (mut model, _, mut request) = admission_fixture().await;
+        let gateway = FakeGateway::start(vec![Reply::completion(
+            "b",
+            r#"{"summary":"checked","resolved":[],"context":[]}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+        )])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        request.schema = json!({
+            "type":"object", "additionalProperties":false, "required":["summary"],
+            "properties": {
+                "summary":{"type":"string"},
+                "resolved":{"type":"array","items":{"type":"string"}},
+                "context":{"type":"array","items": {
+                    "type":"object", "additionalProperties":false, "required":["path"],
+                    "properties":{"path":{"type":"string"},"line":{"type":"integer","minimum":1}}
+                }}
+            }
+        });
+        model.complete(request).await.unwrap();
+        let requests = gateway.requests();
+        let schema = &requests[0]["response_format"]["json_schema"]["schema"];
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("resolved"))
+        );
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("context"))
+        );
+        assert!(
+            schema["properties"]["context"]["items"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("line"))
+        );
+        assert_eq!(
+            schema["properties"]["context"]["items"]["properties"]["line"]["minimum"],
+            json!(1)
+        );
+    }
+
+    #[tokio::test]
     async fn malformed_json_is_repaired_once_and_every_paid_dispatch_is_counted() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         let (mut model, _, request) = admission_fixture().await;

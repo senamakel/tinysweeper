@@ -328,3 +328,32 @@ The forge-only #206 review completed in 282.544 seconds for $0.189602 with
 no unanswered units, but asserted a conditional HIGH without inspecting its
 consumer. It was withheld. That outcome prompted a separate trial using a
 clean matching checkout; it must not be substituted for the earlier result.
+
+
+### Additional checkout-backed trials and security regression
+
+The matching-checkout #206 trial took 370.731 seconds and cost $0.154275,
+with two unanswered units and no posted findings. It was withheld. The
+matching-checkout #215 trial completed in 314.862 seconds for $0.145780,
+with two findings identifying the same valid ignored-file evidence issue.
+The separate production review also found that issue. A clean Git status
+alone permits ignored files, so a general directory reader could expose an
+ordinary ignored private file to the model.
+
+Source `0a549f36` limits checkout reads to Git's reviewable-path allowlist
+and validates the head through the hardened Git runner. Two regressions
+failed before the fix: an ignored ordinary file was readable, and a Git
+fsmonitor hook ran during validation. Both pass after the fix. Existing
+wrong-head, tracked-modification and untracked-file tests remain in place.
+The subsequent stale-checkout warning is covered by the review engine's
+existing revision comparison: a mismatching supplied tree is dropped in
+favor of the forge reader pinned to the freshly fetched PR head.
+
+A new actual-wire test shows that Embed's native OpenAI transport already
+makes every strict-schema property required, including nested lookup
+fields. It passed against the existing adapter, so no redundant schema
+normalizer was added and this is coverage rather than a reproduced bug.
+The strict-schema #206 trial finished in 139.600 seconds for $0.082698,
+with no posted findings but twelve unanswered units. It was withheld.
+The small successful provider probe therefore did not establish full-review
+reliability, and changing the operator setting alone is not a proven fix.

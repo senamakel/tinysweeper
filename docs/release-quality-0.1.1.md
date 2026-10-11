@@ -399,19 +399,28 @@ mutation and deletion assertions pass alongside 2,220 library tests and
 13 CLI tests with the GitHub feature. That prepared local fix (`e5362646`)
 was prepared before the operator authorized one additional feedback round.
 Before that push, #215 merged externally at 03:08:59 UTC as `d9f20d5a`,
-without the snapshot fix; the fix therefore has its own follow-up PR [#217](https://github.com/tinyhumansai/tinysweeper/pull/217),
-with head `47c87f87` and a fresh independent review. Complete trial receipts are retained in
+without the snapshot fix. The follow-up [#217](https://github.com/tinyhumansai/tinysweeper/pull/217)
+started at `47c87f87`; its final documentation-corrected head was `e81040f2`.
+Complete trial receipts are retained in
 [`two-repair-trials.json`](../evals/reports/2026-10-11-two-repair-trials.json).
 The earlier “clean” operator characterization was corrected; no approval was
 fabricated and no failing conclusion was changed in the proposal.
 
 
-The prepared immutable-evidence fix is now integrated into the local 0.1.1
-release candidate (`715248cf`). That candidate passed 2,329 library tests,
-13 CLI tests, feature Clippy with warnings denied, all-feature/all-target
-checking, formatting and the pin assertion. The operator has now authorized
-the additional work and release; publication still requires the follow-up
-fix and release PR to pass normal review and CI.
+That previously prepared immutable-evidence fix has now landed through #217.
+Its final head `e81040f2` received a genuine complete review in 154.136 seconds
+for $0.04835902, with no findings or unanswered units. Normal apply published
+[App approval 5481724241](https://github.com/tinyhumansai/tinysweeper/pull/217#pullrequestreview-5481724241).
+After all 16 checks passed, the ordinary merge landed at 03:37:20 UTC on
+2026-10-11 as `427af43629c9d859cfbc84b06f41bfe893883d99`.
+
+The release branch includes the fix's implementation and preserves that merge
+in its history. The earlier local 0.1.1 candidate (`715248cf`) passed 2,329
+library tests, 13 CLI tests, feature Clippy with warnings denied,
+all-feature/all-target checking, formatting and the pin assertion. The operator
+has authorized release; the release PR still requires fresh exact-head review
+and CI before publication and deployment. The earlier preparation receipts
+above describe their historical state before #217's approval and merge.
 
 
 The immutable candidate binary has SHA-256

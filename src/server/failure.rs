@@ -51,8 +51,9 @@ pub fn is_transient(err: &Error) -> bool {
         Error::Model(_) => true,
         // Repeating paid lanes cannot repair a rejected GitHub credential.
         // Token freshness is handled before the review and again at publish.
+        // Octocrab appends documentation and response details on later lines.
         // Keep secondary rate limits, transport failures and 5xx retryable.
-        Error::Forge(message) => message != "GitHub: Bad credentials",
+        Error::Forge(message) => message.lines().next() != Some("GitHub: Bad credentials"),
         // Everything else is deterministic — a bug, a bad config, or a budget
         // ceiling — so a retry reproduces it exactly and costs real money
         // doing so. `Budget` in particular must never be retried: the run
@@ -309,6 +310,23 @@ mod tests {
         )));
         assert!(is_transient(&Error::Forge(
             "GitHub: 502 Bad Gateway".into()
+        )));
+    }
+
+    #[test]
+    fn decorated_rejected_credentials_do_not_repeat_paid_review_work() {
+        // Octocrab's GitHubError appends these response details after the
+        // message, and the forge adapter preserves them in its error chain.
+        for details in [
+            "\nDocumentation URL: https://docs.github.com/rest",
+            "\nDocumentation URL: https://docs.github.com/rest\nErrors:\n- invalid token",
+        ] {
+            assert!(!is_transient(&Error::Forge(format!(
+                "GitHub: Bad credentials{details}"
+            ))));
+        }
+        assert!(is_transient(&Error::Forge(
+            "GitHub: secondary rate limit\nDocumentation URL: https://docs.github.com/rest".into()
         )));
     }
 

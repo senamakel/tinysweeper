@@ -7,7 +7,8 @@
   file.
 - `src/bin/tinysweeper.rs` — the CLI. Every subcommand is declared even when its
   milestone has not landed, so scripts and runbooks can be written against a
-  stable surface. `src/server/` is the only production surface: tinysweeper is
+  stable surface. Explicitly removed integrations are excluded: Cortex-backed
+  memory and its CLI commands were retired in 0.1.2. `src/server/` is the only production surface: tinysweeper is
   not distributed or run as a GitHub Action. The two deliberate exceptions are
   operator buttons in *this* repository: `.github/workflows/manual-review.yml`,
   which POSTs to the deployed server's `/admin/reviews` route, and

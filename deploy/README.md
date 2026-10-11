@@ -135,6 +135,16 @@ This is deliberate: a `git pull` in the deploy path would make the box's
 manifest follow whatever is on `main` at the moment of the click, and a config
 change is a thing to do with eyes on it.
 
+## Upgrading to 0.1.2
+
+Repository memory was removed in 0.1.2. Remove `[memory]` and any
+`[[memory.questions]]` tables from the mounted `.tinysweeper.toml` before
+deploying; the new image rejects them as unknown configuration. Remove
+`CORTEX_API_KEY` from TinySweeper's environment and Compose forwarding.
+The `memory` CLI command and `/admin/memory/` endpoints were retired, so
+remove calls to them from operator scripts. Mongo retrieval and per-head
+review state remain available.
+
 ## Operating it
 
 ```sh

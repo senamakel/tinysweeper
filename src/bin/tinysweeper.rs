@@ -660,18 +660,17 @@ async fn run_review(
 async fn review_tree(
     path: &std::path::Path,
     head: &str,
-) -> Result<tinysweeper::ports::tree::DirTree> {
+) -> Result<tinysweeper::app::local::GitTree> {
     let revision = tinysweeper::evidence::git::clean_head(path).await?;
     if revision != head {
         return Err(tinysweeper::Error::Git(
             "review tree must be at the live pull request head".into(),
         ));
     }
-    // Git status permits ignored local files. Match local-review's allowlist
-    // rather than letting a lookup turn those files into model evidence.
-    Ok(tinysweeper::ports::tree::DirTree::new(path)
-        .allowing(tinysweeper::evidence::git::reviewable_paths(path).await?)
-        .at_revision(head))
+    // Read committed blobs rather than mutable files after the preflight.
+    // Ignored files are absent by construction; forge fallback supplies
+    // searches and submodule paths that this local reader cannot answer.
+    tinysweeper::app::local::GitTree::at_revision(path, head)
 }
 
 /// The corpus commands. Only `run --record` and `add` need a network.
@@ -1997,7 +1996,32 @@ mod tests {
             .unwrap();
         assert!(matches!(ignored, tinysweeper::ports::tree::Found::NotFound));
         std::fs::write(dir.path().join("source.rs"), "modified").unwrap();
+        let pinned = clean
+            .lookup(&tinysweeper::ports::tree::Lookup::Read {
+                path: "source.rs".into(),
+                start: None,
+                end: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(pinned, tinysweeper::ports::tree::Found::Text { text, .. } if text.contains("original") && !text.contains("modified")),
+            "evidence must keep the validated commit after a checkout mutation"
+        );
         assert!(review_tree(dir.path(), head).await.is_err());
+        std::fs::remove_file(dir.path().join("source.rs")).unwrap();
+        let pinned = clean
+            .lookup(&tinysweeper::ports::tree::Lookup::Read {
+                path: "source.rs".into(),
+                start: None,
+                end: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(pinned, tinysweeper::ports::tree::Found::Text { text, .. } if text.contains("original")),
+            "deleting the working file must not delete committed review evidence"
+        );
         std::fs::write(dir.path().join("source.rs"), "original").unwrap();
         std::fs::write(dir.path().join("untracked.rs"), "new evidence").unwrap();
         assert!(review_tree(dir.path(), head).await.is_err());

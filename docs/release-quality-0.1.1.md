@@ -397,8 +397,9 @@ issue: after validation, changing a working file changed what the supposedly
 pinned reader returned. The prepared Git-object reader fixes that, and both
 mutation and deletion assertions pass alongside 2,220 library tests and
 13 CLI tests with the GitHub feature. That prepared local fix (`e5362646`)
-has not been pushed to #215 pending an exception to the PR merger skill's
-two-feedback-round limit. Complete trial receipts are retained in
+was prepared before the operator authorized one additional feedback round.
+Before that push, #215 merged externally at 03:08:59 UTC as `d9f20d5a`,
+without the snapshot fix; the fix therefore needs its own follow-up PR. Complete trial receipts are retained in
 [`two-repair-trials.json`](../evals/reports/2026-10-11-two-repair-trials.json).
 The earlier “clean” operator characterization was corrected; no approval was
 fabricated and no failing conclusion was changed in the proposal.
@@ -407,5 +408,16 @@ fabricated and no failing conclusion was changed in the proposal.
 The prepared immutable-evidence fix is now integrated into the local 0.1.1
 release candidate (`715248cf`). That candidate passed 2,329 library tests,
 13 CLI tests, feature Clippy with warnings denied, all-feature/all-target
-checking, formatting and the pin assertion. The source fix and release
-remain unpublished while the review-limit exception is pending.
+checking, formatting and the pin assertion. The operator has now authorized
+the additional work and release; publication still requires the follow-up
+fix and release PR to pass normal review and CI.
+
+
+The immutable candidate binary has SHA-256
+`d219057be93393dae209bcf8b2ec31699004839c3c9cf821c9373b2ba84af0a4`.
+A strict replay with the original canonical configuration has zero cassette
+misses, zero loose matches and no unusable responses. It still matches only
+E1, misses E2 and retains both clean-case false positives; recording cost is
+$0.082564. An initial replay accidentally used the operator configuration
+and reported cassette misses; it was rerun with `src/config/defaults.toml`,
+without regenerating answers, editing labels or enabling loose matching.

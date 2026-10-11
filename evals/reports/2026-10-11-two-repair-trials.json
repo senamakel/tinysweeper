@@ -53,5 +53,5 @@
   ],
   "interpretation": "Both trials completed with no unanswered units. PR215 is blocked despite zero new comments because one deduplicated HIGH finding survives; normal apply preserved its failing check. PR216 passed every lane. This is completeness evidence, not a general precision claim.",
   "approval_guard": "Require successful or neutral lane conclusions as well as no findings/unanswered units before publishing a clean proposal.",
-  "remaining_race_regression": "A local checkout-mutation regression failed at0a549f36 and passes on prepared local e5362646 using immutable Git objects; that fix has not been pushed to PR215 pending the skill review-limit exception."
+  "remaining_race_regression": "Actual RED on0a549f36 and GREEN on e5362646 using immutable Git objects. Operator authorized one extra215round, but215 merged externally first at03:08:59UTC asd9f20d5a without the fix; a follow-up PR is required."
 }

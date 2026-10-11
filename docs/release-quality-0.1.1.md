@@ -399,7 +399,8 @@ mutation and deletion assertions pass alongside 2,220 library tests and
 13 CLI tests with the GitHub feature. That prepared local fix (`e5362646`)
 was prepared before the operator authorized one additional feedback round.
 Before that push, #215 merged externally at 03:08:59 UTC as `d9f20d5a`,
-without the snapshot fix; the fix therefore needs its own follow-up PR. Complete trial receipts are retained in
+without the snapshot fix; the fix therefore has its own follow-up PR [#217](https://github.com/tinyhumansai/tinysweeper/pull/217),
+with head `47c87f87` and a fresh independent review. Complete trial receipts are retained in
 [`two-repair-trials.json`](../evals/reports/2026-10-11-two-repair-trials.json).
 The earlier “clean” operator characterization was corrected; no approval was
 fabricated and no failing conclusion was changed in the proposal.

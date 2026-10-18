@@ -768,7 +768,9 @@ mod tests {
         )])
         .await;
         model.base_url = gateway.base_url.clone();
-        let model = model.scoped_budget(0.01).unwrap();
+        let ledger = crate::harness::budget::ledger(0.01);
+        model.budget = Some(ledger.clone());
+        let model = Arc::new(model);
         let first_model = model.clone();
         let first_request = request.clone();
         let first = tokio::spawn(async move { first_model.complete(first_request).await });
@@ -793,6 +795,9 @@ mod tests {
 
         release.add_permits(1);
         first.await.unwrap().expect("first call settles");
+        assert_eq!(ledger.snapshot().spent.cost_micros, 2_100);
+        assert!(ledger.snapshot().spent.cost_micros < 7_500);
+        assert_eq!(ledger.snapshot().reserved.cost_micros, 0);
     }
 
     #[tokio::test]

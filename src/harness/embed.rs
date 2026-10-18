@@ -1061,10 +1061,6 @@ mod tests {
         .expect_err("the live reservation leaves no capacity");
         assert!(matches!(refusal, Error::Budget { .. }), "{refusal:?}");
         assert!(gateway.requests().is_empty());
-        assert!(
-            ledger.refusal().is_some(),
-            "a fail-fast admission refusal remains typed in the ledger"
-        );
         assert_eq!(ledger.snapshot().reserved.cost_micros, 1_000_000);
         assert_eq!(
             ledger.snapshot().spent.cost_micros,

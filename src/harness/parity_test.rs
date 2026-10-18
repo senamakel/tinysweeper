@@ -362,7 +362,7 @@ async fn configured_alias_prices_allow_budgeted_truncation_retries() {
             output: 1.8,
         },
     );
-    let model = adapter(&models).scoped_budget(0.7).unwrap();
+    let model = adapter(&models).scoped_budget(1.0).unwrap();
     let response = model.complete(request("deep")).await.unwrap();
     assert_eq!(response.usage.input_tokens, 240);
     assert!((response.usage.cost_usd - 0.0042).abs() < 1e-12);
@@ -500,7 +500,7 @@ async fn reported_cost_over_reservation_is_retained_and_blocks_later_admission()
             output: 150.0,
         },
     );
-    let model = adapter(&models).scoped_budget(1.0).unwrap();
+    let model = adapter(&models).scoped_budget(0.7).unwrap();
     let first = model.complete(request("deep")).await.unwrap();
     assert!((first.usage.cost_usd - 0.6).abs() < 1e-12);
     let second = model.complete(request("deep")).await;

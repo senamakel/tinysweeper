@@ -315,4 +315,34 @@ mod tests {
         assert_eq!(check.title, "Review incomplete — a lane did not respond");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
+
+    #[tokio::test]
+    async fn the_mock_forge_receives_partial_and_unanswered_review_titles() {
+        use crate::ports::forge::ForgeWrite;
+
+        let forge = crate::forge::MockForge::new();
+        let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
+        forge
+            .publish_check(&repo, completed("abc", 0, false, Some((8, 10)), true))
+            .await
+            .expect("publishes partial status");
+        assert_eq!(
+            forge.checks()[CHECK_NAME].title,
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
+        forge
+            .publish_check(&repo, completed("def", 0, false, None, true))
+            .await
+            .expect("publishes unanswered status");
+        let checks = forge.checks();
+        assert_eq!(
+            checks[CHECK_NAME].title,
+            "Review incomplete — a lane did not respond"
+        );
+        assert_eq!(
+            checks[CHECK_NAME].head_sha,
+            "def",
+            "the latest run replaces the earlier one"
+        );
+    }
 }

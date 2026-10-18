@@ -64,6 +64,19 @@ says the index was cold rather than quietly reviewing on less context than the
 operator believes. Blocking the first review on the first index would trade a
 thin review for a late one, and a late review is the one nobody reads.
 
+### Closed pull requests stop before review work
+
+Webhook routing ignores a pull request event when GitHub supplies a non-open
+state or `merged: true`. Comment deliveries use the issue-shaped PR reference;
+when it includes a closed state, a mention is ignored before it is queued.
+Some trigger payloads have no state, so the worker reads the live pull request
+again before indexing, claiming a review lease, opening a check, or starting
+the lanes. This also protects `/admin/reviews`: its queued head can close while
+waiting for a worker, and a manual request follows the same live-state gate.
+After the lanes return, `app::apply` reads live state again before its first
+write, so a pull request merged while a model call was running receives no
+review or check publication from that run.
+
 A refused claim is requeued, never waited on. `IndexManifest::claim` answers
 `Busy` when another worker holds the repository; the job sleeps, retries a
 bounded number of times, and then leaves it to the holder, who is doing the same

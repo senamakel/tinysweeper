@@ -86,6 +86,14 @@ pub async fn apply(
     // Re-validate against live state. The review ran minutes ago in another
     // job, and the world moves.
     let live = read.pull_request(&repo, proposal.number).await?;
+    if !live.open || live.merged {
+        tracing::info!(
+            number = proposal.number,
+            merged = live.merged,
+            "pull request is closed; not publishing the review"
+        );
+        return Ok(());
+    }
     if live.head_sha != proposal.head_sha {
         tracing::info!(
             reviewed = %proposal.head_sha,
@@ -1497,6 +1505,29 @@ mod tests {
             checks["tinysweeper/critique"].conclusion,
             Some(CheckConclusion::Neutral)
         );
+    }
+
+    #[tokio::test]
+    async fn a_closed_or_merged_pull_request_is_not_published_after_review() {
+        for (open, merged) in [(false, false), (false, true)] {
+            let forge = forge("abc123");
+            forge.replace_pull_request(PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                open,
+                merged,
+                ..PullRequest::default()
+            });
+
+            apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+                .await
+                .expect("closed pull requests are declined without publishing");
+
+            assert!(
+                forge.writes().is_empty(),
+                "closed state open={open} merged={merged} must not publish a review"
+            );
+        }
     }
 
     #[tokio::test]

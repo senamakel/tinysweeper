@@ -3858,6 +3858,16 @@ mod tests {
                 .await
                 .unwrap()
         );
+        assert_eq!(store.unfinished(), 1, "the owner remains until status cleanup");
+        assert!(store
+            .finish(
+                &exhausted,
+                TerminalOutcome::Exhausted,
+                now_ms,
+                now_ms,
+            )
+            .await
+            .unwrap());
         assert_eq!(store.unfinished(), 0);
 
         let normal_store = crate::ports::review_job_mock::MockReviewJobStore::default();

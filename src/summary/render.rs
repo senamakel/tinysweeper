@@ -11,6 +11,8 @@ use crate::summary::types::ReviewSummary;
 pub const MARKER: &str = "<!-- tinysweeper:review-hub -->";
 /// Marker used by the former standalone change-map comment.
 pub const LEGACY_MARKER: &str = "<!-- tinysweeper:change-map -->";
+const LAST_REPORT_START: &str = "<!-- tinysweeper:last-report:start -->";
+const LAST_REPORT_END: &str = "<!-- tinysweeper:last-report:end -->";
 
 /// Render the initial state while model work is running, retaining the last report.
 pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
@@ -20,7 +22,11 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
         body.push_str("\n<details>\n<summary>Previous completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -28,14 +34,22 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
 
 /// Render a prominent failure without destroying the prior trustworthy report.
 pub fn failed(head_sha: &str, message: &str, previous: Option<&str>) -> String {
+    let reason = safe_failure_reason(message);
     let mut body = format!(
-        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review failed for `{}`.** {}\n",
+        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review of `{}` {}.**\n",
         short(head_sha),
-        md(&crate::scan::scrub(message))
+        reason,
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
+        if let Some(sha) = reviewed_sha(previous) {
+            let _ = write!(body, " The last completed review (`{sha}`) is shown below.\n");
+        }
         body.push_str("\n<details open>\n<summary>Last completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -624,15 +638,60 @@ pub(crate) fn md(text: &str) -> String {
     escaped
 }
 fn trustworthy_report(body: &str) -> Option<&str> {
-    if body.contains(MARKER)
+    if let Some(start) = body.find(LAST_REPORT_START) {
+        let content_start = start + LAST_REPORT_START.len();
+        let end = body[content_start..].find(LAST_REPORT_END)? + content_start;
+        return trustworthy_report(body[content_start..end].trim_matches('\n'));
+    }
+
+    if is_completed_report(body) {
+        return Some(body);
+    }
+
+    // Older hubs nested the report in a details block before stable delimiters
+    // were introduced. Extract that block so an upgrade during a review keeps
+    // the report instead of replacing it with another status wrapper.
+    let opening = body.find("<details")?;
+    let content_start = body[opening..].find("</summary>")? + opening + "</summary>".len();
+    let closing = body[content_start..].find("</details>")? + content_start;
+    trustworthy_report(body[content_start..closing].trim())
+}
+
+fn is_completed_report(body: &str) -> bool {
+    body.contains(MARKER)
         && body.contains("**Reviewed head:**")
         && !body.contains("**Reviewing `")
         && !body.contains("**Review failed for `")
-    {
-        Some(body)
-    } else {
-        None
+}
+
+fn reviewed_sha(report: &str) -> Option<&str> {
+    let line = report.lines().find(|line| line.contains("**Reviewed head:**"))?;
+    let value = line.split("**Reviewed head:**").nth(1)?.trim();
+    value.strip_prefix('`')?.split('`').next()
+}
+
+fn safe_failure_reason(message: &str) -> String {
+    let message = message.to_ascii_lowercase();
+    if message.contains("timeout") || message.contains("timed out") || message.contains("within ") {
+        let seconds = message
+            .split_once("within ")
+            .and_then(|(_, rest)| rest.split_once('s'))
+            .and_then(|(seconds, _)| seconds.trim().parse::<u64>().ok());
+        return match seconds {
+            Some(seconds) if seconds >= 60 => {
+                format!("timed out after {} min", seconds.saturating_add(59) / 60)
+            }
+            Some(seconds) => format!("timed out after {seconds} sec"),
+            None => "timed out".to_string(),
+        };
     }
+    if message.contains("budget") {
+        return "ran out of budget".to_string();
+    }
+    if message.contains("model") || message.contains("gateway") || message.contains("provider") {
+        return "could not reach a model".to_string();
+    }
+    "could not complete".to_string()
 }
 
 #[cfg(test)]

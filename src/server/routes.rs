@@ -642,7 +642,7 @@ async fn receive(
                 )
                     .into_response()
             }
-            Err(ReviewQueueError::Closed(_)) => {
+            Err(ReviewQueueError::Closed) => {
                 tracing::error!("review queue is closed");
                 (StatusCode::SERVICE_UNAVAILABLE, "review queue unavailable").into_response()
             }
@@ -685,7 +685,7 @@ async fn receive(
 #[derive(Debug)]
 enum ReviewQueueError {
     Full(Box<QueuedReview>),
-    Closed(Box<QueuedReview>),
+    Closed,
 }
 
 fn try_enqueue_review(
@@ -694,7 +694,7 @@ fn try_enqueue_review(
 ) -> std::result::Result<(), ReviewQueueError> {
     sender.try_send(job).map_err(|error| match error {
         mpsc::error::TrySendError::Full(job) => ReviewQueueError::Full(Box::new(job)),
-        mpsc::error::TrySendError::Closed(job) => ReviewQueueError::Closed(Box::new(job)),
+        mpsc::error::TrySendError::Closed(_) => ReviewQueueError::Closed,
     })
 }
 

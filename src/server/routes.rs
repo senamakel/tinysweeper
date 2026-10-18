@@ -2832,7 +2832,7 @@ impl ReviewRun<'_> {
     async fn run(
         self,
         pull_request: PullRequest,
-    ) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
+    ) -> Result<InnerReview> {
         let Self {
             state,
             repo,
@@ -2853,7 +2853,7 @@ impl ReviewRun<'_> {
         // ready for review.
         if pull_request.draft {
             tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
-            return Ok(None);
+            return Ok(InnerReview::Complete(None));
         }
 
         // The head may have moved after the webhook was delivered, or there
@@ -2872,7 +2872,7 @@ impl ReviewRun<'_> {
                 tracing::debug!(%next, "another worker holds the live pull request head");
                 run.lease_busy
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                return Ok(None);
+                return Ok(InnerReview::Busy);
             }
             if let Some(previous) = lease.replace(next)
                 && let Err(err) = state.store.release_lease_for(&previous, &holder).await
@@ -2917,7 +2917,7 @@ impl ReviewRun<'_> {
                 PaidWork::Exhausted => {
                     run.paid_exhausted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
-                    return Ok(None);
+                    return Ok(InnerReview::Exhausted);
                 }
                 PaidWork::OwnershipLost => return Err(Error::ReviewOwnershipLost),
             }
@@ -2947,26 +2947,17 @@ impl ReviewRun<'_> {
         // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
         // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
         run.check_owner(state).await?;
-        let outcome = {
-            let go_on = open_status(
-                state,
-                &run.slot,
-                repo_id,
-                &pull_request.head_sha,
-                installation,
-            )
-            .await;
-            if !go_on {
-                // Declined, not failed: the check is already concluded as
-                // failed, and an `Err` here would have `handle_review` post a
-                // second one. The lease goes back like any other outcome; the
-                // next push, or the manual review the check points at, reviews
-                // this commit properly.
-                tracing::info!(%repo, number, "shutting down; not starting this review");
-                mark_shutdown_status_result(run);
-                return Ok(None);
-            }
+        let go_on = open_status(
+            state,
+            &run.slot,
+            repo_id,
+            &pull_request.head_sha,
+            installation,
+        )
+        .await;
+        continue_after_open_status(go_on, || async {
             run.check_owner(state).await?;
+            let outcome = {
 
             // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
             // reaches the release below. Without it the `?` on the outcome is not
@@ -3084,7 +3075,7 @@ impl ReviewRun<'_> {
                 }
                 Err(err) => Err(err),
             }
-        };
+            };
 
         let (disposition, proposal, changes_requested) = outcome?;
         let Some((findings, changes_requested, coverage)) = published_review_result(
@@ -3096,7 +3087,7 @@ impl ReviewRun<'_> {
             // The head moved, or the PR closed/merged, after the lanes ran.
             // Leave the already-open umbrella check terminally NotReviewed;
             // neither count the attempt nor kick off automerge.
-            return Ok(None);
+            return Ok(InnerReview::Complete(None));
         };
         state.store.record_review(author, findings as u64).await?;
 
@@ -3120,7 +3111,13 @@ impl ReviewRun<'_> {
             installation,
         ));
 
-        Ok(Some((findings, changes_requested, coverage)))
+            Ok(InnerReview::Complete(Some((
+                findings,
+                changes_requested,
+                coverage,
+            ))))
+        })
+        .await
     }
 }
 

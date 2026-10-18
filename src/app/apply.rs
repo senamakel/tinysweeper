@@ -2729,6 +2729,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_render_drops_false_success_claim_for_no_response_lane() {
+        use crate::harness::mock::MockModel;
+
+        let forge = forge("abc123");
+        let config = config();
+        let model = MockModel::new().then(serde_json::json!({
+            "executive_summary": "The security and tests lanes confirm there are no findings.",
+            "changes": "All lanes passed and confirmed the change is clear.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let lanes = vec![LaneProposal {
+            lane: LaneId::Tests,
+            check_name: LaneId::Tests.check_name(),
+            conclusion: CheckConclusion::Neutral,
+            summary: "No reviewer produced a usable response.".into(),
+            findings: vec![],
+            noted: vec![],
+            resolved: vec![],
+            pending: vec![],
+            skipped: None,
+            deduped: 0,
+            highest_severity: None,
+            usage: Default::default(),
+            models: vec![],
+            unanswered: vec!["tests".into()],
+            coverage: None,
+            overflow: vec![],
+        }];
+        let (summary, _, _) = crate::summary::generate(
+            &model,
+            &config,
+            &PullRequest { number: 7, head_sha: "abc123".into(), ..PullRequest::default() },
+            &[],
+            &lanes,
+            None,
+            &[],
+        ).await;
+        let mut proposal = proposal("abc123", lanes);
+        proposal.summary = Some(summary);
+
+        apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("applies");
+
+        let body = overview_comments(&forge)
+            .into_iter()
+            .find_map(|write| match write {
+                Write::Comment { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("hub comment");
+        assert!(!body.to_ascii_lowercase().contains("all lanes passed"));
+        assert!(!body.to_ascii_lowercase().contains("tests lane confirm"));
+        assert!(body.contains("No reviewer produced a usable response."));
+    }
+
+    #[tokio::test]
     async fn mock_forge_hub_links_a_citation_to_the_reviewed_sha() {
         let forge = forge("abc123");
         let mut proposal = proposal("abc123", vec![]);

@@ -987,15 +987,17 @@ mod tests {
             additions: 83,
             deletions: 12,
         };
-        let _ = generate_with_diffstat(
+        let _ = generate_with_input(
             &model,
             &Config::default(),
             &pull_request,
-            &diffs,
-            full_stat,
-            &lanes,
-            None,
-            &prior,
+            SummaryGenerationInput {
+                diffs: &diffs,
+                full_pr_diffstat: full_stat,
+                lanes: &lanes,
+                prior: None,
+                prior_transcript: &prior,
+            },
         )
         .await;
 

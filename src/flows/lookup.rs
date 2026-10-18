@@ -788,12 +788,7 @@ fn starts_raw_string(text: &str, start: usize) -> bool {
     let rest = &text[start..];
     let rest = rest.strip_prefix('b').unwrap_or(rest);
     rest.starts_with('r')
-        && rest[1..]
-            .bytes()
-            .take_while(|byte| *byte == b'#')
-            .count()
-            + 1
-            < rest.len()
+        && rest[1..].bytes().take_while(|byte| *byte == b'#').count() + 1 < rest.len()
         && rest.as_bytes()[1 + rest[1..].bytes().take_while(|byte| *byte == b'#').count()] == b'"'
 }
 
@@ -1599,7 +1594,10 @@ mod tests {
             .await
             .rendered;
 
-        assert!(seeded.contains("Declared module `foo` at `src/foo.rs`"), "{seeded}");
+        assert!(
+            seeded.contains("Declared module `foo` at `src/foo.rs`"),
+            "{seeded}"
+        );
         assert!(!seeded.contains("Unavailable"), "{seeded}");
     }
 

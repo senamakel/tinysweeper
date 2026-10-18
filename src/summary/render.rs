@@ -351,7 +351,11 @@ fn findings(out: &mut String, proposal: &Proposal) {
                 out,
                 "- {}{} · {} — {} ({})",
                 severity(finding.severity),
-                if lane.context_degraded { " · unverified" } else { "" },
+                if lane.context_degraded {
+                    " · unverified"
+                } else {
+                    ""
+                },
                 finding.lane,
                 prose(&finding.title),
                 code_span(&finding.path)

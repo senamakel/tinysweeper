@@ -178,7 +178,10 @@ fn render_bounded(diff: &FileDiff, limit: usize) -> (String, bool) {
     }
     out.push_str(&header);
     for hunk in &diff.hunks {
-        let header = format!("@@ -{},{} +{},{} @@\n", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines);
+        let header = format!(
+            "@@ -{},{} +{},{} @@\n",
+            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+        );
         if out.len() + header.len() > limit {
             return (out, true);
         }
@@ -191,8 +194,12 @@ fn render_bounded(diff: &FileDiff, limit: usize) -> (String, bool) {
             };
             let mut rendered = String::new();
             match line.new_line {
-                Some(number) => { let _ = writeln!(rendered, "{number:>5} {marker}{}", line.text); }
-                None => { let _ = writeln!(rendered, "      {marker}{}", line.text); }
+                Some(number) => {
+                    let _ = writeln!(rendered, "{number:>5} {marker}{}", line.text);
+                }
+                None => {
+                    let _ = writeln!(rendered, "      {marker}{}", line.text);
+                }
             }
             if out.len() + rendered.len() > limit {
                 return (out, true);
@@ -446,7 +453,10 @@ mod tests {
 
         assert!(evidence.starts_with("--- src/zown.rs\n"), "{evidence}");
         assert!(evidence.contains("fn changed(value: u8)"), "{evidence}");
-        assert!(evidence.contains("Cross-file evidence is incomplete"), "{evidence}");
+        assert!(
+            evidence.contains("Cross-file evidence is incomplete"),
+            "{evidence}"
+        );
         assert!(evidence.len() <= 18_000, "{} bytes", evidence.len());
     }
 

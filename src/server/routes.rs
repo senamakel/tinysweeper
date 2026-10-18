@@ -3046,10 +3046,18 @@ mod tests {
         }))));
         let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
 
-        crate::review_timing::measure(Some(&timing), "permit", async {
-            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
-        })
-        .await;
+        let permits = Arc::new(Semaphore::new(1));
+        let mut held = Some(permits.clone().acquire_owned().await.unwrap());
+        let waiting = crate::review_timing::measure(
+            Some(&timing),
+            "permit",
+            permits.clone().acquire_owned(),
+        );
+        tokio::pin!(waiting);
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        drop(held.take());
+        let permit = waiting.await.unwrap();
+        drop(permit);
         let published = server_review_lifecycle(
             &timing,
             || async {

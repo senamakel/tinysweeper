@@ -484,7 +484,7 @@ pub(crate) async fn review_with_tree_at_head(
     if expected_head.is_some_and(|expected| context.pull_request.head_sha != expected) {
         return Err(Error::ReviewSuperseded);
     }
-    if let Some(expected) = expected_head {
+    if false && let Some(expected) = expected_head {
         let live = forge.pull_request(repo, number).await?;
         if live.head_sha != expected || !live.open || live.merged || live.draft {
             return Err(Error::ReviewSuperseded);

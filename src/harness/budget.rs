@@ -41,7 +41,7 @@ impl OutputHistory {
         observations.push_back(tokens);
     }
 
-    fn p90(&self, lane: &str, model: &str, cap: u32) -> u32 {
+    pub(crate) fn p90(&self, lane: &str, model: &str, cap: u32) -> u32 {
         let history = self
             .0
             .lock()

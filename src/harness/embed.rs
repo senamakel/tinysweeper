@@ -827,6 +827,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agentic_model_events_train_per_dispatch_output_history_without_langfuse() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::{Message, Model};
+        use crate::ports::tree::MockTree;
+        use serde_json::json;
+
+        let tool_call = |output_tokens| Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,
+                    "tool_calls":[{"id":"read","type":"function","function":{
+                        "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
+                    }}]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":5,"completion_tokens":output_tokens,"cost":0.001}
+            }),
+        };
+        let answer = |output_tokens| {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":output_tokens,"cost":0.001}),
+            )
+        };
+        let gateway =
+            FakeGateway::start(vec![tool_call(2), answer(3), tool_call(11), answer(17)]).await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.budget_prices.insert(
+            "b".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 0.0,
+                cached: 0.0,
+                output: 150.0,
+            },
+        );
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.budget = Some(crate::harness::budget::ledger(1.0));
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![Message::system("Review."), Message::user("Review source.")],
+            schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn reviewed() {}")]);
+        let policy = crate::config::types::LookupPolicy::default();
+
+        model
+            .review(request.clone(), &tree, &policy)
+            .await
+            .expect("first agentic review");
+        assert_eq!(
+            model.output_history.p90("review", "b", 128),
+            3,
+            "the first turn contributes two individual physical output observations"
+        );
+
+        model
+            .review(request, &tree, &policy)
+            .await
+            .expect("second agentic review");
+        assert_eq!(
+            model.output_history.p90("review", "b", 128),
+            17,
+            "p90 uses per-dispatch outputs rather than a terminal turn aggregate"
+        );
+        assert_eq!(gateway.requests().len(), 4);
+    }
+
+    #[tokio::test]
     async fn strict_schema_requires_every_declared_field_on_the_actual_wire() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         let (mut model, _, mut request) = admission_fixture().await;

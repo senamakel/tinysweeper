@@ -42,10 +42,7 @@ pub fn failed(head_sha: &str, message: &str, previous: Option<&str>) -> String {
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
         if let Some(sha) = reviewed_sha(previous) {
-            let _ = write!(
-                body,
-                " The last completed review (`{sha}`) is shown below.\n"
-            );
+            let _ = writeln!(body, " The last completed review (`{sha}`) is shown below.");
         }
         body.push_str("\n<details open>\n<summary>Last completed report</summary>\n\n");
         body.push_str(LAST_REPORT_START);

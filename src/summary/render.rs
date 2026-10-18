@@ -653,7 +653,28 @@ fn trustworthy_report(body: &str) -> Option<&str> {
     // the report instead of replacing it with another status wrapper.
     let opening = body.find("<details")?;
     let content_start = body[opening..].find("</summary>")? + opening + "</summary>".len();
-    let closing = body[content_start..].find("</details>")? + content_start;
+    let mut cursor = opening;
+    let mut depth = 0usize;
+    let closing = loop {
+        let next_open = body[cursor..].find("<details").map(|offset| cursor + offset);
+        let next_close = body[cursor..]
+            .find("</details>")
+            .map(|offset| cursor + offset);
+        match (next_open, next_close) {
+            (Some(open), Some(close)) if open < close => {
+                depth += 1;
+                cursor = open + "<details".len();
+            }
+            (_, Some(close)) => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    break close;
+                }
+                cursor = close + "</details>".len();
+            }
+            _ => return None,
+        }
+    };
     trustworthy_report(body[content_start..closing].trim())
 }
 

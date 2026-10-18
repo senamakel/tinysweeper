@@ -979,6 +979,31 @@ fn helper() {
             .expect("lane runs")
     }
 
+    async fn run_with_prior(model: MockModel, config: &Config, diffs: &[FileDiff], prior: &[String]) {
+        let pr = pull_request();
+        Critique::new(Arc::new(model))
+            .run(LaneInput {
+                config,
+                pull_request: &pr,
+                diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: prior,
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+            })
+            .await
+            .expect("lane runs");
+    }
+
     /// A finding anchored the way the schema now asks for: by quotation.
     fn finding_quoting(snippet: &str) -> serde_json::Value {
         json!({
@@ -1027,6 +1052,33 @@ fn helper() {
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert!(outcome.summary.contains("withheld from action"));
         assert!(!outcome.summary.contains("old branch is broken"));
+    }
+
+    #[tokio::test]
+    async fn disputed_prior_finding_reaches_the_next_model_request_as_disputed() {
+        let config = config();
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let prior = [
+            "[disputed by maintainer; verify against current-head evidence] high — Close the socket on the error path"
+                .to_string(),
+        ];
+
+        run_with_prior(model, &config, &diffs(), &prior).await;
+
+        let request = handle.requests().pop().expect("critique model request");
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(prompt.contains("[disputed by maintainer"));
+        assert!(prompt.contains("the earlier claim is not evidence"));
+        assert!(prompt.contains("independently supports the concern"));
     }
 
     #[tokio::test]

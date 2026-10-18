@@ -421,6 +421,11 @@ mod tests {
             &paths,
             &by_path
         ));
+        assert!(citations_supported(
+            &["src/lib.rs:42".into()],
+            &paths,
+            &by_path
+        ));
         assert!(!citations_supported(
             &["src/lib.rs#nonexistent".into()],
             &paths,

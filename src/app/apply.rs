@@ -641,6 +641,11 @@ fn title_for(findings: usize) -> String {
     }
 }
 
+#[cfg(test)]
+fn title_for_test(findings: usize) -> String {
+    title_for(findings)
+}
+
 /// The rendered summary, for tests in sibling modules.
 #[cfg(test)]
 pub(crate) fn render_lane_summary_for_test(lane: &crate::app::review::LaneProposal) -> String {

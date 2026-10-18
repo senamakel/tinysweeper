@@ -15,12 +15,10 @@ pub(crate) fn code_span(text: &str) -> String {
 /// Escape untrusted inline prose so it cannot create HTML, links, or mentions.
 pub(crate) fn prose(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut at_line_start = true;
     for character in text.chars() {
         if character.is_control() {
             if character == '\n' || character == '\r' {
                 out.push(' ');
-                at_line_start = true;
             }
             continue;
         }
@@ -30,15 +28,13 @@ pub(crate) fn prose(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '@' => out.push_str("&#64;"),
             '`' => out.push_str("&#96;"),
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '#' | '+' | '-' | '|' | '~' => {
+            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '#' | '+' | '-' | '~' => {
                 out.push('\\');
                 out.push(character);
             }
             _ => out.push(character),
         }
-        at_line_start = character.is_whitespace();
     }
-    let _ = at_line_start;
     out
 }
 

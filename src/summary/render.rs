@@ -8,6 +8,14 @@ use crate::config::types::{Config, Severity, SummarySection};
 use crate::markdown::{code_span, prose};
 use crate::summary::types::ReviewSummary;
 
+fn render_citations(citations: &[String], proposal: &Proposal) -> String {
+    citations
+        .iter()
+        .map(|citation| crate::markdown::citation(citation, &proposal.repo, &proposal.head_sha))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Marker for the durable review comment.
 pub const MARKER: &str = "<!-- tinysweeper:review-hub -->";
 /// Marker used by the former standalone change-map comment.
@@ -262,11 +270,7 @@ fn over_budget(out: &mut String, proposal: &Proposal) {
             severity(finding.severity),
             finding.lane,
             prose(&finding.title),
-            prose(&finding.path),
-            finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default()
+            code_span(&format!("{}{}", finding.path, finding.line.map(|line| format!(":{line}")).unwrap_or_default()))
         );
     }
 }
@@ -297,11 +301,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
                 lane.lane,
                 prose(&finding.title),
                 prose(&concise(&finding.body)),
-                prose(&finding.path),
-                finding
-                    .line
-                    .map(|line| format!(":{line}"))
-                    .unwrap_or_default()
+                code_span(&format!("{}{}", finding.path, finding.line.map(|line| format!(":{line}")).unwrap_or_default()))
             );
         }
     }
@@ -321,7 +321,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
                 severity(finding.severity),
                 finding.lane,
                 prose(&finding.title),
-                prose(&finding.path)
+                code_span(&finding.path)
             );
         }
     }
@@ -618,25 +618,6 @@ fn concise(body: &str) -> String {
         .chars()
         .take(180)
         .collect()
-}
-pub(crate) fn obsolete_prose(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '@' => escaped.push_str("&#64;"),
-            '`' => escaped.push_str("&#96;"),
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '!' | '|' | '{' | '}' | '+' | '-'
-            | '.' => {
-                escaped.push('\\');
-                escaped.push(character);
-            }
-            _ => escaped.push(character),
-        }
-    }
-    escaped
 }
 fn trustworthy_report(body: &str) -> Option<&str> {
     if let Some(start) = body.find(LAST_REPORT_START) {

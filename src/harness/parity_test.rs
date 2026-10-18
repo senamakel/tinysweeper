@@ -291,6 +291,70 @@ async fn truncated_attempts_are_included_in_returned_usage_and_cost() {
 }
 
 #[tokio::test]
+async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelled() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Calls(Mutex<(crate::ports::model::Usage, Vec<Duration>)>);
+
+    impl crate::ports::model::ModelCallObserver for Calls {
+        fn completed(
+            &self,
+            usage: crate::ports::model::Usage,
+            _succeeded: bool,
+            _refused: bool,
+            latency: Duration,
+        ) {
+            let mut calls = self.0.lock().unwrap();
+            calls.0.add(usage);
+            calls.1.push(latency);
+        }
+    }
+
+    let (gateway, releases) = FakeGateway::start_paused(vec![
+        Reply::completion("vendor/deep", r#"{"summary":"Lo""#, "length", usage()),
+        Reply::completion("vendor/deep", ANSWER, "stop", usage()),
+    ])
+    .await;
+    let model = adapter(&models(&gateway.base_url));
+    let calls = Arc::new(Calls::default());
+    let request = model.complete(request("vendor/deep"));
+    let request = crate::ports::model::with_model_call_observer(calls.clone(), request);
+    tokio::pin!(request);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while gateway.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first completion reaches the fake gateway");
+    releases.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while gateway.requests().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the truncation retry reaches the fake gateway");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut request)
+            .await
+            .is_err(),
+        "the second provider response remains paused until cancellation"
+    );
+    let calls = calls.0.lock().unwrap();
+    assert_eq!(calls.1.len(), 1, "the completed dispatch is flushed at once");
+    assert_eq!(calls.0.input_tokens, 120);
+    assert_eq!(calls.0.output_tokens, 30);
+    assert_eq!(calls.0.calls_attempted, 1);
+    assert_eq!(calls.0.calls_succeeded, 1);
+    assert_eq!(calls.0.calls_errored, 0);
+}
+
+#[tokio::test]
 async fn exhausted_truncation_retains_paid_usage_and_ceiling_diagnostic() {
     let gateway = FakeGateway::start(
         (0..3)

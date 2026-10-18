@@ -8,6 +8,9 @@ use crate::error::Result;
 
 /// Maximum accepted requests waiting or running across all server processes.
 pub const MAX_UNFINISHED_REVIEWS: usize = 260;
+/// Terminal IDs reserved for dedupe within the fixed eight-megabyte BSON cap.
+/// This bounds seven days of accepted work without evicting live tombstones.
+pub const MAX_TERMINAL_REVIEW_RESERVATIONS: usize = 18_000;
 /// Maximum reviews that may be running across all server processes.
 pub const MAX_RUNNING_REVIEWS: usize = 4;
 /// How long a job owner remains valid without a heartbeat.
@@ -159,7 +162,8 @@ impl ReviewSchedulerState {
         }
         if already != 0
             || self.unfinished.len() + requests.len() > MAX_UNFINISHED_REVIEWS
-            || self.terminal.len() + self.unfinished.len() + requests.len() > 1_000
+            || self.terminal.len() + self.unfinished.len() + requests.len()
+                > MAX_TERMINAL_REVIEW_RESERVATIONS
         {
             return Admission::Full;
         }

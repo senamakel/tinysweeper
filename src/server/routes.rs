@@ -2202,7 +2202,8 @@ async fn handle_review(
         // it held would make `claim_delivery` refuse GitHub's own redelivery
         // of the same webhook forever, with no other trigger left to review
         // this commit until the next push.
-        if let Some(delivery) = delivery
+        if owned.is_none()
+            && let Some(delivery) = delivery
             && let Err(release) = state.store.release_delivery(&delivery).await
         {
             tracing::error!(%release, %delivery, "could not release the declined delivery claim");
@@ -2233,7 +2234,7 @@ async fn handle_review(
             {
                 tracing::error!(%release, %delivery, "could not release the delivery claim");
             }
-            return;
+            return WorkerDisposition::Deferred(unix_time_ms() + 5_000);
         }
     };
 
@@ -2263,13 +2264,14 @@ async fn handle_review(
                 // when the slot is empty. `NotReviewed` covers the one ordering
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
+                let published = findings.is_some();
                 let conclusion = review_conclusion(findings);
                 // The review is over; concluding the check is one GitHub
                 // write that should not hold a review slot against other
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
-                return WorkerDisposition::Terminal(if findings.is_some() {
+                return WorkerDisposition::Terminal(if published {
                     TerminalOutcome::Published
                 } else {
                     TerminalOutcome::Declined
@@ -2352,7 +2354,8 @@ async fn handle_review(
     // available to a transiently failed worker without a durable job queue.
     // Keep successful claims for dedupe; only terminal failures become
     // retryable through a later GitHub redelivery.
-    if let Some(delivery) = delivery
+    if owned.is_none()
+        && let Some(delivery) = delivery
         && let Err(release) = state.store.release_delivery(&delivery).await
     {
         tracing::error!(%release, %delivery, "could not release the failed delivery claim");

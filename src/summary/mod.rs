@@ -4,9 +4,7 @@ mod generate;
 pub(crate) mod render;
 mod types;
 
-pub use generate::{
-    SummaryGenerationInput, deterministic, generate, generate_with_input,
-};
+pub use generate::{SummaryGenerationInput, deterministic, generate, generate_with_input};
 pub use render::{LEGACY_MARKER, MARKER, failed, in_progress, render};
 pub use types::{
     ChangeSurface, Feature, FeatureKind, ReviewPass, ReviewSummary, SummaryDiffstat,

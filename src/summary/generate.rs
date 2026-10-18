@@ -601,9 +601,8 @@ fn sanitize_prior_narrative(
     lanes: &[LaneProposal],
     statuses: &BTreeMap<String, LaneReviewStatus>,
 ) {
-    summary.executive_summary =
-        validated_model_narrative(&summary.executive_summary, statuses)
-            .unwrap_or_else(|| fallback_executive(lanes));
+    summary.executive_summary = validated_model_narrative(&summary.executive_summary, statuses)
+        .unwrap_or_else(|| fallback_executive(lanes));
     summary.changes = validated_model_narrative(&summary.changes, statuses).unwrap_or_default();
     summary.features.retain_mut(|feature| {
         let Some(name) = validated_model_narrative(&feature.name, statuses) else {

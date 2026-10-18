@@ -2762,13 +2762,19 @@ mod tests {
         let (summary, _, _) = crate::summary::generate(
             &model,
             &config,
-            &PullRequest { number: 7, head_sha: "abc123".into(), ..PullRequest::default() },
+            &PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
             &[],
             &lanes,
             None,
             &[],
-        ).await;
-        let mut proposal = proposal("abc123", lanes);
+        )
+        .await;
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes = lanes;
         proposal.summary = Some(summary);
 
         apply(&forge, &forge, &config, &proposal, None)

@@ -27,7 +27,8 @@ use crate::ports::knowledge::KnowledgeStore;
 use crate::ports::model::{Model, ModelRequest, ModelResponse};
 use crate::ports::model_factory::ModelFactory;
 use crate::ports::review_job::{
-    Admission, OwnedReview, ReviewJobMode, ReviewJobStore, ReviewRequest, TerminalOutcome,
+    Admission, OwnedReview, PaidStart, ReviewJobMode, ReviewJobStore, ReviewRequest,
+    TerminalOutcome,
 };
 use crate::pr_triage::Report as PrTriageReport;
 use crate::server::admin::{self, AdminAuth};
@@ -782,7 +783,7 @@ async fn drain_review_queue<F>(
                     return;
                 }
             }
-            _ = poll.tick() => continue,
+            _ = poll.tick() => {}
         }
         if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
             return;
@@ -3633,14 +3634,14 @@ mod tests {
     async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (lost, _lost_receiver) = watch::channel(false);
+        let (lost, lost_receiver) = watch::channel(false);
         let (_until_sender, until) =
             watch::channel(tokio::time::Instant::now() - std::time::Duration::from_millis(1));
         let paid_step = Arc::new(AtomicBool::new(false));
         let observed = paid_step.clone();
         tokio::select! {
             biased;
-            _ = wait_for_owner_fence(Some(lost), Some(until)) => {}
+            _ = wait_for_owner_fence(Some(lost_receiver), Some(until)) => {}
             _ = async move {
                 observed.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;

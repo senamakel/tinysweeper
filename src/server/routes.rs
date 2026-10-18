@@ -840,6 +840,7 @@ async fn run_owned_review(
             }
         }
     });
+    let _heartbeat_guard = AbortOnDrop(heartbeat);
 
     let request = &owned.request;
     let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
@@ -861,7 +862,6 @@ async fn run_owned_review(
         owned: Some(owned.clone()),
     };
     let disposition = handle_review(state, job, Some(permit), Some(lost_rx)).await;
-    heartbeat.abort();
 
     let now_ms = unix_time_ms();
     let result = match disposition {
@@ -877,6 +877,16 @@ async fn run_owned_review(
         Ok(true) => {}
         Ok(false) => tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome"),
         Err(err) => tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome"),
+    }
+}
+
+/// Keep a detached Tokio task from renewing ownership after its worker future
+/// has been cancelled or unwound.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

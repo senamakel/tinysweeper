@@ -601,7 +601,7 @@ pub async fn settle_e2e(
                     }
                     _ => "End-to-end jobs concluded".into(),
                 },
-                summary: crate::findings::render::lane_summary(
+                summary: crate::findings::render::settled_lane_summary(
                     &settled.summary,
                     &[],
                     VERSION,

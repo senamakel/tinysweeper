@@ -87,8 +87,33 @@ pub fn lane_summary(
     version: &str,
     reached_a_verdict: bool,
 ) -> String {
+    lane_summary_inner(summary, findings, version, reached_a_verdict, true)
+}
+
+/// Render a summary whose prose was escaped and whose Markdown was composed
+/// from fixed templates by the end-to-end settlement path.
+pub(crate) fn settled_lane_summary(
+    summary: &str,
+    findings: &[Finding],
+    version: &str,
+    reached_a_verdict: bool,
+) -> String {
+    lane_summary_inner(summary, findings, version, reached_a_verdict, false)
+}
+
+fn lane_summary_inner(
+    summary: &str,
+    findings: &[Finding],
+    version: &str,
+    reached_a_verdict: bool,
+    escape_summary: bool,
+) -> String {
     let mut out = String::with_capacity(1024);
-    out.push_str(&prose(summary.trim()));
+    if escape_summary {
+        out.push_str(&prose(summary.trim()));
+    } else {
+        out.push_str(summary.trim());
+    }
     out.push_str("\n\n");
 
     if findings.is_empty() {

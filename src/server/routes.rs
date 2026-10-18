@@ -2309,7 +2309,8 @@ async fn handle_review(
             // terminal path all the same, and a terminal path releases its
             // delivery claim so a redelivery is not refused forever.
             tracing::error!(%err, %repo, number, "the review permit pool is closed");
-            if let Some(delivery) = delivery
+            if owned.is_none()
+                && let Some(delivery) = delivery
                 && let Err(release) = state.store.release_delivery(&delivery).await
             {
                 tracing::error!(%release, %delivery, "could not release the delivery claim");
@@ -4074,6 +4075,8 @@ mod tests {
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(now),
             expected_head: None,
+            owned: None,
+            owner_lost: None,
         };
         let err = spent
             .check("o/r", 7)
@@ -4086,6 +4089,8 @@ mod tests {
             slot,
             deadline: now + REVIEW_DEADLINE,
             expected_head: None,
+            owned: None,
+            owner_lost: None,
         };
         assert!(
             live.check("o/r", 7).is_ok(),

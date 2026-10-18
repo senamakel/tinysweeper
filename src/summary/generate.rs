@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(model.calls(), 2);
         assert_eq!(
             summary.executive_summary,
-            "The pull request preserves its stated purpose."
+            "Pull request purpose (title): Enforce speech privacy. The pull request preserves its stated purpose."
         );
         assert_eq!(
             summary.positive_observations[&LaneId::Critique],
@@ -1465,7 +1465,7 @@ mod tests {
             assert!(
                 summary
                     .executive_summary
-                    .contains("Preserve parser behavior.")
+                    .contains("Pull request purpose (title): Preserve parser behavior.")
             );
             assert!(
                 summary
@@ -1486,10 +1486,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bare_alias_and_collective_checks_do_not_claim_unanswered_lane_success() {
+    async fn bare_alias_does_not_claim_unanswered_lane_success() {
         let model = MockModel::new().then(json!({
             "executive_summary": "Security found no issues. The parser rejects unknown paths.",
-            "changes": "All checks report no issues. The parser now rejects unknown paths.",
+            "changes": "The parser now rejects unknown paths.",
             "features": [],
             "tests": [],
             "positive_observations": {}
@@ -1522,8 +1522,46 @@ mod tests {
 
         assert!(!summary.executive_summary.contains("Security found no issues"));
         assert!(summary.executive_summary.contains("parser rejects unknown paths"));
-        assert!(!summary.changes.contains("All checks report no issues"));
         assert!(summary.changes.contains("parser now rejects unknown paths"));
+    }
+
+    #[tokio::test]
+    async fn collective_checks_do_not_claim_unanswered_lane_success() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "All checks report no issues. The parser rejects unknown paths.",
+            "changes": "The parser now rejects unknown paths.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Security, Spend::default());
+        let mut security = lane(
+            LaneId::Security,
+            crate::forge::types::CheckConclusion::Neutral,
+            &outcome.summary,
+            &[],
+            &[],
+            outcome.coverage.clone(),
+        );
+        security.skipped = outcome.skipped;
+        security.unanswered = outcome.unanswered;
+
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest {
+                title: "Preserve parser behavior".into(),
+                ..PullRequest::default()
+            },
+            &[],
+            &[security],
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(!summary.executive_summary.contains("All checks report no issues"));
+        assert!(summary.executive_summary.contains("parser rejects unknown paths"));
     }
 
     #[tokio::test]
@@ -1553,6 +1591,31 @@ mod tests {
             .executive_summary
             .starts_with("Pull request purpose (title): Run tests on Windows."));
         assert!(summary.executive_summary.contains("build configuration supports Windows"));
+
+        for title in ["Build the client in CI", "Security found no issues"] {
+            let (summary, _, _) = generate(
+                &MockModel::new().then(json!({
+                    "executive_summary": "The change updates build configuration.",
+                    "changes": "CI uses the updated configuration.",
+                    "features": [],
+                    "tests": [],
+                    "positive_observations": {}
+                })),
+                &Config::default(),
+                &PullRequest {
+                    title: title.into(),
+                    ..PullRequest::default()
+                },
+                &[],
+                &[],
+                None,
+                &[],
+            )
+            .await;
+            assert!(summary.executive_summary.starts_with(&format!(
+                "Pull request purpose (title): {title}."
+            )));
+        }
     }
 
     #[tokio::test]

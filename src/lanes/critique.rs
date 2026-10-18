@@ -969,6 +969,40 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[tokio::test]
+    async fn a_not_found_or_other_path_mention_is_not_head_source_proof() {
+        let mentioning_tree = crate::ports::tree::MockTree::from_files([(
+            "docs/guide.md",
+            "The module source is documented as `src/foo.rs:` here.\n",
+        )]);
+        assert!(
+            head_read(&mentioning_tree, "src/foo.rs", None)
+                .await
+                .is_none()
+        );
+
+        let lookup = Lookup::Read {
+            path: "src/foo.rs".into(),
+            start: None,
+            end: None,
+        };
+        let unavailable_tree = crate::ports::tree::MockTree::from_recorded(
+            [(
+                lookup.key(),
+                Found::Unavailable {
+                    reason: "index is cold".into(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        assert!(
+            head_read(&unavailable_tree, "src/foo.rs", None)
+                .await
+                .is_none()
+        );
+    }
+
     fn config() -> Config {
         let mut config: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()

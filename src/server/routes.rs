@@ -2063,11 +2063,38 @@ async fn review_inner(
     let read_token = state.auth.review_read_token(installation).await?;
     let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
-    let Some(pull_request) = pull_request_for_review(&forge, &repo_id, number).await? else {
-        tracing::info!(%repo, number, "pull request is closed; not reviewing");
-        return Ok(None);
-    };
+    let reviewed = with_open_pull_request(&forge, &repo_id, number, |pull_request| async {
+        review_open_pull_request(
+            state,
+            repo,
+            number,
+            author,
+            installation,
+            run,
+            &repo_id,
+            &read_token,
+            &forge,
+            pull_request,
+        )
+        .await
+    })
+    .await?;
+    Ok(reviewed.flatten())
+}
 
+/// Run the remainder of one review after its live pull request passes the gate.
+async fn review_open_pull_request(
+    state: &AppState,
+    repo: &str,
+    number: u64,
+    author: &str,
+    installation: u64,
+    run: &Run,
+    repo_id: &RepoId,
+    read_token: &str,
+    forge: &dyn crate::ports::forge::ForgeRead,
+    pull_request: PullRequest,
+) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     // Comment and review-comment deliveries do not carry the draft flag, so
     // routing alone cannot prevent a manual-looking request from waking the
     // workflow. Read the live state before claiming a lease, indexing, calling
@@ -2302,16 +2329,21 @@ async fn review_inner(
 /// Webhook payloads can be stale by the time the queued worker starts, and
 /// manual reviews are keyed by a head SHA rather than a delivery. This is the
 /// shared gate before indexing, lease/check writes, and model calls.
-async fn pull_request_for_review(
+async fn with_open_pull_request<T, F, Fut>(
     forge: &dyn crate::ports::forge::ForgeRead,
     repo: &RepoId,
     number: u64,
-) -> Result<Option<PullRequest>> {
+    work: F,
+) -> Result<Option<T>>
+where
+    F: FnOnce(PullRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
     let pull_request = forge.pull_request(repo, number).await?;
     if !pull_request.open || pull_request.merged {
         return Ok(None);
     }
-    Ok(Some(pull_request))
+    work(pull_request).await.map(Some)
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {

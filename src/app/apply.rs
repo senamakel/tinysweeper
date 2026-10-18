@@ -2736,8 +2736,8 @@ mod tests {
         let forge = forge("abc123");
         let config = config();
         let model = MockModel::new().then(serde_json::json!({
-            "executive_summary": "All five lanes report no findings.",
-            "changes": "All lanes report no findings.",
+            "executive_summary": "The security lane gives this change a greenlight.",
+            "changes": "The end-to-end lane confirms all checks are complete.",
             "features": [],
             "tests": [],
             "positive_observations": {}
@@ -2802,8 +2802,13 @@ mod tests {
             .and_then(|text| text.lines().next())
             .expect("executive opening");
         assert!(opening.starts_with("Enforce speech privacy."), "{opening}");
-        assert!(!body.to_ascii_lowercase().contains("all five lanes report no findings"));
-        assert!(!body.to_ascii_lowercase().contains("all lanes report no findings"));
+        assert!(!body.to_ascii_lowercase().contains("security lane gives"));
+        assert!(!body.to_ascii_lowercase().contains("greenlight"));
+        assert!(
+            !body
+                .to_ascii_lowercase()
+                .contains("end-to-end lane confirms")
+        );
         assert!(body.contains("No reviewer produced a usable response."));
     }
 

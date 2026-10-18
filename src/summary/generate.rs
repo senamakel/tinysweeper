@@ -320,7 +320,9 @@ pub async fn generate_with_input(
     generated.features.truncate(config.summary.max_features);
     generated.tests.truncate(config.summary.max_tests);
     let narrative = validated_model_narrative(&generated.executive_summary, &lane_statuses)
-        .unwrap_or_else(|| "Tiny Sweeper completed its review; deterministic results follow.".into());
+        .unwrap_or_else(|| {
+            "Tiny Sweeper completed its review; deterministic results follow.".into()
+        });
     summary.executive_summary = purpose_opening(pull_request, &narrative);
     // Empty, not an apology: the hub omits an empty "What changed" section,
     // and failure prose there was printed on most pull requests.
@@ -615,11 +617,7 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
             } else {
                 LaneStatusKind::Answered
             };
-            return lane_status_value(
-                status,
-                None,
-                lane.pending.len(),
-            );
+            return lane_status_value(status, None, lane.pending.len());
         }
         let unanswered: BTreeSet<&str> = coverage
             .unanswered
@@ -648,10 +646,7 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
         if count == 0 {
             lane_status_value(
                 LaneStatusKind::NoResponse,
-                Some(LaneFileCoverage {
-                    reviewed: 0,
-                    total,
-                }),
+                Some(LaneFileCoverage { reviewed: 0, total }),
                 lane.pending.len(),
             )
         } else if count == total && unanswered.is_empty() {
@@ -782,8 +777,8 @@ fn claims_unsupported_lane_success(
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
-    let broad_scope = has_any(&["all", "every"])
-        && has_any(&["lane", "lanes", "reviewer", "reviewers"]);
+    let broad_scope =
+        has_any(&["all", "every"]) && has_any(&["lane", "lanes", "reviewer", "reviewers"]);
     if broad_scope
         && statuses
             .values()
@@ -800,11 +795,7 @@ fn claims_unsupported_lane_success(
 }
 
 fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
-    let has_phrase = |phrase: &[&str]| {
-        words
-            .windows(phrase.len())
-            .any(|window| window == phrase)
-    };
+    let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -1124,12 +1115,10 @@ mod tests {
             evidence: "previous evidence".into(),
             assistant: "previous answer".into(),
         }];
-        let diffs = [
-            FileDiff {
-                path: "src/privacy.rs".into(),
-                ..FileDiff::default()
-            },
-        ];
+        let diffs = [FileDiff {
+            path: "src/privacy.rs".into(),
+            ..FileDiff::default()
+        }];
         let mut pending_e2e = lane(
             LaneId::E2e,
             crate::forge::types::CheckConclusion::Neutral,
@@ -1226,21 +1215,31 @@ mod tests {
             pull_request.body
         );
         assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 2);
-        assert_eq!(request["whole_pull_request"]["changed_files"].as_array().unwrap().len(), 2);
-        assert!(request["whole_pull_request"]["changed_files"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("tests/privacy.rs")));
+        assert_eq!(
+            request["whole_pull_request"]["changed_files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            request["whole_pull_request"]["changed_files"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("tests/privacy.rs"))
+        );
         assert_eq!(request["latest_push_delta"]["available"], false);
         assert_eq!(
             request["latest_push_delta"]["from_reviewed_head"],
             "old-head"
         );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
-        assert!(request["latest_push_delta"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("no trusted base-to-head diff comparison"));
+        assert!(
+            request["latest_push_delta"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("no trusted base-to-head diff comparison")
+        );
         assert_eq!(request["lanes"][0]["status"]["status"], "partial");
         assert_eq!(
             request["lanes"][0]["status"]["file_coverage"]["reviewed"],
@@ -1253,15 +1252,23 @@ mod tests {
         assert_eq!(request["lanes"][5]["status"]["status"], "partial");
         assert_eq!(request["lanes"][5]["status"]["pending_checks"], 1);
         assert!(request["lanes"][5]["status"].get("file_coverage").is_none());
-        assert!(summary.executive_summary.starts_with("Enforce speech privacy."));
-        assert!(!summary.executive_summary.starts_with("This revision adds CI"));
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("Enforce speech privacy.")
+        );
+        assert!(
+            !summary
+                .executive_summary
+                .starts_with("This revision adds CI")
+        );
     }
 
     #[tokio::test]
     async fn non_answered_lane_success_claims_are_removed_from_generated_summary() {
         let model = MockModel::new().then(json!({
-            "executive_summary": "The security and tests lanes confirm there are no findings.",
-            "changes": "All lanes passed and confirmed the change is clear.",
+            "executive_summary": "The security lane gives this change a greenlight; the end-to-end lane confirms it.",
+            "changes": "Every lane is still running. All lanes report no findings.",
             "features": [],
             "tests": [],
             "positive_observations": {}
@@ -1289,19 +1296,91 @@ mod tests {
             !summary
                 .executive_summary
                 .to_ascii_lowercase()
-                .contains("confirm")
+                .contains("greenlight")
         );
         assert!(
             !summary
                 .executive_summary
                 .to_ascii_lowercase()
-                .contains("tests")
+                .contains("end-to-end lane")
         );
-        assert!(!summary.changes.to_ascii_lowercase().contains("all lanes"));
+        assert!(!summary.changes.to_ascii_lowercase().contains("every lane"));
+        assert!(
+            !summary
+                .changes
+                .to_ascii_lowercase()
+                .contains("all lanes report no findings")
+        );
         assert_eq!(
             summary.executive_summary,
             "Tiny Sweeper completed its review; deterministic results follow."
         );
+    }
+
+    #[tokio::test]
+    async fn lane_coverage_denominator_uses_assigned_paths_only() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "The pull request updates the implementation.",
+            "changes": "The implementation now handles the changed source file.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let diffs = [FileDiff {
+            path: "src/lib.rs".into(),
+            ..FileDiff::default()
+        }];
+        let full_pr_paths = vec!["src/lib.rs".into(), "README.md".into()];
+        let security = lane(
+            LaneId::Security,
+            crate::forge::types::CheckConclusion::Success,
+            "Reviewed assigned source path.",
+            &["model"],
+            &[],
+            Some(crate::lanes::FileCoverage {
+                reviewed: vec!["src/lib.rs".into()],
+                unanswered: vec![],
+            }),
+        );
+
+        let (_, _, _) = generate_with_input(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            SummaryGenerationInput {
+                diffs: &diffs,
+                full_pr_paths: &full_pr_paths,
+                full_pr_diffstat: SummaryDiffstat {
+                    files: 2,
+                    additions: 4,
+                    deletions: 1,
+                },
+                previous_reviewed_head: None,
+                lanes: &[security],
+                prior: None,
+                prior_transcript: &[],
+            },
+        )
+        .await;
+
+        let prompt = model.last_prompt().expect("summary request");
+        let request: serde_json::Value = serde_json::from_str(
+            prompt
+                .split("<review_evidence>\n")
+                .nth(1)
+                .unwrap()
+                .split("\n</review_evidence>")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 2);
+        assert_eq!(request["lanes"][1]["status"]["status"], "answered");
+        assert_eq!(
+            request["lanes"][1]["status"]["file_coverage"]["reviewed"],
+            1
+        );
+        assert_eq!(request["lanes"][1]["status"]["file_coverage"]["total"], 1);
     }
 
     #[tokio::test]
@@ -1579,6 +1658,8 @@ mod tests {
         let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
         let prior_observation = format!("The old note quoted {secret}.");
         let prior = ReviewSummary {
+            executive_summary: "The end-to-end lane confirms all checks are green.".into(),
+            changes: "The security lane gives this change a greenlight.".into(),
             positive_observations: BTreeMap::from([(
                 LaneId::Critique,
                 vec![prior_observation.clone()],
@@ -1604,6 +1685,8 @@ mod tests {
         )
         .await;
 
+        assert!(!summary.executive_summary.contains("end-to-end lane"));
+        assert!(!summary.changes.contains("security lane"));
         let retained = &summary.positive_observations[&LaneId::Critique][0];
         assert_eq!(retained, &crate::scan::scrub(&prior_observation));
         assert!(!retained.contains(&secret));

@@ -382,6 +382,30 @@ impl GatewayModel {
                 &request.schema_name,
                 &error.attempts,
             );
+            for attempt in &error.attempts {
+                let model = attempt
+                    .answered_model
+                    .as_deref()
+                    .unwrap_or(&attempt.requested_model);
+                if let Some(usage) = &attempt.usage {
+                    let reported = usage.cost_usd;
+                    let settled = reported.unwrap_or_else(|| {
+                        pricing::completion_cost(
+                            model,
+                            usage.input_tokens,
+                            usage.cached_tokens,
+                            usage.output_tokens,
+                        )
+                    });
+                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                        input_tokens = usage.input_tokens, cached_tokens = usage.cached_tokens,
+                        output_tokens = usage.output_tokens, reported_cost_usd = reported,
+                        settled_cost_usd = settled, failed = true, "model call");
+                } else {
+                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                        settled_cost_usd = Option::<f64>::None, failed = true, "model call");
+                }
+            }
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
             // owner error instead of being interpreted from message text.

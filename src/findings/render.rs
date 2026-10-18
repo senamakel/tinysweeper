@@ -508,7 +508,7 @@ mod tests {
         let out = lane_summary("…", &[item], "0.1.0", true);
         let row = out.lines().find(|l| l.contains("Handle a")).expect("row");
         assert!(row.contains("\\|"), "{row}");
-        assert!(row.contains("`src/a\\|b.rs`"), "{row}");
+        assert!(row.contains("`src/a\\|b.rs:42`"), "{row}");
     }
 
     #[test]

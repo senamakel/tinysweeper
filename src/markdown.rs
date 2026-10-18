@@ -115,11 +115,23 @@ pub(crate) fn prose(text: &str) -> String {
                 out.push('\\');
                 out.push(character);
             }
+            '#' if characters.get(index + 1).is_some_and(char::is_ascii_digit) => {
+                out.push_str("&#35;");
+            }
             '-' | '+' if list_marker => {
                 out.push('\\');
                 out.push(character);
             }
             '.' | ')' if ordered_separator == Some(index) => {
+                out.push('\\');
+                out.push(character);
+            }
+            '~' if characters.get(index + 1) == Some(&'~')
+                || index
+                    .checked_sub(1)
+                    .and_then(|previous| characters.get(previous))
+                    == Some(&'~') =>
+            {
                 out.push('\\');
                 out.push(character);
             }
@@ -249,6 +261,11 @@ mod tests {
         assert!(!rendered.contains("<script>"));
         assert!(!rendered.contains("[click]("));
         assert!(!rendered.contains("https://evil.example"));
+        assert_eq!(prose("# heading"), "\\# heading");
+        assert_eq!(prose("- item"), "\\- item");
+        assert_eq!(prose("1. item"), "1\\. item");
+        assert!(!prose("see #123").contains("#123"));
+        assert!(!prose("~~strike~~").contains("~~"));
         assert!(!rendered.contains('\n'));
     }
 

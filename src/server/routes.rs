@@ -2879,6 +2879,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_mock_forge_keeps_one_completed_report_through_failed_review_cycles() {
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::ports::forge::ForgeWrite;
+
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").expect("repository id");
+        let completed = format!(
+            "{}\n\n**Reviewed head:** `def5678`\n\n## Findings\n\nNone.",
+            crate::summary::MARKER
+        );
+        let comment_id = forge
+            .create_comment(&repo, 7, &completed)
+            .await
+            .expect("create review hub");
+        let mut prior = completed;
+
+        for cycle in 0..10 {
+            let head = format!("failed-{cycle}");
+            let progress = crate::summary::in_progress(&head, Some(&prior));
+            let failed = crate::summary::failed(
+                &head,
+                "the review of owner/repo#7 did not finish within 900s",
+                Some(&progress),
+            );
+            forge
+                .update_comment(&repo, comment_id, &failed)
+                .await
+                .expect("update review hub");
+            prior = failed;
+        }
+
+        let final_body = forge
+            .writes()
+            .into_iter()
+            .rev()
+            .find_map(|write| match write {
+                Write::CommentUpdate { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("final hub update");
+        assert_eq!(
+            final_body.matches("**Reviewed head:** `def5678`").count(),
+            1,
+            "the MockForge output should preserve the original report once"
+        );
+        assert!(
+            final_body.contains("timed out after 15 min"),
+            "{final_body}"
+        );
+        assert!(
+            final_body.contains("last completed review (`def5678`) is shown below"),
+            "{final_body}"
+        );
+        assert!(!final_body.contains("\\#"), "{final_body}");
+        assert!(!final_body.contains("Error::"), "{final_body}");
+        assert!(
+            final_body.len() < 2_000,
+            "failure wrappers grew: {}",
+            final_body.len()
+        );
+    }
+
+    #[tokio::test]
     async fn a_phase_boundary_refuses_a_spent_budget_and_passes_a_live_one() {
         // The lease claim and the lanes both consult this before starting.
         // A spent budget must stop the run *before* it holds anything, and

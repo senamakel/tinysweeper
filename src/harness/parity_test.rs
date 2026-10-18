@@ -319,22 +319,28 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
     .await;
     let model = adapter(&models(&gateway.base_url));
     let calls = Arc::new(Calls::default());
-    let mut request = tokio::spawn(crate::ports::model::with_model_call_observer(
+    let request = crate::ports::model::with_model_call_observer(
         calls.clone(),
         model.complete(request("vendor/deep")),
-    ));
-
+    );
+    tokio::pin!(request);
     tokio::time::timeout(Duration::from_secs(2), async {
-        while gateway.requests().is_empty() {
-            tokio::task::yield_now().await;
+        loop {
+            tokio::select! {
+                result = &mut request => panic!("review completed before first response: {result:?}"),
+                _ = async { while gateway.requests().is_empty() { tokio::task::yield_now().await; } } => break,
+            }
         }
     })
     .await
     .expect("first completion reaches the fake gateway");
     releases.add_permits(1);
     tokio::time::timeout(Duration::from_secs(2), async {
-        while gateway.requests().len() < 2 {
-            tokio::task::yield_now().await;
+        loop {
+            tokio::select! {
+                result = &mut request => panic!("review completed before retry response: {result:?}"),
+                _ = async { while gateway.requests().len() < 2 { tokio::task::yield_now().await; } } => break,
+            }
         }
     })
     .await
@@ -346,7 +352,6 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
             .is_err(),
         "the second provider response remains paused until cancellation"
     );
-    request.abort();
     let calls = calls.0.lock().unwrap();
     assert_eq!(
         calls.1.len(),

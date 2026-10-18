@@ -73,13 +73,21 @@ async fn execute_mcp_issue(write: &dyn ForgeWrite, plan: &McpIssuePlan) -> Resul
 /// If a store is provided, extends the stored fingerprints with the identities
 /// of newly posted findings after successful publication, so the next review
 /// will dedupe them correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDisposition {
+    /// All deterministic writes for this proposal were applied.
+    Published,
+    /// The live pull-request head changed before publication began.
+    Superseded,
+}
+
 pub async fn apply(
     read: &dyn ForgeRead,
     write: &dyn ForgeWrite,
     config: &Config,
     proposal: &Proposal,
     store: Option<&dyn ReviewStateStore>,
-) -> Result<()> {
+) -> Result<ApplyDisposition> {
     let repo = RepoId::parse(&proposal.repo)
         .ok_or_else(|| Error::Forge(format!("`{}` is not owner/name", proposal.repo)))?;
 
@@ -92,7 +100,7 @@ pub async fn apply(
             live = %live.head_sha,
             "head moved since the review; not publishing a stale verdict"
         );
-        return Ok(());
+        return Ok(ApplyDisposition::Superseded);
     }
 
     // Housekeeping first: threads this run decided are settled. Deterministic
@@ -364,7 +372,7 @@ async fn publish_review_hub(
             tracing::warn!(%err, "could not persist the review-hub comment id");
         }
     }
-    Ok(())
+    Ok(ApplyDisposition::Published)
 }
 
 async fn discover_review_hub(

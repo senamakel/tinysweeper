@@ -648,8 +648,8 @@ fn code_span(text: &str) -> String {
 }
 
 fn title_for(findings: usize, summary: &str, unanswered: usize) -> String {
-    if unanswered > 0 {
-        if let Some((reviewed, total)) = summary.strip_prefix("Reviewed ").and_then(|text| {
+    if unanswered > 0
+        && let Some((reviewed, total)) = summary.strip_prefix("Reviewed ").and_then(|text| {
             if let Some((reviewed, rest)) = text.split_once(" of ") {
                 let total = rest.split_once(" files")?.0;
                 Some((
@@ -660,9 +660,9 @@ fn title_for(findings: usize, summary: &str, unanswered: usize) -> String {
                 let reviewed = text.split_once(" file")?.0.parse::<usize>().ok()?;
                 Some((reviewed, reviewed + unanswered))
             }
-        }) {
-            return format!("Reviewed {reviewed} of {total} files — {unanswered} not reviewed");
-        }
+        })
+    {
+        return format!("Reviewed {reviewed} of {total} files — {unanswered} not reviewed");
     }
     match findings {
         0 => summary.chars().take(80).collect(),

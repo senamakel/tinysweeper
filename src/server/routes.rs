@@ -1892,13 +1892,6 @@ impl OwnedModel {
         {
             return Err(Error::ReviewOwnershipLost);
         }
-        if self
-            .owner_until
-            .as_ref()
-            .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
-        {
-            return Err(Error::ReviewOwnershipLost);
-        }
         Ok(())
     }
 
@@ -3560,6 +3553,27 @@ impl Previews for PreviewDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (lost, _lost_receiver) = watch::channel(false);
+        let (_until_sender, until) = watch::channel(
+            tokio::time::Instant::now() - std::time::Duration::from_millis(1),
+        );
+        let paid_step = Arc::new(AtomicBool::new(false));
+        let observed = paid_step.clone();
+        tokio::select! {
+            biased;
+            _ = wait_for_owner_fence(Some(lost), Some(until)) => {}
+            _ = async move {
+                observed.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            } => panic!("expired review future must not be polled"),
+        }
+        assert!(!paid_step.load(Ordering::SeqCst));
+    }
 
     #[tokio::test]
     async fn cancelling_an_owned_worker_drops_heartbeat_and_allows_expiry_recovery() {

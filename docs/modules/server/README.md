@@ -38,14 +38,25 @@ lifetime; restart to pick up a rotated model key.
 
 ## Bounded review scheduling
 
-Webhook reviews enter a bounded in-memory queue of 256 records. One dispatcher
-waits for a review permit before spawning work, so a burst occupies queue slots
-as data instead of creating an unbounded set of waiting tasks. Manual full
-reviews use the same queue and retain a separate `!full` lease key. If the
-queue is full, the server returns `503` without acknowledging the delivery and
-logs the pull request and delivery ID; GitHub does not retry automatically, so
-an operator must redeliver that overflowed event. Other webhook actions keep
-their existing dispatch path.
+Webhook and manual reviews are atomically admitted to one bounded Mongo
+scheduler document before the server acknowledges them. The 256 queued and
+four running records are durable; the in-memory channel carries wakeup hints
+only, and a polling dispatcher recovers work when a hint is lost or a process
+restarts. Admission also reserves space for seven days of dedupe tombstones
+under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
+without acknowledging the delivery; GitHub does not retry automatically, so an
+operator must redeliver that overflowed event. Manual batches are admitted
+atomically, or refused as a whole. Other webhook actions keep their existing
+dispatch path.
+
+At most four jobs may hold a durable 45-second owner lease across the server
+fleet. A heartbeat extends the lease every 15 seconds. Generation checks fence
+claims, renewals, and completion; local expiry checks stop a paused process
+before it resumes model work, and model dispatches also verify ownership. A
+shutdown stops new claims and leaves unfinished jobs in Mongo for the next
+process. Terminal outcomes remain deduped for seven days. GitHub publication
+still uses the app's live-head and idempotency checks because a process can
+crash between a GitHub write and recording its outcome.
 
 When a pull-request event supplies its head SHA, the worker claims that SHA
 before minting a read token or fetching live PR state. A comment request has no

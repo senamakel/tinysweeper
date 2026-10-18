@@ -3341,6 +3341,7 @@ mod tests {
             deadline: now
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(now),
+            expected_head: None,
         };
         let err = spent
             .check("o/r", 7)
@@ -3352,6 +3353,7 @@ mod tests {
             mode: Mode::Incremental,
             slot,
             deadline: now + REVIEW_DEADLINE,
+            expected_head: None,
         };
         assert!(
             live.check("o/r", 7).is_ok(),

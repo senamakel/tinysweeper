@@ -249,14 +249,16 @@ async fn failed_batch_persistence_admits_no_jobs() {
 #[tokio::test]
 async fn tombstone_reservations_backpressure_without_evicting_live_dedupe_ids() {
     let store = MockReviewJobStore::default();
-    let mut state = ReviewSchedulerState::default();
-    state.terminal = (0..MAX_TERMINAL_REVIEW_RESERVATIONS)
-        .map(|index| ReviewTombstone {
-            id: ReviewJobId(format!("done-{index:05}-{}", "x".repeat(260))),
-            outcome: TerminalOutcome::Exhausted,
-            expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
-        })
-        .collect();
+    let state = ReviewSchedulerState {
+        terminal: (0..MAX_TERMINAL_REVIEW_RESERVATIONS)
+            .map(|index| ReviewTombstone {
+                id: ReviewJobId(format!("done-{index:05}-{}", "x".repeat(260))),
+                outcome: TerminalOutcome::Exhausted,
+                expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
+            })
+            .collect(),
+        ..ReviewSchedulerState::default()
+    };
     store.replace_state_for_test(state);
     assert_eq!(
         store

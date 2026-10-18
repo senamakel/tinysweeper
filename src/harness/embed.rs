@@ -69,6 +69,10 @@ impl CompletionObserver for ModelCallObserver {
                 trace.outcome,
                 Err(openhuman_embed::CoreError::StructuredOutput { .. })
             );
+        let refused = matches!(
+            trace.outcome,
+            Err(openhuman_embed::CoreError::BudgetExceeded { .. })
+        );
         let failed_usage = match trace.outcome {
             Err(openhuman_embed::CoreError::StructuredOutput { failure, .. }) => {
                 failure.usage.as_ref()
@@ -84,11 +88,12 @@ impl CompletionObserver for ModelCallObserver {
             cost_usd: usage.and_then(|usage| usage.cost_usd).unwrap_or_default(),
             calls_attempted: 1,
             calls_succeeded: u64::from(provider_response),
-            calls_refused: 0,
-            calls_errored: u64::from(!provider_response),
+            calls_refused: u64::from(refused),
+            calls_errored: u64::from(!provider_response && !refused),
             ..Usage::default()
         };
-        tracing::info!(target: "tinysweeper::model", model, latency_ms, succeeded,
+        tracing::info!(target: "tinysweeper::model", model, latency_ms,
+            succeeded = provider_response, completion_valid = succeeded,
             input_tokens = accounting.input_tokens,
             output_tokens = accounting.output_tokens,
             reasoning_tokens = accounting.reasoning_tokens,
@@ -97,7 +102,7 @@ impl CompletionObserver for ModelCallObserver {
         crate::ports::model::observe_model_call(
             accounting,
             provider_response,
-            false,
+            refused,
             trace.latency,
         );
     }

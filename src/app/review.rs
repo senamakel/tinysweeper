@@ -58,11 +58,16 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
     ) {
         use std::sync::atomic::Ordering;
 
-        self.observed.fetch_add(1, Ordering::Relaxed);
-        usage.calls_attempted = 1;
-        usage.calls_succeeded = u64::from(succeeded);
-        usage.calls_refused = u64::from(refused);
-        usage.calls_errored = u64::from(!succeeded && !refused);
+        let attempts = usage.calls_attempted.max(1);
+        self.observed.fetch_add(attempts, Ordering::Relaxed);
+        if usage.calls_attempted == 0 {
+            usage.calls_attempted = attempts;
+        }
+        if usage.calls_succeeded + usage.calls_refused + usage.calls_errored == 0 {
+            usage.calls_succeeded = if succeeded { attempts } else { 0 };
+            usage.calls_refused = if refused { attempts } else { 0 };
+            usage.calls_errored = if !succeeded && !refused { attempts } else { 0 };
+        }
         self.timing.record(|record| {
             record.calls_attempted += 1;
             record.calls_succeeded += usage.calls_succeeded;

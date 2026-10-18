@@ -198,6 +198,7 @@ fn empty_body_outcome(pr: &PullRequest, files: usize) -> LaneOutcome {
         skipped: None,
         pending: Vec::new(),
         unanswered: Vec::new(),
+        coverage: None,
     }
 }
 

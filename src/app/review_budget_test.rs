@@ -303,6 +303,7 @@ fn lane_of(findings: Vec<Finding>) -> LaneProposal {
         usage: Default::default(),
         models: vec![],
         unanswered: vec![],
+        coverage: None,
         overflow: vec![],
     }
 }

@@ -113,7 +113,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len()),
+                    title: title_for(lane.findings.len(), lane.coverage.as_ref()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -627,18 +627,18 @@ pub async fn settle_e2e(
     Ok(E2eSettlement::Published(settled.conclusion))
 }
 
-/// `text` as a Markdown code span that `text` cannot break out of.
-///
-/// Paths here are the contributor's: a filename with a backtick would close
-/// the span and write Markdown into a review the bot signs. The span is
-/// fenced with one more backtick than the longest run inside, which is how
-/// CommonMark spells a literal backtick, and control characters — a newline
-/// ends a span — are dropped.
-fn title_for(findings: usize) -> String {
-    match findings {
+/// Build a short check title from deterministic counts, never model prose.
+fn title_for(findings: usize, coverage: Option<&crate::lanes::FileCoverage>) -> String {
+    let finding_title = match findings {
         1 => "1 finding".to_string(),
         count => format!("{count} findings"),
+    };
+    if let Some(coverage) = coverage {
+        let reviewed = coverage.reviewed.len();
+        let total = reviewed.saturating_add(coverage.unanswered.len());
+        return format!("{finding_title} · {reviewed}/{total} files reviewed");
     }
+    finding_title
 }
 
 /// The rendered summary, for tests in sibling modules.
@@ -982,12 +982,35 @@ mod tests {
 
     #[test]
     fn check_titles_are_count_based_and_never_truncate_model_prose() {
-        assert_eq!(title_for(2), "2 findings");
-        assert_eq!(title_for(1), "1 finding");
-        assert_eq!(title_for(0), "0 findings");
-        let title = title_for(usize::MAX);
+        assert_eq!(title_for(2, None), "2 findings");
+        assert_eq!(title_for(1, None), "1 finding");
+        assert_eq!(title_for(0, None), "0 findings");
+        let title = title_for(usize::MAX, None);
         assert!(title.len() <= 80, "{} chars: {title}", title.len());
         assert!(!title.contains("summary"));
+    }
+
+    #[test]
+    fn a_partial_lane_title_reports_file_coverage() {
+        let coverage = crate::lanes::FileCoverage {
+            reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec!["src/8.rs".into(), "src/9.rs".into()],
+        };
+        assert_eq!(
+            title_for(2, Some(&coverage)),
+            "2 findings · 8/10 files reviewed"
+        );
+    }
+
+    #[test]
+    fn lane_titles_report_full_coverage_even_without_findings() {
+        let coverage = crate::lanes::FileCoverage {
+            reviewed: (0..10).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec![],
+        };
+        let title = title_for(0, Some(&coverage));
+        assert_eq!(title, "0 findings · 10/10 files reviewed");
+        assert!(title.len() <= 80);
     }
 
     #[cfg(feature = "serve")]
@@ -1054,6 +1077,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                coverage: None,
                 overflow: vec![],
             }],
             cost_usd: 0.01,
@@ -1459,14 +1483,26 @@ mod tests {
     #[tokio::test]
     async fn a_check_run_is_published_per_lane() {
         let forge = forge("abc123");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].conclusion = CheckConclusion::Neutral;
+        proposal.lanes[0].summary = "Reviewed 8 of 10 files — 2 not reviewed.".into();
+        proposal.lanes[0].unanswered = vec!["a.rs".into(), "b.rs".into()];
+        proposal.lanes[0].coverage = Some(crate::lanes::FileCoverage {
+            reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec!["a.rs".into(), "b.rs".into()],
+        });
+        apply(&forge, &forge, &config(), &proposal, None)
             .await
             .expect("applies");
 
         let checks = forge.checks();
         assert_eq!(
+            checks["tinysweeper/critique"].title,
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
+        assert_eq!(
             checks["tinysweeper/critique"].conclusion,
-            Some(CheckConclusion::Success)
+            Some(CheckConclusion::Neutral)
         );
     }
 

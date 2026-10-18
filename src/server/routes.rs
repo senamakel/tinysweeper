@@ -1636,7 +1636,8 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         Conclusion::Reviewed {
             findings,
             changes_requested,
-        } => status::completed(&open.head_sha, findings, changes_requested),
+            coverage,
+        } => status::completed(&open.head_sha, findings, changes_requested, coverage),
         Conclusion::NotReviewed => status::not_reviewed(&open.head_sha),
         Conclusion::Failed(err) => failure::check_run(&open.head_sha, err),
     };
@@ -1825,6 +1826,8 @@ enum Conclusion<'a> {
         /// Whether the published review requested changes, so the check
         /// cannot show a pass beside that verdict.
         changes_requested: bool,
+        /// File and whole-lane coverage aggregated across the proposal.
+        coverage: status::ReviewCoverage,
     },
     /// The run stopped deliberately, without reviewing anything.
     ///
@@ -1917,9 +1920,10 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested)) => Conclusion::Reviewed {
+                    Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
                         findings,
                         changes_requested,
+                        coverage,
                     },
                     None => Conclusion::NotReviewed,
                 };
@@ -2046,7 +2050,7 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-) -> Result<Option<(usize, bool)>> {
+) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");
@@ -2289,7 +2293,8 @@ async fn review_inner(
         installation,
     ));
 
-    Ok(Some((findings, changes_requested)))
+    let coverage = status::aggregate_coverage(&proposal);
+    Ok(Some((findings, changes_requested, coverage)))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {

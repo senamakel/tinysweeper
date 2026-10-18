@@ -195,6 +195,9 @@ pub enum Anchoring {
 pub struct LaneOutcome {
     /// One or two sentences for the check-run summary.
     pub summary: String,
+    /// Whether this lane produced a completed result, including deterministic
+    /// policy checks that do not make a model call.
+    pub completed: bool,
     /// The findings, before the shared filtering pipeline runs.
     pub findings: Vec<Finding>,
     /// Titles of earlier findings this revision fixed.
@@ -328,6 +331,7 @@ impl LaneOutcome {
 
         Self {
             summary,
+            completed: true,
             findings,
             resolved: parsed.resolved,
             spend,

@@ -224,10 +224,13 @@ impl ReviewSchedulerState {
     }
 
     /// Return the current owner's request to pending with bounded backoff.
-    pub fn defer(&mut self, owned: &OwnedReview, not_before_ms: i64) -> bool {
+    pub fn defer(&mut self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> bool {
         let Some(record) = self.unfinished.iter_mut().find(|record| owns(record, owned)) else {
             return false;
         };
+        if record.owner_until_ms <= now_ms {
+            return false;
+        }
         record.owner = None;
         record.owner_until_ms = 0;
         record.not_before_ms = not_before_ms;
@@ -239,9 +242,14 @@ impl ReviewSchedulerState {
         &mut self,
         owned: &OwnedReview,
         outcome: TerminalOutcome,
+        now_ms: i64,
         completed_at_ms: i64,
     ) -> bool {
-        let Some(index) = self.unfinished.iter().position(|record| owns(record, owned)) else {
+        let Some(index) = self
+            .unfinished
+            .iter()
+            .position(|record| owns(record, owned) && record.owner_until_ms > now_ms)
+        else {
             return false;
         };
         let record = self.unfinished.remove(index);
@@ -290,7 +298,7 @@ pub trait ReviewJobStore: Send + Sync {
 
     /// Return an owned request to pending state, optionally with backoff.
     /// The owner and generation must fence this update.
-    async fn defer(&self, owned: &OwnedReview, not_before_ms: i64) -> Result<bool>;
+    async fn defer(&self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> Result<bool>;
 
     /// Finish an owned request and retain a bounded dedupe tombstone.
     /// The owner and generation must fence this update.
@@ -298,6 +306,7 @@ pub trait ReviewJobStore: Send + Sync {
         &self,
         owned: &OwnedReview,
         outcome: TerminalOutcome,
+        now_ms: i64,
         completed_at_ms: i64,
     ) -> Result<bool>;
 }

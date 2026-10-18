@@ -1969,13 +1969,7 @@ async fn handle_review(
     drop(permit);
 
     tracing::error!(%err, %repo, number, attempts = attempt, "review failed");
-    timing.finish(
-        if err.to_string().contains("deadline") || err.to_string().contains("timed out") {
-            "deadline"
-        } else {
-            "failure"
-        },
-    );
+    timing.finish(ReviewTiming::outcome_for_error(&err));
 
     // Two ways to report the same thing, and which one applies depends on how
     // far the review got. If a check is already open, concluding it in place is
@@ -2040,6 +2034,14 @@ impl ReviewTiming {
 
     fn finish(&self, outcome: &'static str) {
         *self.outcome.lock().expect("review timing outcome") = Some(outcome);
+    }
+
+    fn outcome_for_error(error: &Error) -> &'static str {
+        if matches!(error, Error::Timeout { .. }) {
+            "deadline"
+        } else {
+            "failure"
+        }
     }
 }
 
@@ -2827,6 +2829,17 @@ impl Previews for PreviewDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_timing_classifies_deadline_errors_without_parsing_display_text() {
+        let timeout = Error::Timeout {
+            what: "review".into(),
+            seconds: 1,
+        };
+        let model = Error::Model("provider timed out".into());
+        assert_eq!(ReviewTiming::outcome_for_error(&timeout), "deadline");
+        assert_eq!(ReviewTiming::outcome_for_error(&model), "failure");
+    }
 
     #[tokio::test]
     async fn the_permit_pool_actually_bounds_concurrency() {

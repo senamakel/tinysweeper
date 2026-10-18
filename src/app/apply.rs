@@ -1464,6 +1464,7 @@ mod tests {
     async fn a_check_run_is_published_per_lane() {
         let forge = forge("abc123");
         let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].conclusion = CheckConclusion::Neutral;
         proposal.lanes[0].summary = "Reviewed 8 of 10 files — 2 not reviewed.".into();
         proposal.lanes[0].unanswered = vec!["a.rs".into(), "b.rs".into()];
         proposal.lanes[0].coverage = Some((8, 10));
@@ -1478,7 +1479,7 @@ mod tests {
         );
         assert_eq!(
             checks["tinysweeper/critique"].conclusion,
-            Some(CheckConclusion::Success)
+            Some(CheckConclusion::Neutral)
         );
     }
 

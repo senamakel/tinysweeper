@@ -1,12 +1,21 @@
-//! Durable metadata for accepted server review work.
+//! Durable admission and ownership for server review work.
 //!
-//! This port stores only the review request fields needed to resume a queued
-//! worker after process shutdown. It never stores webhook bodies, comments,
-//! pull-request text, or credentials.
+//! The server uses this port as the source of truth for accepted work. Wakeup
+//! channels are hints only: a process can stop after persisting a request and
+//! before sending its hint, so workers also poll this bounded journal.
 
 use crate::error::Result;
 
-/// Stable identity for one accepted review.
+/// Maximum accepted requests waiting or running across all server processes.
+pub const MAX_UNFINISHED_REVIEWS: usize = 260;
+/// Maximum reviews that may be running across all server processes.
+pub const MAX_RUNNING_REVIEWS: usize = 4;
+/// How long a job owner remains valid without a heartbeat.
+pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
+/// How long terminal delivery IDs remain deduped.
+pub const REVIEW_TOMBSTONE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+
+/// Stable identity for one accepted review request.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReviewJobId(pub String);
 
@@ -19,11 +28,10 @@ pub enum ReviewJobMode {
     Full,
 }
 
-/// One review request accepted by the server.
+/// Minimal request metadata needed to resume an accepted review.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewJob {
-    /// Stable ID: the webhook delivery for webhook jobs, a generated ID for
-    /// each job in a manual batch.
+pub struct ReviewRequest {
+    /// Stable webhook delivery ID or generated manual-review ID.
     pub id: ReviewJobId,
     /// Repository in owner/name form.
     pub repo: String,
@@ -37,39 +45,80 @@ pub struct ReviewJob {
     pub head_sha: Option<String>,
     /// Webhook delivery ID, absent for manual jobs.
     pub delivery: Option<String>,
-    /// Webhook event type or manual-review.
+    /// Webhook event type or `manual-review`.
     pub event: String,
     /// Review mode.
     pub mode: ReviewJobMode,
-    /// Unix time in milliseconds when the server accepted the work.
+    /// Unix time in milliseconds when the server accepted this work.
     pub accepted_at_ms: i64,
 }
 
-/// Persistence seam for the bounded server review queue.
-#[allow(async_fn_in_trait)]
+/// Atomic admission result for one webhook or an entire manual expansion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// Every request in the batch is durable and may be acknowledged.
+    Admitted,
+    /// Every request was already known; no duplicate work was added.
+    Duplicate,
+    /// The bounded unfinished or terminal reservation budget is full.
+    Full,
+}
+
+/// A request claimed by one server process and fenced by a generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedReview {
+    /// The accepted request metadata.
+    pub request: ReviewRequest,
+    /// Random process owner identity.
+    pub owner: String,
+    /// Monotonic generation for this job's ownership.
+    pub generation: u64,
+}
+
+/// Terminal result retained as a dedupe tombstone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalOutcome {
+    /// Review was published or reconciled as already published.
+    Published,
+    /// Trust or live eligibility policy declined the review.
+    Declined,
+    /// The queued revision was superseded before review.
+    Superseded,
+    /// A bounded review budget or retry policy ended the request.
+    Exhausted,
+}
+
+/// Atomic journal for accepted server reviews.
+#[async_trait::async_trait]
 pub trait ReviewJobStore: Send + Sync {
-    /// Persist one webhook review before acknowledging its delivery.
-    ///
-    /// Returns false when this delivery already has a durable queue record.
-    async fn enqueue(&self, job: ReviewJob) -> Result<bool>;
+    /// Atomically admit all requests or none, deduping against unfinished and
+    /// unexpired terminal IDs in the same scheduler document.
+    async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission>;
 
-    /// Persist a manual expansion as one atomic batch before accepting it.
-    async fn enqueue_manual_batch(&self, batch_id: &str, jobs: Vec<ReviewJob>) -> Result<()>;
+    /// Claim one eligible request if fewer than four are running globally.
+    /// The implementation must never take an unexpired foreign owner.
+    async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>>;
 
-    /// Load at most limit unfinished records in acceptance order.
-    async fn recover(&self, limit: usize) -> Result<Vec<ReviewJob>>;
+    /// Extend a live claim. A stale generation can never renew another
+    /// process's job.
+    async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool>;
 
-    /// Mark a record as running. A failed update does not remove the record.
-    async fn mark_running(&self, id: &ReviewJobId) -> Result<()>;
+    /// Verify the claim is still current and unexpired before paid work or
+    /// publication.
+    async fn owns(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool>;
 
-    /// Leave a busy or shutdown-deferred job available to retry.
-    async fn mark_pending(&self, id: &ReviewJobId) -> Result<()>;
+    /// Return an owned request to pending state, optionally with backoff.
+    /// The owner and generation must fence this update.
+    async fn defer(&self, owned: &OwnedReview, not_before_ms: i64) -> Result<bool>;
 
-    /// Mark a terminal review complete so restart recovery does not replay it.
-    async fn complete(&self, id: &ReviewJobId) -> Result<()>;
-
-    /// Release only the lease owned by this durable job after a process restart.
-    async fn release_stale_lease(&self, id: &ReviewJobId) -> Result<()>;
+    /// Finish an owned request and retain a bounded dedupe tombstone.
+    /// The owner and generation must fence this update.
+    async fn finish(
+        &self,
+        owned: &OwnedReview,
+        outcome: TerminalOutcome,
+        completed_at_ms: i64,
+    ) -> Result<bool>;
 }
 
 #[cfg(test)]

@@ -3000,6 +3000,18 @@ mod tests {
         use crate::harness::MockModel;
         use crate::ports::forge::{ForgeRead, ForgeWrite};
 
+        struct DelayedModel(MockModel);
+        #[async_trait::async_trait]
+        impl crate::ports::model::Model for DelayedModel {
+            async fn complete(
+                &self,
+                request: crate::ports::model::ModelRequest,
+            ) -> Result<crate::ports::model::ModelResponse> {
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                self.0.complete(request).await
+            }
+        }
+
         let mut state = MockState::default();
         state.pull_requests.insert(
             7,
@@ -3029,9 +3041,9 @@ mod tests {
         config.review.lanes = vec!["critique".into()];
         config.summary.enabled = false;
         config.overview.enabled = false;
-        let model = Arc::new(MockModel::always(serde_json::json!({
+        let model = Arc::new(DelayedModel(MockModel::always(serde_json::json!({
             "summary": "Reviewed.", "findings": [], "resolved": []
-        })));
+        }))));
         let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
 
         crate::review_timing::measure(Some(&timing), "permit", async {

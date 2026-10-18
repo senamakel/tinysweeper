@@ -2876,7 +2876,10 @@ mod tests {
             final_body.contains("timed out after 15 min"),
             "{final_body}"
         );
-        assert!(final_body.contains("`def5678` below"), "{final_body}");
+        assert!(
+            final_body.contains("last completed review (`def5678`) is shown below"),
+            "{final_body}"
+        );
         assert!(!final_body.contains("\\#"), "{final_body}");
         assert!(!final_body.contains("Error::"), "{final_body}");
         assert!(

@@ -2157,6 +2157,99 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[tokio::test]
+    async fn deterministic_commits_outcome_is_answered_in_summary_evidence() {
+        let config = Config::default();
+        let pull_request = PullRequest {
+            title: "Keep credentials out of commit history".into(),
+            body: "Scan the commit history for sensitive material.".into(),
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        };
+        let diffs = [crate::evidence::diff::FileDiff {
+            path: "src/lib.rs".into(),
+            ..crate::evidence::diff::FileDiff::default()
+        }];
+        let file_contents = BTreeMap::new();
+        let scan_findings = vec![];
+        let outcome = crate::lanes::commits::Commits::new()
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pull_request,
+                diffs: &diffs,
+                file_contents: &file_contents,
+                scan_findings: &scan_findings,
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+            })
+            .await
+            .expect("deterministic scanner completes");
+        let prior = PriorReview::default();
+        let suppressed = BTreeSet::new();
+        let severities = BTreeMap::new();
+        let titles = Vec::new();
+        let proposal_lane = lane_proposal(
+            &config,
+            LaneId::Commits,
+            outcome,
+            &diffs,
+            &Continuity {
+                prior: &prior,
+                suppressed: &suppressed,
+                severities: &severities,
+                titles: &titles,
+            },
+        );
+        assert!(proposal_lane.completed);
+
+        let model = MockModel::new().then(json!({
+            "executive_summary": "The commits lane completed its scan.",
+            "changes": "The commit history is checked deterministically.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let full_pr_paths = vec!["src/lib.rs".to_string()];
+        crate::summary::generate_with_input(
+            &model,
+            &config,
+            &pull_request,
+            crate::summary::SummaryGenerationInput {
+                diffs: &diffs,
+                full_pr_paths: &full_pr_paths,
+                full_pr_diffstat: crate::summary::SummaryDiffstat {
+                    files: 1,
+                    ..crate::summary::SummaryDiffstat::default()
+                },
+                lanes: &[proposal_lane],
+                prior: None,
+                prior_transcript: &[],
+            },
+        )
+        .await;
+
+        let prompt = model.last_prompt().expect("summary request");
+        let evidence: serde_json::Value = serde_json::from_str(
+            prompt
+                .split("<review_evidence>\n")
+                .nth(1)
+                .unwrap()
+                .split("\n</review_evidence>")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(evidence["lanes"][3]["status"]["status"], "answered");
+    }
+
     fn config() -> Config {
         let mut config: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()

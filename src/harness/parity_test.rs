@@ -668,16 +668,14 @@ async fn paid_call_capacity_refuses_excess_work_without_waiting_for_settlement()
     fitting.expect("both fitting reservations dispatch before either settles");
 
     let refusal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let result = tasks
-                .join_next()
-                .await
-                .expect("one of the three calls must finish");
-            match result.expect("model task must not panic") {
-                Err(error @ crate::error::Error::Budget { .. }) => break error,
-                Ok(_) => panic!("paused paid call returned before settlement"),
-                Err(error) => panic!("expected capacity refusal, got {error:?}"),
-            }
+        let result = tasks
+            .join_next()
+            .await
+            .expect("one of the three calls must finish");
+        match result.expect("model task must not panic") {
+            Err(error @ crate::error::Error::Budget { .. }) => error,
+            Ok(_) => panic!("paused paid call returned before settlement"),
+            Err(error) => panic!("expected capacity refusal, got {error:?}"),
         }
     })
     .await

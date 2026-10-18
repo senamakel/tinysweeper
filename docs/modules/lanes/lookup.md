@@ -90,17 +90,21 @@ settle    the plain schema, told it is the last turn
 by `(`, or a `Capitalised` one followed by `::` or `{`, is searched for as a
 definition — `fn name(`, `struct Name` — and the doc comment and signature
 above the hit are read. A changed function signature also seeds a search for
-its callers, and an added out-of-line module declaration reads its resolved
-`.rs` path at the reviewed head. A same-file method the change calls is read
-further, because the unbounded sibling on #2313 was a hundred lines into one.
+its callers, and an added out-of-line module declaration reads both valid Rust
+module paths (`name.rs` and `name/mod.rs`) at the reviewed head. A same-file
+method the change calls is read further, because the unbounded sibling on
+#2313 was a hundred lines into one.
 The reviewer that asked for exactly these by name found the bug; the one that
 did not ask did not. Fetching them unasked removes the difference, and it
 costs reads rather than a model turn.
 
 When retrieval is cold, stale or unavailable, critique does not treat that
-silence as proof that callers or files are absent. The prompt says so, and the
-lane withholds unchanged-line findings from action unless a current-head
-lookup supports them. Findings on changed lines remain grounded by the diff.
+silence as proof that callers or files are absent. Findings remain visible,
+but confidence is capped at Likely unless a successful typed read from the
+reviewed head supports the relevant source. A changed anchor alone does not
+support a claim about an unchanged caller or another file. Not-found or
+unavailable results and path mentions in rendered text are not source proof;
+the gate uses the tree reader's typed result and keeps the finding's severity.
 
 Two host-side follow-ups save a round each: a glob-scoped search that finds
 nothing is retried across the whole tree and the retry is named — the

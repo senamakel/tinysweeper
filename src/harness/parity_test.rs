@@ -325,22 +325,18 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
     );
     tokio::pin!(request);
     tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            tokio::select! {
-                result = &mut request => panic!("review completed before first response: {result:?}"),
-                _ = async { while gateway.requests().is_empty() { tokio::task::yield_now().await; } } => break,
-            }
+        tokio::select! {
+            result = &mut request => panic!("review completed before first response: {result:?}"),
+            _ = async { while gateway.requests().is_empty() { tokio::task::yield_now().await; } } => (),
         }
     })
     .await
     .expect("first completion reaches the fake gateway");
     releases.add_permits(1);
     tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            tokio::select! {
-                result = &mut request => panic!("review completed before retry response: {result:?}"),
-                _ = async { while gateway.requests().len() < 2 { tokio::task::yield_now().await; } } => break,
-            }
+        tokio::select! {
+            result = &mut request => panic!("review completed before retry response: {result:?}"),
+            _ = async { while gateway.requests().len() < 2 { tokio::task::yield_now().await; } } => (),
         }
     })
     .await

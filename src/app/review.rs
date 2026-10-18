@@ -2416,6 +2416,7 @@ mod tests {
                 <= record.started.unwrap().elapsed().as_millis() as u64
         );
         assert!(record.lanes_ms.contains_key("critique"));
+        assert!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0);
         assert!(record.calls_succeeded > 0);
         assert_eq!(record.calls_attempted, record.calls_succeeded * 3);
         assert_eq!(record.calls_errored, record.calls_succeeded * 2);
@@ -2485,6 +2486,43 @@ mod tests {
         assert!(line.contains("review timing"));
         assert!(line.contains("outcome=deadline"), "{line}");
         assert_eq!(line.matches("review timing").count(), 1, "{line}");
+    }
+
+    #[tokio::test]
+    async fn a_pre_dispatch_budget_refusal_is_counted_without_provider_usage() {
+        struct Refused;
+        #[async_trait::async_trait]
+        impl Model for Refused {
+            async fn complete(
+                &self,
+                _request: crate::ports::model::ModelRequest,
+            ) -> Result<crate::ports::model::ModelResponse> {
+                Err(Error::Budget {
+                    spent: 1.0,
+                    limit: 1.0,
+                })
+            }
+        }
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        let model = ObservedModel {
+            inner: Arc::new(Refused),
+            timing: timing.clone(),
+        };
+        let result = model
+            .complete(crate::ports::model::ModelRequest {
+                model: "vendor/test".into(),
+                messages: vec![],
+                schema: json!({}),
+                schema_name: "answer".into(),
+                max_tokens: 8,
+            })
+            .await;
+        assert!(matches!(result, Err(Error::Budget { .. })));
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.calls_succeeded, 0);
     }
 
     fn config() -> Config {

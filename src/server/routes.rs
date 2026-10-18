@@ -3131,7 +3131,7 @@ mod tests {
         assert_eq!(started.load(Ordering::SeqCst), 1);
 
         let permits = Arc::new(Semaphore::new(1));
-        let result = with_manual_review_admission(permits.clone(), |_permit| async {
+        let result: Result<()> = with_manual_review_admission(permits.clone(), |_permit| async {
             Err(Error::Forge("simulated GitHub read failure".into()))
         })
         .await;

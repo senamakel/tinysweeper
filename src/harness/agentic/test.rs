@@ -102,11 +102,14 @@ async fn gateway_review_budget_refusal_keeps_paid_usage_and_budget_remedy() {
     let usage = error.usage().expect("first paid turn remains reportable");
     assert!(usage.input_tokens > 0, "a completed turn is retained");
     assert_eq!(usage.cost_usd, 0.02);
-    let check = crate::server::failure::check_run("head", &error);
-    assert_eq!(check.title, "The review ran out of budget");
-    assert!(check.summary.contains("models.budget_usd_per_pr"));
-    assert!(!check.summary.contains("response schema"));
-    assert!(!crate::server::failure::is_transient(&error));
+    #[cfg(feature = "serve")]
+    {
+        let check = crate::server::failure::check_run("head", &error);
+        assert_eq!(check.title, "The review ran out of budget");
+        assert!(check.summary.contains("models.budget_usd_per_pr"));
+        assert!(!check.summary.contains("response schema"));
+        assert!(!crate::server::failure::is_transient(&error));
+    }
 }
 
 #[tokio::test]

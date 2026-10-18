@@ -167,10 +167,16 @@ impl ReviewJobStore for Store {
         Ok(state.owns(owned, self.server_now_ms().await?))
     }
 
-    async fn defer(&self, owned: &OwnedReview, _now_ms: i64, not_before_ms: i64) -> Result<bool> {
+    async fn defer(
+        &self,
+        owned: &OwnedReview,
+        local_now_ms: i64,
+        not_before_ms: i64,
+    ) -> Result<bool> {
         let owned = owned.clone();
+        let delay_ms = not_before_ms.saturating_sub(local_now_ms).max(0);
         self.change_review_scheduler(move |state, now_ms| {
-            state.defer(&owned, now_ms, not_before_ms)
+            state.defer(&owned, now_ms, now_ms.saturating_add(delay_ms))
         })
         .await
     }

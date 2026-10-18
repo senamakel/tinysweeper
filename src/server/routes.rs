@@ -818,10 +818,17 @@ async fn run_owned_review(
     }
 
     let (lost_tx, lost_rx) = watch::channel(false);
+    let (owner_until_tx, owner_until_rx) = watch::channel(
+        tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
+            ),
+    );
     let _heartbeat_guard = spawn_review_heartbeat(
         store.clone(),
         owned.clone(),
         lost_tx,
+        owner_until_tx,
         std::time::Duration::from_secs(15),
     );
 
@@ -843,6 +850,7 @@ async fn run_owned_review(
         expected_head: request.head_sha.clone(),
         queued_at,
         owned: Some(owned.clone()),
+        owner_until: Some(owner_until_rx),
     };
     let disposition = handle_review(state, job, Some(permit), Some(lost_rx)).await;
 
@@ -877,13 +885,19 @@ fn spawn_review_heartbeat(
     store: Arc<dyn ReviewJobStore>,
     owned: OwnedReview,
     lost: watch::Sender<bool>,
+    owner_until: watch::Sender<tokio::time::Instant>,
     interval: std::time::Duration,
 ) -> AbortOnDrop<()> {
     AbortOnDrop(tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
             match store.renew(&owned, unix_time_ms()).await {
-                Ok(true) => {}
+                Ok(true) => {
+                    let conservative_ttl = std::time::Duration::from_millis(
+                        (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
+                    );
+                    let _ = owner_until.send(tokio::time::Instant::now() + conservative_ttl);
+                }
                 Ok(false) => {
                     let _ = lost.send(true);
                     return;

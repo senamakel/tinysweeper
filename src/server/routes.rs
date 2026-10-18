@@ -24,6 +24,7 @@ use crate::forge::{PullRequest, RepoId};
 use crate::index::mongo::MongoIndex;
 use crate::ports::forge::ForgeRead as _;
 use crate::ports::knowledge::KnowledgeStore;
+use crate::ports::model::{Model, ModelRequest, ModelResponse};
 use crate::ports::model_factory::ModelFactory;
 use crate::ports::review_job::{
     Admission, OwnedReview, ReviewJobMode, ReviewJobStore, ReviewRequest, TerminalOutcome,
@@ -1830,6 +1831,62 @@ struct Run {
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Refuse an individual paid model dispatch after durable ownership expires.
+/// A process can be paused longer than its owner lease and then resume while
+/// its heartbeat is still queued; phase-boundary checks alone would let that
+/// stale worker spend against a job now owned by another process.
+struct OwnedModel {
+    inner: Arc<dyn Model>,
+    jobs: Arc<dyn ReviewJobStore>,
+    owned: OwnedReview,
+    owner_lost: Option<watch::Receiver<bool>>,
+}
+
+impl OwnedModel {
+    async fn check_owner(&self) -> Result<()> {
+        if self
+            .owner_lost
+            .as_ref()
+            .is_some_and(|lost| *lost.borrow())
+            || !self.jobs.owns(&self.owned, unix_time_ms()).await?
+        {
+            return Err(Error::ReviewOwnershipLost);
+        }
+        Ok(())
+    }
+
+    fn wrap(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
+        Arc::new(Self {
+            inner,
+            jobs: self.jobs.clone(),
+            owned: self.owned.clone(),
+            owner_lost: self.owner_lost.clone(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for OwnedModel {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.check_owner().await?;
+        self.inner.complete(request).await
+    }
+
+    async fn review(
+        &self,
+        request: ModelRequest,
+        tree: &dyn crate::ports::tree::TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.check_owner().await?;
+        self.inner.review(request, tree, policy).await
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner.scoped_budget(budget_usd).map(|inner| self.wrap(inner))
+    }
+}
+
 impl Run {
     /// Refuse to start the next phase if the budget is already spent.
     ///
@@ -2923,7 +2980,15 @@ async fn run_lanes(
     read_token: &str,
     run: &Run,
 ) -> Result<(Config, crate::app::Proposal)> {
-    let model = state.models.text();
+    let model = match &run.owned {
+        Some(owned) => Arc::new(OwnedModel {
+            inner: state.models.text(),
+            jobs: state.review_jobs.clone(),
+            owned: owned.clone(),
+            owner_lost: run.owner_lost.clone(),
+        }) as Arc<dyn Model>,
+        None => state.models.text(),
+    };
 
     // The model runs against a read-only handle. The write token is minted by
     // the caller, after this returns — same boundary as the workflow, same

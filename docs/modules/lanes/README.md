@@ -287,7 +287,8 @@ A lane with unanswered files is `Neutral` unless its findings already warrant
 `Failure`. It cannot report a clean success for work it did not complete. The
 per-file check title gives the reviewed and unreviewed counts, so a partial
 result is visible even when the summary is folded. The umbrella review check
-uses the same coverage title when a lane has unanswered files.
+uses those counts when available and says “Review incomplete” when a whole-PR
+lane did not respond and no file count applies.
 
 The `commits` lane is different: an empty deterministic scanner result is a
 successful clean scan, titled “No sensitive content in committed files.” It

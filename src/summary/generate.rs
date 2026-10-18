@@ -744,7 +744,7 @@ fn sanitize_prior_narrative(
         test.assessment = assessment;
         true
     });
-    summary.positive_observations.retain_mut(|lane, observations| {
+    summary.positive_observations.retain(|lane, observations| {
         if !statuses
             .get(lane.as_str())
             .is_some_and(|status| matches!(status.status, LaneStatusKind::Answered))

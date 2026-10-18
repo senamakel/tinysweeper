@@ -607,7 +607,9 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                     let name = &text[name_start..name_end];
                     let suffix = text[name_end..].trim_start();
                     if !name.is_empty() && suffix.starts_with(';') {
-                        if incomplete_context {
+                        if line.kind != LineKind::Added {
+                            path_attribute = None;
+                        } else if incomplete_context {
                             declarations.push(AddedModulePaths::Unavailable {
                                 name: name.to_owned(),
                                 reason: "the diff does not show the enclosing module context",
@@ -773,34 +775,54 @@ impl Ledger {
         // declared module at the reviewed head so a cold index cannot hide a
         // file added by the pull request.
         for diff in diffs {
-            for path in added_module_paths(diff) {
+            for declaration in added_module_paths(diff) {
                 if answered >= SEED_SYMBOLS || self.chars >= policy.max_chars / 2 {
                     break;
                 }
-                let lookup = Lookup::Read {
-                    path: path.clone(),
-                    start: None,
-                    end: None,
-                };
-                if !self.seen.insert(lookup.key()) {
-                    continue;
+                match declaration {
+                    AddedModulePaths::Unavailable { name, reason } => {
+                        let body = format!(
+                            "\n### Declared module `{name}` at the reviewed head\n\nUnavailable: {reason}; no candidate path was probed, so this is not evidence that the module is missing.\n"
+                        );
+                        if self.chars + body.len() > policy.max_chars {
+                            break;
+                        }
+                        self.chars += body.len();
+                        answered += 1;
+                        rendered.push_str(&body);
+                    }
+                    AddedModulePaths::Resolved { name, paths } => {
+                        for path in paths {
+                            if answered >= SEED_SYMBOLS || self.chars >= policy.max_chars / 2 {
+                                break;
+                            }
+                            let lookup = Lookup::Read {
+                                path: path.clone(),
+                                start: None,
+                                end: None,
+                            };
+                            if !self.seen.insert(lookup.key()) {
+                                continue;
+                            }
+                            let result = tree
+                                .lookup(&lookup)
+                                .await
+                                .unwrap_or_else(|err| Found::Unavailable {
+                                    reason: err.to_string(),
+                                });
+                            let body = format!(
+                                "\n### Declared module `{name}` at `{path}` in the reviewed head\n\n{}\n",
+                                render_found(&result)
+                            );
+                            if self.chars + body.len() > policy.max_chars {
+                                break;
+                            }
+                            self.chars += body.len();
+                            answered += 1;
+                            rendered.push_str(&body);
+                        }
+                    }
                 }
-                let result = tree
-                    .lookup(&lookup)
-                    .await
-                    .unwrap_or_else(|err| Found::Unavailable {
-                        reason: err.to_string(),
-                    });
-                let body = format!(
-                    "\n### Declared module `{path}` at the reviewed head\n\n{}\n",
-                    render_found(&result)
-                );
-                if self.chars + body.len() > policy.max_chars {
-                    break;
-                }
-                self.chars += body.len();
-                answered += 1;
-                rendered.push_str(&body);
             }
         }
 
@@ -1430,6 +1452,32 @@ mod tests {
         assert!(
             !seeded.rendered.contains("No such file at this commit"),
             "the ignored default path must not be presented as missing: {}",
+            seeded.rendered
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_hunks_do_not_turn_unresolved_module_paths_into_missing_evidence() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -20,1 +20,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_files(std::iter::empty::<(&str, &str)>());
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(seeded.rendered.contains("Unavailable:"), "{}", seeded.rendered);
+        assert!(
+            seeded.rendered.contains("not evidence that the module is missing"),
+            "{}",
+            seeded.rendered
+        );
+        assert!(
+            !seeded.rendered.contains("No such file at this commit"),
+            "an unresolved lexical path must not be presented as missing: {}",
             seeded.rendered
         );
     }

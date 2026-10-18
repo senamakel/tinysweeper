@@ -851,7 +851,6 @@ async fn run_owned_review(
         expected_head: request.head_sha.clone(),
         queued_at,
         owned: Some(owned.clone()),
-        owner_until: Some(owner_until_rx),
     };
     let disposition = handle_review(
         state,

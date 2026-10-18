@@ -213,6 +213,109 @@ pub fn not_reviewed(head_sha: &str) -> CheckRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::review::LaneProposal;
+    use crate::config::types::LaneId;
+    use crate::forge::MockForge;
+    use crate::forge::types::CheckConclusion;
+
+    fn file_lane(id: &str, reviewed: &[&str], unanswered: &[&str]) -> LaneProposal {
+        LaneProposal {
+            lane: LaneId::new(id).expect("valid lane id"),
+            check_name: format!("tinysweeper/{id}"),
+            conclusion: CheckConclusion::Neutral,
+            summary: String::new(),
+            findings: vec![],
+            noted: vec![],
+            resolved: vec![],
+            pending: vec![],
+            deduped: 0,
+            highest_severity: None,
+            usage: Default::default(),
+            models: vec![],
+            unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),
+            coverage: Some(crate::lanes::FileCoverage {
+                reviewed: reviewed.iter().map(|path| (*path).to_string()).collect(),
+                unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),
+            }),
+            overflow: vec![],
+        }
+    }
+
+    fn whole_pr_lane_unanswered(id: &str, gap: &str) -> LaneProposal {
+        let mut lane = file_lane(id, &[], &[]);
+        lane.coverage = None;
+        lane.unanswered = vec![gap.to_string()];
+        lane
+    }
+
+    async fn publish_aggregate(lanes: &[LaneProposal], head: &str) -> crate::forge::types::CheckRun {
+        use crate::ports::forge::ForgeWrite;
+
+        let forge = MockForge::new();
+        let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
+        forge
+            .publish_check(
+                &repo,
+                completed("abc", 0, false, aggregate_coverage(lanes)),
+            )
+            .await
+            .expect("publishes aggregate check");
+        let mut check = forge.checks().remove(CHECK_NAME).unwrap();
+        check.head_sha = head.to_string();
+        check
+    }
+
+    #[tokio::test]
+    async fn aggregate_reports_paths_missed_by_any_required_lane() {
+        let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
+        let all: Vec<_> = files.iter().map(String::as_str).collect();
+        let security_reviewed: Vec<_> = all[..8].to_vec();
+        let security_missing: Vec<_> = all[8..].to_vec();
+        let lanes = [
+            file_lane("critique", &all, &[]),
+            file_lane("security", &security_reviewed, &security_missing),
+        ];
+
+        let check = publish_aggregate(&lanes, "abc").await;
+
+        assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
+
+    #[tokio::test]
+    async fn aggregate_unions_distinct_unanswered_paths_across_lanes() {
+        let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
+        let all: Vec<_> = files.iter().map(String::as_str).collect();
+        let first_reviewed: Vec<_> = all[1..].to_vec();
+        let second_reviewed: Vec<_> = [&all[..9], &all[9..]].concat();
+        let lanes = [
+            file_lane("critique", &first_reviewed, &[all[0]]),
+            file_lane("security", &second_reviewed, &[all[9]]),
+        ];
+
+        let check = publish_aggregate(&lanes, "abc").await;
+
+        assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
+
+    #[tokio::test]
+    async fn whole_pr_lane_gap_survives_complete_file_lane_coverage() {
+        let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
+        let all: Vec<_> = files.iter().map(String::as_str).collect();
+        let lanes = [
+            file_lane("critique", &all, &[]),
+            whole_pr_lane_unanswered("tests", "tinysweeper/tests"),
+        ];
+
+        let check = publish_aggregate(&lanes, "abc").await;
+
+        assert_eq!(
+            check.title,
+            "Review incomplete — lane unanswered; 10 of 10 files reviewed"
+        );
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
 
     #[test]
     fn the_starting_check_is_pending_so_nothing_merges_underneath_it() {
@@ -237,7 +340,7 @@ mod tests {
         // the others.
         let err = crate::error::Error::Model("gateway returned 403".into());
         assert_eq!(in_progress("abc123").name, CHECK_NAME);
-        assert_eq!(completed("abc123", 0, false, None, false).name, CHECK_NAME);
+        assert_eq!(completed("abc123", 0, false, ReviewCoverage::default()).name, CHECK_NAME);
         assert_eq!(
             crate::server::failure::check_run("abc123", &err).name,
             CHECK_NAME
@@ -246,7 +349,7 @@ mod tests {
 
     #[test]
     fn completing_is_terminal_and_does_not_block() {
-        let check = completed("abc123", 3, false, None, false);
+        let check = completed("abc123", 3, false, ReviewCoverage::default());
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
         assert!(!check.is_in_progress());
         assert!(
@@ -260,7 +363,7 @@ mod tests {
         // The trap this check would otherwise set: a green `tinysweeper/review`
         // sitting next to a red `tinysweeper/security`, read as a pass.
         for findings in [0, 1, 7] {
-            let check = completed("abc123", findings, false, None, false);
+            let check = completed("abc123", findings, false, ReviewCoverage::default());
             assert!(
                 check.summary.contains("does not mean the code passed"),
                 "a liveness pass must disclaim being a verdict"
@@ -292,7 +395,7 @@ mod tests {
         // pushed again.
         let err = crate::error::Error::Model("gateway returned 403".into());
         for check in [
-            completed("abc123", 0, false, None, false),
+            completed("abc123", 0, false, ReviewCoverage::default()),
             not_reviewed("abc123"),
             crate::server::failure::check_run("abc123", &err),
         ] {
@@ -306,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_review_that_requested_changes_never_concludes_green() {
-        let check = completed("abc123", 2, true, None, false);
+        let check = completed("abc123", 2, true, ReviewCoverage::default());
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
         assert!(check.title.contains("changes requested"), "{}", check.title);
         assert!(check.title.contains("2 findings"), "{}", check.title);
@@ -325,17 +428,17 @@ mod tests {
     #[test]
     fn the_title_counts_findings_and_gets_the_plural_right() {
         assert!(
-            completed("abc", 0, false, None, false)
+            completed("abc", 0, false, ReviewCoverage::default())
                 .title
                 .contains("nothing to report")
         );
         assert!(
-            completed("abc", 1, false, None, false)
+            completed("abc", 1, false, ReviewCoverage::default())
                 .title
                 .contains("1 finding")
         );
         assert!(
-            completed("abc", 4, false, None, false)
+            completed("abc", 4, false, ReviewCoverage::default())
                 .title
                 .contains("4 findings")
         );
@@ -343,13 +446,13 @@ mod tests {
 
     #[test]
     fn partial_coverage_title_never_says_nothing_to_report() {
-        let check = completed("abc", 0, false, Some((8, 10)), true);
+        let check = completed("abc", 0, false, ReviewCoverage { files: Some((8, 10)), unanswered_lane: false });
         assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
     }
 
     #[test]
     fn an_unanswered_whole_pr_lane_never_uses_the_empty_review_title() {
-        let check = completed("abc", 0, false, None, true);
+        let check = completed("abc", 0, false, ReviewCoverage { files: None, unanswered_lane: true });
         assert_eq!(check.title, "Review incomplete — a lane did not respond");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
@@ -361,7 +464,7 @@ mod tests {
         let forge = crate::forge::MockForge::new();
         let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
         forge
-            .publish_check(&repo, completed("abc", 0, false, Some((8, 10)), true))
+            .publish_check(&repo, completed("abc", 0, false, ReviewCoverage { files: Some((8, 10)), unanswered_lane: false }))
             .await
             .expect("publishes partial status");
         assert_eq!(
@@ -369,7 +472,7 @@ mod tests {
             "Reviewed 8 of 10 files — 2 not reviewed"
         );
         forge
-            .publish_check(&repo, completed("def", 0, false, None, true))
+            .publish_check(&repo, completed("def", 0, false, ReviewCoverage { files: None, unanswered_lane: true }))
             .await
             .expect("publishes unanswered status");
         let checks = forge.checks();

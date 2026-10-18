@@ -903,7 +903,7 @@ pub async fn review_with_tree(
                         additions: context.files.iter().map(|file| file.additions).sum(),
                         deletions: context.files.iter().map(|file| file.deletions).sum(),
                     },
-                previous_reviewed_head: stored
+                    previous_reviewed_head: remembered
                     .as_ref()
                     .map(|state| state.head_sha.as_str()),
                     lanes: &lanes,

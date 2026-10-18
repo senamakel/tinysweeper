@@ -684,8 +684,12 @@ The definitions of what the changed lines call into,                  read from 
         rendered: &mut String,
         answered: &mut usize,
     ) {
+        let caller = symbol.strip_prefix("@caller:");
+        let symbol = caller.unwrap_or(symbol);
         let capitalised = symbol.chars().next().is_some_and(char::is_uppercase);
-        let patterns: Vec<String> = if capitalised {
+        let patterns: Vec<String> = if caller.is_some() {
+            vec![format!("{symbol}(")]
+        } else if capitalised {
             vec![
                 format!("struct {symbol}"),
                 format!("enum {symbol}"),
@@ -721,7 +725,11 @@ The definitions of what the changed lines call into,                  read from 
             let definitions: Vec<&crate::ports::tree::Hit> = hits
                 .iter()
                 .filter(|h| {
-                    looks_like_definition(&h.text) && !already_in_this_conversations_diff(h)
+                    (if caller.is_some() {
+                        !looks_like_definition(&h.text)
+                    } else {
+                        looks_like_definition(&h.text)
+                    }) && !already_in_this_conversations_diff(h)
                 })
                 .collect();
             if definitions.is_empty() || definitions.len() > AUTO_FOLLOW {

@@ -296,7 +296,8 @@ impl Store {
             state.revision = before.revision.saturating_add(1);
             let mut document = bson::serialize_to_document(&state)
                 .map_err(|err| Error::Forge(format!("could not encode review scheduler: {err}")))?;
-            if bson::ser::to_vec(&document)
+            if document
+                .to_vec()
                 .map_err(|err| Error::Forge(format!("could not size review scheduler: {err}")))?
                 .len()
                 > REVIEW_SCHEDULER_BSON_LIMIT

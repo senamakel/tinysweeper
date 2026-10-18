@@ -3712,7 +3712,7 @@ mod tests {
     async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (lost, lost_receiver) = watch::channel(false);
+        let (_lost, lost_receiver) = watch::channel(false);
         let (_until_sender, until) =
             watch::channel(tokio::time::Instant::now() - std::time::Duration::from_millis(1));
         let paid_step = Arc::new(AtomicBool::new(false));

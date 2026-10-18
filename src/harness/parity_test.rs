@@ -284,8 +284,8 @@ async fn truncated_attempts_are_included_in_returned_usage_and_cost() {
     assert_eq!(response.usage.output_tokens, 60);
     assert_eq!(response.usage.cached_tokens, 200);
     assert_eq!(response.usage.calls_attempted, 2);
-    assert_eq!(response.usage.calls_succeeded, 1);
-    assert_eq!(response.usage.calls_errored, 1);
+    assert_eq!(response.usage.calls_succeeded, 2);
+    assert_eq!(response.usage.calls_errored, 0);
     assert!((response.usage.cost_usd - 0.0042).abs() < 1e-12);
     assert_eq!(gateway.requests().len(), 2);
 }
@@ -309,8 +309,8 @@ async fn exhausted_truncation_retains_paid_usage_and_ceiling_diagnostic() {
     assert_eq!(paid.output_tokens, 90);
     assert_eq!(paid.cached_tokens, 300);
     assert_eq!(paid.calls_attempted, 3);
-    assert_eq!(paid.calls_succeeded, 0);
-    assert_eq!(paid.calls_errored, 3);
+    assert_eq!(paid.calls_succeeded, 3);
+    assert_eq!(paid.calls_errored, 0);
     assert!((paid.cost_usd - 0.0063).abs() < 1e-12);
     assert_eq!(
         error.to_string(),

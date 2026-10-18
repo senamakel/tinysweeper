@@ -41,8 +41,9 @@ struct GeneratedObservation {
 enum LaneReviewStatus {
     Answered,
     Partial {
-        reviewed_files: usize,
-        total_files: usize,
+        completed: usize,
+        total: usize,
+        unit: &'static str,
     },
     NoResponse,
     Skipped,
@@ -560,12 +561,19 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
             LaneReviewStatus::Answered
         } else {
             LaneReviewStatus::Partial {
-                reviewed_files: count,
-                total_files: changed_paths.len(),
+                completed: count,
+                total: changed_paths.len(),
+                unit: "files",
             }
         }
     } else if !lane.unanswered.is_empty() {
         LaneReviewStatus::NoResponse
+    } else if !lane.pending.is_empty() && lane_has_response(lane) {
+        LaneReviewStatus::Partial {
+            completed: 1,
+            total: 1 + lane.pending.len(),
+            unit: "review_work",
+        }
     } else if !lane.models.is_empty()
         || lane.usage.input_tokens > 0
         || lane.usage.output_tokens > 0
@@ -577,6 +585,13 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
         // that a reviewer answered.
         LaneReviewStatus::NoResponse
     }
+}
+
+fn lane_has_response(lane: &LaneProposal) -> bool {
+    !lane.models.is_empty()
+        || lane.usage.input_tokens > 0
+        || lane.usage.output_tokens > 0
+        || lane.usage.cost_usd > 0.0
 }
 
 fn lane_statuses(
@@ -971,6 +986,15 @@ mod tests {
                 ..FileDiff::default()
             },
         ];
+        let mut pending_e2e = lane(
+            LaneId::E2e,
+            crate::forge::types::CheckConclusion::Neutral,
+            "Waiting for checks.",
+            &["model"],
+            &[],
+            None,
+        );
+        pending_e2e.pending = vec!["ci/linux".into()];
         let lanes = vec![
             lane(
                 LaneId::Tests,
@@ -980,6 +1004,7 @@ mod tests {
                 &["tests"],
                 None,
             ),
+            pending_e2e,
             lane(
                 LaneId::Critique,
                 crate::forge::types::CheckConclusion::Success,
@@ -1051,9 +1076,14 @@ mod tests {
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
         assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
         assert_eq!(request["lanes"][0]["status"]["status"], "partial");
-        assert_eq!(request["lanes"][0]["status"]["reviewed_files"], 1);
+        assert_eq!(request["lanes"][0]["status"]["completed"], 1);
+        assert_eq!(request["lanes"][0]["status"]["unit"], "files");
         assert_eq!(request["lanes"][1]["status"]["status"], "answered");
         assert_eq!(request["lanes"][3]["status"]["status"], "skipped");
+        assert_eq!(request["lanes"][5]["status"]["status"], "partial");
+        assert_eq!(request["lanes"][5]["status"]["completed"], 1);
+        assert_eq!(request["lanes"][5]["status"]["total"], 2);
+        assert_eq!(request["lanes"][5]["status"]["unit"], "review_work");
     }
 
     #[tokio::test]
@@ -1097,7 +1127,10 @@ mod tests {
                 .contains("tests")
         );
         assert!(!summary.changes.to_ascii_lowercase().contains("all lanes"));
-        assert_eq!(summary.executive_summary, fallback_executive(&[]));
+        assert_eq!(
+            summary.executive_summary,
+            "Tiny Sweeper completed its review; deterministic results follow."
+        );
     }
 
     #[test]

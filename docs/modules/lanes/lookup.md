@@ -99,12 +99,13 @@ did not ask did not. Fetching them unasked removes the difference, and it
 costs reads rather than a model turn.
 
 When retrieval is cold, stale or unavailable, critique does not treat that
-silence as proof that callers or files are absent. Findings remain visible,
-but confidence is capped at Likely unless a successful typed read from the
-reviewed head supports the relevant source. A changed anchor alone does not
-support a claim about an unchanged caller or another file. Not-found or
-unavailable results and path mentions in rendered text are not source proof;
-the gate uses the tree reader's typed result and keeps the finding's severity.
+silence as proof that callers or files are absent. It keeps every model
+finding visible, but caps its confidence at Likely, including findings on
+changed anchors and claims about module paths that can be read. Availability
+does not prove a claim true, and an anchor does not prove an external caller
+is compatible. This gate makes no extra tree reads, so it honors the ordinary
+lookup setting and shared budget; severity is preserved. Independent scanner
+findings are not model findings and are unaffected.
 
 Two host-side follow-ups save a round each: a glob-scoped search that finds
 nothing is retried across the whole tree and the retry is named — the

@@ -2175,7 +2175,7 @@ impl ReviewRun<'_> {
             let go_on = open_status(
                 state,
                 &run.slot,
-                &repo_id,
+                repo_id,
                 &pull_request.head_sha,
                 installation,
             )
@@ -2206,7 +2206,7 @@ impl ReviewRun<'_> {
             // exam. See `crate::config::remote`.
             let overlay = crate::config::remote::overlay(
                 forge,
-                &repo_id,
+                repo_id,
                 &pull_request.base_sha,
                 &state.config.config,
             )
@@ -2223,7 +2223,7 @@ impl ReviewRun<'_> {
                     &run.slot,
                     forge,
                     &overlay.config,
-                    &repo_id,
+                    repo_id,
                     number,
                     &pull_request.head_sha,
                     installation,
@@ -2241,10 +2241,10 @@ impl ReviewRun<'_> {
                 Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                     state,
                     &overlay.config,
-                    &repo_id,
+                    repo_id,
                     number,
                     forge,
-                    &read_token,
+                    read_token,
                     run,
                 ))
                 .catch_unwind()

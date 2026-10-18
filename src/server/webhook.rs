@@ -277,7 +277,6 @@ pub fn route(event: &str, payload: &Payload) -> Action {
         return Action::Ignore("pull request is closed");
     }
 
-
     // Auto-merge is decided before the bot guard below, and deliberately.
     //
     // Every event that can make a pull request mergeable is sent by a bot: the
@@ -528,7 +527,10 @@ mod tests {
         delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
         delivery.pull_request.as_mut().unwrap().merged = true;
 
-        assert_eq!(route("pull_request", &delivery), Action::Ignore("pull request is closed"));
+        assert_eq!(
+            route("pull_request", &delivery),
+            Action::Ignore("pull request is closed")
+        );
     }
 
     #[test]
@@ -536,7 +538,10 @@ mod tests {
         let mut delivery = pr_payload("synchronize");
         delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
 
-        assert_eq!(route("pull_request", &delivery), Action::Ignore("pull request is closed"));
+        assert_eq!(
+            route("pull_request", &delivery),
+            Action::Ignore("pull request is closed")
+        );
     }
 
     #[test]
@@ -557,7 +562,10 @@ mod tests {
             }
         }));
 
-        assert_eq!(route("issue_comment", &delivery), Action::Ignore("pull request is closed"));
+        assert_eq!(
+            route("issue_comment", &delivery),
+            Action::Ignore("pull request is closed")
+        );
     }
 
     #[test]
@@ -566,7 +574,10 @@ mod tests {
         delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
         delivery.pull_request.as_mut().unwrap().merged = true;
 
-        assert_eq!(route("pull_request_review_comment", &delivery), Action::Ignore("pull request is closed"));
+        assert_eq!(
+            route("pull_request_review_comment", &delivery),
+            Action::Ignore("pull request is closed")
+        );
     }
 
     /// A `check_run` or `check_suite` delivery, sent — as the real ones always

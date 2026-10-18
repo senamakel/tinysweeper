@@ -2796,11 +2796,8 @@ mod tests {
             open: true,
             ..PullRequestData::default()
         };
-        let forge = crate::forge::MockForge::new().with_pull_request(
-            queued.clone(),
-            vec![],
-            vec![],
-        );
+        let forge =
+            crate::forge::MockForge::new().with_pull_request(queued.clone(), vec![], vec![]);
 
         // The webhook queued the number while it was open. GitHub reports it
         // merged before the worker's live read, so the lane path must not run.
@@ -2811,11 +2808,19 @@ mod tests {
         });
         let model = MockModel::silent();
 
-        let pull_request = pull_request_for_review(&forge, &repo, 7).await.expect("fetch");
+        let pull_request = pull_request_for_review(&forge, &repo, 7)
+            .await
+            .expect("fetch");
 
-        assert!(pull_request.is_none(), "a merged PR must decline before review work");
+        assert!(
+            pull_request.is_none(),
+            "a merged PR must decline before review work"
+        );
         assert!(model.requests().is_empty(), "the model must not be called");
-        assert!(forge.writes().is_empty(), "no review or check may be published");
+        assert!(
+            forge.writes().is_empty(),
+            "no review or check may be published"
+        );
         assert_eq!(
             ForgeRead::pull_request(&forge, &repo, 7)
                 .await

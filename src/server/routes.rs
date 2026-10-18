@@ -1774,7 +1774,7 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         Conclusion::Reviewed { .. } => None,
         Conclusion::NotReviewed => Some(crate::summary::failed(
             &open.head_sha,
-            "This pass stopped before a review could be completed.",
+            "This pass stopped before a review could be completed; the pull request may have closed or changed while it was running.",
             open.prior_hub_body.as_deref(),
         )),
         Conclusion::Failed(err) => Some(crate::summary::failed(
@@ -1968,6 +1968,19 @@ enum Conclusion<'a> {
     Failed(&'a Error),
 }
 
+fn review_conclusion(
+    findings: Option<(usize, bool, status::ReviewCoverage)>,
+) -> Conclusion<'static> {
+    match findings {
+        Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
+            findings,
+            changes_requested,
+            coverage,
+        },
+        None => Conclusion::NotReviewed,
+    }
+}
+
 /// Review one pull request, off the request path.
 ///
 /// A failed review must not take the server with it — one pull request going
@@ -2057,14 +2070,7 @@ async fn handle_review(
                 // when the slot is empty. `NotReviewed` covers the one ordering
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
-                let conclusion = match findings {
-                    Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
-                        findings,
-                        changes_requested,
-                        coverage,
-                    },
-                    None => Conclusion::NotReviewed,
-                };
+                let conclusion = review_conclusion(findings);
                 // The review is over; concluding the check is one GitHub
                 // write that should not hold a review slot against other
                 // pull requests.
@@ -2475,10 +2481,10 @@ impl ReviewRun<'_> {
                                 Err(Error::lane("review", "publishing panicked"))
                             })
                         })
-                        .map(|()| {
+                        .map(|disposition| {
                             let changes_requested =
                                 crate::app::apply::requests_changes(&config, &proposal);
-                            (proposal, changes_requested)
+                            (disposition, proposal, changes_requested)
                         })
                 }
                 Err(err) => Err(err),
@@ -2487,8 +2493,18 @@ impl ReviewRun<'_> {
             outcome
         };
 
-        let (proposal, changes_requested) = outcome?;
-        let findings = proposal.findings().count();
+        let (disposition, proposal, changes_requested) = outcome?;
+        let Some((findings, changes_requested, coverage)) = published_review_result(
+            disposition,
+            proposal.findings().count(),
+            changes_requested,
+            status::aggregate_coverage(&proposal),
+        ) else {
+            // The head moved, or the PR closed/merged, after the lanes ran.
+            // Leave the already-open umbrella check terminally NotReviewed;
+            // neither count the attempt nor kick off automerge.
+            return Ok(None);
+        };
         state.store.record_review(author, findings as u64).await?;
 
         // The review has just published its check runs and, when everything passed,
@@ -2511,7 +2527,6 @@ impl ReviewRun<'_> {
             installation,
         ));
 
-        let coverage = status::aggregate_coverage(&proposal);
         Ok(Some((findings, changes_requested, coverage)))
     }
 }
@@ -2536,6 +2551,18 @@ where
         return Ok(None);
     }
     work(pull_request).await.map(Some)
+}
+
+fn published_review_result(
+    disposition: crate::app::apply::ApplyDisposition,
+    findings: usize,
+    changes_requested: bool,
+    coverage: status::ReviewCoverage,
+) -> Option<(usize, bool, status::ReviewCoverage)> {
+    if disposition != crate::app::apply::ApplyDisposition::Published {
+        return None;
+    }
+    Some((findings, changes_requested, coverage))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {
@@ -3195,6 +3222,41 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(model.calls(), 1);
         assert_eq!(forge.writes().len(), 1);
+    }
+
+    #[test]
+    fn a_closed_publication_stays_not_reviewed_and_does_not_produce_success() {
+        let coverage = status::ReviewCoverage {
+            files: Default::default(),
+            unanswered_lane: false,
+        };
+        let result = published_review_result(
+            crate::app::apply::ApplyDisposition::Closed,
+            3,
+            true,
+            coverage,
+        );
+
+        assert!(
+            result.is_none(),
+            "closed publication must skip success effects"
+        );
+        assert!(matches!(review_conclusion(result), Conclusion::NotReviewed));
+        let terminal = status::not_reviewed("reviewed-head");
+        assert_eq!(
+            terminal.conclusion,
+            Some(crate::forge::CheckConclusion::Neutral)
+        );
+        let hub = crate::summary::failed(
+            "reviewed-head",
+            "This pass stopped before a review could be completed; the pull request may have closed or changed while it was running.",
+            None,
+        );
+        assert!(hub.contains("stopped because the pull request closed or changed"));
+        assert!(
+            !hub.contains("Error"),
+            "the summary is explanatory, not a raw error"
+        );
     }
 
     #[tokio::test]

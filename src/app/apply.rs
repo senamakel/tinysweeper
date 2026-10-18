@@ -17,6 +17,17 @@ use crate::ports::forge::{ForgeRead, ForgeWrite};
 use crate::ports::review_state::ReviewStateStore;
 use crate::{MARKER_PREFIX, VERSION};
 
+/// Whether a review proposal was published against the live pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDisposition {
+    /// The review was published (or was already present for this exact head).
+    Published,
+    /// The pull request head changed before publication.
+    Superseded,
+    /// The pull request was closed or merged before publication.
+    Closed,
+}
+
 /// A fully decided MCP issue creation.
 #[cfg(feature = "serve")]
 pub struct McpIssuePlan {
@@ -79,7 +90,7 @@ pub async fn apply(
     config: &Config,
     proposal: &Proposal,
     store: Option<&dyn ReviewStateStore>,
-) -> Result<()> {
+) -> Result<ApplyDisposition> {
     let repo = RepoId::parse(&proposal.repo)
         .ok_or_else(|| Error::Forge(format!("`{}` is not owner/name", proposal.repo)))?;
 
@@ -92,7 +103,7 @@ pub async fn apply(
             merged = live.merged,
             "pull request is closed; not publishing the review"
         );
-        return Ok(());
+        return Ok(ApplyDisposition::Closed);
     }
     if live.head_sha != proposal.head_sha {
         tracing::info!(
@@ -100,7 +111,7 @@ pub async fn apply(
             live = %live.head_sha,
             "head moved since the review; not publishing a stale verdict"
         );
-        return Ok(());
+        return Ok(ApplyDisposition::Superseded);
     }
 
     // Housekeeping first: threads this run decided are settled. Deterministic
@@ -298,7 +309,7 @@ pub async fn apply(
     // not be undone is reported as the failure it is.
     match withdrawal_failed {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => Ok(ApplyDisposition::Published),
     }
 }
 
@@ -1519,9 +1530,11 @@ mod tests {
                 ..PullRequest::default()
             });
 
-            apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+            let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
                 .await
                 .expect("closed pull requests are declined without publishing");
+
+            assert_eq!(disposition, ApplyDisposition::Closed);
 
             assert!(
                 forge.writes().is_empty(),
@@ -1565,10 +1578,11 @@ mod tests {
         // The review ran against a commit that has since been replaced.
         // Publishing would report on code nobody is looking at.
         let forge = forge("newer456");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
             .await
             .expect("returns cleanly");
 
+        assert_eq!(disposition, ApplyDisposition::Superseded);
         assert!(forge.wrote_nothing(), "{:#?}", forge.writes());
     }
 

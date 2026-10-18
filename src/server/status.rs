@@ -90,13 +90,30 @@ pub fn in_progress(head_sha: &str) -> CheckRun {
 /// beside a Changes Requested review. `findings` is rendered so the check is
 /// worth reading on its own, and because it is the one number that tells a
 /// contributor whether to go looking at the inline comments.
-pub fn completed(head_sha: &str, findings: usize, changes_requested: bool) -> CheckRun {
+pub fn completed(
+    head_sha: &str,
+    findings: usize,
+    changes_requested: bool,
+    coverage: Option<(usize, usize)>,
+) -> CheckRun {
     let counted = match findings {
         0 => "nothing to report".to_string(),
         1 => "1 finding".to_string(),
         many => format!("{many} findings"),
     };
-    let (conclusion, title) = if changes_requested {
+    let (conclusion, title) = if let Some((reviewed, total)) = coverage {
+        (
+            if changes_requested {
+                CheckConclusion::Neutral
+            } else {
+                CheckConclusion::Success
+            },
+            format!(
+                "Reviewed {reviewed} of {total} files — {} not reviewed",
+                total.saturating_sub(reviewed)
+            ),
+        )
+    } else if changes_requested {
         (
             CheckConclusion::Neutral,
             format!("Reviewed — changes requested, {counted}"),
@@ -173,7 +190,7 @@ mod tests {
         // the others.
         let err = crate::error::Error::Model("gateway returned 403".into());
         assert_eq!(in_progress("abc123").name, CHECK_NAME);
-        assert_eq!(completed("abc123", 0, false).name, CHECK_NAME);
+        assert_eq!(completed("abc123", 0, false, None).name, CHECK_NAME);
         assert_eq!(
             crate::server::failure::check_run("abc123", &err).name,
             CHECK_NAME
@@ -182,7 +199,7 @@ mod tests {
 
     #[test]
     fn completing_is_terminal_and_does_not_block() {
-        let check = completed("abc123", 3, false);
+        let check = completed("abc123", 3, false, None);
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
         assert!(!check.is_in_progress());
         assert!(
@@ -196,7 +213,7 @@ mod tests {
         // The trap this check would otherwise set: a green `tinysweeper/review`
         // sitting next to a red `tinysweeper/security`, read as a pass.
         for findings in [0, 1, 7] {
-            let check = completed("abc123", findings, false);
+            let check = completed("abc123", findings, false, None);
             assert!(
                 check.summary.contains("does not mean the code passed"),
                 "a liveness pass must disclaim being a verdict"
@@ -228,7 +245,7 @@ mod tests {
         // pushed again.
         let err = crate::error::Error::Model("gateway returned 403".into());
         for check in [
-            completed("abc123", 0, false),
+            completed("abc123", 0, false, None),
             not_reviewed("abc123"),
             crate::server::failure::check_run("abc123", &err),
         ] {
@@ -242,7 +259,7 @@ mod tests {
 
     #[test]
     fn a_review_that_requested_changes_never_concludes_green() {
-        let check = completed("abc123", 2, true);
+        let check = completed("abc123", 2, true, None);
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
         assert!(check.title.contains("changes requested"), "{}", check.title);
         assert!(check.title.contains("2 findings"), "{}", check.title);

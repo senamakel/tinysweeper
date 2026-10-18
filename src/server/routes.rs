@@ -891,9 +891,27 @@ async fn record_owned_disposition(
 ) -> Option<Result<bool>> {
     match disposition {
         WorkerDisposition::Terminal(TerminalOutcome::Deadline) => {
-            store.finish_deadline(owned, now_ms).await
+            let finished = store.finish_deadline(owned, now_ms).await?;
+            if !finished
+                && store.owns(owned, now_ms).await?
+                && !store.should_continue(owned, now_ms).await?
+            {
+                store.defer_yield(owned, now_ms).await
+            } else {
+                Ok(finished)
+            }
         }
-        WorkerDisposition::Terminal(outcome) => store.finish(owned, outcome, now_ms, now_ms).await,
+        WorkerDisposition::Terminal(outcome) => {
+            let finished = store.finish(owned, outcome, now_ms, now_ms).await?;
+            if !finished
+                && store.owns(owned, now_ms).await?
+                && !store.should_continue(owned, now_ms).await?
+            {
+                store.defer_yield(owned, now_ms).await
+            } else {
+                Ok(finished)
+            }
+        }
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(owned, now_ms, not_before_ms).await
         }
@@ -2589,6 +2607,23 @@ async fn handle_review(
                 // when the slot is empty. `NotReviewed` covers the one ordering
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
+                if let Err(err) = run.check_work(&state).await {
+                    if matches!(err, Error::ReviewSuperseded)
+                        && let Some(owned) = &owned
+                        && run.check_owner(&state).await.is_ok()
+                        && !state
+                            .review_jobs
+                            .should_continue(owned, unix_time_ms())
+                            .await
+                            .unwrap_or(true)
+                    {
+                        close_status(&state, &slot, Conclusion::NotReviewed).await;
+                        drop(permit);
+                        return WorkerDisposition::Yielded;
+                    }
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
                 let published = findings.is_some();
                 let conclusion = review_conclusion(findings);
                 if run.check_owner(&state).await.is_err() {
@@ -3130,7 +3165,7 @@ impl ReviewRun<'_> {
             // metadata phase above was bounded per call, not by the deadline, so
             // this is where a budget it exhausted is noticed.
             let lanes = match run.check(repo, number).map(|_| ()) {
-                Ok(()) => match run.check_owner(state).await {
+                Ok(()) => match run.check_work(state).await {
                     Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                         state,
                         &overlay.config,
@@ -3169,7 +3204,7 @@ impl ReviewRun<'_> {
                     let publish = std::panic::AssertUnwindSafe(async {
                 run.check_work(state).await?;
                         let write_token = state.auth.installation_token(installation).await?;
-                        run.check_owner(state).await?;
+                        run.check_work(state).await?;
                         // The review reader has already been held across all the
                         // model calls. Rebuild the publisher's reader with the
                         // credential acquired now so live-head validation and

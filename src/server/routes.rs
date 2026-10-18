@@ -2264,7 +2264,7 @@ async fn review_inner(
                     crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
                 })
                 .catch_unwind();
-                crate::review_timing::measure(
+                let published = crate::review_timing::measure(
                     Some(&run.timing),
                     "publish",
                     tokio::time::timeout(PUBLISH_DEADLINE, publish),
@@ -2418,16 +2418,16 @@ async fn run_lanes(
                     {
                         tracing::warn!(%repo, %err, "submodules not fetched for the review's tree");
                     }
-                    Some(checkout)
+                    Ok(Some(checkout))
                 }
                 Err(err) => {
                     tracing::warn!(%repo, %err, "no checkout for the review; lookups read through the forge");
-                    None
+                    Ok(None)
                 }
             }
         } else {
-            None
-        }}).await;
+            Ok(None)
+        }}).await?;
         // The review chains the forge reader behind whatever it is given, so a
         // path the shallow checkout lacks — a submodule that was not fetched —
         // is still read through the API.

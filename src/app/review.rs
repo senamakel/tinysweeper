@@ -526,6 +526,7 @@ pub async fn review_with_tree(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "review"))]
 pub async fn review_with_tree_observed(
     forge: &dyn ForgeRead,
     model: Arc<dyn Model>,
@@ -1149,12 +1150,12 @@ pub async fn review_with_tree_observed(
                     model.as_ref(),
                 )
                 .await?;
-                (Some(outcome.set), outcome.spend)
+                Ok((Some(outcome.set), outcome.spend))
             } else {
-                (None, Spend::default())
+                Ok((None, Spend::default()))
             }
         })
-        .await;
+        .await?;
     spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {

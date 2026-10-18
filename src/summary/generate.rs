@@ -169,6 +169,7 @@ pub async fn generate_with_diffstat(
 
     let mut summary = deterministic(config, pull_request, diffs, lanes, prior);
     summary.cache_chain_restarted = restarted;
+    sanitize_prior_narrative(&mut summary, lanes, &lane_statuses);
     let mut spend = Spend::default();
     let first = match model.complete(request.clone()).await {
         Ok(response) => response,
@@ -503,9 +504,7 @@ fn validated_model_narrative(
 }
 
 fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneReviewStatus {
-    if lane.conclusion == crate::forge::types::CheckConclusion::Neutral
-        && lane.summary.trim_start().starts_with("Skipped:")
-    {
+    if lane.skipped.is_some() {
         return LaneReviewStatus::Skipped;
     }
     if let Some(coverage) = &lane.coverage {
@@ -516,11 +515,13 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
                 LaneReviewStatus::Answered
             };
         }
+        let unanswered: BTreeSet<&str> = coverage.unanswered.iter().map(String::as_str).collect();
         let reviewed: BTreeSet<&str> = coverage
             .reviewed
             .iter()
             .map(String::as_str)
             .filter(|path| changed_paths.contains(*path))
+            .filter(|path| !unanswered.contains(path))
             .collect();
         let count = reviewed.len();
         if count == 0 {
@@ -546,6 +547,54 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
         // that a reviewer answered.
         LaneReviewStatus::NoResponse
     }
+}
+
+fn sanitize_prior_narrative(
+    summary: &mut ReviewSummary,
+    lanes: &[LaneProposal],
+    statuses: &BTreeMap<String, LaneReviewStatus>,
+) {
+    summary.executive_summary =
+        validated_model_narrative(&summary.executive_summary, statuses)
+            .unwrap_or_else(|| fallback_executive(lanes));
+    summary.changes = validated_model_narrative(&summary.changes, statuses).unwrap_or_default();
+    summary.features.retain_mut(|feature| {
+        let Some(name) = validated_model_narrative(&feature.name, statuses) else {
+            return false;
+        };
+        let Some(impact) = validated_model_narrative(&feature.impact, statuses) else {
+            return false;
+        };
+        feature.name = name;
+        feature.impact = impact;
+        true
+    });
+    summary.tests.retain_mut(|test| {
+        let Some(kind) = validated_model_narrative(&test.kind, statuses) else {
+            return false;
+        };
+        let Some(behavior) = validated_model_narrative(&test.behavior, statuses) else {
+            return false;
+        };
+        let Some(assessment) = validated_model_narrative(&test.assessment, statuses) else {
+            return false;
+        };
+        test.kind = kind;
+        test.behavior = behavior;
+        test.assessment = assessment;
+        true
+    });
+    summary.positive_observations.retain(|lane, observations| {
+        statuses
+            .get(lane.as_str())
+            .is_some_and(|status| matches!(status, LaneReviewStatus::Answered))
+            && {
+                observations.retain(|observation| {
+                    validated_model_narrative(observation, statuses).is_some()
+                });
+                !observations.is_empty()
+            }
+    });
 }
 
 fn claims_unsupported_lane_success(

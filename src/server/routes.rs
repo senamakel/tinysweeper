@@ -3300,7 +3300,11 @@ mod tests {
 
         assert!(matches!(result, Err(Error::ReviewCapacityFull)));
         assert_eq!(reads.load(Ordering::SeqCst), 0);
-        assert_eq!(sender.capacity(), 1, "failed reservation leaves queue intact");
+        assert_eq!(
+            sender.capacity(),
+            1,
+            "failed reservation leaves queue intact"
+        );
     }
 
     #[tokio::test]

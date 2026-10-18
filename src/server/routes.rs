@@ -2848,7 +2848,7 @@ where
     Start: FnOnce() -> StartFuture,
     StartFuture: std::future::Future<Output = Result<()>>,
     OpenStatus: FnOnce() -> OpenStatusFuture,
-    OpenStatusFuture: std::future::Future<Output = bool>,
+    OpenStatusFuture: std::future::Future<Output = Result<bool>>,
     Review: FnOnce() -> ReviewFuture,
     ReviewFuture: std::future::Future<Output = Result<InnerReview>>,
 {
@@ -2861,7 +2861,7 @@ where
     } else {
         start().await?;
     }
-    let go_on = open_status().await;
+    let go_on = open_status().await?;
     continue_after_open_status(go_on, review).await
 }
 
@@ -3002,6 +3002,7 @@ impl ReviewRun<'_> {
                     installation,
                 )
                 .await
+                .map_err(Error::from)
             },
             || async {
                 run.check_owner(state).await?;

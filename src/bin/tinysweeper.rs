@@ -920,6 +920,22 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
 
+/// Describe whether applying a proposal actually published its review.
+fn apply_confirmation(
+    disposition: tinysweeper::app::apply::ApplyDisposition,
+    check_runs: usize,
+) -> String {
+    use tinysweeper::app::apply::ApplyDisposition;
+
+    match disposition {
+        ApplyDisposition::Published => format!("published {check_runs} check run(s)"),
+        ApplyDisposition::Superseded => {
+            "skipped publishing: the pull request head changed before publication".into()
+        }
+        ApplyDisposition::Closed => "skipped publishing: the pull request is closed or merged".into(),
+    }
+}
+
 /// Publish a proposal. No model key reaches this path.
 #[cfg(feature = "github")]
 async fn run_apply(repo: &str, pr: u64, findings: &std::path::Path) -> Result<()> {
@@ -935,9 +951,9 @@ async fn run_apply(repo: &str, pr: u64, findings: &std::path::Path) -> Result<()
     let loaded = tinysweeper::config::load_validated(std::path::Path::new("."), None)?;
     let read = GitHubRead::from_env()?;
     let write = GitHubWrite::from_env()?;
-    tinysweeper::app::apply(&read, &write, &loaded.config, &proposal, None).await?;
+    let disposition = tinysweeper::app::apply(&read, &write, &loaded.config, &proposal, None).await?;
 
-    println!("published {} check run(s)", proposal.lanes.len());
+    println!("{}", apply_confirmation(disposition, proposal.lanes.len()));
     Ok(())
 }
 

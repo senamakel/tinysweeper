@@ -1470,11 +1470,18 @@ mod tests {
     #[tokio::test]
     async fn a_check_run_is_published_per_lane() {
         let forge = forge("abc123");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].summary = "Reviewed 8 of 10 files — 2 not reviewed.".into();
+        proposal.lanes[0].unanswered = vec!["a.rs".into(), "b.rs".into()];
+        apply(&forge, &forge, &config(), &proposal, None)
             .await
             .expect("applies");
 
         let checks = forge.checks();
+        assert_eq!(
+            checks["tinysweeper/critique"].title,
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
         assert_eq!(
             checks["tinysweeper/critique"].conclusion,
             Some(CheckConclusion::Success)

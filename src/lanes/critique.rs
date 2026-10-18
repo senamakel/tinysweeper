@@ -52,8 +52,8 @@ use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
-use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 use crate::ports::tree::{Found, Lookup, TreeReader};
+use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 
 /// A successful, typed source read from the reviewed head.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,9 +579,7 @@ async fn review_group(
                     false
                 };
                 if !supported {
-                    finding.confidence = finding
-                        .confidence
-                        .min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+                    finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
                     capped_for_degraded_context += 1;
                 }
             }
@@ -884,9 +882,7 @@ fn summarise(
             "Nothing to report confidently. Unsupported module claims were kept at Likely confidence."
                 .to_string()
         } else {
-            format!(
-                "Unsupported module claims were kept at Likely confidence: {titles}."
-            )
+            format!("Unsupported module claims were kept at Likely confidence: {titles}.")
         }
     } else if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected

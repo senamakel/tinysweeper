@@ -8,7 +8,7 @@
 
 use crate::config::types::{LaneId, Severity};
 use crate::findings::types::Finding;
-use crate::markdown::{code_block, code_span, prose, table_cell};
+use crate::markdown::{code_block, code_span, prose, table_cell, table_code_span};
 use crate::ports::model::Usage;
 
 /// Colour and label for each severity, as a shields.io badge.
@@ -118,7 +118,7 @@ pub fn lane_summary(
             "| {} | {} | {} |\n",
             badge(finding.severity),
             escape_cell(&finding.title),
-            table_cell(&format!(
+            table_code_span(&format!(
                 "{}{}",
                 finding.path,
                 finding.line.map(|l| format!(":{l}")).unwrap_or_default()

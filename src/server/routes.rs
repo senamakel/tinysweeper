@@ -2091,8 +2091,8 @@ async fn review_open_pull_request(
     installation: u64,
     run: &Run,
     repo_id: &RepoId,
-    read_token: &str,
-    forge: &dyn crate::ports::forge::ForgeRead,
+    read_token: &String,
+    forge: &crate::forge::github::GitHubRead,
     pull_request: PullRequest,
 ) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     // Comment and review-comment deliveries do not carry the draft flag, so
@@ -2118,7 +2118,7 @@ async fn review_open_pull_request(
             state.index_permits.clone(),
             repo_id.clone(),
             pull_request.head_sha.clone(),
-            read_token.clone(),
+            read_token.to_owned(),
         ));
     }
 
@@ -2188,7 +2188,7 @@ async fn review_open_pull_request(
         // the branch under review would let a pull request grade its own
         // exam. See `crate::config::remote`.
         let overlay = crate::config::remote::overlay(
-            &forge,
+            forge,
             &repo_id,
             &pull_request.base_sha,
             &state.config.config,
@@ -2204,7 +2204,7 @@ async fn review_open_pull_request(
             open_review_hub(
                 state,
                 &run.slot,
-                &forge,
+                forge,
                 &overlay.config,
                 &repo_id,
                 number,
@@ -2226,7 +2226,7 @@ async fn review_open_pull_request(
                 &overlay.config,
                 &repo_id,
                 number,
-                &forge,
+                forge,
                 &read_token,
                 run,
             ))

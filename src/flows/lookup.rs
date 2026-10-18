@@ -540,8 +540,14 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
                 .unwrap_or(text)
                 .strip_prefix("mod ")?;
             let name = declaration.strip_suffix(';')?.trim();
-            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                .then(|| parent.join(format!("{name}.rs")).to_string_lossy().into_owned())
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(
+                || {
+                    parent
+                        .join(format!("{name}.rs"))
+                        .to_string_lossy()
+                        .into_owned()
+                },
+            )
         })
         .collect()
 }
@@ -552,8 +558,11 @@ fn added_function_name(text: &str) -> Option<&str> {
     let tail = &text[start..];
     let end = tail.find('(')?;
     let name = tail[..end].trim();
-    (!name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-        .then_some(name)
+    (!name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    .then_some(name)
 }
 
 impl Ledger {
@@ -612,11 +621,12 @@ impl Ledger {
                 if !self.seen.insert(lookup.key()) {
                     continue;
                 }
-                let result = tree.lookup(&lookup).await.unwrap_or_else(|err| {
-                    Found::Unavailable {
+                let result = tree
+                    .lookup(&lookup)
+                    .await
+                    .unwrap_or_else(|err| Found::Unavailable {
                         reason: err.to_string(),
-                    }
-                });
+                    });
                 let body = format!(
                     "\n### Declared module `{path}` at the reviewed head\n\n{}\n",
                     render_found(&result)
@@ -1099,8 +1109,7 @@ mod tests {
             .await;
 
         assert!(
-            seeded.rendered.contains("src/foo.rs")
-                && seeded.rendered.contains("pub fn added_api"),
+            seeded.rendered.contains("src/foo.rs") && seeded.rendered.contains("pub fn added_api"),
             "a module declaration must read the module file at the reviewed head: {}",
             seeded.rendered
         );

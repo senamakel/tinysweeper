@@ -1092,7 +1092,11 @@ mod tests {
         });
 
         assert!(prompt.suffix().contains("index is degraded"));
-        assert!(prompt.suffix().contains("does not prove that a file, module, or caller is missing"));
+        assert!(
+            prompt
+                .suffix()
+                .contains("does not prove that a file, module, or caller is missing")
+        );
     }
 
     #[test]

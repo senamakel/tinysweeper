@@ -1305,7 +1305,9 @@ fn annotate_prior(
         .zip(annotate(titles, severities))
         .map(|(title, annotated)| {
             if disputed.contains(title.as_str()) {
-                format!("[disputed by maintainer; verify against current-head evidence] {annotated}")
+                format!(
+                    "[disputed by maintainer; verify against current-head evidence] {annotated}"
+                )
             } else {
                 annotated
             }

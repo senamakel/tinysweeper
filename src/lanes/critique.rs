@@ -347,12 +347,7 @@ async fn review_group(
     // filter can only reject, so more inputs in one pass is identical semantics
     // at a fraction of the calls.
     let filtered = Falsifier::new(llm.model().as_ref(), config)
-        .filter_with(
-            LaneId::Critique,
-            findings,
-            &falsifier_evidence,
-            &looked_up,
-        )
+        .filter_with(LaneId::Critique, findings, &falsifier_evidence, &looked_up)
         .await;
     spend.merge(filtered.spend);
 
@@ -520,8 +515,8 @@ async fn review_group(
     // findings retain their direct diff evidence and are unaffected.
     if input.retrieval_status.is_degraded() {
         findings.retain(|finding| {
-            let supported = !finding.late
-                || looked_up.lines().any(|line| line.contains(&finding.path));
+            let supported =
+                !finding.late || looked_up.lines().any(|line| line.contains(&finding.path));
             if !supported {
                 withheld_for_degraded_context += 1;
             }
@@ -1247,15 +1242,9 @@ fn helper() {
                 "src/lib.rs",
                 "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
             ),
-            parse_file_patch(
-                "src/foo.rs",
-                "@@ -0,0 +1,1 @@\n+pub fn foo() {}\n",
-            ),
+            parse_file_patch("src/foo.rs", "@@ -0,0 +1,1 @@\n+pub fn foo() {}\n"),
         ];
-        let tree = crate::ports::tree::MockTree::from_files([(
-            "src/foo.rs",
-            "pub fn foo() {}\n",
-        )]);
+        let tree = crate::ports::tree::MockTree::from_files([("src/foo.rs", "pub fn foo() {}\n")]);
         let model = Arc::new(AddedModuleModel::default());
 
         let outcome = Critique::new(model.clone())
@@ -1293,8 +1282,7 @@ fn helper() {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            falsifier_prompt.contains("src/foo.rs")
-                && falsifier_prompt.contains("pub fn foo()"),
+            falsifier_prompt.contains("src/foo.rs") && falsifier_prompt.contains("pub fn foo()"),
             "falsification must see the added file even though another group owns it: {falsifier_prompt}"
         );
         assert!(
@@ -2464,3 +2452,4 @@ fn helper() {
             assert!(!system.contains("These files only"), "{system}");
         }
     }
+}

@@ -2394,6 +2394,7 @@ async fn run_lanes(
     // same policy, not the deployment's policy instead.
 
     let config = config_for(config, run.mode);
+    let config_ref = &config;
 
     // The deadline bounds the checkout and the lanes — everything that can
     // take minutes and nothing that must not be cut short. `timeout_at` drops
@@ -2401,15 +2402,20 @@ async fn run_lanes(
     // flight. The checkout sits inside it so that a deadline already in the
     // past — a retry after a slow failure — resolves at once, before a clone
     // is even started, which is the intended way of refusing the retry.
-    let review = async {
-        // The tree the reviewers may look things up in. A shallow checkout of
-        // the head when `[lookup].checkout` allows it — one commit, no history,
-        // no hooks, the same fetch the indexer makes — so search works and a
-        // read costs no API call; the forge reader behind it for what a shallow
-        // checkout lacks, such as a submodule that was not fetched. Read-only
-        // either way: the token here is the review-read one the forge already
-        // holds, and the checkout is deleted with the review.
-        let checkout = crate::review_timing::measure(Some(&run.timing), "checkout", async { if config.lookup.enabled && config.lookup.checkout {
+    // The tree the reviewers may look things up in. A shallow checkout of
+    // the head when `[lookup].checkout` allows it — one commit, no history,
+    // no hooks, the same fetch the indexer makes — so search works and a
+    // read costs no API call; the forge reader behind it for what a shallow
+    // checkout lacks, such as a submodule that was not fetched. Read-only
+    // either way: the token here is the review-read one the forge already
+    // holds, and the checkout is deleted with the review.
+    let proposal = checkout_then_review_before_deadline(
+        &run.timing,
+        run.deadline,
+        repo,
+        number,
+        || async {
+            if config_ref.lookup.enabled && config_ref.lookup.checkout {
             let head = forge.pull_request(repo, number).await?.head_sha;
             match crate::indexer::fetch::Checkout::fetch(
                 &super::indexing::git_host(),
@@ -2420,12 +2426,12 @@ async fn run_lanes(
             .await
             {
                 Ok(checkout) => {
-                    if !config.retrieval.submodules.is_empty()
+                    if !config_ref.retrieval.submodules.is_empty()
                         && let Err(err) = checkout
                             .fetch_submodules(
                                 &super::indexing::git_host(),
                                 read_token,
-                                &config.retrieval.submodules,
+                                &config_ref.retrieval.submodules,
                             )
                             .await
                     {
@@ -2438,12 +2444,14 @@ async fn run_lanes(
                     Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
                 }
             }
-        } else {
-            Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
-        }}).await?;
-        // The review chains the forge reader behind whatever it is given, so a
-        // path the shallow checkout lacks — a submodule that was not fetched —
-        // is still read through the API.
+            } else {
+                Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
+            }
+        },
+        |checkout| async move {
+            // The review chains the forge reader behind whatever it is given,
+            // so a path the shallow checkout lacks — a submodule that was not
+            // fetched — is still read through the API.
         let dir_tree = checkout
             .as_ref()
             .map(|c| crate::ports::tree::DirTree::new(c.path()).at_revision(c.revision()));
@@ -2454,7 +2462,7 @@ async fn run_lanes(
         crate::app::review::review_with_tree_observed(
             forge,
             model,
-            &config,
+            config_ref.as_ref(),
             repo,
             number,
             Some(&state.store),
@@ -2464,8 +2472,9 @@ async fn run_lanes(
             Some(run.timing.clone()),
         )
         .await
-    };
-    let proposal = review_before_deadline(&run.timing, run.deadline, repo, number, review).await?;
+        },
+    )
+    .await?;
 
     Ok((config.into_owned(), proposal))
 }
@@ -2492,6 +2501,37 @@ where
             ))
         }
     }
+}
+
+/// Measure checkout separately while bounding checkout and review as one
+/// cancellable server stage. This is the production boundary used by both the
+/// route and MockForge/MockModel lifecycle tests.
+async fn checkout_then_review_before_deadline<
+    C,
+    R,
+    Checkout,
+    CheckoutFuture,
+    Review,
+    ReviewFuture,
+>(
+    timing: &crate::review_timing::ReviewTiming,
+    deadline: tokio::time::Instant,
+    repo: &RepoId,
+    number: u64,
+    checkout: Checkout,
+    review: Review,
+) -> Result<R>
+where
+    Checkout: FnOnce() -> CheckoutFuture,
+    CheckoutFuture: std::future::Future<Output = Result<C>>,
+    Review: FnOnce(C) -> ReviewFuture,
+    ReviewFuture: std::future::Future<Output = Result<R>>,
+{
+    let pipeline = async {
+        let checkout = crate::review_timing::measure(Some(timing), "checkout", checkout()).await?;
+        review(checkout).await
+    };
+    review_before_deadline(timing, deadline, repo, number, pipeline).await
 }
 
 /// The UI preview routes' way into the brain.
@@ -2929,12 +2969,16 @@ mod tests {
             None,
             Some(timing.clone()),
         );
-        let error = review_before_deadline(
+        let error = checkout_then_review_before_deadline(
             &timing,
             tokio::time::Instant::now() + std::time::Duration::from_millis(80),
             &repo,
             7,
-            future,
+            || async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok::<(), Error>(())
+            },
+            |_| future,
         )
         .await
         .expect_err("the server deadline cancels the delayed model call");
@@ -2946,6 +2990,7 @@ mod tests {
         assert_eq!(record.files_answered, 0);
         assert_eq!(record.files_unanswered, 1);
         assert!(record.phases_ms.contains_key("context"));
+        assert!(record.phases_ms["checkout"] > 0);
         assert!(record.phases_ms["lanes"] > 0);
         assert_eq!(record.calls_attempted, 1);
         assert_eq!(record.calls_errored, 1);

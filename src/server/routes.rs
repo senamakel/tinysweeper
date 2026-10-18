@@ -2277,16 +2277,23 @@ async fn review_inner(
                         PUBLISH_DEADLINE,
                     )
                 });
-                published
+                let publish_result = published
                     .and_then(|published| {
                         published
                             .unwrap_or_else(|_| Err(Error::lane("review", "publishing panicked")))
-                    })
-                    .map(|()| {
+                    });
+                match publish_result {
+                    Ok(crate::app::apply::ApplyDisposition::Published) => {
                         let changes_requested =
                             crate::app::apply::requests_changes(&config, &proposal);
-                        (proposal, changes_requested)
-                    })
+                        Ok(Some((proposal, changes_requested)))
+                    }
+                    Ok(crate::app::apply::ApplyDisposition::Superseded) => {
+                        run.timing.finish("superseded");
+                        Ok(None)
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Err(err) => Err(err),
         };
@@ -2301,7 +2308,9 @@ async fn review_inner(
         outcome
     };
 
-    let (proposal, changes_requested) = outcome?;
+    let Some((proposal, changes_requested)) = outcome? else {
+        return Ok(None);
+    };
     let findings = proposal.findings().count();
     state.store.record_review(author, findings as u64).await?;
 

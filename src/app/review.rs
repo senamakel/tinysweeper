@@ -2258,6 +2258,16 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[derive(Clone)]
+    struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for TimingLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
     #[tokio::test]
     async fn an_observed_mock_review_records_phase_lane_model_and_file_telemetry() {
         let forge = forge_with(vec![rust_file()], vec![]);
@@ -2357,10 +2367,18 @@ mod tests {
         assert_eq!(record.outcome, "deadline");
         assert!(record.calls_attempted > 0);
         assert_eq!(record.calls_succeeded, 0);
-        assert_eq!(
-            record.phases_ms.get("lanes").copied().unwrap_or_default() > 0,
-            true
-        );
+        assert!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0);
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("review timing"));
+        assert!(line.contains("outcome=\"deadline\""), "{line}");
     }
 
     fn config() -> Config {

@@ -818,29 +818,12 @@ async fn run_owned_review(
     }
 
     let (lost_tx, lost_rx) = watch::channel(false);
-    let heartbeat_store = store.clone();
-    let heartbeat_job = owned.clone();
-    let heartbeat = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-            match heartbeat_store
-                .renew(&heartbeat_job, unix_time_ms())
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    let _ = lost_tx.send(true);
-                    return;
-                }
-                Err(err) => {
-                    tracing::error!(%err, "could not renew durable review ownership");
-                    let _ = lost_tx.send(true);
-                    return;
-                }
-            }
-        }
-    });
-    let _heartbeat_guard = AbortOnDrop(heartbeat);
+    let _heartbeat_guard = spawn_review_heartbeat(
+        store.clone(),
+        owned.clone(),
+        lost_tx,
+        std::time::Duration::from_secs(15),
+    );
 
     let request = &owned.request;
     let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
@@ -888,6 +871,31 @@ impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+fn spawn_review_heartbeat(
+    store: Arc<dyn ReviewJobStore>,
+    owned: OwnedReview,
+    lost: watch::Sender<bool>,
+    interval: std::time::Duration,
+) -> AbortOnDrop<()> {
+    AbortOnDrop(tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            match store.renew(&owned, unix_time_ms()).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = lost.send(true);
+                    return;
+                }
+                Err(err) => {
+                    tracing::error!(%err, "could not renew durable review ownership");
+                    let _ = lost.send(true);
+                    return;
+                }
+            }
+        }
+    }))
 }
 
 /// Claim the delivery, then run whatever it asked for.

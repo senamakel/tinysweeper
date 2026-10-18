@@ -303,5 +303,9 @@ mod tests {
         assert!(
             citation("src/arr[0].rs:7", "acme/widget", "abc123").contains("src/arr%5B0%5D.rs#L7")
         );
+        assert_eq!(
+            citation("src/arr[`0`].rs:7", "acme/widget", "abc123"),
+            "[`` src/arr[`0`].rs:7 ``](https://github.com/acme/widget/blob/abc123/src/arr%5B%600%60%5D.rs#L7)"
+        );
     }
 }

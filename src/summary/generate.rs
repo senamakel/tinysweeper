@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(model.calls(), 2);
         assert_eq!(
             summary.executive_summary,
-            "Pull request purpose (title): Enforce speech privacy. The pull request preserves its stated purpose."
+            "The pull request preserves its stated purpose."
         );
         assert_eq!(
             summary.positive_observations[&LaneId::Critique],

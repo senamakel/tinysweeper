@@ -2154,6 +2154,29 @@ mod budget_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maintainer_disputed_findings_keep_their_status_in_prompt_annotations() {
+        let title = "Reject the stale caller contract".to_string();
+        let prior = PriorReview {
+            anchors: vec![crate::findings::prior::PostedAnchor {
+                lane: None,
+                path: "src/api.rs".into(),
+                line: Some(12),
+                start_line: None,
+                title: Some(title.clone()),
+                text: None,
+                rule: None,
+                source: crate::findings::prior::AnchorSource::Declined,
+            }],
+            ..PriorReview::default()
+        };
+
+        let annotated = annotate_prior(&[title], &BTreeMap::new(), &prior);
+
+        assert!(annotated[0].starts_with("[disputed by maintainer; verify against current-head evidence]"));
+        assert!(annotated[0].contains("Reject the stale caller contract"));
+    }
     use crate::forge::types::{ChangedFile, FileStatus, PullRequest, ReviewThread, ThreadComment};
     use crate::forge::{MockForge, MockState};
     use crate::harness::mock::MockModel;

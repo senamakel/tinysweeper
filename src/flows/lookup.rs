@@ -717,9 +717,39 @@ The definitions of what the changed lines call into,                  read from 
             if self.seen.contains(&lookup.key()) {
                 continue;
             }
-            let Ok(Found::Hits { hits, .. }) = tree.lookup(&lookup).await else {
+            let found = tree.lookup(&lookup).await.unwrap_or_else(|err| {
+                Found::Unavailable {
+                    reason: err.to_string(),
+                }
+            });
+            let Found::Hits { hits, .. } = &found else {
+                self.seen.insert(lookup.key());
+                let body = format!(
+                    "\n### {} at the reviewed head\n\n{}\n",
+                    lookup.key(),
+                    render_found(&found)
+                );
+                if self.chars + body.len() <= policy.max_chars {
+                    self.chars += body.len();
+                    *answered += 1;
+                    rendered.push_str(&body);
+                }
                 continue;
             };
+            if hits.is_empty() {
+                self.seen.insert(lookup.key());
+                let body = format!(
+                    "\n### {} at the reviewed head\n\n{}\n",
+                    lookup.key(),
+                    render_found(&found)
+                );
+                if self.chars + body.len() <= policy.max_chars {
+                    self.chars += body.len();
+                    *answered += 1;
+                    rendered.push_str(&body);
+                }
+                continue;
+            }
             // A definition already in the diff is not looked up; one in
             // the same file but outside every hunk is — it is exactly as
             // invisible to the reviewer as one in another file, and the
@@ -930,6 +960,36 @@ mod tests {
             max_chars: 200,
             checkout: false,
         }
+    }
+
+    #[tokio::test]
+    async fn a_declared_module_keeps_missing_distinct_from_unavailable_at_head() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,2 @@\n fn main() {}\n+pub mod foo;\n",
+        );
+        let read = Lookup::Read {
+            path: "src/foo.rs".into(),
+            start: None,
+            end: None,
+        };
+        let unavailable = MockTree::from_recorded(
+            [(read.key(), Found::Unavailable {
+                reason: "submodule is not checked out".into(),
+            })]
+            .into_iter()
+            .collect(),
+        );
+        let mut ledger = Ledger::default();
+        let unavailable = ledger.seed(&unavailable, &[diff.clone()], &policy()).await;
+        assert!(unavailable.rendered.contains("Not available: submodule is not checked out"));
+        assert!(!unavailable.rendered.contains("No such file at this commit"));
+
+        let missing = MockTree::from_recorded([(read.key(), Found::NotFound)].into_iter().collect());
+        let mut ledger = Ledger::default();
+        let missing = ledger.seed(&missing, &[diff], &policy()).await;
+        assert!(missing.rendered.contains("No such file at this commit"));
+        assert!(!missing.rendered.contains("Not available:"));
     }
 
     #[test]

@@ -80,6 +80,7 @@ impl ObservedModel {
                     r.calls_refused += usage.calls_refused;
                     r.calls_errored += usage.calls_errored;
                 } else if error.to_string().to_lowercase().contains("refus")
+                    || error.to_string().to_lowercase().contains("budget")
                     || matches!(error, Error::Budget { .. })
                 {
                     r.calls_attempted += 1;
@@ -93,7 +94,13 @@ impl ObservedModel {
                 }
             }),
         }
-        tracing::info!(model = %request.model, latency_ms, "observed model call");
+        let physical_attempts = result
+            .as_ref()
+            .map(|response| response.usage.calls_attempted)
+            .unwrap_or_else(|error| error.usage().map_or(0, |usage| usage.calls_attempted));
+        if physical_attempts == 0 {
+            tracing::info!(model = %request.model, latency_ms, succeeded = result.is_ok(), "model call");
+        }
         result
     }
 }
@@ -2428,6 +2435,9 @@ mod tests {
         timing.finish("deadline");
         let record = timing.snapshot();
         assert_eq!(record.outcome, "deadline");
+        assert_eq!(record.files_total, 1);
+        assert_eq!(record.files_unanswered, 1);
+        assert_eq!(record.files_answered, 0);
         assert!(record.calls_attempted > 0);
         assert_eq!(record.calls_succeeded, 0);
         assert!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0);

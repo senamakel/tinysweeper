@@ -541,6 +541,10 @@ mod tests {
             input_tokens: input,
             output_tokens: output,
             reasoning_tokens: 0,
+            calls_attempted: 0,
+            calls_succeeded: 0,
+            calls_refused: 0,
+            calls_errored: 0,
             cached_tokens: cached,
             embed_tokens: 0,
         }

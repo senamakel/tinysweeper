@@ -3005,7 +3005,7 @@ mod tests {
             "This pass stopped before a review could be completed; the pull request may have closed or changed while it was running.",
             None,
         );
-        assert!(hub.contains("pull request may have closed or changed"));
+        assert!(hub.contains("stopped because the pull request closed or changed"));
         assert!(!hub.contains("Error"), "the summary is explanatory, not a raw error");
     }
 

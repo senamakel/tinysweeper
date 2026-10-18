@@ -1376,6 +1376,65 @@ where
     result
 }
 
+async fn enqueue_manual_jobs<'a, F>(
+    sender: &mpsc::Sender<QueuedReview>,
+    repo: &str,
+    installation: u64,
+    numbers: Vec<u64>,
+    mut resolve: F,
+) -> Result<Vec<u64>>
+where
+    F: FnMut(
+        u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::forge::types::PullRequest>> + Send + 'a>,
+    >,
+{
+    // Reserve the whole expansion before per-PR reads, then publish none until
+    // all resolutions succeed. Dropping this iterator returns every slot on an
+    // error, so a partial manual expansion cannot leak queue capacity or jobs.
+    let mut queue_slots = sender
+        .try_reserve_many(numbers.len())
+        .map_err(|_| Error::ReviewCapacityFull)?;
+
+    let mut jobs = Vec::with_capacity(numbers.len());
+    for number in numbers {
+        let pull_request = resolve(number).await?;
+        let action = Action::Review {
+            repo: repo.to_owned(),
+            number,
+            author: pull_request.author,
+            installation,
+            head_sha: Some(pull_request.head_sha),
+        };
+        let job = QueuedReview {
+            action,
+            delivery: None,
+            event: "manual-review".into(),
+            mode: Mode::Full,
+            queued_at: tokio::time::Instant::now(),
+        };
+        queue_slots.next().expect("reserved queue slot").send(job);
+        jobs.push((
+            number,
+            QueuedReview {
+                action: Action::Ignore("temporary red proof"),
+                delivery: None,
+                event: String::new(),
+                mode: Mode::Full,
+                queued_at: tokio::time::Instant::now(),
+            },
+        ));
+    }
+
+    let mut queued = Vec::with_capacity(jobs.len());
+    for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
+        slot.send(job);
+        queued.push(number);
+    }
+    Ok(queued)
+}
+
 #[async_trait::async_trait]
 impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
@@ -1404,49 +1463,18 @@ impl FullReviews for ManualDispatch {
                 None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
             };
 
-            // Reserve the whole expansion atomically before reading each PR head,
-            // so an overflow cannot leave a partially queued manual request.
-            let queue_slots = self
-                .state
-                .review_queue
-                .try_reserve_many(numbers.len())
-                .map_err(|_| Error::ReviewCapacityFull)?;
-
-            let mut jobs = Vec::with_capacity(numbers.len());
-            for number in numbers {
-                // The author is what the trust check is about, and only the pull
-                // request knows it. One extra read per queued review, on a path
-                // used a few times a year.
-                let pull_request = {
-                    use crate::ports::forge::ForgeRead;
-                    forge.pull_request(repo, number).await?
-                };
-                let action = Action::Review {
-                    repo: repo.to_string(),
-                    number,
-                    author: pull_request.author,
-                    installation,
-                    head_sha: Some(pull_request.head_sha),
-                };
-                jobs.push((
-                    number,
-                    QueuedReview {
-                        action,
-                        delivery: None,
-                        event: "manual-review".into(),
-                        mode: Mode::Full,
-                        queued_at: tokio::time::Instant::now(),
-                    },
-                ));
-            }
-
-            let mut queued = Vec::with_capacity(jobs.len());
-            for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
-                slot.send(job);
-                queued.push(number);
-            }
-
-            Ok(queued)
+            // The author is what trust checks use; enqueue only once every
+            // requested PR has resolved successfully.
+            use crate::ports::forge::ForgeRead;
+            let repo_name = repo.to_string();
+            enqueue_manual_jobs(
+                &self.state.review_queue,
+                &repo_name,
+                installation,
+                numbers,
+                |number| Box::pin(forge.pull_request(repo, number)),
+            )
+            .await
         })
         .await
     }
@@ -3210,6 +3238,43 @@ mod tests {
         with_manual_review_admission(permits.clone(), || async { Ok(()) })
             .await
             .expect("a cancelled expansion does not strand capacity");
+    }
+
+    #[tokio::test]
+    async fn a_failed_manual_expansion_releases_all_slots_without_partial_jobs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (sender, mut receiver) = mpsc::channel(2);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed = reads.clone();
+        let result = enqueue_manual_jobs(&sender, "owner/repo", 1, vec![7, 8], move |number| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                if number == 8 {
+                    return Err(Error::Forge("simulated second PR read failure".into()));
+                }
+                Ok(crate::forge::types::PullRequest {
+                    number,
+                    author: "contributor".into(),
+                    head_sha: "head".into(),
+                    ..Default::default()
+                })
+            })
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Forge(_))));
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            sender.capacity(),
+            2,
+            "all reserved queue slots are returned"
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

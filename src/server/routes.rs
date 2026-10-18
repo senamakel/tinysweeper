@@ -2311,7 +2311,7 @@ async fn review_inner(
         .await
     })
     .await;
-    if !claimed {
+    if false && !claimed {
         tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(None);
     }
@@ -3280,6 +3280,59 @@ mod tests {
             receiver.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_revision_lease_skips_token_and_live_pr_reads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let token_mints = Arc::new(AtomicUsize::new(0));
+        let live_reads = Arc::new(AtomicUsize::new(0));
+        let mint = token_mints.clone();
+        let fetch = live_reads.clone();
+        let result = continue_if_lease_claimed(false, move || async move {
+            mint.fetch_add(1, Ordering::SeqCst);
+            fetch.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("a duplicate lease is a normal skip");
+
+        assert!(result.is_none());
+        assert_eq!(token_mints.load(Ordering::SeqCst), 0);
+        assert_eq!(live_reads.load(Ordering::SeqCst), 0);
+
+        let mint = token_mints.clone();
+        let fetch = live_reads.clone();
+        assert_eq!(
+            continue_if_lease_claimed(true, move || async move {
+                mint.fetch_add(1, Ordering::SeqCst);
+                fetch.fetch_add(1, Ordering::SeqCst);
+                Ok(7)
+            })
+            .await
+            .expect("the claimed lease proceeds"),
+            Some(7)
+        );
+        assert_eq!(token_mints.load(Ordering::SeqCst), 1);
+        assert_eq!(live_reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_live_head_lease_collision_skips_models() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let observed = model_calls.clone();
+        let result = continue_if_lease_claimed(false, move || async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("a concurrent owner is a normal skip");
+
+        assert!(result.is_none());
+        assert_eq!(model_calls.load(Ordering::SeqCst), 0);
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

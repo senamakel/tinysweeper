@@ -56,7 +56,9 @@ before it resumes model work, and model dispatches also verify ownership. A
 shutdown stops new claims and leaves unfinished jobs in Mongo for the next
 process. Terminal outcomes remain deduped for seven days. GitHub publication
 still uses the app's live-head and idempotency checks because a process can
-crash between a GitHub write and recording its outcome.
+crash between a GitHub write and recording its outcome. A job has five durable
+paid-work starts across restarts; recovery after the fifth terminalizes it
+before another index, credential, or model call.
 
 When a pull-request event supplies its head SHA, the worker claims that SHA
 before minting a read token or fetching live PR state. A comment request has no

@@ -636,7 +636,7 @@ fn title_for(findings: usize, coverage: Option<&crate::lanes::FileCoverage>) -> 
     if let Some(coverage) = coverage {
         let reviewed = coverage.reviewed.len();
         let total = reviewed.saturating_add(coverage.unanswered.len());
-        return format!("{finding_title} · {reviewed}/{total} files reviewed");
+        return format!("{finding_title} · {reviewed}/{total} files");
     }
     finding_title
 }
@@ -996,10 +996,7 @@ mod tests {
             reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
             unanswered: vec!["src/8.rs".into(), "src/9.rs".into()],
         };
-        assert_eq!(
-            title_for(2, Some(&coverage)),
-            "2 findings · 8/10 files reviewed"
-        );
+        assert_eq!(title_for(2, Some(&coverage)), "2 findings · 8/10 files");
     }
 
     #[test]
@@ -1009,7 +1006,7 @@ mod tests {
             unanswered: vec![],
         };
         let title = title_for(0, Some(&coverage));
-        assert_eq!(title, "0 findings · 10/10 files reviewed");
+        assert_eq!(title, "0 findings · 10/10 files");
         assert!(title.len() <= 80);
     }
 
@@ -1498,7 +1495,7 @@ mod tests {
         let checks = forge.checks();
         assert_eq!(
             checks["tinysweeper/critique"].title,
-            "Reviewed 8 of 10 files — 2 not reviewed"
+            "0 findings · 8/10 files"
         );
         assert_eq!(
             checks["tinysweeper/critique"].conclusion,

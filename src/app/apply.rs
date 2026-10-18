@@ -1712,7 +1712,11 @@ mod tests {
                 .lines()
                 .find(|line| line.contains(&format!("Path {count}")))
                 .expect("finding row");
-            assert_eq!(row.matches(" | ").count(), 2, "{row}");
+            assert_eq!(row.split(" | ").count(), 3, "{row}");
+            assert!(
+                row.contains(&format!("{}\\|", "\\".repeat(count))),
+                "{row}"
+            );
             assert!(row.contains("[click](https://evil.example)"), "{row}");
         }
     }

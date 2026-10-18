@@ -559,13 +559,15 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
             let name = declaration.strip_suffix(';')?.trim();
             (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(
                 || {
-                    module_parent
-                        .join(format!("{name}.rs"))
-                        .to_string_lossy()
-                        .into_owned()
+                    vec![
+                        module_parent.join(format!("{name}.rs")),
+                        module_parent.join(name).join("mod.rs"),
+                    ]
                 },
             )
         })
+        .flatten()
+        .map(|path| path.to_string_lossy().into_owned())
         .collect()
 }
 
@@ -1210,6 +1212,27 @@ mod tests {
         assert!(
             seeded.rendered.contains("src/foo.rs") && seeded.rendered.contains("pub fn added_api"),
             "a module declaration must read the module file at the reviewed head: {}",
+            seeded.rendered
+        );
+    }
+
+    #[tokio::test]
+    async fn the_seed_reads_directory_modules_declared_by_the_change() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_files([("src/foo/mod.rs", "pub fn from_directory() {}\n")]);
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(
+            seeded.rendered.contains("src/foo/mod.rs")
+                && seeded.rendered.contains("pub fn from_directory"),
+            "Rust module resolution also permits `foo/mod.rs`: {}",
             seeded.rendered
         );
     }

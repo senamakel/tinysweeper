@@ -421,8 +421,14 @@ pub fn deterministic_with_paths(
 }
 
 fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
-    let title = validated_narrative(&pull_request.title)
-        .unwrap_or_default()
+    // A title is untrusted purpose data. Attribute it explicitly instead of
+    // running it through prose validators that mistake imperatives for claims.
+    let flattened_title = pull_request
+        .title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let title = crate::scan::scrub(&flattened_title)
         .trim_end_matches(['.', '!', '?'])
         .trim()
         .to_string();
@@ -430,16 +436,11 @@ fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
     if title.is_empty() {
         return narrative.to_string();
     }
-    if narrative.get(..title.len()).is_some_and(|prefix| {
-        prefix.eq_ignore_ascii_case(&title)
-            && narrative[title.len()..]
-                .chars()
-                .next()
-                .is_some_and(|separator| matches!(separator, '.' | '!' | '?'))
-    }) {
+    let attributed_title = format!("Pull request purpose (title): {title}.");
+    if narrative.starts_with(&attributed_title) {
         return narrative.to_string();
     }
-    format!("{title}. {narrative}")
+    format!("{attributed_title} {narrative}")
 }
 
 fn classify(diffs: &[FileDiff]) -> ChangeSurface {
@@ -806,8 +807,17 @@ fn claims_unsupported_lane_sentence(
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
-    let broad_scope =
-        has_any(&["all", "every"]) && has_any(&["lane", "lanes", "reviewer", "reviewers"]);
+    let broad_scope = has_any(&["all", "every"])
+        && has_any(&[
+            "lane",
+            "lanes",
+            "reviewer",
+            "reviewers",
+            "check",
+            "checks",
+            "review",
+            "reviews",
+        ]);
     if broad_scope
         && statuses
             .values()
@@ -819,18 +829,12 @@ fn claims_unsupported_lane_sentence(
         statuses
             .get(lane.as_str())
             .is_some_and(|status| !matches!(status.status, LaneStatusKind::Answered))
-            && lane_subject_is_mentioned(*lane, &words)
+            && lane_alias_is_mentioned(*lane, &words)
     })
 }
 
-fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
+fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
     let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
-    let has_lane_subject = ["lane", "lanes", "reviewer", "reviewers"]
-        .iter()
-        .any(|subject| words.contains(subject));
-    if !has_lane_subject {
-        return false;
-    }
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -1520,8 +1524,16 @@ mod tests {
         )
         .await;
 
-        assert!(!summary.executive_summary.contains("Security found no issues"));
-        assert!(summary.executive_summary.contains("parser rejects unknown paths"));
+        assert!(
+            !summary
+                .executive_summary
+                .contains("Security found no issues")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("parser rejects unknown paths")
+        );
         assert!(summary.changes.contains("parser now rejects unknown paths"));
     }
 
@@ -1560,8 +1572,16 @@ mod tests {
         )
         .await;
 
-        assert!(!summary.executive_summary.contains("All checks report no issues"));
-        assert!(summary.executive_summary.contains("parser rejects unknown paths"));
+        assert!(
+            !summary
+                .executive_summary
+                .contains("All checks report no issues")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("parser rejects unknown paths")
+        );
     }
 
     #[tokio::test]
@@ -1588,10 +1608,16 @@ mod tests {
         .await;
 
         assert!(summary.executive_summary.contains("Run tests on Windows"));
-        assert!(summary
-            .executive_summary
-            .starts_with("Pull request purpose (title): Run tests on Windows."));
-        assert!(summary.executive_summary.contains("build configuration supports Windows"));
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("Pull request purpose (title): Run tests on Windows.")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("build configuration supports Windows")
+        );
 
         let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
         for title in [

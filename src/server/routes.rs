@@ -2542,7 +2542,15 @@ async fn handle_review(
         if let Err(err) = run.check_owner(&state).await {
             break err;
         }
-        match review_inner(&state, &repo, number, &author, installation, &run).await {
+        let review_result = review_inner(&state, &repo, number, &author, installation, &run).await;
+        if let Ok(review) = &review_result
+            && let Some(disposition) = shutdown_disposition(review, unix_time_ms())
+        {
+            drop(permit);
+            close_status(&state, &slot, Conclusion::NotReviewed).await;
+            return disposition;
+        }
+        match review_result {
             Ok(InnerReview::Complete(findings)) => {
                 // Usually there is nothing to close: a run that declines — a
                 // blocked contributor, a draft, a lease another worker holds —
@@ -2584,11 +2592,6 @@ async fn handle_review(
                 drop(permit);
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                 return WorkerDisposition::Terminal(TerminalOutcome::Exhausted);
-            }
-            Ok(InnerReview::Shutdown) => {
-                drop(permit);
-                close_status(&state, &slot, Conclusion::NotReviewed).await;
-                return defer_interrupted_review();
             }
             Err(err) => {
                 if matches!(err, Error::ReviewOwnershipLost) {

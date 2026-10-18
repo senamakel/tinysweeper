@@ -2832,6 +2832,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_manual_review_that_is_closed_before_start_does_no_review_work() {
+        use crate::forge::types::PullRequest as PullRequestData;
+        use crate::harness::MockModel;
+
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let pull_request = PullRequestData {
+            number: 7,
+            open: true,
+            ..PullRequestData::default()
+        };
+        let forge = crate::forge::MockForge::new().with_pull_request(
+            pull_request.clone(),
+            vec![],
+            vec![],
+        );
+        forge.replace_pull_request(PullRequestData {
+            open: false,
+            merged: false,
+            ..pull_request
+        });
+        let model = MockModel::silent();
+
+        assert!(
+            pull_request_for_review(&forge, &repo, 7)
+                .await
+                .expect("fetch")
+                .is_none()
+        );
+        assert!(model.requests().is_empty());
+        assert!(forge.writes().is_empty());
+    }
+
+    #[tokio::test]
     async fn the_permit_pool_actually_bounds_concurrency() {
         // Asserting on the constant would be a tautology; this asserts the
         // semaphore behaves, which is what stops a delivery burst becoming an

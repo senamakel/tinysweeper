@@ -3059,7 +3059,10 @@ mod tests {
                 permits.clone().acquire_owned(),
             );
             tokio::pin!(waiting);
-            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+            tokio::select! {
+                _permit = &mut waiting => panic!("held semaphore should keep the permit pending"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(3)) => {}
+            }
             drop(held.take());
             waiting.await.unwrap()
         };

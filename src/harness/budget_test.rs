@@ -81,8 +81,7 @@ fn deep_prices() -> std::collections::BTreeMap<String, crate::config::types::Bud
 }
 
 fn typical_deep_request(cap: u32) -> CompletionRequest {
-    CompletionRequest::new("deep", vec![ChatMessage::user("code".repeat(18_000))])
-        .max_tokens(cap)
+    CompletionRequest::new("deep", vec![ChatMessage::user("code".repeat(18_000))]).max_tokens(cap)
 }
 
 #[test]
@@ -107,10 +106,13 @@ fn budget_input_money_estimate_uses_quarter_bytes_with_bounded_framing() {
 fn budget_expected_output_reservation_preserves_the_provider_output_cap() {
     let request = typical_deep_request(16_000);
     let bound = call(&ledger(1.0), &request, 0, &deep_prices()).unwrap();
-    assert_eq!(bound.call.output_tokens, 16_000, "the provider cap stays intact");
+    assert_eq!(
+        bound.call.output_tokens, 16_000,
+        "the provider cap stays intact"
+    );
     assert_eq!(request.max_tokens, Some(16_000));
     assert!(
-        bound.call.cost_micros < 16_000.0_f64.mul_add(1.8, 0.0) as u64,
+        bound.call.cost_micros < 28_800,
         "a cold-start expected output plus this input should reserve less than the full output cap alone; got {} micros",
         bound.call.cost_micros
     );
@@ -137,7 +139,10 @@ fn budget_eight_typical_deep_calls_fit_even_with_the_bounded_retry_cap() {
     }
     assert!(ledger.snapshot().reserved.cost_micros <= 1_000_000);
     for reservation in reservations {
-        reservation.settle(Spend { tokens: 18_500, cost_micros: 1000 });
+        reservation.settle(Spend {
+            tokens: 18_500,
+            cost_micros: 1000,
+        });
     }
     assert_eq!(ledger.snapshot().reserved.cost_micros, 0);
     assert_eq!(ledger.snapshot().spent.cost_micros, 8000);
@@ -146,21 +151,26 @@ fn budget_eight_typical_deep_calls_fit_even_with_the_bounded_retry_cap() {
 #[tokio::test]
 async fn budget_reported_five_cent_review_spend_does_not_exhaust_admission() {
     use crate::harness::fake_gateway::{FakeGateway, Reply};
-    use crate::harness::port::{Model, ModelRequest};
-    use crate::harness::types::Message;
+    use crate::ports::model::{Message, Model, ModelRequest};
     use serde_json::json;
     let gateway = FakeGateway::start(
         (0..50)
-            .map(|_| Reply::completion(
-                "deep",
-                r#"{"summary":"checked"}"#,
-                "stop",
-                json!({"prompt_tokens":18000,"completion_tokens":500,"cost":0.001}),
-            ))
+            .map(|_| {
+                Reply::completion(
+                    "deep",
+                    r#"{"summary":"checked"}"#,
+                    "stop",
+                    json!({"prompt_tokens":18000,"completion_tokens":500,"cost":0.001}),
+                )
+            })
             .collect(),
-    ).await;
+    )
+    .await;
     let mut config: crate::config::types::Config = crate::config::DEFAULTS
-        .parse::<toml::Table>().unwrap().try_into().unwrap();
+        .parse::<toml::Table>()
+        .unwrap()
+        .try_into()
+        .unwrap();
     config.models.base_url = gateway.base_url.clone();
     config.models.budget_prices = deep_prices();
     config.models.routes.clear();
@@ -176,8 +186,15 @@ async fn budget_reported_five_cent_review_spend_does_not_exhaust_admission() {
     };
     let mut reported = 0.0;
     for index in 0..50 {
-        let response = model.complete(request.clone()).await
-            .unwrap_or_else(|error| panic!("review refused at call {} with only {reported} real USD spent: {error}", index + 1));
+        let response = model
+            .complete(request.clone())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "review refused at call {} with only {reported} real USD spent: {error}",
+                    index + 1
+                )
+            });
         reported += response.usage.cost_usd;
     }
     assert_eq!(gateway.requests().len(), 50);

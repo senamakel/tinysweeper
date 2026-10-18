@@ -2328,6 +2328,9 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
+    if !claimed {
+        return Ok(None);
+    }
     work().await.map(Some)
 }
 

@@ -672,9 +672,12 @@ fn render_lane_summary(lane: &crate::app::review::LaneProposal) -> String {
         );
         for finding in lane.noted.iter().filter(|finding| !finding.grouped) {
             out.push_str(&format!(
-                "- `{}`{} — {} {}\n",
-                finding.path,
-                finding.line.map(|l| format!(":{l}")).unwrap_or_default(),
+                "- {} — {} {}\n",
+                crate::markdown::code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+                )),
                 crate::findings::render::escape_cell(&finding.title),
                 crate::findings::render::confidence_badge(finding.confidence),
             ));
@@ -943,7 +946,7 @@ fn inline_comments(proposal: &Proposal, files: &[ChangedFile]) -> Vec<ReviewComm
                         finding.confidence
                     ),
                     crate::findings::render::escape_emphasis(&finding.title),
-                    finding.body,
+                    crate::markdown::prose(&finding.body),
                     suggestion,
                     crate::findings::render::rule_line(&finding.rule),
                     alias_marker(finding),

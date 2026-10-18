@@ -88,7 +88,7 @@ pub fn lane_summary(
     reached_a_verdict: bool,
 ) -> String {
     let mut out = String::with_capacity(1024);
-    out.push_str(summary.trim());
+    out.push_str(&prose(summary.trim()));
     out.push_str("\n\n");
 
     if findings.is_empty() {

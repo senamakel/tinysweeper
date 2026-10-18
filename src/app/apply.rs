@@ -1088,6 +1088,7 @@ mod tests {
                 noted: Vec::new(),
                 resolved: vec![],
                 pending: vec![],
+                skipped: None,
                 deduped: 0,
                 highest_severity,
                 usage: Default::default(),

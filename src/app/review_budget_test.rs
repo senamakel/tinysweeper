@@ -298,6 +298,7 @@ fn lane_of(findings: Vec<Finding>) -> LaneProposal {
         noted: Vec::new(),
         resolved: vec![],
         pending: vec![],
+        skipped: None,
         deduped: 0,
         highest_severity: Some(Severity::Critical),
         usage: Default::default(),

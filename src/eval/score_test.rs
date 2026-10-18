@@ -90,6 +90,7 @@ fn proposal(findings: Vec<Finding>) -> Proposal {
             noted: Vec::new(),
             resolved: vec![],
             pending: vec![],
+            skipped: None,
             deduped: 0,
             highest_severity: None,
             usage: Usage::default(),

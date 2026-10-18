@@ -250,6 +250,7 @@ mod tests {
             noted: vec![],
             resolved: vec![],
             pending: vec![],
+            skipped: None,
             deduped: 0,
             highest_severity: None,
             usage: Default::default(),

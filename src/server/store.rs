@@ -294,7 +294,7 @@ impl Store {
                 return Ok(result);
             }
             state.revision = before.revision.saturating_add(1);
-            let mut document = bson::serialize_to_document(&state)
+            let document = bson::serialize_to_document(&state)
                 .map_err(|err| Error::Forge(format!("could not encode review scheduler: {err}")))?;
             if document
                 .to_vec()

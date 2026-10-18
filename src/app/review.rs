@@ -2209,6 +2209,66 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[tokio::test]
+    async fn an_observed_mock_review_records_phase_lane_model_and_file_telemetry() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut config = critique_config();
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        let model = MockModel::always(json!({"summary":"Fine.","findings":[]})).with_usage(Usage {
+            input_tokens: 17, output_tokens: 5, reasoning_tokens: 3, cached_tokens: 4,
+            embed_tokens: 0, cost_usd: 0.001,
+        });
+        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let proposal = review_with_tree_observed(
+            &forge, Arc::new(model), &config, &repo(), 7, None, None, None, None,
+            Some(timing.clone()),
+        ).await.expect("mock review completes");
+        timing.finish("success");
+
+        let record = timing.snapshot();
+        assert_eq!(record.repo, "tinyhumansai/tinysweeper");
+        assert_eq!(record.pr, 7);
+        assert_eq!(record.head_sha, "abc123");
+        assert_eq!(record.outcome, "success");
+        assert!(crate::review_timing::PHASES.iter().all(|phase| record.phases_ms.contains_key(*phase)));
+        assert!(record.phases_ms.values().sum::<u64>() <= record.started.unwrap().elapsed().as_millis() as u64);
+        assert!(record.lanes_ms.contains_key("critique"));
+        assert!(record.calls_attempted > 0);
+        assert!(record.calls_succeeded > 0);
+        assert_eq!(record.usage.reasoning_tokens, record.calls_succeeded * 3);
+        assert_eq!(record.usage.cached_tokens, record.calls_succeeded * 4);
+        assert_eq!(record.files_total, 1);
+        assert_eq!(record.files_answered + record.files_unanswered, record.files_total);
+        assert_eq!(proposal.head_sha, "abc123");
+    }
+
+    #[tokio::test]
+    async fn a_deadline_keeps_the_partial_timing_record_and_outcome() {
+        struct SlowModel;
+        #[async_trait::async_trait]
+        impl Model for SlowModel {
+            async fn complete(&self, _request: crate::ports::model::ModelRequest) -> Result<crate::ports::model::ModelResponse> {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                unreachable!("deadline cancels the slow model")
+            }
+        }
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let config = critique_config();
+        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let future = review_with_tree_observed(
+            &forge, Arc::new(SlowModel), &config, &repo(), 7, None, None, None, None,
+            Some(timing.clone()),
+        );
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), future).await.is_err());
+        timing.finish("deadline");
+        let record = timing.snapshot();
+        assert_eq!(record.outcome, "deadline");
+        assert!(record.calls_attempted > 0);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0, true);
+    }
+
     fn config() -> Config {
         let mut config: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()

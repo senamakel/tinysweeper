@@ -1853,6 +1853,7 @@ async fn handle_review(
     mode: Mode,
     delivery: Option<String>,
 ) {
+    let timing = ReviewTiming::new(repo.clone(), number, mode);
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
@@ -1895,6 +1896,7 @@ async fn handle_review(
             return;
         }
     };
+    timing.permit_acquired();
 
     // One deadline for the whole review, retries included. A per-attempt
     // deadline would let three transient failures late in the run stretch a
@@ -1928,6 +1930,7 @@ async fn handle_review(
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
+                timing.finish("success");
                 return;
             }
             Err(err) => {
@@ -1966,6 +1969,7 @@ async fn handle_review(
     drop(permit);
 
     tracing::error!(%err, %repo, number, attempts = attempt, "review failed");
+    timing.finish(if err.to_string().contains("deadline") || err.to_string().contains("timed out") { "deadline" } else { "failure" });
 
     // Two ways to report the same thing, and which one applies depends on how
     // far the review got. If a check is already open, concluding it in place is
@@ -1996,6 +2000,47 @@ async fn handle_review(
         && let Err(release) = state.store.release_delivery(&delivery).await
     {
         tracing::error!(%release, %delivery, "could not release the failed delivery claim");
+    }
+}
+
+/// Emits one machine-readable summary even when a worker future is cancelled.
+struct ReviewTiming {
+    repo: String,
+    pr: u64,
+    mode: Mode,
+    started: std::time::Instant,
+    queue_wait_ms: std::sync::atomic::AtomicU64,
+    outcome: std::sync::Mutex<Option<&'static str>>,
+}
+
+impl ReviewTiming {
+    fn new(repo: String, pr: u64, mode: Mode) -> Self {
+        Self {
+            repo,
+            pr,
+            mode,
+            started: std::time::Instant::now(),
+            queue_wait_ms: std::sync::atomic::AtomicU64::new(0),
+            outcome: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn permit_acquired(&self) {
+        self.queue_wait_ms.store(self.started.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn finish(&self, outcome: &'static str) {
+        *self.outcome.lock().expect("review timing outcome") = Some(outcome);
+    }
+}
+
+impl Drop for ReviewTiming {
+    fn drop(&mut self) {
+        let outcome = self.outcome.get_mut().expect("review timing outcome").unwrap_or("cancelled");
+        tracing::info!(target: "tinysweeper::review_timing", repo = %self.repo, pr = self.pr,
+            mode = ?self.mode, outcome, total_ms = self.started.elapsed().as_millis() as u64,
+            queue_wait_ms = self.queue_wait_ms.load(std::sync::atomic::Ordering::Relaxed),
+            "review timing");
     }
 }
 

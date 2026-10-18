@@ -54,8 +54,7 @@ use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 
-/// Confidence retained for an external-context claim when its relevant source
-/// could not be read at the reviewed head.
+/// Confidence ceiling for critique model findings when retrieval is degraded.
 const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.5;
 
 /// The correctness lane.

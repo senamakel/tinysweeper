@@ -64,33 +64,24 @@ pub(crate) fn prose(text: &str) -> String {
                 .is_some_and(|character| character.is_whitespace()))
         .then_some(end)
     });
-    let mut out = String::with_capacity(text.len());
-    let mut skip_until = 0;
-    for (index, character) in characters.iter().copied().enumerate() {
-        if index < skip_until {
-            continue;
-        }
-        if url_start(&characters, index) {
-            let end = characters[index..]
+    let mut in_url_token = vec![false; characters.len()];
+    let mut cursor = 0;
+    while cursor < characters.len() {
+        if url_start(&characters, cursor) {
+            let end = characters[cursor..]
                 .iter()
                 .position(|character| character.is_whitespace() || character.is_control())
-                .map(|offset| index + offset)
+                .map(|offset| cursor + offset)
                 .unwrap_or(characters.len());
-            for character in &characters[index..end] {
-                match character {
-                    ':' => out.push_str("&#58;"),
-                    '.' => out.push_str("&#46;"),
-                    '&' => out.push_str("&amp;"),
-                    '<' => out.push_str("&lt;"),
-                    '>' => out.push_str("&gt;"),
-                    _ => out.push(*character),
-                }
-            }
-            skip_until = end;
-            // The URL token was emitted as text with its autolink punctuation
-            // entity-encoded. Skip the remaining characters in that token.
-            continue;
+            in_url_token[cursor..end].fill(true);
+            cursor = end;
+        } else {
+            cursor += 1;
         }
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for (index, character) in characters.iter().copied().enumerate() {
         if character.is_control() {
             if character == '\n' || character == '\r' {
                 out.push(' ');
@@ -103,6 +94,8 @@ pub(crate) fn prose(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '@' => out.push_str("&#64;"),
             '`' => out.push_str("&#96;"),
+            ':' if in_url_token[index] => out.push_str("&#58;"),
+            '.' if in_url_token[index] => out.push_str("&#46;"),
             '\\' | '[' | ']' | '*' => {
                 out.push('\\');
                 out.push(character);
@@ -278,7 +271,10 @@ mod tests {
         assert!(!rendered.contains("`code`"), "{rendered}");
         assert!(!rendered.contains("**bold**"), "{rendered}");
         assert!(!rendered.contains("https://"), "{rendered}");
-        assert!(!rendered.contains("|"), "{rendered}");
+        let table_rendered = table_cell(
+            "https://a.b/[click](https://evil.example) @maintainer `code` **bold** |\\path",
+        );
+        assert!(!table_rendered.contains(" | "), "{table_rendered}");
         assert!(!rendered.contains("\\path"), "{rendered}");
     }
 

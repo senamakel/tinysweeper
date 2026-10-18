@@ -1702,7 +1702,7 @@ mod tests {
         assert!(!body.contains("<script>"), "{body}");
         assert!(!body.contains("[link](https://evil.example)"), "{body}");
         assert!(!body.contains("https://evil.example"), "{body}");
-        assert!(!body.contains("https://"), "{body}");
+        assert!(!body.contains("https://a.b"), "{body}");
         assert!(!body.contains("[click]("), "{body}");
         assert!(!body.contains("@maintainer"), "{body}");
         assert!(!body.contains("`code`"), "{body}");

@@ -349,7 +349,7 @@ pub fn cost_table(
     // Nothing but a total means there is no breakdown to align, and a one-row
     // table reads worse than the sentence it replaced.
     if rows.len() < 2 {
-        return format!("```\n{}\n```", cost_line(total, total_models).trim());
+        return code_block(cost_line(total, total_models).trim());
     }
 
     // The last column is never padded: trailing spaces are invisible and only
@@ -361,7 +361,7 @@ pub fn cost_table(
             .unwrap_or(0)
     });
 
-    let mut out = String::from("```\n");
+    let mut out = String::new();
     for cells in &rows {
         let mut line = String::new();
         for (column, cell) in cells.iter().enumerate().take(5) {
@@ -380,8 +380,7 @@ pub fn cost_table(
         out.push_str(line.trim_end());
         out.push('\n');
     }
-    out.push_str("```");
-    out
+    code_block(&out)
 }
 
 /// One row's cells: label, cost, input, output, cache, models.

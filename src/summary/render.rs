@@ -520,10 +520,10 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         for pass in &summary.history {
             let _ = writeln!(
                 out,
-                "| `{}` | {} | {}{} |",
-                short(&pass.head_sha),
-                prose(&pass.state),
-                prose(&pass.summary),
+                "| {} | {} | {}{} |",
+                crate::markdown::table_code_span(&short(&pass.head_sha)),
+                crate::markdown::table_cell(&pass.state),
+                crate::markdown::table_cell(&pass.summary),
                 if pass.reviewed_at_epoch > 0 {
                     format!(" (at {})", iso8601_utc(pass.reviewed_at_epoch))
                 } else {

@@ -68,12 +68,12 @@ pub struct ReviewCoverage {
 }
 
 /// Aggregate per-file gaps by path, then mark whether a whole-PR lane failed.
-pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewCoverage {
+pub fn aggregate_coverage(proposal: &crate::app::review::Proposal) -> ReviewCoverage {
     use std::collections::BTreeSet;
 
     let mut paths = BTreeSet::new();
     let mut unanswered_paths = BTreeSet::new();
-    for lane in lanes {
+    for lane in &proposal.lanes {
         if let Some(coverage) = &lane.coverage {
             paths.extend(coverage.reviewed.iter().cloned());
             paths.extend(coverage.unanswered.iter().cloned());
@@ -86,7 +86,8 @@ pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewC
             paths.len(),
         )
     });
-    let unanswered_lane = lanes
+    let unanswered_lane = proposal
+        .lanes
         .iter()
         .any(|lane| lane.coverage.is_none() && !lane.unanswered.is_empty());
     ReviewCoverage {
@@ -267,8 +268,31 @@ mod tests {
         lane
     }
 
+    fn proposal(lanes: Vec<LaneProposal>, unreviewed: &[&str]) -> crate::app::review::Proposal {
+        crate::app::review::Proposal {
+            version: crate::app::review::PROPOSAL_VERSION,
+            repo: "acme/widget".into(),
+            number: 1,
+            head_sha: "abc".into(),
+            lanes,
+            overview: None,
+            wireframe: None,
+            summary: None,
+            prior_findings: vec![],
+            unreviewed: unreviewed.iter().map(|path| (*path).to_string()).collect(),
+            skipped: None,
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            embed_tokens: 0,
+            models: vec![],
+            threads: Default::default(),
+        }
+    }
+
     async fn publish_aggregate(
-        lanes: &[LaneProposal],
+        proposal: &crate::app::review::Proposal,
         head: &str,
     ) -> crate::forge::types::CheckRun {
         use crate::ports::forge::ForgeWrite;
@@ -276,7 +300,10 @@ mod tests {
         let forge = MockForge::new();
         let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
         forge
-            .publish_check(&repo, completed(head, 0, false, aggregate_coverage(lanes)))
+            .publish_check(
+                &repo,
+                completed(head, 0, false, aggregate_coverage(proposal)),
+            )
             .await
             .expect("publishes aggregate check");
         forge.checks().remove(CHECK_NAME).unwrap()
@@ -288,12 +315,15 @@ mod tests {
         let all: Vec<_> = files.iter().map(String::as_str).collect();
         let security_reviewed: Vec<_> = all[..8].to_vec();
         let security_missing: Vec<_> = all[8..].to_vec();
-        let lanes = [
-            file_lane("critique", &all, &[]),
-            file_lane("security", &security_reviewed, &security_missing),
-        ];
+        let proposal = proposal(
+            vec![
+                file_lane("critique", &all, &[]),
+                file_lane("security", &security_reviewed, &security_missing),
+            ],
+            &[],
+        );
 
-        let check = publish_aggregate(&lanes, "abc").await;
+        let check = publish_aggregate(&proposal, "abc").await;
 
         assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
@@ -305,12 +335,15 @@ mod tests {
         let all: Vec<_> = files.iter().map(String::as_str).collect();
         let first_reviewed: Vec<_> = all[1..].to_vec();
         let second_reviewed: Vec<_> = all[..9].to_vec();
-        let lanes = [
-            file_lane("critique", &first_reviewed, &[all[0]]),
-            file_lane("security", &second_reviewed, &[all[9]]),
-        ];
+        let proposal = proposal(
+            vec![
+                file_lane("critique", &first_reviewed, &[all[0]]),
+                file_lane("security", &second_reviewed, &[all[9]]),
+            ],
+            &[],
+        );
 
-        let check = publish_aggregate(&lanes, "abc").await;
+        let check = publish_aggregate(&proposal, "abc").await;
 
         assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
@@ -318,27 +351,62 @@ mod tests {
 
     #[tokio::test]
     async fn successful_lanes_keep_their_distinct_file_scopes() {
-        let lanes = [
-            file_lane("critique", &["src/a.rs", "README.md"], &[]),
-            file_lane("security", &["src/a.rs"], &[]),
-        ];
+        let proposal = proposal(
+            vec![
+                file_lane("critique", &["src/a.rs", "README.md"], &[]),
+                file_lane("security", &["src/a.rs"], &[]),
+            ],
+            &[],
+        );
 
-        let check = publish_aggregate(&lanes, "abc").await;
+        let check = publish_aggregate(&proposal, "abc").await;
 
         assert_eq!(check.title, "Reviewed 2 of 2 files — 0 not reviewed");
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
     }
 
     #[tokio::test]
+    async fn forge_withheld_files_are_included_in_overall_coverage() {
+        let proposal = proposal(
+            vec![file_lane("critique", &["src/a.rs"], &[])],
+            &["src/b.rs"],
+        );
+
+        let check = publish_aggregate(&proposal, "abc").await;
+
+        assert_eq!(check.title, "Reviewed 1 of 2 files — 1 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
+
+    #[tokio::test]
+    async fn forge_withheld_paths_count_without_file_lanes_and_deduplicate() {
+        let no_lanes = proposal(vec![], &["src/b.rs"]);
+        let check = publish_aggregate(&no_lanes, "abc").await;
+        assert_eq!(check.title, "Reviewed 0 of 1 files — 1 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+
+        let duplicate_gap = proposal(
+            vec![file_lane("critique", &["src/a.rs"], &["src/b.rs"])],
+            &["src/b.rs"],
+        );
+        let check = publish_aggregate(&duplicate_gap, "def").await;
+        assert_eq!(check.title, "Reviewed 1 of 2 files — 1 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
+
+    #[tokio::test]
     async fn whole_pr_lane_gap_survives_complete_file_lane_coverage() {
         let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
         let all: Vec<_> = files.iter().map(String::as_str).collect();
-        let lanes = [
-            file_lane("critique", &all, &[]),
-            whole_pr_lane_unanswered("tests", "tinysweeper/tests"),
-        ];
+        let proposal = proposal(
+            vec![
+                file_lane("critique", &all, &[]),
+                whole_pr_lane_unanswered("tests", "tinysweeper/tests"),
+            ],
+            &[],
+        );
 
-        let check = publish_aggregate(&lanes, "abc").await;
+        let check = publish_aggregate(&proposal, "abc").await;
 
         assert_eq!(
             check.title,

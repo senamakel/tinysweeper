@@ -2293,7 +2293,7 @@ async fn review_inner(
         installation,
     ));
 
-    let coverage = status::aggregate_coverage(&proposal.lanes);
+    let coverage = status::aggregate_coverage(&proposal);
     Ok(Some((findings, changes_requested, coverage)))
 }
 

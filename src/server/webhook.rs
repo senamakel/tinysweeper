@@ -532,6 +532,14 @@ mod tests {
     }
 
     #[test]
+    fn a_review_delivery_for_a_closed_unmerged_pull_request_is_ignored() {
+        let mut delivery = pr_payload("synchronize");
+        delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
+
+        assert_eq!(route("pull_request", &delivery), Action::Ignore("pull request is closed"));
+    }
+
+    #[test]
     fn a_mention_on_a_closed_pull_request_is_ignored() {
         let delivery = payload(serde_json::json!({
             "action": "created",

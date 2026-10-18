@@ -451,6 +451,28 @@ pub async fn review_with_tree(
     retrieval: Option<&Retriever<'_>>,
     tree: Option<&dyn TreeReader>,
 ) -> Result<Proposal> {
+    review_with_tree_at_head(
+        forge, model, config, repo, number, store, knowledge, retrieval, tree, None,
+    )
+    .await
+}
+
+/// Run a review only if its fetched context still matches the revision leased
+/// by the server. The check is immediately after the context read and before
+/// any model or embedding call.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn review_with_tree_at_head(
+    forge: &dyn ForgeRead,
+    model: Arc<dyn Model>,
+    config: &Config,
+    repo: &RepoId,
+    number: u64,
+    store: Option<&dyn ReviewStateStore>,
+    knowledge: Option<&dyn KnowledgeStore>,
+    retrieval: Option<&Retriever<'_>>,
+    tree: Option<&dyn TreeReader>,
+    expected_head: Option<&str>,
+) -> Result<Proposal> {
     let mut context = forge
         .pull_request_context_bounded(
             repo,
@@ -459,6 +481,9 @@ pub async fn review_with_tree(
             config.review.max_changed_lines,
         )
         .await?;
+    if expected_head.is_some_and(|expected| context.pull_request.head_sha != expected) {
+        return Err(Error::ReviewSuperseded);
+    }
     // Scrubbed once, here, rather than at each of its several consumers: the
     // description lane's own prompt and `Retriever::retrieve`'s query both
     // read the pull request's title and body. A credential pasted into those

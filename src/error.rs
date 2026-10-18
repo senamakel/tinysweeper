@@ -101,6 +101,12 @@ pub enum Error {
         max_lines: u64,
     },
 
+    /// The pull request head changed after the server claimed a review lease.
+    /// This is a clean skip: retry on the new head rather than reviewing it
+    /// under a lease for a different revision.
+    #[error("pull request head changed before the review started")]
+    ReviewSuperseded,
+
     /// A feature required for this code path was not compiled in.
     #[error("{0} requires the `{1}` feature; rebuild with --features {1}")]
     FeatureDisabled(&'static str, &'static str),

@@ -580,7 +580,10 @@ async fn receive(
             Ok(permit) => Some(permit),
             Err(err) => {
                 tracing::error!(%err, "review permit pool is closed");
-                return (StatusCode::SERVICE_UNAVAILABLE, "review capacity unavailable")
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "review capacity unavailable",
+                )
                     .into_response();
             }
         }
@@ -1977,6 +1980,12 @@ async fn handle_review(
                 return;
             }
             Err(err) => {
+                if matches!(err, Error::ReviewSuperseded) {
+                    drop(permit);
+                    close_status(&state, &slot, Conclusion::NotReviewed).await;
+                    tracing::debug!(%repo, number, "head changed while preparing review context");
+                    return;
+                }
                 // The lease is released inside `review_inner` on every path,
                 // including this one, so a retry re-claims it rather than
                 // colliding with itself and returning a silent `Ok`.
@@ -2268,9 +2277,6 @@ impl ReviewRun<'_> {
                 // next push, or the manual review the check points at, reviews
                 // this commit properly.
                 tracing::info!(%repo, number, "shutting down; not starting this review");
-                if let Err(err) = state.store.release_lease(&lease).await {
-                    tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-                }
                 return Ok(None);
             }
 
@@ -2327,6 +2333,7 @@ impl ReviewRun<'_> {
                     forge,
                     read_token,
                     run,
+                    Some(&pull_request.head_sha),
                 ))
                 .catch_unwind()
                 .await
@@ -2385,13 +2392,6 @@ impl ReviewRun<'_> {
                 }
                 Err(err) => Err(err),
             };
-
-            // Released regardless of how the review went. The TTL in the store is
-            // the backstop for the cases this cannot cover — a kill, or a lost
-            // machine.
-            if let Err(err) = state.store.release_lease(&lease).await {
-                tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-            }
 
             outcome
         };
@@ -2474,6 +2474,7 @@ async fn run_lanes(
     forge: &crate::forge::github::GitHubRead,
     read_token: &str,
     run: &Run,
+    expected_head: Option<&str>,
 ) -> Result<(Config, crate::app::Proposal)> {
     let model = state.models.text();
 
@@ -2557,7 +2558,7 @@ async fn run_lanes(
             .as_ref()
             .map(|dir| dir as &dyn crate::ports::tree::TreeReader);
 
-        crate::app::review::review_with_tree(
+        crate::app::review::review_with_tree_at_head(
             forge,
             model,
             &config,
@@ -2567,6 +2568,7 @@ async fn run_lanes(
             state.knowledge.as_deref(),
             retriever.as_ref(),
             tree,
+            expected_head,
         )
         .await
     };

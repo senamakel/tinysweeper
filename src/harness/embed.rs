@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openhuman_embed::Route;
 use openhuman_embed::complete::{ChatMessage, Completer, CompletionRequest, ResponseFormat};
-use openhuman_embed::routing::{CompletionLadder, CompletionRung, TruncationRetry};
+use openhuman_embed::routing::{CompletionAttempt, CompletionLadder, CompletionRung, TruncationRetry};
 use serde_json::json;
 
 use crate::config::types::{Models, ProviderRouting, StructuredOutput};
@@ -147,6 +147,20 @@ fn reasoning_crowds_the_answer(cap: u32, reasoning_tokens: u64) -> bool {
 fn answered_model(raw: Option<&serde_json::Value>) -> Option<&str> {
     let model = raw?.get("model")?.as_str()?.trim();
     (!model.is_empty()).then_some(model)
+}
+
+/// Keep the output estimator trained on every billed physical attempt,
+/// including partial structured replies that caused a retry or refusal.
+fn record_output_attempts(
+    history: &crate::harness::budget::OutputHistory,
+    lane: &str,
+    attempts: &[CompletionAttempt],
+) {
+    for attempt in attempts {
+        if let (Some(usage), Some(cap)) = (&attempt.usage, attempt.max_tokens) {
+            history.record(lane, &attempt.requested_model, usage.output_tokens, cap);
+        }
+    }
 }
 
 /// One crate message as the completion API wants it.
@@ -360,10 +374,22 @@ impl GatewayModel {
             )?);
         }
         let result = ladder.complete(completion).await.map_err(|error| {
+            record_output_attempts(
+                &self.output_history,
+                &request.schema_name,
+                &error.attempts,
+            );
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
             // owner error instead of being interpreted from message text.
-            let refusal = if let Some(attempt) = error.attempts.last()
+            let refusal = if let openhuman_embed::CoreError::BudgetExceeded { source, .. } = &error.last_error {
+                let committed = source.snapshot.spent.cost_micros
+                    .saturating_add(source.snapshot.reserved.cost_micros);
+                Error::Budget {
+                    spent: committed as f64 / 1_000_000.0,
+                    limit: source.limits.cost_micros.unwrap_or_default() as f64 / 1_000_000.0,
+                }
+            } else if let Some(attempt) = error.attempts.last()
                 && matches!(attempt.finish_reason.as_deref(), Some("length" | "max_tokens" | "MAX_TOKENS"))
             {
                 let model = &attempt.requested_model;
@@ -406,6 +432,11 @@ impl GatewayModel {
                 refusal
             }
         })?;
+        record_output_attempts(
+            &self.output_history,
+            &request.schema_name,
+            &result.attempts,
+        );
         let response = result.response;
         let answered = response
             .answered_model
@@ -429,7 +460,7 @@ impl GatewayModel {
             // structured repair dispatches. The last raw response contains only
             // its own bill, so preferring it would hide earlier paid attempts.
             let reported = usage.cost_usd;
-            cost += reported.unwrap_or_else(|| {
+            let settled = reported.unwrap_or_else(|| {
                 pricing::completion_cost(
                     model,
                     usage.input_tokens,
@@ -437,10 +468,12 @@ impl GatewayModel {
                     usage.output_tokens,
                 )
             });
+            cost += settled;
             tracing::info!(model, cap = attempt.max_tokens, input_tokens = usage.input_tokens,
                 cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
                 reasoning_tokens = usage.reasoning_tokens, finish_reason = ?attempt.finish_reason,
-                reported_cost_usd = reported, "model call");
+                reported_cost_usd = reported, settled_cost_usd = settled,
+                "model call");
             if reasoning_crowds_the_answer(
                 attempt.max_tokens.unwrap_or_default(),
                 usage.reasoning_tokens,

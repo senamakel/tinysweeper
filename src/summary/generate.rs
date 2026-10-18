@@ -45,8 +45,34 @@ enum LaneReviewStatus {
     Skipped,
 }
 
-/// Generate only narrative fields; all verdict-bearing fields are rendered from the proposal.
+/// Generate narrative fields when only parsed diff hunks are available.
+/// Production review calls [`generate_with_diffstat`] with the forge's full
+/// pull-request file counts.
 pub async fn generate(
+    model: &dyn Model,
+    config: &Config,
+    pull_request: &PullRequest,
+    diffs: &[FileDiff],
+    lanes: &[LaneProposal],
+    prior: Option<&ReviewSummary>,
+    prior_transcript: &[SummaryTranscriptTurn],
+) -> (ReviewSummary, Spend, Vec<SummaryTranscriptTurn>) {
+    generate_with_diffstat(
+        model,
+        config,
+        pull_request,
+        diffs,
+        SummaryDiffstat::from_diffs(diffs),
+        lanes,
+        prior,
+        prior_transcript,
+    )
+    .await
+}
+
+/// Generate narrative fields; all verdict-bearing fields are rendered from
+/// the proposal and the complete diffstat comes from the forge file list.
+pub async fn generate_with_diffstat(
     model: &dyn Model,
     config: &Config,
     pull_request: &PullRequest,

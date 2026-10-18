@@ -2846,11 +2846,8 @@ mod tests {
             open: true,
             ..PullRequestData::default()
         };
-        let forge = crate::forge::MockForge::new().with_pull_request(
-            pull_request.clone(),
-            vec![],
-            vec![],
-        );
+        let forge =
+            crate::forge::MockForge::new().with_pull_request(pull_request.clone(), vec![], vec![]);
         forge.replace_pull_request(PullRequestData {
             open: false,
             merged: false,

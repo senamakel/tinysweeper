@@ -562,20 +562,20 @@ async fn review_group(
             if !supported {
                 if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
                     supported = if let Some(tree) = input.tree {
-                    let mut supported = false;
-                    for path in module_paths {
-                        if head_read(tree, &path, None)
-                            .await
-                            .is_some_and(|proof| proof.proves_path(&path))
-                        {
-                            supported = true;
-                            break;
+                        let mut supported = false;
+                        for path in module_paths {
+                            if head_read(tree, &path, None)
+                                .await
+                                .is_some_and(|proof| proof.proves_path(&path))
+                            {
+                                supported = true;
+                                break;
+                            }
                         }
-                    }
-                    supported
-                } else {
-                    false
-                };
+                        supported
+                    } else {
+                        false
+                    };
                 }
             }
             if !supported {
@@ -879,7 +879,9 @@ fn summarise(
             "No findings were independently supported at the reviewed head; retained findings were capped at Likely confidence because retrieval was degraded."
                 .to_string()
         } else {
-            format!("Retained findings were capped at Likely confidence because retrieval was degraded and no typed head-source lookup supported them: {titles}.")
+            format!(
+                "Retained findings were capped at Likely confidence because retrieval was degraded and no typed head-source lookup supported them: {titles}."
+            )
         }
     } else if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
@@ -1237,7 +1239,10 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(!outcome.findings[0].late);
-        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
     }
 
     #[tokio::test]
@@ -1253,9 +1258,14 @@ fn helper() {
             end: Some(2),
         };
         let tree = crate::ports::tree::MockTree::from_recorded(
-            [(lookup.key(), Found::Unavailable { reason: "cold index".into() })]
-                .into_iter()
-                .collect(),
+            [(
+                lookup.key(),
+                Found::Unavailable {
+                    reason: "cold index".into(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         let model = MockModel::new()
             .then(json!({
@@ -1282,8 +1292,15 @@ fn helper() {
         )
         .await;
 
-        assert_eq!(outcome.findings.len(), 1, "the finding stays visible: {outcome:?}");
-        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings.len(),
+            1,
+            "the finding stays visible: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
         assert_eq!(outcome.findings[0].severity, Severity::Critical);
     }
 

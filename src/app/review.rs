@@ -597,6 +597,10 @@ pub async fn review_with_tree_observed(
     context.pull_request.title = scan::scrub(context.pull_request.title.trim());
     context.pull_request.body = scan::scrub(context.pull_request.body.trim());
     let mut diffs = reviewable_diffs(config, &context)?;
+    let uninspected = uninspected_paths(config, &context)?;
+    if let Some(timing) = &timing {
+        record_file_coverage(timing, &context, &uninspected, &[]);
+    }
     // The forge reader is always behind whatever the caller supplied: a
     // checkout that lacks a submodule, or a fixture that recorded nothing
     // for a path, falls through to a read at the head commit through the
@@ -952,6 +956,9 @@ pub async fn review_with_tree_observed(
                 titles: &prior_titles,
             },
         ));
+        if let Some(timing) = &timing {
+            record_file_coverage(timing, &context, &uninspected, &lanes);
+        }
     }
 
     // Scanner findings that no lane actually adjudicated still have to reach a
@@ -981,8 +988,6 @@ pub async fn review_with_tree_observed(
     cap_proposal_findings(&mut lanes, budget, &|finding| {
         inline_anchor_within(finding, &diffs)
     });
-
-    let uninspected = uninspected_paths(config, &context)?;
 
     // Say out loud what the reviewer could not see. This goes on every lane
     // that produced a verdict, not only on the gate: a `critique` check run
@@ -1194,26 +1199,7 @@ pub async fn review_with_tree_observed(
         .collect();
 
     if let Some(timing) = &timing {
-        timing.record(|r| {
-            r.files_total = context.files.len();
-            let paths: std::collections::BTreeSet<_> = context
-                .files
-                .iter()
-                .map(|file| file.path.as_str())
-                .collect();
-            let unanswered: std::collections::BTreeSet<_> = uninspected
-                .iter()
-                .map(String::as_str)
-                .chain(
-                    lanes
-                        .iter()
-                        .flat_map(|lane| lane.unanswered.iter().map(String::as_str)),
-                )
-                .filter(|path| paths.contains(path))
-                .collect();
-            r.files_unanswered = unanswered.len();
-            r.files_answered = r.files_total.saturating_sub(r.files_unanswered);
-        });
+        record_file_coverage(timing, &context, &uninspected, &lanes);
     }
     Ok(Proposal {
         version: PROPOSAL_VERSION,
@@ -2212,6 +2198,41 @@ fn uninspected_paths(config: &Config, context: &PullRequestContext) -> Result<Ve
         .filter(|f| f.evidence_missing())
         .map(|f| f.path.clone())
         .collect())
+}
+
+fn record_file_coverage(
+    timing: &crate::review_timing::ReviewTiming,
+    context: &PullRequestContext,
+    uninspected: &[String],
+    lanes: &[LaneProposal],
+) {
+    let paths: std::collections::BTreeSet<_> = context
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    let unanswered: std::collections::BTreeSet<_> = uninspected
+        .iter()
+        .map(String::as_str)
+        .chain(
+            lanes
+                .iter()
+                .flat_map(|lane| lane.unanswered.iter().map(String::as_str)),
+        )
+        .filter(|path| paths.contains(path))
+        .chain(
+            lanes
+                .is_empty()
+                .then_some(paths.iter().copied())
+                .into_iter()
+                .flatten(),
+        )
+        .collect();
+    timing.record(|record| {
+        record.files_total = paths.len();
+        record.files_unanswered = unanswered.len();
+        record.files_answered = record.files_total.saturating_sub(record.files_unanswered);
+    });
 }
 
 /// The caveat to append when files changed that no lane could read.

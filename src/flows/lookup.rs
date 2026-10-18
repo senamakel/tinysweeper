@@ -753,7 +753,6 @@ The definitions of what the changed lines call into,                  read from 
                 );
                 if self.chars + body.len() <= policy.max_chars {
                     self.chars += body.len();
-                    *answered += 1;
                     rendered.push_str(&body);
                 }
                 continue;
@@ -767,7 +766,6 @@ The definitions of what the changed lines call into,                  read from 
                 );
                 if self.chars + body.len() <= policy.max_chars {
                     self.chars += body.len();
-                    *answered += 1;
                     rendered.push_str(&body);
                 }
                 continue;

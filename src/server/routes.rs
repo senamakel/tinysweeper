@@ -224,6 +224,7 @@ struct ReviewJob {
 enum WorkerDisposition {
     Terminal(TerminalOutcome),
     Deferred(i64),
+    Yielded,
     OwnershipLost,
 }
 
@@ -889,10 +890,14 @@ async fn record_owned_disposition(
     now_ms: i64,
 ) -> Option<Result<bool>> {
     match disposition {
+        WorkerDisposition::Terminal(TerminalOutcome::Deadline) => {
+            store.finish_deadline(owned, now_ms).await
+        }
         WorkerDisposition::Terminal(outcome) => store.finish(owned, outcome, now_ms, now_ms).await,
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(owned, now_ms, not_before_ms).await
         }
+        WorkerDisposition::Yielded => store.defer_yield(owned, now_ms).await,
         WorkerDisposition::OwnershipLost => return None,
     }
     .into()
@@ -1974,12 +1979,17 @@ struct OwnedModel {
 impl OwnedModel {
     async fn check_owner(&self) -> Result<()> {
         if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
-            || !self.jobs.owns(&self.owned, unix_time_ms()).await?
             || self
                 .owner_until
                 .as_ref()
                 .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
         {
+            return Err(Error::ReviewOwnershipLost);
+        }
+        if !self.jobs.should_continue(&self.owned, unix_time_ms()).await? {
+            if self.jobs.owns(&self.owned, unix_time_ms()).await? {
+                return Err(Error::ReviewSuperseded);
+            }
             return Err(Error::ReviewOwnershipLost);
         }
         Ok(())
@@ -2048,6 +2058,16 @@ impl Run {
                 state.review_jobs.owns(owned, unix_time_ms()),
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    async fn check_work(&self, state: &AppState) -> Result<()> {
+        self.check_owner(state).await?;
+        if let Some(owned) = &self.owned
+            && !state.review_jobs.should_continue(owned, unix_time_ms()).await?
+        {
+            return Err(Error::ReviewSuperseded);
         }
         Ok(())
     }
@@ -2550,7 +2570,7 @@ async fn handle_review(
 
     let mut attempt = 1;
     let err = loop {
-        if let Err(err) = run.check_owner(&state).await {
+        if let Err(err) = run.check_work(&state).await {
             break err;
         }
         let review_result = review_inner(&state, &repo, number, &author, installation, &run).await;
@@ -2616,6 +2636,23 @@ async fn handle_review(
                     return WorkerDisposition::OwnershipLost;
                 }
                 if matches!(err, Error::ReviewSuperseded) {
+                    if let Some(owned) = &owned
+                        && run.check_owner(&state).await.is_ok()
+                    {
+                        match state.review_jobs.should_continue(owned, unix_time_ms()).await {
+                            Ok(false) => {
+                                close_status(&state, &slot, Conclusion::NotReviewed).await;
+                                drop(permit);
+                                return WorkerDisposition::Yielded;
+                            }
+                            Ok(true) => {}
+                            Err(err) => {
+                                tracing::error!(%err, job_id = %owned.request.id.0, "could not confirm review supersession");
+                                drop(permit);
+                                return WorkerDisposition::OwnershipLost;
+                            }
+                        }
+                    }
                     drop(permit);
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
                     tracing::debug!(%repo, number, "head changed while preparing review context");
@@ -2663,6 +2700,12 @@ async fn handle_review(
     // and refuse auto-merge forever. If the review died before it had a SHA,
     // there is nothing to conclude and the failure has to open its own check.
     let opened = slot.lock().expect("status slot").is_some();
+    let deadline_hit = matches!(
+        &err,
+        Error::Timeout { what, seconds }
+            if *seconds == REVIEW_DEADLINE.as_secs()
+                && what.starts_with("the review of ")
+    );
     if run.check_owner(&state).await.is_err() {
         return WorkerDisposition::OwnershipLost;
     }
@@ -2691,7 +2734,11 @@ async fn handle_review(
     {
         tracing::error!(%release, %delivery, "could not release the failed delivery claim");
     }
-    WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
+    WorkerDisposition::Terminal(if deadline_hit {
+        TerminalOutcome::Deadline
+    } else {
+        TerminalOutcome::Exhausted
+    })
 }
 
 /// Publish the check that says this pull request was not reviewed.
@@ -2742,7 +2789,7 @@ async fn review_inner(
     installation: u64,
     run: &Run,
 ) -> Result<InnerReview> {
-    run.check_owner(state).await?;
+    run.check_work(state).await?;
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");
@@ -2761,7 +2808,7 @@ async fn review_inner(
     let mut lease = Some(initial_lease.clone());
     let claimed = state.store.claim_lease(&initial_lease, &holder).await?;
     let reviewed = continue_if_lease_claimed(claimed, || async {
-        run.check_owner(state).await?;
+        run.check_work(state).await?;
         let read_token = state.auth.review_read_token(installation).await?;
         let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
@@ -2959,7 +3006,16 @@ impl ReviewRun<'_> {
             expected_head: Some(pull_request.head_sha.clone()),
             ..run.clone()
         };
-        run.check_owner(state).await?;
+        if let Some(owned) = &run.owned
+            && run.mode == Mode::Incremental
+            && !state
+                .review_jobs
+                .confirm_head(owned, &pull_request.head_sha, unix_time_ms())
+                .await?
+        {
+            return Err(Error::ReviewOwnershipLost);
+        }
+        run.check_work(state).await?;
 
         // A manual review deliberately takes a lease of its own: the operator asked
         // for this run *because* the ordinary one already happened, so sharing the
@@ -2985,7 +3041,7 @@ impl ReviewRun<'_> {
             run.owned.as_ref(),
             unix_time_ms(),
             || async {
-                run.check_owner(state).await?;
+                run.check_work(state).await?;
                 if let Some(backend) = &state.index {
                     tokio::spawn(index_in_background(
                         backend.clone(),
@@ -3000,7 +3056,7 @@ impl ReviewRun<'_> {
                 Ok(())
             },
             || async {
-                run.check_owner(state).await?;
+                run.check_work(state).await?;
                 run.check(repo, number)?;
                 Ok(open_status(
                     state,
@@ -3012,7 +3068,7 @@ impl ReviewRun<'_> {
                 .await)
             },
             || async {
-                run.check_owner(state).await?;
+                run.check_work(state).await?;
             let outcome = {
 
             // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
@@ -3097,7 +3153,7 @@ impl ReviewRun<'_> {
                     // "in progress" forever, which is exactly what this whole
                     // umbrella-check mechanism exists to prevent.
                     let publish = std::panic::AssertUnwindSafe(async {
-                        run.check_owner(state).await?;
+                run.check_work(state).await?;
                         let write_token = state.auth.installation_token(installation).await?;
                         run.check_owner(state).await?;
                         // The review reader has already been held across all the
@@ -3345,18 +3401,21 @@ async fn run_lanes(
         )
         .await
     };
-    let review = tokio::time::timeout_at(run.deadline, review);
-    let proposal = tokio::select! {
-        biased;
-        _ = wait_for_owner_fence(run.owner_lost.clone(), run.owner_until.clone()) => {
-            return Err(Error::ReviewOwnershipLost);
-        }
-        result = review => result
-            .map_err(|_elapsed| Error::timeout(
-                format!("the review of {repo}#{number}"),
-                REVIEW_DEADLINE,
-            ))??,
+    let review = async {
+        tokio::time::timeout_at(run.deadline, review)
+            .await
+            .map_err(|_elapsed| {
+                Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
+            })?
     };
+    let proposal = select_review_control(
+        review,
+        state.review_jobs.as_ref(),
+        run.owned.as_ref(),
+        run.owner_lost.clone(),
+        run.owner_until.clone(),
+    )
+    .await?;
 
     Ok((config.into_owned(), proposal))
 }
@@ -3399,6 +3458,47 @@ async fn wait_for_owner_fence(
             }
             (None, None) => std::future::pending::<()>().await,
         }
+    }
+}
+
+/// Poll the durable control plane while model work is in flight. The provider
+/// future is dropped as soon as another process records a superseding hint;
+/// the owner lease remains held until `handle_review` acknowledges the yield.
+async fn wait_for_review_yield(
+    jobs: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+) -> Result<()> {
+    let Some(owned) = owned else {
+        return std::future::pending().await;
+    };
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if jobs.should_continue(owned, unix_time_ms()).await? {
+            continue;
+        }
+        return if jobs.owns(owned, unix_time_ms()).await? {
+            Err(Error::ReviewSuperseded)
+        } else {
+            Err(Error::ReviewOwnershipLost)
+        };
+    }
+}
+
+async fn select_review_control<F, T>(
+    review: F,
+    jobs: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+    owner_lost: Option<watch::Receiver<bool>>,
+    owner_until: Option<watch::Receiver<tokio::time::Instant>>,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    tokio::select! {
+        biased;
+        _ = wait_for_owner_fence(owner_lost, owner_until) => Err(Error::ReviewOwnershipLost),
+        result = wait_for_review_yield(jobs, owned) => Err(result.expect_err("yield waiter only completes when control changes")),
+        result = review => result,
     }
 }
 
@@ -3893,6 +3993,109 @@ mod tests {
             .expect("ordinary review uses normal terminal path")
         );
         assert_eq!(normal_store.unfinished(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_superseding_delivery_stops_the_old_model_dispatch_before_provider_call() {
+        use crate::harness::MockModel;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let mut first = queued_test_review(73);
+        first.repo = "owner/repo".into();
+        first.number = 7;
+        first.head_sha = Some("head-a".into());
+        store.admit_batch(vec![first.clone()]).await.unwrap();
+        let owned = store.claim_next("old-worker", 100).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", 101).await.unwrap());
+
+        let model = MockModel::silent();
+        let guarded = OwnedModel {
+            inner: Arc::new(model.clone()),
+            jobs: store.clone(),
+            owned: owned.clone(),
+            owner_lost: None,
+            owner_until: None,
+        };
+        let mut next = first;
+        next.id = crate::ports::review_job::ReviewJobId("push-b".into());
+        next.delivery = Some("push-b".into());
+        next.head_sha = Some("head-b".into());
+        store.admit_batch(vec![next]).await.unwrap();
+
+        let result = guarded
+            .complete(ModelRequest {
+                model: "test".into(),
+                messages: vec![Message::user("review this head")],
+                schema: json!({"type": "object"}),
+                schema_name: "review".into(),
+                max_tokens: 16,
+            })
+            .await;
+        assert!(matches!(result, Err(Error::ReviewSuperseded)));
+        assert!(model.requests().is_empty(), "the old provider request never starts");
+        assert!(store.owns(&owned, 102).await.unwrap(), "the old owner keeps its slot until yield acknowledgement");
+        assert!(!store.should_continue(&owned, 102).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cross_process_supersession_drops_the_in_flight_review_future_and_frees_its_permit() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let mut first = queued_test_review(74);
+        first.repo = "owner/repo".into();
+        first.number = 7;
+        first.head_sha = Some("head-a".into());
+        store.admit_batch(vec![first.clone()]).await.unwrap();
+        let owned = store.claim_next("old-worker", 100).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", 101).await.unwrap());
+
+        let permits = Arc::new(Semaphore::new(crate::ports::review_job::MAX_RUNNING_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..crate::ports::review_job::MAX_RUNNING_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.unwrap());
+        }
+        let worker_permit = held.pop().expect("one running review owns the worker permit");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_by_future = dropped.clone();
+        let jobs: Arc<dyn ReviewJobStore> = store.clone();
+        let review = async move {
+            let _drop_flag = DropFlag(dropped_by_future);
+            std::future::pending::<Result<()>>().await
+        };
+        let worker = tokio::spawn(async move {
+            let result = select_review_control(review, jobs.as_ref(), Some(&owned), None, None).await;
+            if matches!(result, Err(Error::ReviewSuperseded)) {
+                assert!(jobs.defer_yield(&owned, unix_time_ms()).await.unwrap());
+            }
+            drop(worker_permit);
+            result
+        });
+
+        let mut next = first;
+        next.id = crate::ports::review_job::ReviewJobId("push-b".into());
+        next.delivery = Some("push-b".into());
+        next.head_sha = Some("head-b".into());
+        store.admit_batch(vec![next]).await.unwrap();
+
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+                .await
+                .expect("control polling must cancel without waiting for owner expiry")
+                .unwrap(),
+            Err(Error::ReviewSuperseded)
+        ));
+        assert!(dropped.load(Ordering::SeqCst), "the provider future is dropped");
+        assert!(permits.try_acquire().is_ok(), "the acknowledged worker releases its slot");
     }
 
     #[tokio::test]

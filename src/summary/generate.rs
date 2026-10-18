@@ -1585,6 +1585,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_test_and_commit_prose_survives_non_answered_lane_filter() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "The transaction commits each event once. The test fixture maps the empty-state case. The commit reviewer found no issues.",
+            "changes": "All checks report no issues. The parser handles unknown paths safely.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcomes = [LaneId::Tests, LaneId::Commits]
+            .into_iter()
+            .map(|id| {
+                let outcome = crate::lanes::LaneOutcome::unanswered(id, Spend::default());
+                lane(
+                    id,
+                    crate::forge::types::CheckConclusion::Neutral,
+                    &outcome.summary,
+                    &[],
+                    &[],
+                    outcome.coverage,
+                )
+            })
+            .collect::<Vec<_>>();
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &outcomes,
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(
+            summary
+                .executive_summary
+                .contains("The transaction commits each event once")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("The test fixture maps the empty-state case")
+        );
+        assert!(
+            !summary
+                .executive_summary
+                .contains("The commit reviewer found no issues")
+        );
+        assert!(!summary.changes.contains("All checks report no issues"));
+        assert!(
+            summary
+                .changes
+                .contains("The parser handles unknown paths safely")
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_test_and_commit_verdicts_are_removed_for_unanswered_lanes() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "Tests report no findings. Commits found no issues. The transaction commits each event once.",
+            "changes": "The test fixture maps the empty-state case.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcomes = [LaneId::Tests, LaneId::Commits]
+            .into_iter()
+            .map(|id| {
+                let outcome = crate::lanes::LaneOutcome::unanswered(id, Spend::default());
+                lane(
+                    id,
+                    crate::forge::types::CheckConclusion::Neutral,
+                    &outcome.summary,
+                    &[],
+                    &[],
+                    outcome.coverage,
+                )
+            })
+            .collect::<Vec<_>>();
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &outcomes,
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(
+            !summary
+                .executive_summary
+                .contains("Tests report no findings")
+        );
+        assert!(
+            !summary
+                .executive_summary
+                .contains("Commits found no issues")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("The transaction commits each event once")
+        );
+        assert!(
+            summary
+                .changes
+                .contains("The test fixture maps the empty-state case")
+        );
+    }
+
+    #[tokio::test]
     async fn imperative_title_is_kept_as_attributed_purpose() {
         let model = MockModel::new().then(json!({
             "executive_summary": "The build configuration supports Windows.",
@@ -1920,6 +2033,60 @@ mod tests {
         assert_eq!(summary.history[0].head_sha, "old");
         assert_eq!(spend, Spend::default());
         assert_eq!(transcript, prior_transcript);
+    }
+
+    #[tokio::test]
+    async fn transport_fallback_replaces_only_the_prior_attributed_title() {
+        let prior = ReviewSummary {
+            executive_summary: "Pull request purpose (title): Run tests on Windows. The parser retains strict lane keys.".into(),
+            ..ReviewSummary::default()
+        };
+        let model = MockModel::new().then_error_with_usage(
+            "HTTP 502",
+            crate::ports::model::Usage {
+                input_tokens: 7,
+                output_tokens: 2,
+                cost_usd: 0.02,
+                ..Default::default()
+            },
+        );
+
+        let (summary, spend, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest {
+                title: "Build the client in CI".into(),
+                ..PullRequest::default()
+            },
+            &[],
+            &[],
+            Some(&prior),
+            &[],
+        )
+        .await;
+
+        assert!(
+            summary
+                .executive_summary
+                .contains("The parser retains strict lane keys")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("Pull request purpose (title): Build the client in CI.")
+        );
+        assert!(!summary.executive_summary.contains("Run tests on Windows"));
+        assert_eq!(
+            summary
+                .executive_summary
+                .matches("Pull request purpose (title):")
+                .count(),
+            1
+        );
+        assert_eq!(model.calls(), 1);
+        assert_eq!(spend.usage.input_tokens, 7);
+        assert_eq!(spend.usage.output_tokens, 2);
+        assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

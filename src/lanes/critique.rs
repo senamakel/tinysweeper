@@ -373,6 +373,7 @@ async fn review_group(
     let mut findings = filtered.findings;
     let mut rejected = filtered.rejected;
     let mut withheld_for_degraded_context = 0usize;
+    let mut capped_for_degraded_context = 0usize;
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole
     // pull request's — a lane fans out per group, so a two-line group must
@@ -540,7 +541,6 @@ async fn review_group(
     // typed outcomes from the pinned tree, never model-controlled rendering.
     if input.retrieval_status.is_degraded() {
         let mut actionable = Vec::with_capacity(findings.len());
-        let mut capped_for_degraded_context = 0usize;
         for mut finding in findings {
             if finding.late {
                 let supported = match input.tree {
@@ -588,7 +588,6 @@ async fn review_group(
             actionable.push(finding);
         }
         findings = actionable;
-        withheld_for_degraded_context += capped_for_degraded_context;
     }
 
     Ok(FileReview {
@@ -600,6 +599,7 @@ async fn review_group(
             &findings,
             added_by_coverage,
             withheld_for_degraded_context,
+            capped_for_degraded_context,
         ),
         findings,
         resolved,
@@ -872,8 +872,23 @@ fn summarise(
     kept: &[Finding],
     added_by_coverage: usize,
     withheld_for_degraded_context: usize,
+    capped_for_degraded_context: usize,
 ) -> String {
-    let summary = if kept.is_empty() && !rejected.is_empty() {
+    let summary = if capped_for_degraded_context > 0 {
+        let titles = kept
+            .iter()
+            .map(|finding| finding.title.trim())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if titles.is_empty() {
+            "Nothing to report confidently. Unsupported module claims were kept at Likely confidence."
+                .to_string()
+        } else {
+            format!(
+                "Unsupported module claims were kept at Likely confidence: {titles}."
+            )
+        }
+    } else if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
             .iter()
             .map(|item| format!("{} — {}", item.title.trim(), item.reason.trim()))
@@ -928,6 +943,12 @@ fn summarise(
         notes.push(format!(
             "{withheld_for_degraded_context} unchanged-code finding{} withheld from action because retrieval was degraded and no current-head lookup supported it",
             plural(withheld_for_degraded_context)
+        ));
+    }
+    if capped_for_degraded_context > 0 {
+        notes.push(format!(
+            "{capped_for_degraded_context} module-declaration finding{} capped at Likely confidence because no declared module path was successfully read at the reviewed head",
+            plural(capped_for_degraded_context)
         ));
     }
 

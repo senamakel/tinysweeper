@@ -1756,6 +1756,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bare_security_alias_is_filtered_without_verdict_wording() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "Security is clean.",
+            "changes": "The parser handles unknown paths safely.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Security, Spend::default());
+        let security = lane(
+            LaneId::Security,
+            crate::forge::types::CheckConclusion::Neutral,
+            &outcome.summary,
+            &[],
+            &[],
+            outcome.coverage,
+        );
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[security],
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(!summary.executive_summary.contains("Security is clean"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_commit_no_longer_claims_unanswered_commit_lane_status() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "The transaction commit no longer loses events.",
+            "changes": "The parser handles unknown paths safely.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Commits, Spend::default());
+        let commits = lane(
+            LaneId::Commits,
+            crate::forge::types::CheckConclusion::Neutral,
+            &outcome.summary,
+            &[],
+            &[],
+            outcome.coverage,
+        );
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[commits],
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(summary.executive_summary.contains("The transaction commit no longer loses events"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_test_fixture_no_dependencies_survives_unanswered_test_lane() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "This adds a test fixture with no new dependencies.",
+            "changes": "The parser handles unknown paths safely.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Tests, Spend::default());
+        let tests = lane(
+            LaneId::Tests,
+            crate::forge::types::CheckConclusion::Neutral,
+            &outcome.summary,
+            &[],
+            &[],
+            outcome.coverage,
+        );
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[tests],
+            None,
+            &[],
+        )
+        .await;
+
+        assert!(summary.executive_summary.contains("This adds a test fixture with no new dependencies"));
+    }
+
+    #[tokio::test]
     async fn imperative_title_is_kept_as_attributed_purpose() {
         let model = MockModel::new().then(json!({
             "executive_summary": "The build configuration supports Windows.",

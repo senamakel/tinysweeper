@@ -39,7 +39,7 @@ static WORKERS: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 static RUNTIME: OnceCell<Arc<Runtime>> = OnceCell::const_new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn shared_runtime() -> Result<Arc<Runtime>> {
     RUNTIME

@@ -693,9 +693,10 @@ impl GatewayModel {
             .transpose()?;
         let provider = openhuman_embed::Provider::openai_compatible(&self.base_url, &self.api_key)
             .model(&request.model);
-        let downstream = self.langfuse.clone().map(|observer| {
-            observer as Arc<dyn openhuman_embed::observe::TurnObserver>
-        });
+        let downstream = self
+            .langfuse
+            .clone()
+            .map(|observer| observer as Arc<dyn openhuman_embed::observe::TurnObserver>);
         let observer = Arc::new(AgenticCallObserver {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
@@ -879,6 +880,9 @@ mod tests {
     #[derive(Default)]
     struct RecordedModelCall(std::sync::Mutex<Option<(Usage, bool, bool, std::time::Duration)>>);
 
+    #[derive(Default)]
+    struct RecordedModelCalls(std::sync::Mutex<Vec<(Usage, bool, bool, std::time::Duration)>>);
+
     impl crate::ports::model::ModelCallObserver for RecordedModelCall {
         fn completed(
             &self,
@@ -888,6 +892,21 @@ mod tests {
             latency: std::time::Duration,
         ) {
             *self.0.lock().unwrap() = Some((usage, succeeded, refused, latency));
+        }
+    }
+
+    impl crate::ports::model::ModelCallObserver for RecordedModelCalls {
+        fn completed(
+            &self,
+            usage: Usage,
+            succeeded: bool,
+            refused: bool,
+            latency: std::time::Duration,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((usage, succeeded, refused, latency));
         }
     }
 
@@ -967,6 +986,98 @@ mod tests {
         assert_eq!(call.0.output_tokens, 7);
         assert_eq!(call.0.reasoning_tokens, 2);
         assert_eq!(call.0.cached_tokens, 3);
+    }
+
+    #[tokio::test]
+    async fn agentic_physical_calls_keep_latency_and_usage_without_langfuse() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Message;
+        use crate::ports::tree::MockTree;
+        use tracing::instrument::WithSubscriber;
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let tool_reply = Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic-observed",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"list-1","type":"function","function":{"name":"repo_list","arguments":"{\"path\":\".\",\"limit\":5}"}
+                }]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let gateway = FakeGateway::start(vec![
+            tool_reply,
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"total_tokens":20,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                Message::system("Review this evidence."),
+                Message::user("Check the implementation."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}".into())]);
+        let calls = Arc::new(RecordedModelCalls::default());
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_log = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || LogBytes(writer_log.clone()))
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let response = crate::ports::model::with_model_call_observer(
+            calls.clone(),
+            model
+                .review(
+                    &request,
+                    &tree,
+                    &crate::config::types::LookupPolicy::default(),
+                )
+                .with_subscriber(dispatch),
+        )
+        .await
+        .expect("agentic review completes");
+
+        assert_eq!(response.value, json!({"summary":"checked"}));
+        assert_eq!(gateway.requests().len(), 2);
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "each provider round is observed immediately"
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.calls_attempted).sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            calls.iter().map(|call| call.0.calls_succeeded).sum::<u64>(),
+            2
+        );
+        assert!(calls.iter().all(|call| call.3 > std::time::Duration::ZERO));
+        let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert_eq!(lines.matches("model call").count(), 2, "{lines}");
+        assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
     }
 
     fn models() -> Models {

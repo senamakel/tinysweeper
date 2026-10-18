@@ -64,12 +64,34 @@ impl CompletionObserver for ModelCallObserver {
         let model = trace.request.model.as_str();
         let latency_ms = trace.latency.as_millis() as u64;
         let succeeded = trace.outcome.is_ok();
+        let provider_response = succeeded
+            || matches!(trace.outcome, Err(openhuman_embed::CoreError::StructuredOutput { .. }));
+        let failed_usage = match trace.outcome {
+            Err(openhuman_embed::CoreError::StructuredOutput { failure, .. }) => {
+                failure.usage.as_ref()
+            }
+            _ => None,
+        };
+        let usage = usage.or(failed_usage);
+        let accounting = Usage {
+            input_tokens: usage.map_or(0, |usage| usage.input_tokens),
+            output_tokens: usage.map_or(0, |usage| usage.output_tokens),
+            reasoning_tokens: usage.map_or(0, |usage| usage.reasoning_tokens),
+            cached_tokens: usage.map_or(0, |usage| usage.cached_tokens),
+            cost_usd: usage.and_then(|usage| usage.cost_usd).unwrap_or_default(),
+            calls_attempted: 1,
+            calls_succeeded: u64::from(provider_response),
+            calls_refused: 0,
+            calls_errored: u64::from(!provider_response),
+            ..Usage::default()
+        };
         tracing::info!(target: "tinysweeper::model", model, latency_ms, succeeded,
-            input_tokens = usage.map_or(0, |usage| usage.input_tokens),
-            output_tokens = usage.map_or(0, |usage| usage.output_tokens),
-            reasoning_tokens = usage.map_or(0, |usage| usage.reasoning_tokens),
-            cached_tokens = usage.map_or(0, |usage| usage.cached_tokens),
+            input_tokens = accounting.input_tokens,
+            output_tokens = accounting.output_tokens,
+            reasoning_tokens = accounting.reasoning_tokens,
+            cached_tokens = accounting.cached_tokens,
             "model call");
+        crate::ports::model::observe_model_call(accounting, provider_response, false, trace.latency);
     }
 }
 
@@ -441,15 +463,9 @@ impl GatewayModel {
                     output_tokens: totals.output_tokens,
                     reasoning_tokens,
                     calls_attempted: error.attempts.len() as u64,
-                    calls_succeeded: 0,
-                    calls_refused: if is_refusal {
-                        1
-                    } else {
-                        0
-                    },
-                    calls_errored: (error.attempts.iter().filter(|attempt| attempt.failed).count()
-                        as u64)
-                        .saturating_sub(u64::from(is_refusal)),
+                    calls_succeeded: error.attempts.iter().filter(|attempt| !attempt.failed).count() as u64,
+                    calls_refused: u64::from(is_refusal && error.attempts.is_empty()),
+                    calls_errored: error.attempts.iter().filter(|attempt| attempt.failed).count() as u64,
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,
@@ -510,7 +526,7 @@ impl GatewayModel {
             output_tokens: totals.output_tokens,
             reasoning_tokens: totals.reasoning_tokens,
             calls_attempted: attempts,
-            calls_succeeded: 1,
+            calls_succeeded: result.attempts.iter().filter(|attempt| !attempt.failed).count() as u64,
             calls_refused: 0,
             calls_errored: failed_attempts,
             cached_tokens: totals.cached_tokens,

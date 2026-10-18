@@ -437,6 +437,7 @@ pub async fn review_with_retrieval(
 /// see `crate::flows::lookup` — and either way it holds a read handle and
 /// nothing else.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "review"))]
 pub async fn review_with_tree(
     forge: &dyn ForgeRead,
     model: Arc<dyn Model>,

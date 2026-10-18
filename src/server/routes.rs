@@ -2358,6 +2358,7 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
 ///
 /// Holds no write credential: nothing in here runs after a model call has
 /// returned, so nothing in here may mint one.
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "checkout_and_review"))]
 async fn run_lanes(
     state: &AppState,
     config: &Config,

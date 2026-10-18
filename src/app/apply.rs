@@ -2587,6 +2587,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_publishes_only_citations_on_supplied_head_lines() {
+        use crate::harness::mock::MockModel;
+
+        let forge = forge("abc123");
+        let config = config();
+        let model = MockModel::new().then(serde_json::json!({
+            "executive_summary": "The change adds a parser guard.",
+            "changes": "The parser now checks its boundary.",
+            "features": [
+                {
+                    "kind": "addition",
+                    "name": "Unsupported line",
+                    "impact": "This line is outside the supplied diff.",
+                    "citations": ["src/main.rs:999999"]
+                },
+                {
+                    "kind": "addition",
+                    "name": "Supported line",
+                    "impact": "This line was added in the reviewed diff.",
+                    "citations": ["src/main.rs:2"]
+                }
+            ],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let diffs = [parse_file_patch(
+            "src/main.rs",
+            "@@ -1,1 +1,2 @@\n fn main() {}\n+let i = 0;\n",
+        )];
+        let pull_request = PullRequest {
+            number: 7,
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        };
+        let (summary, _, _) =
+            crate::summary::generate(&model, &config, &pull_request, &diffs, &[], None, &[]).await;
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(summary);
+
+        apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        assert_eq!(posted.len(), 1, "{posted:#?}");
+        let Write::Comment { body, .. } = &posted[0] else {
+            panic!("hub comment was not posted: {posted:#?}");
+        };
+        assert!(body.contains("Supported line"), "{body}");
+        assert!(body.contains("blob/abc123/src/main.rs#L2"), "{body}");
+        assert!(!body.contains("Unsupported line"), "{body}");
+        assert!(!body.contains("#L999999"), "{body}");
+    }
+
+    #[tokio::test]
     async fn mock_forge_hub_links_a_citation_to_the_reviewed_sha() {
         let forge = forge("abc123");
         let mut proposal = proposal("abc123", vec![]);

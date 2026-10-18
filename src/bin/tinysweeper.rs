@@ -932,7 +932,9 @@ fn apply_confirmation(
         ApplyDisposition::Superseded => {
             "skipped publishing: the pull request head changed before publication".into()
         }
-        ApplyDisposition::Closed => "skipped publishing: the pull request is closed or merged".into(),
+        ApplyDisposition::Closed => {
+            "skipped publishing: the pull request is closed or merged".into()
+        }
     }
 }
 
@@ -951,7 +953,8 @@ async fn run_apply(repo: &str, pr: u64, findings: &std::path::Path) -> Result<()
     let loaded = tinysweeper::config::load_validated(std::path::Path::new("."), None)?;
     let read = GitHubRead::from_env()?;
     let write = GitHubWrite::from_env()?;
-    let disposition = tinysweeper::app::apply(&read, &write, &loaded.config, &proposal, None).await?;
+    let disposition =
+        tinysweeper::app::apply(&read, &write, &loaded.config, &proposal, None).await?;
 
     println!("{}", apply_confirmation(disposition, proposal.lanes.len()));
     Ok(())

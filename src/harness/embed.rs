@@ -35,6 +35,7 @@ use crate::ports::model::{
 pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
+    output_history: crate::harness::budget::OutputHistory,
     agentic_reviewers: bool,
     api_key: String,
     base_url: String,
@@ -216,6 +217,7 @@ impl GatewayModel {
             api_key,
             budget: None,
             budget_prices: models.budget_prices.clone(),
+            output_history: Default::default(),
             agentic_reviewers: models.agentic_reviewers,
             base_url: models.base_url.clone(),
             fallbacks: models.fallback.clone(),
@@ -327,6 +329,7 @@ impl GatewayModel {
                 &bound,
                 0,
                 &self.budget_prices,
+                &self.output_history,
             )?);
         }
         let rung = CompletionRung::new(completer, model)
@@ -502,6 +505,7 @@ impl GatewayModel {
                         .saturating_mul(12)
                         .saturating_add(32768),
                     &self.budget_prices,
+                    &self.output_history,
                 )
             })
             .transpose()?;
@@ -1205,6 +1209,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),
@@ -1251,6 +1256,7 @@ mod tests {
         let mut gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),
@@ -1364,6 +1370,7 @@ mod tests {
             request_timeout_ms: 120_000,
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
         };
         let rendered = format!("{model:?}");
         assert!(!rendered.contains("sk-secret-value"), "{rendered}");
@@ -1417,6 +1424,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),

@@ -3769,7 +3769,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_after_status_open_defers_job_for_replacement_owner() {
+    async fn status_open_shutdown_defers_job_for_replacement_owner() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let store = crate::ports::review_job::tests::MockReviewJobStore::default();
         let request = queued_test_review(71);
         assert_eq!(
@@ -3781,29 +3783,20 @@ mod tests {
             .await
             .unwrap()
             .expect("first process owns accepted review");
-        let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
-        let run = Run {
-            mode: Mode::Incremental,
-            slot,
-            deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
-            expected_head: Some("sha-71".into()),
-            owned: Some(first.clone()),
-            owner_lost: None,
-            owner_until: None,
-            lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
-
-        // This is the signal `ReviewRun::run` sets when open_status discovers
-        // shutdown after the check POST completed. Follow the same classification
-        // and durable-disposition path used by review_inner/run_owned_review.
-        mark_shutdown_status_result(&run);
+        let continued = AtomicUsize::new(0);
+        let shutdown_result = continue_after_open_status(false, || async {
+            continued.fetch_add(1, Ordering::SeqCst);
+            Ok(InnerReview::Complete(None))
+        })
+        .await
+        .expect("shutdown after status-open resolves as a typed result");
+        assert_eq!(continued.load(Ordering::SeqCst), 0);
         assert!(matches!(
-            take_shutdown_status_result(&run),
-            Some(InnerReview::Shutdown)
+            shutdown_result,
+            InnerReview::Shutdown
         ));
-        let disposition = defer_interrupted_review();
-        assert!(matches!(disposition, WorkerDisposition::Deferred(_)));
+        let disposition = shutdown_disposition(&shutdown_result, unix_time_ms())
+            .expect("the production handler defers shutdown results");
         assert!(
             record_owned_disposition(&store, &first, disposition, unix_time_ms())
                 .await
@@ -3835,6 +3828,38 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(store.unfinished(), 0);
+
+        let normal_store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        assert_eq!(
+            normal_store
+                .admit_batch(vec![queued_test_review(72)])
+                .await
+                .unwrap(),
+            Admission::Admitted
+        );
+        let normal_owner = normal_store
+            .claim_next("normal-owner", unix_time_ms())
+            .await
+            .unwrap()
+            .expect("positive control owns work");
+        let normal_result = continue_after_open_status(true, || async {
+            continued.fetch_add(1, Ordering::SeqCst);
+            Ok(InnerReview::Complete(None))
+        })
+        .await
+        .expect("live status continues review");
+        assert_eq!(continued.load(Ordering::SeqCst), 1);
+        assert!(shutdown_disposition(&normal_result, unix_time_ms()).is_none());
+        assert!(record_owned_disposition(
+            &normal_store,
+            &normal_owner,
+            WorkerDisposition::Terminal(TerminalOutcome::Declined),
+            unix_time_ms()
+        )
+        .await
+        .unwrap()
+        .expect("ordinary review uses normal terminal path"));
+        assert_eq!(normal_store.unfinished(), 0);
     }
 
     #[tokio::test]

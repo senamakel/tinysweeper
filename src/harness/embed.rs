@@ -477,9 +477,17 @@ impl GatewayModel {
                     reasoning_tokens,
                     calls_attempted: (error.attempts.len() as u64)
                         .max(u64::from(is_refusal && error.attempts.is_empty())),
-                    calls_succeeded: error.attempts.iter().filter(|attempt| !attempt.failed).count() as u64,
+                    calls_succeeded: error
+                        .attempts
+                        .iter()
+                        .filter(|attempt| attempt.finish_reason.is_some() || !attempt.failed)
+                        .count() as u64,
                     calls_refused: u64::from(is_refusal && error.attempts.is_empty()),
-                    calls_errored: error.attempts.iter().filter(|attempt| attempt.failed).count() as u64,
+                    calls_errored: error
+                        .attempts
+                        .iter()
+                        .filter(|attempt| attempt.failed && attempt.finish_reason.is_none())
+                        .count() as u64,
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,
@@ -487,11 +495,6 @@ impl GatewayModel {
         })?;
         let response = result.response;
         let attempts = result.attempts.len() as u64;
-        let failed_attempts = result
-            .attempts
-            .iter()
-            .filter(|attempt| attempt.failed)
-            .count() as u64;
         let answered = response
             .answered_model
             .as_deref()
@@ -543,10 +546,14 @@ impl GatewayModel {
             calls_succeeded: result
                 .attempts
                 .iter()
-                .filter(|attempt| !attempt.failed)
+                .filter(|attempt| attempt.finish_reason.is_some() || !attempt.failed)
                 .count() as u64,
             calls_refused: 0,
-            calls_errored: failed_attempts,
+            calls_errored: result
+                .attempts
+                .iter()
+                .filter(|attempt| attempt.failed && attempt.finish_reason.is_none())
+                .count() as u64,
             cached_tokens: totals.cached_tokens,
             embed_tokens: 0,
             cost_usd: cost,

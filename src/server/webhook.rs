@@ -252,6 +252,7 @@ pub fn route(event: &str, payload: &Payload) -> Action {
         return Action::Ignore("no installation");
     };
 
+
     // Auto-merge is decided before the bot guard below, and deliberately.
     //
     // Every event that can make a pull request mergeable is sent by a bot: the
@@ -494,6 +495,45 @@ mod tests {
                 "user": {"login": "someone", "type": "User"}
             }
         }))
+    }
+
+    #[test]
+    fn a_review_delivery_for_a_merged_pull_request_is_ignored() {
+        let mut delivery = pr_payload("synchronize");
+        delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
+        delivery.pull_request.as_mut().unwrap().merged = true;
+
+        assert_eq!(route("pull_request", &delivery), Action::Ignore("pull request is closed"));
+    }
+
+    #[test]
+    fn a_mention_on_a_closed_pull_request_is_ignored() {
+        let delivery = payload(serde_json::json!({
+            "action": "created",
+            "repository": {"full_name": "tinyhumansai/tinysweeper"},
+            "installation": {"id": 152184043},
+            "issue": {
+                "number": 7,
+                "state": "closed",
+                "pull_request": {},
+                "user": {"login": "someone", "type": "User"}
+            },
+            "comment": {
+                "body": "@tinysweeper please review",
+                "user": {"login": "someone", "type": "User"}
+            }
+        }));
+
+        assert_eq!(route("issue_comment", &delivery), Action::Ignore("pull request is closed"));
+    }
+
+    #[test]
+    fn a_thread_reply_on_a_merged_pull_request_is_ignored() {
+        let mut delivery = pr_payload("created");
+        delivery.pull_request.as_mut().unwrap().state = Some("closed".into());
+        delivery.pull_request.as_mut().unwrap().merged = true;
+
+        assert_eq!(route("pull_request_review_comment", &delivery), Action::Ignore("pull request is closed"));
     }
 
     /// A `check_run` or `check_suite` delivery, sent — as the real ones always

@@ -1398,7 +1398,11 @@ fn helper() {
         .await;
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
-        assert!(tree.lookups.lock().expect("lookup calls").is_empty());
+        let lookups = tree.lookups.lock().expect("lookup calls");
+        assert!(
+            lookups.is_empty(),
+            "disabled lookup policy must prevent post-review reads: {lookups:?}"
+        );
         assert_eq!(
             outcome.findings[0].confidence,
             DEGRADED_CONTEXT_CONFIDENCE_CAP

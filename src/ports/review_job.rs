@@ -78,7 +78,7 @@ pub enum Admission {
 pub enum PaidStart {
     /// This owner may proceed to credentials and review work.
     Started,
-    /// The retry budget was exhausted and the job is now terminal.
+    /// The retry budget was exhausted; its owner can now conclude status and finish it.
     Exhausted,
     /// This process no longer owns the unexpired generation.
     OwnershipLost,

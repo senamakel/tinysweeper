@@ -2829,7 +2829,14 @@ where
     }
 }
 
-async fn review_with_paid_budget_and_status<Start, StartFuture, OpenStatus, OpenStatusFuture, Review, ReviewFuture>(
+async fn review_with_paid_budget_and_status<
+    Start,
+    StartFuture,
+    OpenStatus,
+    OpenStatusFuture,
+    Review,
+    ReviewFuture,
+>(
     store: &dyn ReviewJobStore,
     owned: Option<&OwnedReview>,
     now_ms: i64,
@@ -3985,8 +3992,6 @@ mod tests {
         let forge = MockForge::new();
         let model = MockModel::silent();
         let mut check_id = None;
-        let mut last_result = None;
-
         for _ in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
             let attempt_model = model.clone();
             let attempt_forge = forge.clone();
@@ -4021,10 +4026,12 @@ mod tests {
             )
             .await;
             assert!(matches!(result, Err(Error::Forge(_))));
-            last_result = Some(result);
         }
-        drop(last_result);
-        assert_eq!(model.requests().len(), 5, "five paid starts reached the model");
+        assert_eq!(
+            model.requests().len(),
+            5,
+            "five paid starts reached the model"
+        );
         let check_id = check_id.expect("the transient review opened one check");
 
         let exhausted = review_with_paid_budget_and_status(
@@ -4060,18 +4067,21 @@ mod tests {
         )
         .await;
         assert!(matches!(
-            disposition,
+            &disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
         ));
-        assert_eq!(
+        assert!(matches!(
             record_owned_disposition(&store, &owned, disposition, now_ms).await,
             Some(Ok(true))
-        );
+        ));
         let conclusions: Vec<_> = forge
             .writes()
             .into_iter()
             .filter_map(|write| match write {
-                Write::CheckUpdate { check_id: id, check } if id == check_id => Some(check),
+                Write::CheckUpdate {
+                    check_id: id,
+                    check,
+                } if id == check_id => Some(check),
                 _ => None,
             })
             .collect();
@@ -4168,16 +4178,19 @@ mod tests {
             disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
         ));
-        assert_eq!(
+        assert!(matches!(
             record_owned_disposition(&store, &recovered, disposition, now_ms).await,
             Some(Ok(true))
-        );
+        ));
         let checks: Vec<_> = forge
             .writes()
             .into_iter()
             .filter_map(|write| match write {
                 Write::Check(check) => Some(check),
-                Write::CheckUpdate { check_id: id, check } if id == check_id => Some(check),
+                Write::CheckUpdate {
+                    check_id: id,
+                    check,
+                } if id == check_id => Some(check),
                 _ => None,
             })
             .collect();
@@ -4196,7 +4209,10 @@ mod tests {
         use crate::ports::forge::ForgeWrite;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
-        store.admit_batch(vec![queued_test_review(9)]).await.unwrap();
+        store
+            .admit_batch(vec![queued_test_review(9)])
+            .await
+            .unwrap();
         let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
         let stale_check_time = 3;
         let forge = MockForge::new();
@@ -4226,11 +4242,7 @@ mod tests {
             },
             || async {
                 forge
-                    .update_check(
-                        &repo,
-                        stale_check_id,
-                        status::not_reviewed("sha-9"),
-                    )
+                    .update_check(&repo, stale_check_id, status::not_reviewed("sha-9"))
                     .await
                     .expect("stale close is rejected before reaching the forge");
             },

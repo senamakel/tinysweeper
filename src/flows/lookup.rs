@@ -481,9 +481,7 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
         if text.starts_with("//") || text.starts_with('*') || text.starts_with("///") {
             continue;
         }
-        if let Some(name) = added_function_name(text)
-            && removed_functions.contains(name)
-        {
+        if let Some(name) = added_function_name(text) {
             let candidate = format!("@caller:{name}");
             if !out.contains(&candidate) {
                 out.push(candidate);

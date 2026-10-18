@@ -623,6 +623,10 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                             break;
                         }
                     }
+                    if !closed {
+                        lexical_ambiguous = true;
+                        break;
+                    }
                     continue;
                 }
                 if rest.starts_with('\'')
@@ -716,6 +720,14 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                         continue;
                     }
                     if !name.is_empty() && suffix.starts_with('{') {
+                        if path_attribute.is_some() || unsupported_attribute {
+                            // A path attribute on an inline module changes the
+                            // base used by its descendants. This small resolver
+                            // cannot safely carry that base through the tree.
+                            lexical_ambiguous = true;
+                            path_attribute = None;
+                            unsupported_attribute = false;
+                        }
                         pending_inline = Some(name.to_owned());
                         cursor = name_end;
                         continue;
@@ -755,12 +767,15 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
 
 fn rust_path_attribute(line: &str) -> Option<String> {
     let text = line.trim();
-    if !text.starts_with("#[path") {
-        return None;
-    }
-    let equals = text.find('=')?;
-    let value = text[equals + 1..].trim().strip_prefix('"')?;
-    Some(value.split('"').next()?.to_owned())
+    let value = text
+        .strip_prefix("#[path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    let path = &value[..end];
+    (value[end + 1..].trim() == "]" && !path.contains('\\')).then(|| path.to_owned())
 }
 
 /// Return the byte immediately after a valid Rust raw string literal.

@@ -1216,7 +1216,7 @@ mod tests {
     async fn a_changed_function_signature_seeds_its_callers() {
         let diff = crate::evidence::diff::parse_file_patch(
             "src/api.rs",
-            "@@ -1,1 +1,2 @@\n fn parse(value: &str) {}\n+pub fn parse(value: &str, strict: bool) {}\n",
+            "@@ -1,1 +1,1 @@\n-fn parse(value: &str) {}\n+pub fn parse(value: &str, strict: bool) {}\n",
         );
         let tree = MockTree::from_files([
             ("src/api.rs", "pub fn parse(value: &str, strict: bool) {}\n"),

@@ -884,8 +884,6 @@ mod tests {
             !rendered.contains("| [click](https://evil.example) |"),
             "{rendered}"
         );
-        let row = rendered
-            .lines()
         std::fs::write("target/history.md", &rendered).unwrap();
         let row = rendered
             .lines()

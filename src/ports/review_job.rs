@@ -13,6 +13,8 @@ pub const MAX_UNFINISHED_REVIEWS: usize = 260;
 pub const MAX_TERMINAL_REVIEW_RESERVATIONS: usize = 18_000;
 /// Maximum reviews that may be running across all server processes.
 pub const MAX_RUNNING_REVIEWS: usize = 4;
+/// Paid recovery starts allowed for one accepted review across process restarts.
+pub const MAX_REVIEW_PAID_ATTEMPTS: u32 = 5;
 /// How long a job owner remains valid without a heartbeat.
 pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
 /// How long terminal delivery IDs remain deduped.
@@ -71,6 +73,17 @@ pub enum Admission {
     Full,
 }
 
+/// Result of consuming one durable paid-work attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaidStart {
+    /// This owner may proceed to credentials and review work.
+    Started,
+    /// The retry budget was exhausted and the job is now terminal.
+    Exhausted,
+    /// This process no longer owns the unexpired generation.
+    OwnershipLost,
+}
+
 /// A request claimed by one server process and fenced by a generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedReview {
@@ -109,8 +122,8 @@ pub struct ScheduledReview {
     pub owner_until_ms: i64,
     /// Earliest retry time in Unix milliseconds.
     pub not_before_ms: i64,
-    /// Failures observed across process restarts.
-    pub attempts: u32,
+    /// Paid-work starts consumed across process restarts.
+    pub paid_attempts: u32,
 }
 
 /// A completed ID retained to dedupe redeliveries for seven days.
@@ -175,7 +188,7 @@ impl ReviewSchedulerState {
                 generation: 0,
                 owner_until_ms: 0,
                 not_before_ms: 0,
-                attempts: 0,
+                paid_attempts: 0,
             }));
         Admission::Admitted
     }
@@ -197,12 +210,33 @@ impl ReviewSchedulerState {
         record.generation += 1;
         record.owner = Some(owner.to_owned());
         record.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
-        record.attempts = record.attempts.saturating_add(1);
         Some(OwnedReview {
             request: record.request.clone(),
             owner: owner.to_owned(),
             generation: record.generation,
         })
+    }
+
+    /// Consume one paid attempt, terminalizing the job after the bounded budget.
+    pub fn begin_paid(&mut self, owned: &OwnedReview, now_ms: i64) -> PaidStart {
+        let Some(index) = self
+            .unfinished
+            .iter()
+            .position(|record| owns(record, owned) && record.owner_until_ms > now_ms)
+        else {
+            return PaidStart::OwnershipLost;
+        };
+        if self.unfinished[index].paid_attempts >= MAX_REVIEW_PAID_ATTEMPTS {
+            let record = self.unfinished.remove(index);
+            self.terminal.push(ReviewTombstone {
+                id: record.request.id,
+                outcome: TerminalOutcome::Exhausted,
+                expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
+            });
+            return PaidStart::Exhausted;
+        }
+        self.unfinished[index].paid_attempts += 1;
+        PaidStart::Started
     }
 
     /// Extend the current unexpired owner's lease.
@@ -303,6 +337,9 @@ pub trait ReviewJobStore: Send + Sync {
     /// Claim one eligible request if fewer than four are running globally.
     /// The implementation must never take an unexpired foreign owner.
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>>;
+
+    /// Consume a paid attempt or terminalize an exhausted recovered job.
+    async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart>;
 
     /// Extend a live claim. A stale generation can never renew another
     /// process's job.

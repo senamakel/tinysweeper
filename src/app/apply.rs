@@ -1002,6 +1002,18 @@ mod tests {
     use crate::forge::types::{ChangedFile, CheckConclusion, IssueComment, PullRequest};
     use crate::forge::{MockForge, MockState, Write};
 
+    #[test]
+    fn a_partial_lane_title_reports_file_coverage() {
+        assert_eq!(
+            title_for(
+                0,
+                "Reviewed 8 of 10 files — 2 not reviewed. Partial result.",
+                2
+            ),
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
+    }
+
     #[cfg(feature = "serve")]
     #[tokio::test]
     async fn applying_an_mcp_issue_plan_performs_exactly_its_write() {

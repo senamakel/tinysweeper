@@ -231,7 +231,6 @@ enum InnerReview {
     Complete(Option<(usize, bool, status::ReviewCoverage)>),
     Busy,
     Exhausted,
-    Shutdown,
 }
 
 /// Run the server until the process is stopped.
@@ -900,17 +899,6 @@ async fn record_owned_disposition(
 
 fn defer_interrupted_review() -> WorkerDisposition {
     WorkerDisposition::Deferred(unix_time_ms())
-}
-
-fn take_shutdown_status_result(run: &Run) -> Option<InnerReview> {
-    run.shutdown_deferred
-        .swap(false, std::sync::atomic::Ordering::SeqCst)
-        .then_some(InnerReview::Shutdown)
-}
-
-fn mark_shutdown_status_result(run: &Run) {
-    run.shutdown_deferred
-        .store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 enum PaidWork<T> {
@@ -1952,7 +1940,6 @@ struct Run {
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
     paid_exhausted: Arc<std::sync::atomic::AtomicBool>,
-    shutdown_deferred: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Refuse an individual paid model dispatch after durable ownership expires.

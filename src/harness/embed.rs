@@ -440,10 +440,10 @@ impl GatewayModel {
                     usage.output_tokens,
                 )
             });
-            tracing::info!(model, cap = attempt.max_tokens, latency_ms = call_started.elapsed().as_millis() as u64, input_tokens = usage.input_tokens,
-                cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
-                reasoning_tokens = usage.reasoning_tokens, finish_reason = ?attempt.finish_reason,
-                reported_cost_usd = reported, "model call");
+            log_model_attempt(
+                model, attempt.max_tokens, call_started.elapsed().as_millis() as u64,
+                &usage, attempt.finish_reason.as_deref(), reported,
+            );
             if reasoning_crowds_the_answer(
                 attempt.max_tokens.unwrap_or_default(),
                 usage.reasoning_tokens,
@@ -530,6 +530,20 @@ impl GatewayModel {
         )
         .await
     }
+}
+
+fn log_model_attempt(
+    model: &str,
+    cap: Option<u32>,
+    latency_ms: u64,
+    usage: &openhuman_embed::structured::TokenUsage,
+    finish_reason: Option<&str>,
+    reported_cost_usd: Option<f64>,
+) {
+    tracing::info!(model, cap, latency_ms, input_tokens = usage.input_tokens,
+        cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
+        reasoning_tokens = usage.reasoning_tokens, ?finish_reason,
+        reported_cost_usd, "model call");
 }
 
 /// How many times a truncated answer is retried with a doubled ceiling before

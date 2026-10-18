@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openhuman_embed::Route;
-use openhuman_embed::complete::{ChatMessage, Completer, CompletionRequest, ResponseFormat};
+use openhuman_embed::complete::{
+    ChatMessage, Completer, CompletionObserver, CompletionRequest, CompletionTrace, ResponseFormat,
+};
 use openhuman_embed::routing::{CompletionLadder, CompletionRung, TruncationRetry};
 use serde_json::json;
 
@@ -45,6 +47,26 @@ pub struct GatewayModel {
     routes: Vec<crate::config::types::ModelRoute>,
     structured_output: StructuredOutput,
     langfuse: Option<Arc<crate::harness::langfuse::LangfuseExporter>>,
+}
+
+struct ModelCallObserver(Option<Arc<crate::harness::langfuse::LangfuseExporter>>);
+
+impl CompletionObserver for ModelCallObserver {
+    fn on_complete(&self, trace: &CompletionTrace<'_>) {
+        if let Some(observer) = &self.0 {
+            observer.on_complete(trace);
+        }
+        let usage = trace.outcome.as_ref().ok().and_then(|response| response.usage.as_ref());
+        let model = trace.request.model.as_str();
+        let latency_ms = trace.latency.as_millis() as u64;
+        let succeeded = trace.outcome.is_ok();
+        tracing::info!(target: "tinysweeper::model", model, latency_ms, succeeded,
+            input_tokens = usage.map_or(0, |usage| usage.input_tokens),
+            output_tokens = usage.map_or(0, |usage| usage.output_tokens),
+            reasoning_tokens = usage.map_or(0, |usage| usage.reasoning_tokens),
+            cached_tokens = usage.map_or(0, |usage| usage.cached_tokens),
+            "model call");
+    }
 }
 
 impl std::fmt::Debug for GatewayModel {
@@ -261,10 +283,7 @@ impl GatewayModel {
                 "https://github.com/tinyhumansai/tinysweeper",
             )
             .header("X-Title", "tinysweeper");
-        match &self.langfuse {
-            Some(observer) => completer.observer(observer.clone()),
-            None => completer,
-        }
+        completer.observer(Arc::new(ModelCallObserver(self.langfuse.clone())))
     }
 
     /// Build the immutable prompt shared by all completion routes.

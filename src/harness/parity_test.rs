@@ -487,13 +487,10 @@ async fn concurrent_affordable_completions_wait_for_reservations_to_settle() {
 }
 
 #[tokio::test]
-async fn reported_cost_over_budget_is_retained_and_blocks_later_admission() {
+async fn reported_cost_over_reservation_is_retained_and_blocks_later_admission() {
     let paid_usage = json!({"prompt_tokens":120,"completion_tokens":4_000,"cost":0.6});
-    let gateway = FakeGateway::start(vec![
-        Reply::completion("deep", ANSWER, "stop", paid_usage.clone()),
-        Reply::completion("deep", ANSWER, "stop", paid_usage),
-    ])
-    .await;
+    let gateway =
+        FakeGateway::start(vec![Reply::completion("deep", ANSWER, "stop", paid_usage)]).await;
     let mut models = models(&gateway.base_url);
     models.budget_prices.insert(
         "deep".into(),
@@ -505,14 +502,13 @@ async fn reported_cost_over_budget_is_retained_and_blocks_later_admission() {
     );
     let model = adapter(&models).scoped_budget(1.0).unwrap();
     let first = model.complete(request("deep")).await.unwrap();
-    let second = model.complete(request("deep")).await.unwrap();
-    assert!((first.usage.cost_usd + second.usage.cost_usd - 1.2).abs() < 1e-12);
-    let third = model.complete(request("deep")).await;
-    assert!(matches!(third, Err(crate::error::Error::Budget { .. })));
+    assert!((first.usage.cost_usd - 0.6).abs() < 1e-12);
+    let second = model.complete(request("deep")).await;
+    assert!(matches!(second, Err(crate::error::Error::Budget { .. })));
     assert_eq!(
         gateway.requests().len(),
-        2,
-        "the post-overspend refusal never reaches the provider"
+        1,
+        "the post-settlement refusal never reaches the provider"
     );
 }
 

@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use super::{
     Admission, MAX_RUNNING_REVIEWS, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS,
-    OwnedReview, REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode,
+    OwnedReview, PaidStart, REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode,
     ReviewJobStore, ReviewRequest, ReviewSchedulerState, ReviewTombstone, TerminalOutcome,
 };
 use crate::error::{Error, Result};
@@ -45,6 +45,10 @@ impl ReviewJobStore for MockReviewJobStore {
 
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
+    }
+
+    async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart> {
+        Ok(self.state.lock().expect("state").begin_paid(owned, now_ms))
     }
 
     async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {

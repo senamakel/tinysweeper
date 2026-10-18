@@ -2997,7 +2997,7 @@ mod tests {
             7,
         )
         .await
-        .expect("reviews");
+        .expect("reviews")
         assert_eq!(posted.findings().count(), 1);
 
         let mut comments = crate::app::apply::test_inline_comments(&posted, &[rust_file()]);
@@ -3066,6 +3066,142 @@ mod tests {
         );
         state.files.insert(7, files);
         MockForge::with_state(state)
+    }
+
+    #[cfg(feature = "serve")]
+    async fn review_with_previous_evidence(
+        files: Vec<ChangedFile>,
+        previous: &[crate::evidence::diff::FileDiff],
+        model: MockModel,
+    ) -> Proposal {
+        use crate::ports::review_state::ReviewStateStore;
+
+        let forge = forge_with(files, vec![]);
+        let store = crate::state::memory::MemoryState::new();
+        let key = crate::state::key(&repo().to_string(), 7);
+        store
+            .save_state(
+                &key,
+                &ReviewedState {
+                    head_sha: "previous-head".into(),
+                    evidence: replay::render(previous),
+                    ..ReviewedState::default()
+                },
+            )
+            .await
+            .expect("stores previous reviewed evidence");
+        review_with_state(
+            &forge,
+            Arc::new(model),
+            &critique_config(),
+            &repo(),
+            7,
+            Some(&store),
+        )
+        .await
+        .expect("reviews");
+    }
+
+    #[cfg(feature = "serve")]
+    async fn umbrella_check_for(proposal: &Proposal) -> crate::forge::types::CheckRun {
+        use crate::ports::forge::ForgeWrite;
+
+        let forge = MockForge::new();
+        let repo = RepoId::parse("acme/widget").unwrap();
+        forge
+            .publish_check(
+                &repo,
+                crate::server::status::completed(
+                    &proposal.head_sha,
+                    proposal.findings().count(),
+                    false,
+                    crate::server::status::aggregate_coverage(proposal),
+                ),
+            )
+            .await
+            .expect("publishes aggregate status");
+        forge
+            .checks()
+            .remove(crate::server::status::CHECK_NAME)
+            .unwrap()
+    }
+
+    #[cfg(feature = "serve")]
+    fn changed_file(path: &str, patch: &str) -> ChangedFile {
+        ChangedFile {
+            path: path.into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.into()),
+            ..ChangedFile::default()
+        }
+    }
+
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn umbrella_coverage_includes_replayed_and_currently_reviewed_files() {
+        let a_patch = "@@ -1,1 +1,2 @@\n let a = 1;\n+let a2 = 2;\n";
+        let b_patch = "@@ -1,1 +1,2 @@\n let b = 1;\n+let b2 = 2;\n";
+        let previous = [crate::evidence::diff::parse_file_patch("src/a.rs", a_patch)];
+        let model = MockModel::silent();
+        let proposal = review_with_previous_evidence(
+            vec![
+                changed_file("src/a.rs", a_patch),
+                changed_file("src/b.rs", b_patch),
+            ],
+            &previous,
+            model.clone(),
+        )
+        .await;
+
+        assert_eq!(model.calls(), 1, "only the new path reaches the model");
+        let check = umbrella_check_for(&proposal).await;
+        assert_eq!(check.title, "Reviewed 2 of 2 files — 0 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Success));
+    }
+
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn an_all_replayed_review_still_has_complete_coverage() {
+        let patch = "@@ -1,1 +1,2 @@\n let a = 1;\n+let a2 = 2;\n";
+        let previous = [crate::evidence::diff::parse_file_patch("src/a.rs", patch)];
+        let model = MockModel::silent();
+        let proposal = review_with_previous_evidence(
+            vec![changed_file("src/a.rs", patch)],
+            &previous,
+            model.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            model.calls(),
+            1,
+            "the all-replayed fallback reviews the file"
+        );
+        let check = umbrella_check_for(&proposal).await;
+        assert_eq!(check.title, "Reviewed 1 of 1 files — 0 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Success));
+    }
+
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn umbrella_coverage_includes_mechanically_verified_files_and_the_sample() {
+        let old = "use openhuman_core::openhuman as oh;";
+        let new = old.replace("::openhuman", "");
+        let files: Vec<_> = (0..59)
+            .map(|index| {
+                changed_file(
+                    &format!("src/rename_{index}.rs"),
+                    &format!("@@ -1,1 +1,1 @@\n-{old}\n+{new}\n"),
+                )
+            })
+            .collect();
+        let proposal = review_with_previous_evidence(files, &[], MockModel::silent()).await;
+
+        let check = umbrella_check_for(&proposal).await;
+        assert_eq!(check.title, "Reviewed 59 of 59 files — 0 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Success));
     }
 
     fn rust_file() -> ChangedFile {

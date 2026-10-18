@@ -311,6 +311,7 @@ impl LaneOutcome {
             skipped: None,
             pending: Vec::new(),
             unanswered: Vec::new(),
+            coverage: None,
         }
     }
 

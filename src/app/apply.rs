@@ -2834,11 +2834,11 @@ mod tests {
         assert!(!body.contains("All checks report no issues"));
         assert!(body.contains("parser now rejects unknown paths"));
         assert!(body.contains("parser handles unknown paths safely"));
+        assert!(body.contains("Atomic commit mapping"));
+        assert!(body.contains("unit test fixture"));
         assert!(body.contains("The transaction commits each event once"));
         assert!(body.contains("The test fixture maps the empty-state case"));
         assert!(!body.contains("The commit reviewer found no issues"));
-        assert!(body.contains("Atomic commit mapping"));
-        assert!(body.contains("unit test fixture"));
         assert!(
             opening.starts_with("Pull request purpose (title): Enforce speech privacy."),
             "{opening}"

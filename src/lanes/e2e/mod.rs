@@ -418,6 +418,7 @@ mod lane_tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: evidence,
@@ -701,6 +702,7 @@ mod lane_tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "1 credential value was removed from this diff before you saw \
                                   it and appears as `<redacted, N chars>`.",

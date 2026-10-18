@@ -75,6 +75,10 @@ pub struct LaneInput<'a> {
     /// `crate::harness::prompt`. Empty when retrieval is off, degraded, or
     /// found nothing, in which case the lane reviews the diff alone.
     pub retrieved_context: &'a str,
+    /// Typed state of the index used for this review. The critique lane uses
+    /// this to keep unsupported unchanged-code claims from becoming
+    /// actionable when retrieval could not establish repository context.
+    pub retrieval_status: crate::retrieve::RetrievalStatus,
     /// One sentence saying a value was masked out of `diffs` before this lane
     /// ever saw it, from `crate::evidence::redact::Redactions::note`. Empty
     /// when nothing was redacted. Volatile and placed right after the diff

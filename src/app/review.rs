@@ -781,6 +781,7 @@ pub async fn review_with_tree(
                 extracted_rules: &knowledge.extracted_rules,
                 reviewed_evidence: &reviewed_evidence,
                 prior_findings: &prior_lines,
+                retrieval_status: retrieved.status.clone(),
                 retrieved_context: &retrieved_context,
                 redaction_note: &redaction_note,
                 e2e: e2e_evidence.as_ref(),

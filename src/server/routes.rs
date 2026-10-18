@@ -1637,13 +1637,7 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             findings,
             changes_requested,
             coverage,
-        } => status::completed(
-            &open.head_sha,
-            findings,
-            changes_requested,
-            coverage,
-            incomplete,
-        ),
+        } => status::completed(&open.head_sha, findings, changes_requested, coverage),
         Conclusion::NotReviewed => status::not_reviewed(&open.head_sha),
         Conclusion::Failed(err) => failure::check_run(&open.head_sha, err),
     };
@@ -1832,10 +1826,8 @@ enum Conclusion<'a> {
         /// Whether the published review requested changes, so the check
         /// cannot show a pass beside that verdict.
         changes_requested: bool,
-        /// File coverage from a per-file lane, when that lane had failures.
-        coverage: Option<(usize, usize)>,
-        /// At least one configured lane had unanswered work.
-        incomplete: bool,
+        /// File and whole-lane coverage aggregated across the proposal.
+        coverage: status::ReviewCoverage,
     },
     /// The run stopped deliberately, without reviewing anything.
     ///
@@ -1928,12 +1920,11 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested, coverage, incomplete)) => {
+                    Some((findings, changes_requested, coverage)) => {
                         Conclusion::Reviewed {
                             findings,
                             changes_requested,
                             coverage,
-                            incomplete,
                         }
                     }
                     None => Conclusion::NotReviewed,
@@ -2061,7 +2052,7 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-) -> Result<Option<(usize, bool, Option<(usize, usize)>, bool)>> {
+) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");

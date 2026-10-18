@@ -35,6 +35,12 @@ impl SummaryDiffstat {
 pub struct ReviewSummary {
     /// Short model-authored explanation shown above the fold.
     pub executive_summary: String,
+    /// Scrubbed PR title used for the deterministic purpose opening.
+    ///
+    /// Keeping this source separately lets incremental updates replace only
+    /// the prior generated title preamble before validating stored narrative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose_title: Option<String>,
     /// Model-authored behavioral explanation.
     pub changes: String,
     /// Cited feature descriptions.

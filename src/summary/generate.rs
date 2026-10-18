@@ -416,11 +416,12 @@ pub fn deterministic_with_paths(
     let paths: BTreeSet<String> = full_pr_paths.iter().cloned().collect();
     let statuses = lane_statuses(lanes, &paths);
     sanitize_prior_narrative(&mut summary, lanes, &statuses);
+    summary.purpose_title = normalized_purpose_title(pull_request);
     summary.executive_summary = purpose_opening(pull_request, &summary.executive_summary);
     summary
 }
 
-fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
+fn normalized_purpose_title(pull_request: &PullRequest) -> Option<String> {
     // A title is untrusted purpose data. Attribute it explicitly instead of
     // running it through prose validators that mistake imperatives for claims.
     let flattened_title = pull_request
@@ -432,10 +433,14 @@ fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
         .trim_end_matches(['.', '!', '?'])
         .trim()
         .to_string();
+    (!title.is_empty()).then_some(title)
+}
+
+fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
+    let Some(title) = normalized_purpose_title(pull_request) else {
+        return narrative.trim().to_string();
+    };
     let narrative = narrative.trim();
-    if title.is_empty() {
-        return narrative.to_string();
-    }
     let attributed_title = format!("Pull request purpose (title): {title}.");
     if narrative.starts_with(&attributed_title) {
         return narrative.to_string();
@@ -719,7 +724,9 @@ fn sanitize_prior_narrative(
     lanes: &[LaneProposal],
     statuses: &BTreeMap<String, LaneReviewStatus>,
 ) {
-    summary.executive_summary = validated_model_narrative(&summary.executive_summary, statuses)
+    let prior_executive =
+        strip_prior_purpose_opening(&summary.executive_summary, summary.purpose_title.as_deref());
+    summary.executive_summary = validated_model_narrative(prior_executive, statuses)
         .unwrap_or_else(|| fallback_executive(lanes));
     summary.changes = validated_model_narrative(&summary.changes, statuses).unwrap_or_default();
     summary.features.retain_mut(|feature| {
@@ -764,6 +771,28 @@ fn sanitize_prior_narrative(
         });
         !observations.is_empty()
     });
+}
+
+fn strip_prior_purpose_opening<'a>(text: &'a str, purpose_title: Option<&str>) -> &'a str {
+    const PREFIX: &str = "Pull request purpose (title): ";
+    if let Some(title) = purpose_title {
+        let prefix = format!("{PREFIX}{title}. ");
+        return text.strip_prefix(&prefix).unwrap_or(text);
+    }
+
+    // Persisted summaries from before purpose_title metadata used this exact
+    // label and sentence boundary. Ordinary prose without that boundary stays
+    // intact, including any model-authored mention of the words themselves.
+    let Some(remainder) = text.strip_prefix(PREFIX) else {
+        return text;
+    };
+    let Some((title, narrative)) = remainder.split_once(". ") else {
+        return text;
+    };
+    if title.trim().is_empty() {
+        return text;
+    }
+    narrative
 }
 
 fn remove_unsupported_lane_sentences(
@@ -835,6 +864,35 @@ fn claims_unsupported_lane_sentence(
 
 fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
     let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
+    let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
+    let has_lane_subject = has_any(&["lane", "lanes", "reviewer", "reviewers"]);
+    let has_verdict_context = has_any(&[
+        "approved",
+        "clear",
+        "complete",
+        "completed",
+        "confirm",
+        "confirmed",
+        "confirms",
+        "find",
+        "found",
+        "finding",
+        "findings",
+        "green",
+        "issue",
+        "issues",
+        "no",
+        "none",
+        "pass",
+        "passed",
+        "passing",
+        "report",
+        "reports",
+        "safe",
+        "success",
+        "successful",
+        "succeeded",
+    ]);
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -843,7 +901,7 @@ fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
         LaneId::Description => &[&["description"]],
         LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
     };
-    aliases.iter().any(|alias| has_phrase(alias))
+    (has_lane_subject || has_verdict_context) && aliases.iter().any(|alias| has_phrase(alias))
 }
 
 fn now_epoch() -> u64 {
@@ -2126,13 +2184,21 @@ mod tests {
         )
         .await;
 
-        assert!(summary
-            .executive_summary
-            .contains("The parser retains strict lane keys"));
-        assert!(summary
-            .executive_summary
-            .starts_with("Pull request purpose (title): Harden parser input."));
-        assert!(!summary.executive_summary.contains("Preserve parser behavior"));
+        assert!(
+            summary
+                .executive_summary
+                .contains("The parser retains strict lane keys")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("Pull request purpose (title): Harden parser input.")
+        );
+        assert!(
+            !summary
+                .executive_summary
+                .contains("Preserve parser behavior")
+        );
         assert_eq!(
             summary
                 .executive_summary

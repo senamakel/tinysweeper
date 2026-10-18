@@ -207,6 +207,7 @@ struct QueuedReview {
     delivery: Option<String>,
     event: String,
     mode: Mode,
+    queued_at: tokio::time::Instant,
 }
 
 /// The admitted review's identity and revision, carried together into a worker.
@@ -218,6 +219,7 @@ struct ReviewJob {
     mode: Mode,
     delivery: Option<String>,
     expected_head: Option<String>,
+    queued_at: tokio::time::Instant,
 }
 
 /// Run the server until the process is stopped.
@@ -681,8 +683,7 @@ fn try_enqueue_review(
     sender: &mpsc::Sender<QueuedReview>,
     job: QueuedReview,
 ) -> std::result::Result<(), mpsc::error::TrySendError<QueuedReview>> {
-    let _ = sender.try_send(job);
-    Ok(())
+    sender.try_send(job)
 }
 
 /// Drain the bounded review queue, acquiring capacity before each worker is

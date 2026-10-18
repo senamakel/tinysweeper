@@ -4001,7 +4001,7 @@ mod tests {
             store.admit_batch(vec![request.clone()]).await.unwrap(),
             Admission::Admitted
         );
-        let now_ms = 2;
+        let now_ms = request.accepted_at_ms + 1;
         let owned = store
             .claim_next("same-worker", now_ms)
             .await

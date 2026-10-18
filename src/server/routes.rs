@@ -2198,8 +2198,10 @@ async fn review_inner(
     // so claim it before spending a credential or a forge read. Comment and
     // manual requests have no revision; serialize those per pull request until
     // the live head is known, then take its revision lease before any indexing.
-    let mut lease = review_lease(repo, number, run.mode, expected_head);
-    if !state.store.claim_lease(&lease, "server").await? {
+    let mut lease = expected_head.map(|head| review_lease(repo, number, run.mode, Some(head)));
+    if let Some(lease) = &lease
+        && !state.store.claim_lease(lease, "server").await?
+    {
         tracing::debug!(%lease, "another worker holds this review");
         return Ok(None);
     }
@@ -2227,7 +2229,9 @@ async fn review_inner(
         .await
     }
     .await;
-    if let Err(err) = state.store.release_lease(&lease).await {
+    if let Some(lease) = &lease
+        && let Err(err) = state.store.release_lease(lease).await
+    {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
     Ok(reviewed?.flatten())
@@ -2242,7 +2246,6 @@ fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> Stri
 }
 
 /// The server dependencies for the work after the pull request passes its gate.
-#[derive(Clone, Copy)]
 struct ReviewRun<'a> {
     state: &'a AppState,
     repo: &'a str,
@@ -2253,7 +2256,7 @@ struct ReviewRun<'a> {
     repo_id: &'a RepoId,
     read_token: &'a String,
     forge: &'a crate::forge::github::GitHubRead,
-    lease: &'a mut String,
+    lease: &'a mut Option<String>,
     expected_head: Option<&'a str>,
 }
 
@@ -2298,8 +2301,9 @@ impl ReviewRun<'_> {
                 tracing::debug!(%next, "another worker holds the live pull request head");
                 return Ok(None);
             }
-            let previous = std::mem::replace(lease, next);
-            if let Err(err) = state.store.release_lease(&previous).await {
+            if let Some(previous) = lease.replace(next)
+                && let Err(err) = state.store.release_lease(&previous).await
+            {
                 tracing::error!(%err, %previous, "could not release the previous review lease");
             }
         }

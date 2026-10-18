@@ -42,18 +42,58 @@ struct ObservedModel {
     timing: crate::review_timing::ReviewTiming,
 }
 
-struct PendingModelCall {
+struct ReviewCallObserver {
     timing: crate::review_timing::ReviewTiming,
+    observed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
+    fn completed(
+        &self,
+        mut usage: Usage,
+        succeeded: bool,
+        refused: bool,
+        latency: std::time::Duration,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        self.observed.fetch_add(1, Ordering::Relaxed);
+        usage.calls_attempted = 1;
+        usage.calls_succeeded = u64::from(succeeded);
+        usage.calls_refused = u64::from(refused);
+        usage.calls_errored = u64::from(!succeeded && !refused);
+        self.timing.record(|record| {
+            record.calls_attempted += 1;
+            record.calls_succeeded += usage.calls_succeeded;
+            record.calls_refused += usage.calls_refused;
+            record.calls_errored += usage.calls_errored;
+            record.usage.add(usage);
+        });
+        tracing::info!(target: "tinysweeper::model", latency_ms = latency.as_millis() as u64,
+            succeeded, refused, "model call");
+    }
+}
+
+struct PendingModelCall {
+    observer: std::sync::Arc<ReviewCallObserver>,
     completed: bool,
 }
 
 impl Drop for PendingModelCall {
     fn drop(&mut self) {
         if !self.completed {
-            self.timing.record(|record| {
-                record.calls_attempted += 1;
-                record.calls_errored += 1;
-            });
+            // A completed physical dispatch has already been flushed by its
+            // adapter observer. Only synthesize one logical failure when no
+            // adapter exposed physical call telemetry (or the first dispatch
+            // itself was cancelled before it could report).
+            if self.observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                self.observer.completed(
+                    Usage::default(),
+                    false,
+                    false,
+                    std::time::Duration::ZERO,
+                );
+            }
         }
     }
 }
@@ -64,32 +104,40 @@ impl ObservedModel {
         request: crate::ports::model::ModelRequest,
         tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>,
     ) -> Result<crate::ports::model::ModelResponse> {
-        let mut pending = PendingModelCall {
+        let observer = std::sync::Arc::new(ReviewCallObserver {
             timing: self.timing.clone(),
+            observed: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        });
+        let mut pending = PendingModelCall {
+            observer: observer.clone(),
             completed: false,
         };
         let started = std::time::Instant::now();
-        let result = match tree {
-            Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
-            None => self.inner.complete(request.clone()).await,
-        };
+        let result = crate::ports::model::with_model_call_observer(observer.clone(), async {
+            match tree {
+                Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
+                None => self.inner.complete(request.clone()).await,
+            }
+        })
+        .await;
         pending.completed = true;
         let latency_ms = started.elapsed().as_millis() as u64;
-        match &result {
-            Ok(response) => self.timing.record(|r| {
-                let usage = response.usage;
-                if usage.calls_attempted > 0 {
-                    r.calls_attempted += usage.calls_attempted;
-                    r.calls_succeeded += usage.calls_succeeded;
-                    r.calls_refused += usage.calls_refused;
-                    r.calls_errored += usage.calls_errored;
-                } else {
-                    r.calls_attempted += 1;
-                    r.calls_succeeded += 1;
-                }
-                r.usage.add(response.usage);
-            }),
-            Err(error) => self.timing.record(|r| {
+        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            match &result {
+                Ok(response) => self.timing.record(|r| {
+                    let usage = response.usage;
+                    if usage.calls_attempted > 0 {
+                        r.calls_attempted += usage.calls_attempted;
+                        r.calls_succeeded += usage.calls_succeeded;
+                        r.calls_refused += usage.calls_refused;
+                        r.calls_errored += usage.calls_errored;
+                    } else {
+                        r.calls_attempted += 1;
+                        r.calls_succeeded += 1;
+                    }
+                    r.usage.add(response.usage);
+                }),
+                Err(error) => self.timing.record(|r| {
                 if let Some(usage) = error.usage()
                     && (usage.calls_attempted > 0
                         || usage.calls_succeeded > 0
@@ -113,13 +161,10 @@ impl ObservedModel {
                 if let Some(usage) = error.usage() {
                     r.usage.add(usage);
                 }
-            }),
+                }),
+            }
         }
-        let physical_attempts = result
-            .as_ref()
-            .map(|response| response.usage.calls_attempted)
-            .unwrap_or_else(|error| error.usage().map_or(0, |usage| usage.calls_attempted));
-        if physical_attempts == 0 {
+        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             tracing::info!(model = %request.model, latency_ms, succeeded = result.is_ok(), "model call");
         }
         result

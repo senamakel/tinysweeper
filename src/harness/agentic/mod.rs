@@ -211,7 +211,7 @@ pub(crate) async fn review_accounted(
         input_tokens: input_bound.saturating_mul(calls),
         output_tokens: u64::from(request.max_tokens).saturating_mul(calls),
         reasoning_tokens: 0,
-        calls_attempted: calls,
+        calls_attempted: 0,
         calls_succeeded: 0,
         calls_refused: 0,
         calls_errored: 0,

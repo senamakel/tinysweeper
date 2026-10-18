@@ -419,16 +419,17 @@ impl GatewayModel {
             })
         })?;
         let response = result.response;
+        let attempts = result.attempts.len() as u64;
+        let failed_attempts = result
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.failed)
+            .count() as u64;
         let answered = response
             .answered_model
             .as_deref()
             .or_else(|| answered_model(response.raw.as_ref()))
             .unwrap_or(&request.model);
-        let value = response.structured.ok_or_else(|| {
-            Error::Model(format!(
-                "{answered} returned no structured output; the response did not satisfy the schema"
-            ))
-        })?;
         let totals = result.total_usage.unwrap_or_default();
         let mut cost = 0.0;
         for attempt in &result.attempts {
@@ -467,25 +468,32 @@ impl GatewayModel {
                 );
             }
         }
+        let usage = Usage {
+            input_tokens: totals.input_tokens,
+            output_tokens: totals.output_tokens,
+            reasoning_tokens: totals.reasoning_tokens,
+            calls_attempted: attempts,
+            calls_succeeded: 1,
+            calls_refused: 0,
+            calls_errored: failed_attempts,
+            cached_tokens: totals.cached_tokens,
+            embed_tokens: 0,
+            cost_usd: cost,
+        };
+        let value = response.structured.ok_or_else(|| {
+            Error::Model(format!(
+                "{answered} returned no structured output; the response did not satisfy the schema"
+            ))
+            .with_usage(Usage {
+                calls_attempted: attempts,
+                calls_errored: attempts,
+                ..usage
+            })
+        })?;
         Ok(ModelResponse {
             value,
             model: answered.to_owned(),
-            usage: Usage {
-                input_tokens: totals.input_tokens,
-                output_tokens: totals.output_tokens,
-                reasoning_tokens: totals.reasoning_tokens,
-                calls_attempted: result.attempts.len() as u64,
-                calls_succeeded: 1,
-                calls_refused: 0,
-                calls_errored: result
-                    .attempts
-                    .iter()
-                    .filter(|attempt| attempt.failed)
-                    .count() as u64,
-                cached_tokens: totals.cached_tokens,
-                embed_tokens: 0,
-                cost_usd: cost,
-            },
+            usage,
         })
     }
 

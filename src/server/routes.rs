@@ -2457,7 +2457,16 @@ where
 /// Sequence the durable status gate, read-only review work, and publication.
 /// The route supplies closures so no model work starts before the status is
 /// open, and publication cannot start until checkout and review have returned.
-async fn server_review_lifecycle<Open, OpenFuture, Review, ReviewFuture, Publish, PublishFuture, R, T>(
+async fn server_review_lifecycle<
+    Open,
+    OpenFuture,
+    Review,
+    ReviewFuture,
+    Publish,
+    PublishFuture,
+    R,
+    T,
+>(
     timing: &crate::review_timing::ReviewTiming,
     open_status: Open,
     review: Review,

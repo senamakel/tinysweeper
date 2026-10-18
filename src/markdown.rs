@@ -12,6 +12,21 @@ pub(crate) fn code_span(text: &str) -> String {
     }
 }
 
+/// Fence untrusted source text without letting it terminate the code block.
+pub(crate) fn code_block(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect();
+    let longest = clean
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}\n{}\n{fence}", clean.trim_matches('\n'))
+}
+
 /// Escape untrusted inline prose so it cannot create HTML, links, or mentions.
 pub(crate) fn prose(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -45,6 +60,9 @@ pub(crate) fn table_cell(text: &str) -> String {
 
 /// Render a citation as a pinned GitHub link, or as code spans for symbols.
 pub(crate) fn citation(citation: &str, repo: &str, sha: &str) -> String {
+    if !valid_repo(repo) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return code_span(citation);
+    }
     if let Some((path, line)) = citation.rsplit_once(':')
         && !path.is_empty()
         && line.parse::<u32>().is_ok_and(|line| line > 0)
@@ -67,6 +85,17 @@ pub(crate) fn citation(citation: &str, repo: &str, sha: &str) -> String {
         return format!("{} {}", code_span(path), code_span(symbol));
     }
     code_span(citation)
+}
+
+fn valid_repo(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    parts.clone().count() == 2
+        && parts.all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
 }
 
 fn safe_path(path: &str) -> bool {
@@ -108,6 +137,14 @@ mod tests {
     }
 
     #[test]
+    fn fenced_source_uses_a_fence_longer_than_untrusted_backticks() {
+        assert_eq!(
+            code_block("safe\n```\nunsafe"),
+            "````\nsafe\n```\nunsafe\n````"
+        );
+    }
+
+    #[test]
     fn prose_cannot_create_mentions_html_links_or_new_blocks() {
         let rendered = prose("@user <script>[click](https://evil.example)\n# heading");
         assert!(!rendered.contains("@user"));
@@ -118,7 +155,10 @@ mod tests {
 
     #[test]
     fn table_cells_escape_the_column_separator() {
-        assert_eq!(table_cell("left | <b>right</b>"), "left \\| &lt;b&gt;right&lt;/b&gt;");
+        assert_eq!(
+            table_cell("left | <b>right</b>"),
+            "left \\| &lt;b&gt;right&lt;/b&gt;"
+        );
     }
 
     #[test]

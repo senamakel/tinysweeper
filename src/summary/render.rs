@@ -404,7 +404,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                 any = true;
                 let _ = writeln!(
                     out,
-                "- [ ] Address **{}** ({}).",
+                    "- [ ] Address **{}** ({}).",
                     prose(&finding.title),
                     code_span(&finding.path)
                 );

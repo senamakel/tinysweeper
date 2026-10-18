@@ -8,7 +8,7 @@
 
 use crate::config::types::{LaneId, Severity};
 use crate::findings::types::Finding;
-use crate::markdown::{code_span, prose, table_cell};
+use crate::markdown::{code_block, code_span, prose, table_cell};
 use crate::ports::model::Usage;
 
 /// Colour and label for each severity, as a shields.io badge.
@@ -167,8 +167,8 @@ fn detail(finding: &Finding) -> String {
 
     if let Some(suggestion) = &finding.suggestion {
         out.push_str(&format!(
-            "\n**Suggested change**\n\n```\n{}\n```\n",
-            suggestion.trim()
+            "\n**Suggested change**\n\n{}\n",
+            code_block(suggestion.trim())
         ));
     }
 

@@ -832,7 +832,10 @@ fn review_body(
                 crate::markdown::code_span(&format!(
                     "{}{}",
                     finding.path,
-                    finding.line.map(|line| format!(":{line}")).unwrap_or_default()
+                    finding
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
                 ))
             ));
         }

@@ -358,6 +358,7 @@ async fn review_group(
 
     let mut findings = filtered.findings;
     let mut rejected = filtered.rejected;
+    let mut withheld_for_degraded_context = 0usize;
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole
     // pull request's — a lane fans out per group, so a two-line group must
@@ -512,6 +513,22 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
+    // Unchanged-line findings need repository context to be actionable. A
+    // cold/stale/unavailable index does not prove them wrong, but its silence
+    // cannot support them either. Keep findings with a current-head lookup in
+    // the same file; withhold only unsupported late claims. Changed-line
+    // findings retain their direct diff evidence and are unaffected.
+    if input.retrieval_status.is_degraded() {
+        findings.retain(|finding| {
+            let supported = !finding.late
+                || looked_up.lines().any(|line| line.contains(&finding.path));
+            if !supported {
+                withheld_for_degraded_context += 1;
+            }
+            supported
+        });
+    }
+
     Ok(FileReview {
         summary: summarise(
             summary.trim(),
@@ -520,6 +537,7 @@ async fn review_group(
             &rejected,
             &findings,
             added_by_coverage,
+            withheld_for_degraded_context,
         ),
         findings,
         resolved,
@@ -767,6 +785,7 @@ fn summarise(
     rejected: &[Rejection],
     kept: &[Finding],
     added_by_coverage: usize,
+    withheld_for_degraded_context: usize,
 ) -> String {
     if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
@@ -2352,5 +2371,12 @@ fn helper() {
             );
             assert!(!system.contains("These files only"), "{system}");
         }
+    }
+    if withheld_for_degraded_context > 0 {
+        format!(
+            "{summary} {withheld_for_degraded_context} unchanged-code finding(s) were withheld from action because retrieval was degraded and no current-head lookup supported them."
+        )
+    } else {
+        summary
     }
 }

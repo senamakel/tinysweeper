@@ -811,6 +811,11 @@ Before raising anything new, deal with that list:
   to move, say in the body what moved it. A level that drifts between revisions
   is read as the author having made things better or worse, and it is a claim
   you did not mean to make.
+- A prior finding marked `[disputed by maintainer]` was explicitly declined.
+  Re-check the current head; the earlier claim is not evidence that it is
+  still actionable. Re-raise it only when current-head code or a lookup
+  independently supports the concern, and state that evidence. If the code
+  cannot establish it, leave it out rather than repeating the disputed claim.
 - Do not re-raise a finding that has been fixed.
 - Raise every blocking concern you have in this one pass. Producing one new
   objection per cycle, when you could see it the first time, is a defect in the

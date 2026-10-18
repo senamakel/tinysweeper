@@ -1093,7 +1093,9 @@ mod tests {
                     e2e: Some(Watch {
                         head_sha: "abc123".into(),
                         jobs: vec!["playwright".into()],
-                        summary: "Coverage looks complete.".into(),
+                        summary:
+                            "Coverage looks complete. [click](https://evil.example) @user <script>"
+                                .into(),
                         failed: false,
                         generation: "gen-1".into(),
                     }),
@@ -1134,6 +1136,10 @@ mod tests {
             "{}",
             check.summary
         );
+        assert!(!check.summary.contains("[click](https://evil.example)"));
+        assert!(!check.summary.contains("https://evil.example"));
+        assert!(!check.summary.contains("@user"));
+        assert!(!check.summary.contains("<script>"));
 
         // The watch is cleared, so the next completion event does nothing.
         let forge = MockForge::with_state(state);
@@ -2561,11 +2567,14 @@ mod tests {
 
         let posted = overview_comments(&forge);
         assert_eq!(posted.len(), 1, "{posted:#?}");
-        assert!(matches!(
-            &posted[0],
-            Write::Comment { body, .. }
-                if body.contains("[`src/savings_store.rs:42`](https://github.com/tinyhumansai/tinysweeper/blob/abc123/src/savings_store.rs#L42)")
-        ), "{posted:#?}");
+        assert!(
+            matches!(
+                &posted[0],
+                Write::Comment { body, .. }
+                    if body.contains("[`src/savings_store.rs:42`](https://github.com/tinyhumansai/tinysweeper/blob/abc123/src/savings_store.rs#L42)")
+            ),
+            "{posted:#?}"
+        );
     }
 
     #[tokio::test]

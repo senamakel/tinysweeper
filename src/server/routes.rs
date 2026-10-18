@@ -721,11 +721,10 @@ async fn dispatch(
                 number,
                 author,
                 installation,
-                Mode::Incremental,
+                mode,
                 delivery,
                 head_sha,
                 review_permit,
-                mode,
             )
             .await;
         }
@@ -1346,22 +1345,26 @@ impl FullReviews for ManualDispatch {
             // The author is what the trust check is about, and only the pull
             // request knows it. One extra read per queued review, on a path
             // used a few times a year.
-            let author = {
+            let pull_request = {
                 use crate::ports::forge::ForgeRead;
-                forge.pull_request(repo, number).await?.author
+                forge.pull_request(repo, number).await?
             };
-
-            tokio::spawn(handle_review(
-                self.state.clone(),
-                repo.to_string(),
+            let action = Action::Review {
+                repo: repo.to_string(),
                 number,
-                author,
+                author: pull_request.author,
                 installation,
-                Mode::Full,
-                None,
-                None,
-                None,
-            ));
+                head_sha: Some(pull_request.head_sha),
+            };
+            self.state
+                .review_queue
+                .try_send(QueuedReview {
+                    action,
+                    delivery: None,
+                    event: "manual-review".into(),
+                    mode: Mode::Full,
+                })
+                .map_err(|err| Error::Forge(format!("review queue is full or closed: {err}")))?;
             queued.push(number);
         }
 

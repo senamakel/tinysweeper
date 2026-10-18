@@ -1363,83 +1363,90 @@ struct ManualDispatch {
     state: AppState,
 }
 
+async fn with_manual_review_admission<T, F, Fut>(permits: Arc<Semaphore>, work: F) -> Result<T>
+where
+    F: FnOnce(tokio::sync::OwnedSemaphorePermit) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let permit = Arc::new(Semaphore::new(1))
+        .try_acquire_owned()
+        .map_err(|_| Error::ReviewCapacityFull)?;
+    work(permit).await
+}
+
 #[async_trait::async_trait]
 impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
-        // Manual expansion needs live GitHub reads to resolve the queued PRs.
-        // Refuse immediately when every worker slot is busy, before minting a
-        // token or making those reads. This temporary admission permit is
-        // released after the bounded queue entries have been reserved.
-        let admission = self
-            .state
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::ReviewCapacityFull)?;
+        with_manual_review_admission(self.state.permits.clone(), |_| async {
+            // Manual expansion needs live GitHub reads to resolve the queued PRs.
+            // Refuse immediately when every worker slot is busy, before minting a
+            // token or making those reads. The permit is held until all bounded
+            // queue slots and job data are ready.
 
-        // A webhook names its installation. A button does not, so ask GitHub
-        // which installation covers the repository; the app JWT can answer that
-        // and nothing else.
-        let installation = self
-            .state
-            .auth
-            .installation_for_repo(&repo.owner, &repo.name)
-            .await?;
-        let read_token = self.state.auth.installation_token(installation).await?;
-        let forge = crate::forge::github::GitHubRead::new(&read_token)?;
+            // A webhook names its installation. A button does not, so ask GitHub
+            // which installation covers the repository; the app JWT can answer that
+            // and nothing else.
+            let installation = self
+                .state
+                .auth
+                .installation_for_repo(&repo.owner, &repo.name)
+                .await?;
+            let read_token = self.state.auth.installation_token(installation).await?;
+            let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
-        let numbers = match number {
-            Some(number) => vec![number],
-            // Through the port, which is also where pull request triage reads
-            // them: one definition of "the open pull requests", so the button
-            // and the sweep can never disagree about what is open.
-            None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
-        };
-
-        // Reserve the whole expansion atomically before reading each PR head,
-        // so an overflow cannot leave a partially queued manual request.
-        let queue_slots = self
-            .state
-            .review_queue
-            .try_reserve_many(numbers.len())
-            .map_err(|_| Error::ReviewCapacityFull)?;
-
-        let mut jobs = Vec::with_capacity(numbers.len());
-        for number in numbers {
-            // The author is what the trust check is about, and only the pull
-            // request knows it. One extra read per queued review, on a path
-            // used a few times a year.
-            let pull_request = {
-                use crate::ports::forge::ForgeRead;
-                forge.pull_request(repo, number).await?
+            let numbers = match number {
+                Some(number) => vec![number],
+                // Through the port, which is also where pull request triage reads
+                // them: one definition of "the open pull requests", so the button
+                // and the sweep can never disagree about what is open.
+                None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
             };
-            let action = Action::Review {
-                repo: repo.to_string(),
-                number,
-                author: pull_request.author,
-                installation,
-                head_sha: Some(pull_request.head_sha),
-            };
-            jobs.push((
-                number,
-                QueuedReview {
-                    action,
-                    delivery: None,
-                    event: "manual-review".into(),
-                    mode: Mode::Full,
-                    queued_at: tokio::time::Instant::now(),
-                },
-            ));
-        }
 
-        let mut queued = Vec::with_capacity(jobs.len());
-        for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
-            slot.send(job);
-            queued.push(number);
-        }
+            // Reserve the whole expansion atomically before reading each PR head,
+            // so an overflow cannot leave a partially queued manual request.
+            let queue_slots = self
+                .state
+                .review_queue
+                .try_reserve_many(numbers.len())
+                .map_err(|_| Error::ReviewCapacityFull)?;
 
-        drop(admission);
-        Ok(queued)
+            let mut jobs = Vec::with_capacity(numbers.len());
+            for number in numbers {
+                // The author is what the trust check is about, and only the pull
+                // request knows it. One extra read per queued review, on a path
+                // used a few times a year.
+                let pull_request = {
+                    use crate::ports::forge::ForgeRead;
+                    forge.pull_request(repo, number).await?
+                };
+                let action = Action::Review {
+                    repo: repo.to_string(),
+                    number,
+                    author: pull_request.author,
+                    installation,
+                    head_sha: Some(pull_request.head_sha),
+                };
+                jobs.push((
+                    number,
+                    QueuedReview {
+                        action,
+                        delivery: None,
+                        event: "manual-review".into(),
+                        mode: Mode::Full,
+                        queued_at: tokio::time::Instant::now(),
+                    },
+                ));
+            }
+
+            let mut queued = Vec::with_capacity(jobs.len());
+            for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
+                slot.send(job);
+                queued.push(number);
+            }
+
+            Ok(queued)
+        })
+        .await
     }
 }
 
@@ -3091,6 +3098,27 @@ impl Previews for PreviewDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn saturated_manual_admission_runs_no_expensive_resolution() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let permits = Arc::new(Semaphore::new(0));
+        let expensive_reads = Arc::new(AtomicUsize::new(0));
+        let reads = expensive_reads.clone();
+        let result = with_manual_review_admission(permits, move |_permit| async move {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::ReviewCapacityFull)));
+        assert_eq!(
+            expensive_reads.load(Ordering::SeqCst),
+            0,
+            "a saturated manual request must be refused before token or PR reads"
+        );
+    }
 
     fn queued_test_review(number: u64) -> QueuedReview {
         QueuedReview {

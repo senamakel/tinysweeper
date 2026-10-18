@@ -1486,6 +1486,8 @@ fn lane_proposal(
         .any(|f| f.severity >= config.fail_on(lane))
     {
         CheckConclusion::Failure
+    } else if !outcome.unanswered.is_empty() {
+        CheckConclusion::Neutral
     } else if !outcome.pending.is_empty() {
         // A verdict on work that has not finished is the verdict branch
         // protection must not see. The check settles when the jobs do.

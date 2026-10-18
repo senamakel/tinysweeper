@@ -48,8 +48,22 @@ enum LaneReviewStatus {
     Skipped,
 }
 
+/// All contextual evidence supplied to one summary generation pass.
+pub struct SummaryGenerationInput<'a> {
+    /// Current parsed reviewable changes.
+    pub diffs: &'a [FileDiff],
+    /// Complete pull-request file and line counts from the forge.
+    pub full_pr_diffstat: SummaryDiffstat,
+    /// Deterministic lane proposals.
+    pub lanes: &'a [LaneProposal],
+    /// Previous durable summary, if any.
+    pub prior: Option<&'a ReviewSummary>,
+    /// Exact earlier summary conversation turns.
+    pub prior_transcript: &'a [SummaryTranscriptTurn],
+}
+
 /// Generate narrative fields when only parsed diff hunks are available.
-/// Production review calls [`generate_with_diffstat`] with the forge's full
+/// Production review calls [`generate_with_input`] with the forge's full
 /// pull-request file counts.
 pub async fn generate(
     model: &dyn Model,
@@ -60,31 +74,36 @@ pub async fn generate(
     prior: Option<&ReviewSummary>,
     prior_transcript: &[SummaryTranscriptTurn],
 ) -> (ReviewSummary, Spend, Vec<SummaryTranscriptTurn>) {
-    generate_with_diffstat(
+    generate_with_input(
         model,
         config,
         pull_request,
-        diffs,
-        SummaryDiffstat::from_diffs(diffs),
-        lanes,
-        prior,
-        prior_transcript,
+        SummaryGenerationInput {
+            diffs,
+            full_pr_diffstat: SummaryDiffstat::from_diffs(diffs),
+            lanes,
+            prior,
+            prior_transcript,
+        },
     )
     .await
 }
 
 /// Generate narrative fields; all verdict-bearing fields are rendered from
 /// the proposal and the complete diffstat comes from the forge file list.
-pub async fn generate_with_diffstat(
+pub async fn generate_with_input(
     model: &dyn Model,
     config: &Config,
     pull_request: &PullRequest,
-    diffs: &[FileDiff],
-    full_pr_diffstat: SummaryDiffstat,
-    lanes: &[LaneProposal],
-    prior: Option<&ReviewSummary>,
-    prior_transcript: &[SummaryTranscriptTurn],
+    input: SummaryGenerationInput<'_>,
 ) -> (ReviewSummary, Spend, Vec<SummaryTranscriptTurn>) {
+    let SummaryGenerationInput {
+        diffs,
+        full_pr_diffstat,
+        lanes,
+        prior,
+        prior_transcript,
+    } = input;
     let paths: BTreeSet<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
     let symbols_by_path: BTreeMap<String, BTreeSet<String>> = diffs
         .iter()
@@ -134,6 +153,7 @@ pub async fn generate_with_diffstat(
                 "title": finding.title, "path": finding.path, "rule": finding.rule
             })).collect::<Vec<_>>(),
             "pending": lane.pending, "unanswered": lane.unanswered,
+            "skipped": lane.skipped,
             "status": lane_statuses.get(lane.lane.as_str()).expect("status for every lane"),
         })).collect::<Vec<_>>(),
         "prior_summary": prior,
@@ -708,6 +728,7 @@ mod tests {
             noted: vec![],
             resolved: vec![],
             pending: vec![],
+            skipped: summary.starts_with("Skipped:").then(|| summary.to_string()),
             deduped: 0,
             highest_severity: None,
             usage: Default::default(),

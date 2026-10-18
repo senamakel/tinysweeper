@@ -1082,7 +1082,7 @@ pub async fn review_with_tree_observed(
         .iter()
         .flat_map(|lane| lane.resolved.iter().cloned())
         .collect();
-    let threads = crate::review_timing::measure(timing.as_ref(), "threads", async { match
+    let threads = crate::review_timing::measure(timing.as_ref(), "threads", async {
         match crate::threads::plan(forge, Some(model.as_ref()), config, repo, number, &resolved)
             .await
         {

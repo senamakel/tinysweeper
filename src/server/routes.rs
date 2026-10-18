@@ -1882,8 +1882,7 @@ async fn handle_review(
     // its own, report that failure against whatever head is live by then.
     // Holding it across retries also keeps a retry from going to the back of
     // the queue behind reviews that arrived while it was failing.
-    let permit_phase = timing.phase("permit");
-    let permit = match state.permits.clone().acquire_owned().await {
+    let permit = match crate::review_timing::measure(Some(&timing), "permit", state.permits.clone().acquire_owned()).await {
         Ok(permit) => permit,
         Err(err) => {
             // Unreachable in practice — nothing closes the pool — but a
@@ -1898,7 +1897,6 @@ async fn handle_review(
             return;
         }
     };
-    drop(permit_phase);
 
     // One deadline for the whole review, retries included. A per-attempt
     // deadline would let three transient failures late in the run stretch a
@@ -2142,16 +2140,13 @@ async fn review_inner(
     // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
     // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
     let outcome = {
-        let status_phase = run.timing.phase("open_status");
-        let go_on = open_status(
+        let go_on = crate::review_timing::measure(Some(&run.timing), "open_status", open_status(
             state,
             &run.slot,
             &repo_id,
             &pull_request.head_sha,
             installation,
-        )
-        .await;
-        drop(status_phase);
+        )).await;
         if !go_on {
             // Declined, not failed: the check is already concluded as
             // failed, and an `Err` here would have `handle_review` post a
@@ -2176,15 +2171,12 @@ async fn review_inner(
         // head: a config is acted on deterministically, so reading it from
         // the branch under review would let a pull request grade its own
         // exam. See `crate::config::remote`.
-        let setup_phase = run.timing.phase("knowledge");
-        let overlay = crate::config::remote::overlay(
+        let overlay = crate::review_timing::measure(Some(&run.timing), "knowledge", crate::config::remote::overlay(
             &forge,
             &repo_id,
             &pull_request.base_sha,
             &state.config.config,
-        )
-        .await;
-        drop(setup_phase);
+        )).await;
         if let Some(source) = &overlay.source {
             tracing::info!(%repo, source, "reviewing under the repository's own configuration");
         }
@@ -2245,7 +2237,6 @@ async fn review_inner(
                 // its check — a lease held until `LEASE_TTL` and a check stuck
                 // "in progress" forever, which is exactly what this whole
                 // umbrella-check mechanism exists to prevent.
-                let publish_phase = run.timing.phase("publish");
                 let publish = std::panic::AssertUnwindSafe(async {
                     let write_token = state.auth.installation_token(installation).await?;
                     // The review reader has already been held across all the
@@ -2257,7 +2248,7 @@ async fn review_inner(
                     crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
                 })
                 .catch_unwind();
-                let published = tokio::time::timeout(PUBLISH_DEADLINE, publish)
+                crate::review_timing::measure(Some(&run.timing), "publish", tokio::time::timeout(PUBLISH_DEADLINE, publish))
                     .await
                     .map_err(|_elapsed| {
                         Error::timeout(
@@ -2265,7 +2256,6 @@ async fn review_inner(
                             PUBLISH_DEADLINE,
                         )
                     });
-                drop(publish_phase);
                 published
                     .and_then(|published| {
                         published

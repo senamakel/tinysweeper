@@ -880,7 +880,7 @@ fn summarise(
                 .to_string()
         } else {
             format!(
-                "Retained findings were capped at Likely confidence because retrieval was degraded and no typed head-source lookup supported them: {titles}."
+                "Findings were capped at Likely confidence where no typed head-source lookup supported the claim; retained findings include: {titles}."
             )
         }
     } else if kept.is_empty() && !rejected.is_empty() {

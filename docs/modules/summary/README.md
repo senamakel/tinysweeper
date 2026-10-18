@@ -21,13 +21,14 @@ previous rendered diff, but the forge input has no base-to-head comparison
 port; that snapshot cannot prove the exact push delta, so the field says it is
 unavailable rather than presenting the full PR diff as a push delta. Each lane
 also carries a typed `answered`, `partial`, `no_response`, or `skipped` status.
-Per-file coverage uses the actual full forge path list and preserves explicit
-unanswered paths even when they had no parseable diff. Whole-pull-request lanes
-with waiting checks carry only the pending-check count, without a fabricated
-file denominator. Completion provenance distinguishes deterministic lane
+Per-file coverage counts only assigned paths, bounded to the forge's full
+changed-path list; explicitly unanswered paths remain in scope even when they
+had no parseable diff. Whole-pull-request lanes with waiting checks carry only
+the pending-check count, without a fabricated file denominator. Completion provenance distinguishes deterministic lane
 results from policy skips and unanswered model calls; old proposal shapes with
-no provenance remain unknown. Narrative that says a non-answered lane
-confirmed or passed is discarded.
+no provenance remain unknown. Narrative that explicitly names a non-answered
+lane or makes a collective claim about all lanes/reviewers is discarded,
+regardless of its wording or claimed verdict.
 
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one

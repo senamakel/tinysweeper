@@ -2742,29 +2742,34 @@ mod tests {
             "tests": [],
             "positive_observations": {}
         }));
-        let outcome = crate::lanes::LaneOutcome::unanswered(
-            LaneId::Tests,
-            crate::ports::model::Spend::default(),
-        );
-        let lanes = vec![LaneProposal {
-            lane: LaneId::Tests,
-            check_name: LaneId::Tests.check_name(),
-            conclusion: CheckConclusion::Neutral,
-            summary: outcome.summary,
-            completed: outcome.completed,
-            findings: vec![],
-            noted: vec![],
-            resolved: vec![],
-            pending: vec![],
-            skipped: outcome.skipped,
-            deduped: 0,
-            highest_severity: None,
-            usage: Default::default(),
-            models: vec![],
-            unanswered: outcome.unanswered,
-            coverage: outcome.coverage,
-            overflow: vec![],
-        }];
+        let lanes: Vec<_> = [LaneId::Tests, LaneId::Security, LaneId::E2e]
+            .into_iter()
+            .map(|lane| {
+                let outcome = crate::lanes::LaneOutcome::unanswered(
+                    lane,
+                    crate::ports::model::Spend::default(),
+                );
+                LaneProposal {
+                    lane,
+                    check_name: lane.check_name(),
+                    conclusion: CheckConclusion::Neutral,
+                    summary: outcome.summary,
+                    completed: outcome.completed,
+                    findings: vec![],
+                    noted: vec![],
+                    resolved: vec![],
+                    pending: vec![],
+                    skipped: outcome.skipped,
+                    deduped: 0,
+                    highest_severity: None,
+                    usage: Default::default(),
+                    models: vec![],
+                    unanswered: outcome.unanswered,
+                    coverage: outcome.coverage,
+                    overflow: vec![],
+                }
+            })
+            .collect();
         let (summary, _, _) = crate::summary::generate(
             &model,
             &config,

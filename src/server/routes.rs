@@ -2311,7 +2311,7 @@ async fn review_inner(
         .await
     })
     .await;
-    if false && !claimed {
+    if !claimed {
         tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(None);
     }
@@ -2320,7 +2320,7 @@ async fn review_inner(
     {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
-    Ok(reviewed?.flatten())
+    Ok(reviewed?.flatten().flatten())
 }
 
 async fn continue_if_lease_claimed<T, F, Fut>(claimed: bool, work: F) -> Result<Option<T>>

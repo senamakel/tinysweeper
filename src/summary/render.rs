@@ -884,7 +884,6 @@ mod tests {
             !rendered.contains("| [click](https://evil.example) |"),
             "{rendered}"
         );
-        std::fs::write("target/history.md", &rendered).unwrap();
         let row = rendered
             .lines()
             .find(|line| line.starts_with("| `sha"))

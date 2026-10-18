@@ -229,6 +229,7 @@ enum WorkerDisposition {
 enum InnerReview {
     Complete(Option<(usize, bool, status::ReviewCoverage)>),
     Busy,
+    Exhausted,
 }
 
 /// Run the server until the process is stopped.
@@ -1906,6 +1907,7 @@ struct Run {
     owner_lost: Option<watch::Receiver<bool>>,
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
+    paid_exhausted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Refuse an individual paid model dispatch after durable ownership expires.
@@ -2476,6 +2478,7 @@ async fn handle_review(
         owner_lost: owner_lost.clone(),
         owner_until: owner_until.clone(),
         lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let mut attempt = 1;
@@ -2516,6 +2519,15 @@ async fn handle_review(
                 drop(permit);
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                 return WorkerDisposition::Deferred(unix_time_ms() + 5_000);
+            }
+            Ok(InnerReview::Exhausted) => {
+                if run.check_owner(&state).await.is_err() {
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
+                drop(permit);
+                close_status(&state, &slot, Conclusion::NotReviewed).await;
+                return WorkerDisposition::Terminal(TerminalOutcome::Exhausted);
             }
             Err(err) => {
                 if matches!(err, Error::ReviewOwnershipLost) {

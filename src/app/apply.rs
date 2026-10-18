@@ -113,11 +113,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(
-                        lane.findings.len(),
-                        &lane.summary,
-                        lane.unanswered.len(),
-                    ),
+                    title: title_for(lane.findings.len(), &lane.summary, lane.unanswered.len()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -659,9 +655,7 @@ fn title_for(findings: usize, summary: &str, unanswered: usize) -> String {
             .and_then(|count| count.parse::<usize>().ok())
         {
             let total = reviewed + unanswered;
-            return format!(
-                "Reviewed {reviewed} of {total} files — {unanswered} not reviewed"
-            );
+            return format!("Reviewed {reviewed} of {total} files — {unanswered} not reviewed");
         }
     }
     match findings {

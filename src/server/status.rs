@@ -283,7 +283,11 @@ mod tests {
                 .contains("nothing to report")
         );
         assert!(completed("abc", 1, false, None).title.contains("1 finding"));
-        assert!(completed("abc", 4, false, None).title.contains("4 findings"));
+        assert!(
+            completed("abc", 4, false, None)
+                .title
+                .contains("4 findings")
+        );
     }
 
     #[test]

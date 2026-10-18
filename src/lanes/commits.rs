@@ -112,8 +112,8 @@ fn merge_scanner_findings(outcome: &mut LaneOutcome, scanner: &[&crate::scan::ty
 mod tests {
     use super::*;
     use crate::config::types::{Config, Severity};
-    use crate::forge::types::CheckConclusion;
     use crate::evidence::diff::{FileDiff, parse_file_patch};
+    use crate::forge::types::CheckConclusion;
     use crate::forge::types::{Commit, PullRequest};
     use crate::ports::model::Spend;
     use crate::scan::types::{Finding as ScanFinding, redact};

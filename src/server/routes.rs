@@ -1932,7 +1932,7 @@ async fn handle_review(
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
-                timing.finish("success");
+                timing.finish(if findings.is_some() { "success" } else { "superseded" });
                 return;
             }
             Err(err) => {
@@ -2284,11 +2284,6 @@ async fn review_inner(
     };
 
     let (proposal, changes_requested) = outcome?;
-    run.timing.record(|r| {
-        r.files_total = proposal.lanes.iter().map(|l| l.files_reviewed.len() + l.unanswered.len()).sum();
-        r.files_unanswered = proposal.unanswered().len();
-        r.files_answered = r.files_total.saturating_sub(r.files_unanswered);
-    });
     let findings = proposal.findings().count();
     state.store.record_review(author, findings as u64).await?;
 
@@ -2384,6 +2379,7 @@ async fn run_lanes(
         // checkout lacks, such as a submodule that was not fetched. Read-only
         // either way: the token here is the review-read one the forge already
         // holds, and the checkout is deleted with the review.
+        let checkout_phase = run.timing.phase("checkout");
         let checkout = if config.lookup.enabled && config.lookup.checkout {
             let head = forge.pull_request(repo, number).await?.head_sha;
             match crate::indexer::fetch::Checkout::fetch(
@@ -2416,6 +2412,7 @@ async fn run_lanes(
         } else {
             None
         };
+        drop(checkout_phase);
         // The review chains the forge reader behind whatever it is given, so a
         // path the shallow checkout lacks — a submodule that was not fetched —
         // is still read through the API.
@@ -2426,7 +2423,7 @@ async fn run_lanes(
             .as_ref()
             .map(|dir| dir as &dyn crate::ports::tree::TreeReader);
 
-        crate::app::review::review_with_tree(
+        crate::app::review::review_with_tree_observed(
             forge,
             model,
             &config,
@@ -2436,6 +2433,7 @@ async fn run_lanes(
             state.knowledge.as_deref(),
             retriever.as_ref(),
             tree,
+            Some(run.timing.clone()),
         )
         .await
     };
@@ -2798,8 +2796,8 @@ mod tests {
             seconds: 1,
         };
         let model = Error::Model("provider timed out".into());
-        assert_eq!(ReviewTiming::outcome_for_error(&timeout), "deadline");
-        assert_eq!(ReviewTiming::outcome_for_error(&model), "failure");
+        assert_eq!(crate::review_timing::outcome_for_error(&timeout), "deadline");
+        assert_eq!(crate::review_timing::outcome_for_error(&model), "failure");
     }
 
     #[tokio::test]

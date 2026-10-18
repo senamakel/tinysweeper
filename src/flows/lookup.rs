@@ -1003,6 +1003,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_seed_reads_a_module_declared_by_the_change_from_the_head_tree() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_files([("src/foo.rs", "pub fn added_api() {}\n")]);
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(
+            seeded.rendered.contains("src/foo.rs")
+                && seeded.rendered.contains("pub fn added_api"),
+            "a module declaration must read the module file at the reviewed head: {}",
+            seeded.rendered
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_function_signature_seeds_its_callers() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/api.rs",
+            "@@ -1,1 +1,2 @@\n fn parse(value: &str) {}\n+pub fn parse(value: &str, strict: bool) {}\n",
+        );
+        let tree = MockTree::from_files([
+            ("src/api.rs", "pub fn parse(value: &str, strict: bool) {}\n"),
+            (
+                "src/client.rs",
+                "pub fn handle(value: &str) {\n    parse(value, true);\n}\n",
+            ),
+        ]);
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(
+            seeded.rendered.contains("src/client.rs")
+                && seeded.rendered.contains("parse(value, true)"),
+            "a changed signature must bring existing callers into evidence: {}",
+            seeded.rendered
+        );
+    }
+
     /// Grouping's whole point for lookups: a reviewer given a group's files
     /// together must not lose the seeding that made #2313's finding possible
     /// just because the calling line sits in the *second* file of the group.

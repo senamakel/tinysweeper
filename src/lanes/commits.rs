@@ -64,6 +64,7 @@ impl Lane for Commits {
         if scanner.is_empty() {
             return Ok(LaneOutcome {
                 summary: "No sensitive content in committed files.".into(),
+                completed: true,
                 ..LaneOutcome::default()
             });
         }
@@ -76,6 +77,7 @@ impl Lane for Commits {
         // `LaneOutcome::default()` rather than a model response: this lane no
         // longer has one, so there is no spend to record and nothing to anchor.
         let mut outcome = LaneOutcome::default();
+        outcome.completed = true;
         merge_scanner_findings(&mut outcome, &scanner);
 
         outcome.summary = match outcome.findings.len() {

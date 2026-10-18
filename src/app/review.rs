@@ -557,6 +557,7 @@ pub async fn review_with_tree(
                     check_name: lane.check_name(),
                     conclusion: CheckConclusion::Neutral,
                     summary: format!("Skipped: `{label}` is applied."),
+                    completed: false,
                     findings: vec![],
                     noted: Vec::new(),
                     resolved: vec![],
@@ -1603,6 +1604,7 @@ fn lane_proposal(
         check_name: lane.check_name(),
         conclusion,
         summary,
+        completed: outcome.completed,
         findings,
         noted,
         resolved,
@@ -2022,6 +2024,7 @@ fn publish_unclaimed(lanes: &mut Vec<LaneProposal>, scan_findings: &[scan::types
                 "{} finding(s) from the deterministic scanners.",
                 unclaimed.len()
             ),
+            completed: true,
             findings: unclaimed,
             noted: Vec::new(),
             resolved: vec![],

@@ -142,6 +142,7 @@ impl FanOut {
         // and named per member path here, so "Reviewed N files" and the
         // unanswered list stay file-accurate rather than reporting one
         // synthetic entry per conversation.
+        let completed = !self.reviews.is_empty();
         let reviewed: usize = self.reviews.iter().map(|(paths, _)| paths.len()).sum();
         let one_conversation = self.reviews.len() == 1;
         let mut reviewed_paths = Vec::with_capacity(reviewed);
@@ -208,6 +209,7 @@ impl FanOut {
         );
         LaneOutcome {
             summary,
+            completed,
             findings,
             resolved,
             spend,

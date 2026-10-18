@@ -2736,8 +2736,8 @@ mod tests {
         let forge = forge("abc123");
         let config = config();
         let model = MockModel::new().then(serde_json::json!({
-            "executive_summary": "The security and tests lanes confirm there are no findings.",
-            "changes": "All lanes passed and confirmed the change is clear.",
+            "executive_summary": "All five lanes report no findings.",
+            "changes": "All lanes report no findings.",
             "features": [],
             "tests": [],
             "positive_observations": {}
@@ -2770,6 +2770,8 @@ mod tests {
             &config,
             &PullRequest {
                 number: 7,
+                title: "Enforce speech privacy".into(),
+                body: "Keep private speech out of logs.".into(),
                 head_sha: "abc123".into(),
                 ..PullRequest::default()
             },
@@ -2794,8 +2796,9 @@ mod tests {
                 _ => None,
             })
             .expect("hub comment");
-        assert!(!body.to_ascii_lowercase().contains("all lanes passed"));
-        assert!(!body.to_ascii_lowercase().contains("tests lane confirm"));
+        assert!(body.contains("Enforce speech privacy."), "{body}");
+        assert!(!body.to_ascii_lowercase().contains("all five lanes report no findings"));
+        assert!(!body.to_ascii_lowercase().contains("all lanes report no findings"));
         assert!(body.contains("No reviewer produced a usable response."));
     }
 

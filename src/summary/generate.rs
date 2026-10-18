@@ -414,15 +414,22 @@ pub fn deterministic_with_paths(
 }
 
 fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
-    let title = validated_narrative(&pull_request.title).unwrap_or_default();
+    let title = validated_narrative(&pull_request.title)
+        .unwrap_or_default()
+        .trim_end_matches(['.', '!', '?'])
+        .trim()
+        .to_string();
     let narrative = narrative.trim();
     if title.is_empty() {
         return narrative.to_string();
     }
-    if narrative
-        .get(..title.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&title))
-    {
+    if narrative.get(..title.len()).is_some_and(|prefix| {
+        prefix.eq_ignore_ascii_case(&title)
+            && narrative[title.len()..]
+                .chars()
+                .next()
+                .is_some_and(|separator| matches!(separator, '.' | '!' | '?'))
+    }) {
         return narrative.to_string();
     }
     format!("{title}. {narrative}")
@@ -1533,6 +1540,41 @@ mod tests {
         assert_eq!(summary.history[0].head_sha, "old");
         assert_eq!(spend, Spend::default());
         assert_eq!(transcript, prior_transcript);
+    }
+
+    #[tokio::test]
+    async fn deterministic_fallback_stores_scrubbed_prior_observations() {
+        let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
+        let prior_observation = format!("The old note quoted {secret}.");
+        let prior = ReviewSummary {
+            positive_observations: BTreeMap::from([(
+                LaneId::Critique,
+                vec![prior_observation.clone()],
+            )]),
+            ..ReviewSummary::default()
+        };
+        let lane = lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Success,
+            "Reviewed",
+            &["model"],
+            &[],
+            None,
+        );
+        let (summary, _, _) = generate(
+            &MockModel::new().then_error("offline"),
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[lane],
+            Some(&prior),
+            &[],
+        )
+        .await;
+
+        let retained = &summary.positive_observations[&LaneId::Critique][0];
+        assert_eq!(retained, &crate::scan::scrub(&prior_observation));
+        assert!(!retained.contains(&secret));
     }
 
     #[tokio::test]

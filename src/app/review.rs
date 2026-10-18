@@ -42,17 +42,38 @@ struct ObservedModel {
     timing: crate::review_timing::ReviewTiming,
 }
 
+struct PendingModelCall {
+    timing: crate::review_timing::ReviewTiming,
+    completed: bool,
+}
+
+impl Drop for PendingModelCall {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.timing.record(|record| {
+                record.calls_attempted += 1;
+                record.calls_errored += 1;
+            });
+        }
+    }
+}
+
 impl ObservedModel {
     async fn observe(
         &self,
         request: crate::ports::model::ModelRequest,
         tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>,
     ) -> Result<crate::ports::model::ModelResponse> {
+        let mut pending = PendingModelCall {
+            timing: self.timing.clone(),
+            completed: false,
+        };
         let started = std::time::Instant::now();
         let result = match tree {
             Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
             None => self.inner.complete(request.clone()).await,
         };
+        pending.completed = true;
         let latency_ms = started.elapsed().as_millis() as u64;
         match &result {
             Ok(response) => self.timing.record(|r| {

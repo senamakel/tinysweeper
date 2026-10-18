@@ -818,48 +818,65 @@ async fn run_owned_review(
         return;
     }
 
-    let (lost_tx, lost_rx) = watch::channel(false);
-    let (owner_until_tx, owner_until_rx) = watch::channel(
-        tokio::time::Instant::now()
-            + std::time::Duration::from_millis(
-                (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
-            ),
-    );
-    let _heartbeat_guard = spawn_review_heartbeat(
-        store.clone(),
-        owned.clone(),
-        lost_tx,
-        owner_until_tx,
-        std::time::Duration::from_secs(15),
-    );
+    let worker_store = store.clone();
+    let worker_owned = owned.clone();
+    let start = with_paid_review_attempt(&*store, &owned, now_ms, || async move {
+        let (lost_tx, lost_rx) = watch::channel(false);
+        let (owner_until_tx, owner_until_rx) = watch::channel(
+            tokio::time::Instant::now()
+                + std::time::Duration::from_millis(
+                    (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
+                ),
+        );
+        let _heartbeat_guard = spawn_review_heartbeat(
+            worker_store.clone(),
+            worker_owned.clone(),
+            lost_tx,
+            owner_until_tx,
+            std::time::Duration::from_secs(15),
+        );
 
-    let request = &owned.request;
-    let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
-    let queued_at = tokio::time::Instant::now()
-        .checked_sub(std::time::Duration::from_millis(elapsed_ms))
-        .unwrap_or_else(tokio::time::Instant::now);
-    let job = ReviewJob {
-        repo: request.repo.clone(),
-        number: request.number,
-        author: request.author.clone(),
-        installation: request.installation,
-        mode: match request.mode {
-            ReviewJobMode::Incremental => Mode::Incremental,
-            ReviewJobMode::Full => Mode::Full,
-        },
-        delivery: request.delivery.clone(),
-        expected_head: request.head_sha.clone(),
-        queued_at,
-        owned: Some(owned.clone()),
-    };
-    let disposition = handle_review(
-        state,
-        job,
-        Some(permit),
-        Some(lost_rx),
-        Some(owner_until_rx),
-    )
+        let request = &worker_owned.request;
+        let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
+        let queued_at = tokio::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(elapsed_ms))
+            .unwrap_or_else(tokio::time::Instant::now);
+        let job = ReviewJob {
+            repo: request.repo.clone(),
+            number: request.number,
+            author: request.author.clone(),
+            installation: request.installation,
+            mode: match request.mode {
+                ReviewJobMode::Incremental => Mode::Incremental,
+                ReviewJobMode::Full => Mode::Full,
+            },
+            delivery: request.delivery.clone(),
+            expected_head: request.head_sha.clone(),
+            queued_at,
+            owned: Some(worker_owned.clone()),
+        };
+        handle_review(
+            state,
+            job,
+            Some(permit),
+            Some(lost_rx),
+            Some(owner_until_rx),
+        )
+        .await
+    })
     .await;
+    let disposition = match start {
+        Ok(PaidWork::Started(disposition)) => disposition,
+        Ok(PaidWork::Exhausted) => {
+            tracing::warn!(job_id = %owned.request.id.0, "durable review recovery budget exhausted");
+            return;
+        }
+        Ok(PaidWork::OwnershipLost) => return,
+        Err(err) => {
+            tracing::error!(%err, job_id = %owned.request.id.0, "could not consume durable review attempt");
+            return;
+        }
+    };
 
     let now_ms = unix_time_ms();
     let result = match disposition {
@@ -877,6 +894,29 @@ async fn run_owned_review(
         Err(err) => {
             tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome")
         }
+    }
+}
+
+enum PaidWork<T> {
+    Started(T),
+    Exhausted,
+    OwnershipLost,
+}
+
+async fn with_paid_review_attempt<T, F, Fut>(
+    store: &dyn ReviewJobStore,
+    owned: &OwnedReview,
+    now_ms: i64,
+    work: F,
+) -> Result<PaidWork<T>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    match store.begin_paid(owned, now_ms).await? {
+        PaidStart::Started => Ok(PaidWork::Started(work().await)),
+        PaidStart::Exhausted => Ok(PaidWork::Exhausted),
+        PaidStart::OwnershipLost => Ok(PaidWork::OwnershipLost),
     }
 }
 
@@ -3580,6 +3620,83 @@ mod tests {
             } => panic!("expired review future must not be polled"),
         }
         assert!(!paid_step.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn recovered_paid_attempts_are_bounded_before_worker_work_starts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let request = ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId("webhook:recovery-budget".into()),
+            repo: "owner/repo".into(),
+            number: 7,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("head".into()),
+            delivery: Some("recovery-budget".into()),
+            event: "pull_request".into(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: 1,
+        };
+        assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let mut now_ms = 2;
+        for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
+            let owned = store
+                .claim_next(&format!("worker-{generation}"), now_ms)
+                .await
+                .unwrap()
+                .expect("each expired owner is recoverable");
+            let observed = starts.clone();
+            assert!(matches!(
+                with_paid_review_attempt(&store, &owned, now_ms, || async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                })
+                .await
+                .unwrap(),
+                PaidWork::Started(())
+            ));
+            now_ms += crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1;
+        }
+
+        let exhausted = store
+            .claim_next("last-worker", now_ms)
+            .await
+            .unwrap()
+            .expect("the final check is made under an owned generation");
+        assert!(matches!(
+            with_paid_review_attempt(&store, &exhausted, now_ms, || async {
+                starts.fetch_add(1, Ordering::SeqCst);
+            })
+            .await
+            .unwrap(),
+            PaidWork::Exhausted
+        ));
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS as usize,
+            "exhausted recovery must not restart token or model work"
+        );
+        assert_eq!(store.unfinished(), 0);
+        assert_eq!(
+            store.admit_batch(vec![ReviewRequest {
+                id: crate::ports::review_job::ReviewJobId("webhook:recovery-budget".into()),
+                repo: "owner/repo".into(),
+                number: 7,
+                author: "contributor".into(),
+                installation: 1,
+                head_sha: Some("head".into()),
+                delivery: Some("recovery-budget".into()),
+                event: "pull_request".into(),
+                mode: ReviewJobMode::Incremental,
+                accepted_at_ms: now_ms,
+            }])
+            .await
+            .unwrap(),
+            Admission::Duplicate,
+            "exhaustion remains terminal and deduped"
+        );
     }
 
     #[tokio::test]

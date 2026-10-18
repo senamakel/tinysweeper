@@ -173,7 +173,7 @@ fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
             .mul_add(0.4, 10_000.0 * 1.8)
             .ceil() as u64
     );
-    assert_eq!(history.p90("unseen_lane", "deep", 64_000), 8_000);
+    assert_eq!(history.p90("unseen_lane", "deep", 64_000), 16_000);
     history.record("zero_output_lane", "deep", 0, 1_000);
     assert_eq!(history.p90("zero_output_lane", "deep", 1_000), 0);
 }

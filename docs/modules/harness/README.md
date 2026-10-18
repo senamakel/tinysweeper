@@ -153,7 +153,7 @@ their separate 60-second turn deadline.
 
 Admission estimates input tokens as serialized request bytes divided by four,
 plus bounded framing, and reserves the lane/model rolling p90 output observed in
-the last 32 physical attempts. A cold lane starts at one eighth of its output
+the last 32 physical attempts. A cold lane starts at one quarter of its output
 cap. The estimate never changes the provider's output cap or Embed's separate
 serialized-size safety bound. Reservations are fail-fast: a call that cannot fit
 alongside live reservations returns the typed budget error instead of serializing

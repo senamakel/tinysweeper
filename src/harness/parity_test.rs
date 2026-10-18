@@ -487,7 +487,7 @@ async fn concurrent_affordable_completions_wait_for_reservations_to_settle() {
 }
 
 #[tokio::test]
-async fn queued_completions_still_stop_before_dispatching_past_the_hard_budget() {
+async fn fail_fast_reservations_do_not_dispatch_past_the_hard_budget() {
     let paid_usage = json!({"prompt_tokens":120,"completion_tokens":30,"cost":0.4});
     let gateway = FakeGateway::start(vec![
         Reply::completion("deep", ANSWER, "stop", paid_usage.clone()),
@@ -510,17 +510,17 @@ async fn queued_completions_still_stop_before_dispatching_past_the_hard_budget()
         model.complete(request("deep")),
     );
     let outcomes = [first, second, third];
-    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 2);
-    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 2);
     let total: f64 = outcomes
         .into_iter()
         .filter_map(Result::ok)
         .map(|response| response.usage.cost_usd)
         .sum();
-    assert!((total - 0.8).abs() < 1e-12);
+    assert!((total - 0.4).abs() < 1e-12);
     assert_eq!(
         gateway.requests().len(),
-        2,
+        1,
         "the denied call never reaches the provider"
     );
 }

@@ -939,6 +939,17 @@ fn helper() {
         file_contents: &BTreeMap<String, String>,
         retrieval_status: crate::retrieve::RetrievalStatus,
     ) -> LaneOutcome {
+        run_with_context_and_tree(model, config, diffs, file_contents, retrieval_status, None).await
+    }
+
+    async fn run_with_context_and_tree(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        file_contents: &BTreeMap<String, String>,
+        retrieval_status: crate::retrieve::RetrievalStatus,
+        tree: Option<&dyn crate::ports::tree::TreeReader>,
+    ) -> LaneOutcome {
         let pr = pull_request();
         Critique::new(Arc::new(model))
             .run(LaneInput {
@@ -956,7 +967,7 @@ fn helper() {
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
-                tree: None,
+                tree,
                 graph: None,
             })
             .await
@@ -1046,6 +1057,46 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(!outcome.findings[0].late);
+    }
+
+    #[tokio::test]
+    async fn degraded_retrieval_keeps_unchanged_code_with_a_head_local_lookup() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    helper();\n }\n",
+        )];
+        let tree = crate::ports::tree::MockTree::from_files([(
+            "src/main.rs",
+            "fn main() {\n    helper();\n}\nfn helper() {}\n",
+        )]);
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The existing call needs a guard.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "fn main() {",
+                    "rule": "unsafe-caller",
+                    "title": "Guard the existing caller",
+                    "body": "The unchanged caller assumes an invalid contract.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(outcome.findings[0].late);
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal

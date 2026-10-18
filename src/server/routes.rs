@@ -1882,7 +1882,13 @@ async fn handle_review(
     // its own, report that failure against whatever head is live by then.
     // Holding it across retries also keeps a retry from going to the back of
     // the queue behind reviews that arrived while it was failing.
-    let permit = match crate::review_timing::measure(Some(&timing), "permit", state.permits.clone().acquire_owned()).await {
+    let permit = match crate::review_timing::measure(
+        Some(&timing),
+        "permit",
+        state.permits.clone().acquire_owned(),
+    )
+    .await
+    {
         Ok(permit) => permit,
         Err(err) => {
             // Unreachable in practice — nothing closes the pool — but a
@@ -2140,13 +2146,18 @@ async fn review_inner(
     // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
     // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
     let outcome = {
-        let go_on = crate::review_timing::measure(Some(&run.timing), "open_status", open_status(
-            state,
-            &run.slot,
-            &repo_id,
-            &pull_request.head_sha,
-            installation,
-        )).await;
+        let go_on = crate::review_timing::measure(
+            Some(&run.timing),
+            "open_status",
+            open_status(
+                state,
+                &run.slot,
+                &repo_id,
+                &pull_request.head_sha,
+                installation,
+            ),
+        )
+        .await;
         if !go_on {
             // Declined, not failed: the check is already concluded as
             // failed, and an `Err` here would have `handle_review` post a
@@ -2171,12 +2182,17 @@ async fn review_inner(
         // head: a config is acted on deterministically, so reading it from
         // the branch under review would let a pull request grade its own
         // exam. See `crate::config::remote`.
-        let overlay = crate::review_timing::measure(Some(&run.timing), "knowledge", crate::config::remote::overlay(
-            &forge,
-            &repo_id,
-            &pull_request.base_sha,
-            &state.config.config,
-        )).await;
+        let overlay = crate::review_timing::measure(
+            Some(&run.timing),
+            "knowledge",
+            crate::config::remote::overlay(
+                &forge,
+                &repo_id,
+                &pull_request.base_sha,
+                &state.config.config,
+            ),
+        )
+        .await;
         if let Some(source) = &overlay.source {
             tracing::info!(%repo, source, "reviewing under the repository's own configuration");
         }
@@ -2248,14 +2264,18 @@ async fn review_inner(
                     crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
                 })
                 .catch_unwind();
-                crate::review_timing::measure(Some(&run.timing), "publish", tokio::time::timeout(PUBLISH_DEADLINE, publish))
-                    .await
-                    .map_err(|_elapsed| {
-                        Error::timeout(
-                            format!("publishing the review of {repo}#{number}"),
-                            PUBLISH_DEADLINE,
-                        )
-                    });
+                crate::review_timing::measure(
+                    Some(&run.timing),
+                    "publish",
+                    tokio::time::timeout(PUBLISH_DEADLINE, publish),
+                )
+                .await
+                .map_err(|_elapsed| {
+                    Error::timeout(
+                        format!("publishing the review of {repo}#{number}"),
+                        PUBLISH_DEADLINE,
+                    )
+                });
                 published
                     .and_then(|published| {
                         published
@@ -2376,8 +2396,7 @@ async fn run_lanes(
         // checkout lacks, such as a submodule that was not fetched. Read-only
         // either way: the token here is the review-read one the forge already
         // holds, and the checkout is deleted with the review.
-        let checkout_phase = run.timing.phase("checkout");
-        let checkout = if config.lookup.enabled && config.lookup.checkout {
+        let checkout = crate::review_timing::measure(Some(&run.timing), "checkout", async { if config.lookup.enabled && config.lookup.checkout {
             let head = forge.pull_request(repo, number).await?.head_sha;
             match crate::indexer::fetch::Checkout::fetch(
                 &super::indexing::git_host(),
@@ -2408,8 +2427,7 @@ async fn run_lanes(
             }
         } else {
             None
-        };
-        drop(checkout_phase);
+        }}).await;
         // The review chains the forge reader behind whatever it is given, so a
         // path the shallow checkout lacks — a submodule that was not fetched —
         // is still read through the API.

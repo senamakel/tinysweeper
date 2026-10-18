@@ -546,13 +546,17 @@ pub async fn review_with_tree_observed(
     } else {
         model
     };
-    let mut context = crate::review_timing::measure(timing.as_ref(), "context", forge
-        .pull_request_context_bounded(
+    let mut context = crate::review_timing::measure(
+        timing.as_ref(),
+        "context",
+        forge.pull_request_context_bounded(
             repo,
             number,
             config.review.max_changed_files,
             config.review.max_changed_lines,
-        )).await?;
+        ),
+    )
+    .await?;
     if let Some(timing) = &timing {
         let head_sha = context.pull_request.head_sha.clone();
         timing.record(|r| r.head_sha = head_sha);
@@ -753,18 +757,23 @@ pub async fn review_with_tree_observed(
     // instruction files at *this* head commit. The extraction is sandboxed and
     // its output is untrusted — see `crate::knowledge` — so the two halves go
     // to different halves of the prompt.
-    let (knowledge, knowledge_usage) = crate::review_timing::measure(timing.as_ref(), "knowledge", crate::knowledge::gather(
-        forge,
-        &model,
-        config,
-        repo,
-        &context.pull_request.head_sha,
-        &diffs
-            .iter()
-            .map(|diff| diff.path.clone())
-            .collect::<Vec<_>>(),
-        knowledge,
-    )).await;
+    let (knowledge, knowledge_usage) = crate::review_timing::measure(
+        timing.as_ref(),
+        "knowledge",
+        crate::knowledge::gather(
+            forge,
+            &model,
+            config,
+            repo,
+            &context.pull_request.head_sha,
+            &diffs
+                .iter()
+                .map(|diff| diff.path.clone())
+                .collect::<Vec<_>>(),
+            knowledge,
+        ),
+    )
+    .await;
     // `gather` has no response model to report when the instruction files are
     // absent. Do not turn that zero-cost no-op into a fictitious scan-model
     // entry in the review's model list.
@@ -777,20 +786,24 @@ pub async fn review_with_tree_observed(
     // Related code, retrieved once for the whole review rather than per lane:
     // the query is composed from the diff, so every lane would compose the same
     // one and pay for the same embedding.
-    let (retrieved, retrieval_spend) = crate::review_timing::measure(timing.as_ref(), "retrieval", async { match retrieval {
-        Some(retriever) => {
-            retriever
-                .retrieve(
-                    config,
-                    &repo.to_string(),
-                    &context.pull_request.title,
-                    &context.pull_request.head_sha,
-                    &diffs,
-                )
-                .await
-        }
-        None => (crate::retrieve::RetrievedContext::off(), Spend::default()),
-    }}).await;
+    let (retrieved, retrieval_spend) =
+        crate::review_timing::measure(timing.as_ref(), "retrieval", async {
+            match retrieval {
+                Some(retriever) => {
+                    retriever
+                        .retrieve(
+                            config,
+                            &repo.to_string(),
+                            &context.pull_request.title,
+                            &context.pull_request.head_sha,
+                            &diffs,
+                        )
+                        .await
+                }
+                None => (crate::retrieve::RetrievedContext::off(), Spend::default()),
+            }
+        })
+        .await;
     spend.merge(retrieval_spend);
     // Retrieval is separate from the diff pipeline, but its rendered chunks
     // become model input too. Apply the same path-independent stream scrub
@@ -828,11 +841,14 @@ pub async fn review_with_tree_observed(
     // `changed_neighbourhood_is_needed` — so a deployment with both off, or a
     // tests-only review with neither `critique` nor `security` enabled, costs
     // no query it never needed.
-    let changed_neighbourhood = crate::review_timing::measure(timing.as_ref(), "graph", async { if changed_neighbourhood_is_needed(config) {
-        walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
-    } else {
-        None
-    }}).await;
+    let changed_neighbourhood = crate::review_timing::measure(timing.as_ref(), "graph", async {
+        if changed_neighbourhood_is_needed(config) {
+            walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
+        } else {
+            None
+        }
+    })
+    .await;
     let graph_for_lanes = changed_neighbourhood.as_ref().and_then(|w| w.as_ref().ok());
 
     // What the `e2e` lane needs beyond the diff, read at the head commit and
@@ -864,8 +880,10 @@ pub async fn review_with_tree_observed(
             LaneId::E2e => Box::new(crate::lanes::e2e::E2e::new(model.clone())),
         };
 
-        let outcome = crate::review_timing::measure_lane(timing.as_ref(), lane_id.as_str(), lane
-            .run(LaneInput {
+        let outcome = crate::review_timing::measure_lane(
+            timing.as_ref(),
+            lane_id.as_str(),
+            lane.run(LaneInput {
                 config,
                 pull_request: &context.pull_request,
                 diffs: &diffs,
@@ -881,7 +899,9 @@ pub async fn review_with_tree_observed(
                 e2e: e2e_evidence.as_ref(),
                 tree: Some(tree),
                 graph: graph_for_lanes,
-            })).await?;
+            }),
+        )
+        .await?;
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a
@@ -968,48 +988,52 @@ pub async fn review_with_tree_observed(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let (summary, summary_spend, summary_transcript) = crate::review_timing::measure(timing.as_ref(), "summary", async { if config.summary.enabled {
-        if summary_generation_needed(config, &diffs) {
-            let (summary, spend, transcript) = crate::summary::generate(
-                model.as_ref(),
-                config,
-                &context.pull_request,
-                &diffs,
-                &lanes,
-                stored.as_ref().and_then(|state| state.summary.as_ref()),
-                stored
-                    .as_ref()
-                    .map(|state| state.summary_transcript.as_slice())
-                    .unwrap_or_default(),
-            )
-            .await;
-            (Some(summary), spend, transcript)
-        } else {
-            (
-                Some(crate::summary::deterministic(
-                    config,
-                    &context.pull_request,
-                    &diffs,
-                    &lanes,
-                    stored.as_ref().and_then(|state| state.summary.as_ref()),
-                )),
-                Spend::default(),
-                stored
-                    .as_ref()
-                    .map(|state| state.summary_transcript.clone())
-                    .unwrap_or_default(),
-            )
-        }
-    } else {
-        (
-            None,
-            Spend::default(),
-            stored
-                .as_ref()
-                .map(|state| state.summary_transcript.clone())
-                .unwrap_or_default(),
-        )
-    }}).await;
+    let (summary, summary_spend, summary_transcript) =
+        crate::review_timing::measure(timing.as_ref(), "summary", async {
+            if config.summary.enabled {
+                if summary_generation_needed(config, &diffs) {
+                    let (summary, spend, transcript) = crate::summary::generate(
+                        model.as_ref(),
+                        config,
+                        &context.pull_request,
+                        &diffs,
+                        &lanes,
+                        stored.as_ref().and_then(|state| state.summary.as_ref()),
+                        stored
+                            .as_ref()
+                            .map(|state| state.summary_transcript.as_slice())
+                            .unwrap_or_default(),
+                    )
+                    .await;
+                    (Some(summary), spend, transcript)
+                } else {
+                    (
+                        Some(crate::summary::deterministic(
+                            config,
+                            &context.pull_request,
+                            &diffs,
+                            &lanes,
+                            stored.as_ref().and_then(|state| state.summary.as_ref()),
+                        )),
+                        Spend::default(),
+                        stored
+                            .as_ref()
+                            .map(|state| state.summary_transcript.clone())
+                            .unwrap_or_default(),
+                    )
+                }
+            } else {
+                (
+                    None,
+                    Spend::default(),
+                    stored
+                        .as_ref()
+                        .map(|state| state.summary_transcript.clone())
+                        .unwrap_or_default(),
+                )
+            }
+        })
+        .await;
     spend.merge(summary_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
@@ -1095,7 +1119,9 @@ pub async fn review_with_tree_observed(
                 tracing::warn!(%err, "could not plan thread resolution");
                 Default::default()
             }
-        }}).await;
+        }
+    })
+    .await;
 
     // The change map. Built last, from the findings that survived, so the
     // diagram marks the behaviours the review will actually comment on. It
@@ -1108,23 +1134,27 @@ pub async fn review_with_tree_observed(
     // request adds, removes or changes, read from the diff alone. One cheap
     // model call, independent of `src/preview` end to end — see
     // `docs/modules/wireframe/README.md`.
-    let (wireframe, wireframe_spend) = crate::review_timing::measure(timing.as_ref(), "wireframe", async { if config.wireframe.enabled {
-        let outcome = crate::wireframe::build(
-            &crate::wireframe::WireframeInputs {
-                diffs: &diffs,
-                max_screens: config.wireframe.max_screens,
-                max_width: config.wireframe.max_width,
-                max_height: config.wireframe.max_height,
-                model: config.model_for_workload(crate::config::types::Workload::Wireframe),
-                max_tokens: config.models.max_tokens,
-            },
-            model.as_ref(),
-        )
-        .await?;
-        (Some(outcome.set), outcome.spend)
-    } else {
-        (None, Spend::default())
-    }}).await;
+    let (wireframe, wireframe_spend) =
+        crate::review_timing::measure(timing.as_ref(), "wireframe", async {
+            if config.wireframe.enabled {
+                let outcome = crate::wireframe::build(
+                    &crate::wireframe::WireframeInputs {
+                        diffs: &diffs,
+                        max_screens: config.wireframe.max_screens,
+                        max_width: config.wireframe.max_width,
+                        max_height: config.wireframe.max_height,
+                        model: config.model_for_workload(crate::config::types::Workload::Wireframe),
+                        max_tokens: config.models.max_tokens,
+                    },
+                    model.as_ref(),
+                )
+                .await?;
+                (Some(outcome.set), outcome.spend)
+            } else {
+                (None, Spend::default())
+            }
+        })
+        .await;
     spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
@@ -2246,7 +2276,9 @@ mod tests {
             self.0.lock().unwrap().extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]

@@ -67,7 +67,7 @@ pub struct ReviewCoverage {
     pub unanswered_lane: bool,
 }
 
-/// Aggregate per-file gaps by path, then mark whether a whole-PR lane failed.
+/// Aggregate lane coverage and forge-withheld paths, then mark whole-PR gaps.
 pub fn aggregate_coverage(proposal: &crate::app::review::Proposal) -> ReviewCoverage {
     use std::collections::BTreeSet;
 
@@ -80,6 +80,8 @@ pub fn aggregate_coverage(proposal: &crate::app::review::Proposal) -> ReviewCove
             unanswered_paths.extend(coverage.unanswered.iter().cloned());
         }
     }
+    paths.extend(proposal.unreviewed.iter().cloned());
+    unanswered_paths.extend(proposal.unreviewed.iter().cloned());
     let files = (!paths.is_empty()).then(|| {
         (
             paths.len().saturating_sub(unanswered_paths.len()),

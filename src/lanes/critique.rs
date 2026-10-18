@@ -979,7 +979,12 @@ fn helper() {
             .expect("lane runs")
     }
 
-    async fn run_with_prior(model: MockModel, config: &Config, diffs: &[FileDiff], prior: &[String]) {
+    async fn run_with_prior(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        prior: &[String],
+    ) {
         let pr = pull_request();
         Critique::new(Arc::new(model))
             .run(LaneInput {

@@ -49,9 +49,10 @@ their existing dispatch path.
 
 When a pull-request event supplies its head SHA, the worker claims that SHA
 before minting a read token or fetching live PR state. A comment request has no
-SHA, so it reads and gates the live PR first, then claims that revision before
-indexing. Manual reviews pass the SHA they already read while preparing the
-button response. If a head moved, the worker transfers its lease to the new
+SHA, so it claims a provisional per-PR key before reading and gating the live
+PR, then claims that revision before indexing. Manual reviews currently resolve
+their pull request numbers and SHAs before enqueueing, so the response can list
+the queued reviews. If a head moved, the worker transfers its lease to the new
 SHA. The app checks the leased SHA again immediately after loading review
 context and skips before any model call if the context moved in the meantime.
 

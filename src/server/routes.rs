@@ -2039,6 +2039,7 @@ async fn report_failure(
 /// draft, or a commit another worker is already reviewing — and is distinct
 /// from `Ok(Some(0))`, a review that ran and found nothing. Only the latter
 /// should tell a pull request it has been reviewed.
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, head_sha = tracing::field::Empty, mode = ?run.mode))]
 async fn review_inner(
     state: &AppState,
     repo: &str,
@@ -2063,6 +2064,7 @@ async fn review_inner(
         use crate::ports::forge::ForgeRead;
         forge.pull_request(&repo_id, number).await?
     };
+    tracing::Span::current().record("head_sha", pull_request.head_sha.as_str());
 
     // Comment and review-comment deliveries do not carry the draft flag, so
     // routing alone cannot prevent a manual-looking request from waking the

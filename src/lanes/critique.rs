@@ -1216,6 +1216,7 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(!outcome.findings[0].late);
+        assert_eq!(outcome.findings[0].confidence, 0.9);
     }
 
     #[tokio::test]
@@ -1256,6 +1257,7 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(outcome.findings[0].late);
+        assert_eq!(outcome.findings[0].confidence, 0.9);
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal

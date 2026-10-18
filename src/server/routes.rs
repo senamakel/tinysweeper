@@ -3954,16 +3954,17 @@ mod tests {
             crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS as usize,
             "exhausted recovery must not restart token or model work"
         );
-        assert_eq!(store.unfinished(), 1, "the owner remains until status cleanup");
-        assert!(store
-            .finish(
-                &exhausted,
-                TerminalOutcome::Exhausted,
-                now_ms,
-                now_ms,
-            )
-            .await
-            .unwrap());
+        assert_eq!(
+            store.unfinished(),
+            1,
+            "the owner remains until status cleanup"
+        );
+        assert!(
+            store
+                .finish(&exhausted, TerminalOutcome::Exhausted, now_ms, now_ms,)
+                .await
+                .unwrap()
+        );
         assert_eq!(store.unfinished(), 0);
         assert_eq!(
             store

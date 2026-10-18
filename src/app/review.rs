@@ -753,6 +753,7 @@ pub(crate) async fn review_with_tree_at_head(
         return Err(Error::Budget {
             spent: spend.cost_usd(),
             limit: config.models.budget_usd_per_pr,
+            usage: None,
         });
     }
 
@@ -828,6 +829,7 @@ pub(crate) async fn review_with_tree_at_head(
             return Err(Error::Budget {
                 spent: spend.cost_usd(),
                 limit: config.models.budget_usd_per_pr,
+                usage: None,
             });
         }
 
@@ -951,6 +953,7 @@ pub(crate) async fn review_with_tree_at_head(
         return Err(Error::Budget {
             spent: spend.cost_usd(),
             limit: config.models.budget_usd_per_pr,
+            usage: None,
         });
     }
 
@@ -1066,6 +1069,7 @@ pub(crate) async fn review_with_tree_at_head(
         return Err(Error::Budget {
             spent: spend.cost_usd(),
             limit: config.models.budget_usd_per_pr,
+            usage: None,
         });
     }
 

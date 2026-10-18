@@ -2092,6 +2092,7 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
+    expected_head: Option<&str>,
 ) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
@@ -2102,25 +2103,51 @@ async fn review_inner(
     let repo_id =
         RepoId::parse(repo).ok_or_else(|| Error::Forge(format!("`{repo}` is not owner/name")))?;
 
-    let read_token = state.auth.review_read_token(installation).await?;
-    let forge = crate::forge::github::GitHubRead::new(&read_token)?;
+    // Webhook pull-request events carry the revision that caused the delivery,
+    // so claim it before spending a credential or a forge read. Comment and
+    // manual requests have no revision; serialize those per pull request until
+    // the live head is known, then take its revision lease before any indexing.
+    let mut lease = review_lease(repo, number, run.mode, expected_head);
+    if !state.store.claim_lease(&lease, "server").await? {
+        tracing::debug!(%lease, "another worker holds this review");
+        return Ok(None);
+    }
 
-    let worker = ReviewRun {
-        state,
-        repo,
-        number,
-        author,
-        installation,
-        run,
-        repo_id: &repo_id,
-        read_token: &read_token,
-        forge: &forge,
-    };
-    let reviewed = with_open_pull_request(&forge, &repo_id, number, |pull_request| {
-        worker.run(pull_request)
-    })
-    .await?;
-    Ok(reviewed.flatten())
+    let reviewed = async {
+        let read_token = state.auth.review_read_token(installation).await?;
+        let forge = crate::forge::github::GitHubRead::new(&read_token)?;
+
+        let worker = ReviewRun {
+            state,
+            repo,
+            number,
+            author,
+            installation,
+            run,
+            repo_id: &repo_id,
+            read_token: &read_token,
+            forge: &forge,
+            lease: &mut lease,
+            expected_head,
+        };
+        with_open_pull_request(&forge, &repo_id, number, |pull_request| {
+            worker.run(pull_request)
+        })
+        .await
+    }
+    .await;
+    if let Err(err) = state.store.release_lease(&lease).await {
+        tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
+    }
+    Ok(reviewed?.flatten())
+}
+
+fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {
+    let suffix = if mode == Mode::Full { "!full" } else { "" };
+    match head {
+        Some(head) => format!("{repo}#{number}@{head}{suffix}"),
+        None => format!("{repo}#{number}!manual{suffix}"),
+    }
 }
 
 /// The server dependencies for the work after the pull request passes its gate.
@@ -2135,6 +2162,8 @@ struct ReviewRun<'a> {
     repo_id: &'a RepoId,
     read_token: &'a String,
     forge: &'a crate::forge::github::GitHubRead,
+    lease: &'a mut String,
+    expected_head: Option<&'a str>,
 }
 
 impl ReviewRun<'_> {
@@ -2153,6 +2182,8 @@ impl ReviewRun<'_> {
             repo_id,
             read_token,
             forge,
+            lease,
+            expected_head,
         } = self;
         // Comment and review-comment deliveries do not carry the draft flag, so
         // routing alone cannot prevent a manual-looking request from waking the
@@ -2163,6 +2194,23 @@ impl ReviewRun<'_> {
         if pull_request.draft {
             tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
             return Ok(None);
+        }
+
+        // The head may have moved after the webhook was delivered, or there
+        // may have been no SHA to claim (manual/comment request). Re-key before
+        // indexing or model work. The caller releases this final key on every
+        // normal return, while the old claim is released only after the new
+        // one is acquired.
+        if self.expected_head != Some(pull_request.head_sha.as_str()) {
+            let next = review_lease(repo, number, run.mode, Some(&pull_request.head_sha));
+            if !state.store.claim_lease(&next, "server").await? {
+                tracing::debug!(%next, "another worker holds the live pull request head");
+                return Ok(None);
+            }
+            let previous = std::mem::replace(lease, next);
+            if let Err(err) = state.store.release_lease(&previous).await {
+                tracing::error!(%err, %previous, "could not release the previous review lease");
+            }
         }
 
         // Indexing is kicked off here and deliberately not awaited. A cold full
@@ -2188,15 +2236,6 @@ impl ReviewRun<'_> {
         // A manual review deliberately takes a lease of its own: the operator asked
         // for this run *because* the ordinary one already happened, so sharing the
         // webhook path's key would make the button a silent no-op.
-        let lease = match run.mode {
-            Mode::Incremental => format!("{repo}#{number}@{}", pull_request.head_sha),
-            Mode::Full => format!("{repo}#{number}@{}!full", pull_request.head_sha),
-        };
-        if !state.store.claim_lease(&lease, "server").await? {
-            tracing::debug!(%lease, "another worker holds this review");
-            return Ok(None);
-        }
-
         // The lease is held and the pull request is real, so this run is the one
         // that will review this commit — which makes it the run that owns the
         // status check. Opening it here rather than on the delivery path is what

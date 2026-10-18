@@ -2806,7 +2806,6 @@ mod tests {
             .nth(1)
             .and_then(|text| text.lines().next())
             .expect("executive opening");
-        assert!(opening.starts_with("Pull request purpose (title): Enforce speech privacy."), "{opening}");
         assert!(!body.to_ascii_lowercase().contains("security lane gives"));
         assert!(!body.to_ascii_lowercase().contains("greenlight"));
         assert!(!body.to_ascii_lowercase().contains("end-to-end lane confirms"));
@@ -2814,6 +2813,7 @@ mod tests {
         assert!(!body.contains("All checks report no issues"));
         assert!(body.contains("parser now rejects unknown paths"));
         assert!(body.contains("parser handles unknown paths safely"));
+        assert!(opening.starts_with("Pull request purpose (title): Enforce speech privacy."), "{opening}");
         assert!(body.contains("No reviewer produced a usable response."));
     }
 

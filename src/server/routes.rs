@@ -868,7 +868,8 @@ async fn run_owned_review(
     )
     .await;
 
-    let result = record_owned_disposition(store.as_ref(), &owned, disposition, unix_time_ms()).await;
+    let result =
+        record_owned_disposition(store.as_ref(), &owned, disposition, unix_time_ms()).await;
     match result {
         Some(Ok(true)) => {}
         Some(Ok(false)) => {
@@ -1723,43 +1724,43 @@ impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
         with_manual_review_admission(self.state.permits.clone(), || async {
             with_durable_manual_capacity(self.state.review_jobs.as_ref(), 1, || async {
-            // Manual expansion needs live GitHub reads to resolve the queued PRs.
-            // Refuse immediately when every worker slot is busy, before minting a
-            // token or making those reads. The permit is held until all bounded
-            // queue slots and job data are ready.
+                // Manual expansion needs live GitHub reads to resolve the queued PRs.
+                // Refuse immediately when every worker slot is busy, before minting a
+                // token or making those reads. The permit is held until all bounded
+                // queue slots and job data are ready.
 
-            // A webhook names its installation. A button does not, so ask GitHub
-            // which installation covers the repository; the app JWT can answer that
-            // and nothing else.
-            let installation = self
-                .state
-                .auth
-                .installation_for_repo(&repo.owner, &repo.name)
-                .await?;
-            let read_token = self.state.auth.installation_token(installation).await?;
-            let forge = crate::forge::github::GitHubRead::new(&read_token)?;
+                // A webhook names its installation. A button does not, so ask GitHub
+                // which installation covers the repository; the app JWT can answer that
+                // and nothing else.
+                let installation = self
+                    .state
+                    .auth
+                    .installation_for_repo(&repo.owner, &repo.name)
+                    .await?;
+                let read_token = self.state.auth.installation_token(installation).await?;
+                let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
-            let numbers = match number {
-                Some(number) => vec![number],
-                // Through the port, which is also where pull request triage reads
-                // them: one definition of "the open pull requests", so the button
-                // and the sweep can never disagree about what is open.
-                None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
-            };
+                let numbers = match number {
+                    Some(number) => vec![number],
+                    // Through the port, which is also where pull request triage reads
+                    // them: one definition of "the open pull requests", so the button
+                    // and the sweep can never disagree about what is open.
+                    None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
+                };
 
-            // The author is what trust checks use; enqueue only once every
-            // requested PR has resolved successfully.
-            use crate::ports::forge::ForgeRead;
-            let repo_name = repo.to_string();
-            enqueue_manual_jobs(
-                &self.state.review_queue,
-                self.state.review_jobs.as_ref(),
-                &repo_name,
-                installation,
-                numbers,
-                |number| Box::pin(forge.pull_request(repo, number)),
-            )
-            .await
+                // The author is what trust checks use; enqueue only once every
+                // requested PR has resolved successfully.
+                use crate::ports::forge::ForgeRead;
+                let repo_name = repo.to_string();
+                enqueue_manual_jobs(
+                    &self.state.review_queue,
+                    self.state.review_jobs.as_ref(),
+                    &repo_name,
+                    installation,
+                    numbers,
+                    |number| Box::pin(forge.pull_request(repo, number)),
+                )
+                .await
             })
             .await
         })
@@ -3741,14 +3742,11 @@ mod tests {
         let valid = Arc::new(AtomicBool::new(true));
         let delayed_valid = valid.clone();
         let publications = AtomicUsize::new(0);
-        let result = check_owner_after_await(
-            || valid.load(Ordering::SeqCst),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                delayed_valid.store(false, Ordering::SeqCst);
-                Ok(true)
-            },
-        )
+        let result = check_owner_after_await(|| valid.load(Ordering::SeqCst), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            delayed_valid.store(false, Ordering::SeqCst);
+            Ok(true)
+        })
         .await;
         if result.is_ok() {
             publications.fetch_add(1, Ordering::SeqCst);
@@ -3795,13 +3793,18 @@ mod tests {
         // shutdown after the check POST completed. Follow the same classification
         // and durable-disposition path used by review_inner/run_owned_review.
         mark_shutdown_status_result(&run);
-        assert!(matches!(take_shutdown_status_result(&run), Some(InnerReview::Shutdown)));
+        assert!(matches!(
+            take_shutdown_status_result(&run),
+            Some(InnerReview::Shutdown)
+        ));
         let disposition = defer_interrupted_review();
         assert!(matches!(disposition, WorkerDisposition::Deferred(_)));
-        assert!(record_owned_disposition(&store, &first, disposition, unix_time_ms())
-            .await
-            .unwrap()
-            .expect("shutdown disposition must be persisted"));
+        assert!(
+            record_owned_disposition(&store, &first, disposition, unix_time_ms())
+                .await
+                .unwrap()
+                .expect("shutdown disposition must be persisted")
+        );
 
         let replacement = store
             .claim_next("replacement-owner", unix_time_ms() + 1)
@@ -3809,18 +3812,23 @@ mod tests {
             .unwrap()
             .expect("shutdown-interrupted work remains recoverable");
         assert!(matches!(
-            store.begin_paid(&replacement, unix_time_ms()).await.unwrap(),
+            store
+                .begin_paid(&replacement, unix_time_ms())
+                .await
+                .unwrap(),
             crate::ports::review_job::PaidStart::Started
         ));
-        assert!(store
-            .finish(
-                &replacement,
-                TerminalOutcome::Published,
-                unix_time_ms(),
-                unix_time_ms()
-            )
-            .await
-            .unwrap());
+        assert!(
+            store
+                .finish(
+                    &replacement,
+                    TerminalOutcome::Published,
+                    unix_time_ms(),
+                    unix_time_ms()
+                )
+                .await
+                .unwrap()
+        );
         assert_eq!(store.unfinished(), 0);
     }
 
@@ -3997,6 +4005,42 @@ mod tests {
             1,
             "failed expansion releases admission"
         );
+    }
+
+    #[tokio::test]
+    async fn durable_full_manual_queue_refuses_before_credentials_or_pull_request_reads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let full = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let requests = (0..crate::ports::review_job::MAX_UNFINISHED_REVIEWS)
+            .map(|number| queued_test_review(number as u64 + 1))
+            .collect();
+        assert_eq!(
+            full.admit_batch(requests).await.unwrap(),
+            Admission::Admitted
+        );
+        let credentials = AtomicUsize::new(0);
+        let pull_requests = AtomicUsize::new(0);
+        let result = with_durable_manual_capacity(&full, 1, || async {
+            credentials.fetch_add(1, Ordering::SeqCst);
+            pull_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        assert!(matches!(result, Err(Error::ReviewCapacityFull)));
+        assert_eq!(credentials.load(Ordering::SeqCst), 0);
+        assert_eq!(pull_requests.load(Ordering::SeqCst), 0);
+
+        let available = crate::ports::review_job::tests::MockReviewJobStore::default();
+        with_durable_manual_capacity(&available, 1, || async {
+            credentials.fetch_add(1, Ordering::SeqCst);
+            pull_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("capacity preflight admits work when there is durable room");
+        assert_eq!(credentials.load(Ordering::SeqCst), 1);
+        assert_eq!(pull_requests.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

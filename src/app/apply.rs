@@ -1094,7 +1094,7 @@ mod tests {
                         head_sha: "abc123".into(),
                         jobs: vec!["playwright".into()],
                         summary:
-                            "Coverage looks complete. [click](https://evil.example) @user <script>"
+                            "Coverage looks complete. [click](https://evil.example) @user <script> `hostile` | value"
                                 .into(),
                         failed: false,
                         generation: "gen-1".into(),
@@ -1140,6 +1140,7 @@ mod tests {
         assert!(!check.summary.contains("https://evil.example"));
         assert!(!check.summary.contains("@user"));
         assert!(!check.summary.contains("<script>"));
+        assert!(!check.summary.contains("`hostile`"));
 
         // The watch is cleared, so the next completion event does nothing.
         let forge = MockForge::with_state(state);
@@ -2551,9 +2552,9 @@ mod tests {
     async fn mock_forge_hub_links_a_citation_to_the_reviewed_sha() {
         let forge = forge("abc123");
         let mut proposal = proposal("abc123", vec![]);
-        proposal.summary = Some(crate::summary::types::ReviewSummary {
-            features: vec![crate::summary::types::Feature {
-                kind: crate::summary::types::FeatureKind::Addition,
+        proposal.summary = Some(crate::summary::ReviewSummary {
+            features: vec![crate::summary::Feature {
+                kind: crate::summary::FeatureKind::Addition,
                 name: "Saved value".into(),
                 impact: "A persisted field.".into(),
                 citations: vec!["src/savings_store.rs:42".into()],

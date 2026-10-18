@@ -58,6 +58,34 @@ use crate::forge::types::{CheckConclusion, CheckRun};
 /// overwrite a real result from an earlier push with a liveness signal.
 pub const CHECK_NAME: &str = "tinysweeper/review";
 
+/// Coverage aggregated across every lane in one review proposal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReviewCoverage {
+    /// Distinct files answered by every relevant per-file lane, and total files.
+    pub files: Option<(usize, usize)>,
+    /// At least one whole-pull-request lane did not produce an answer.
+    pub unanswered_lane: bool,
+}
+
+/// Aggregate per-file gaps by path, then mark whether a whole-PR lane failed.
+pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewCoverage {
+    let files = lanes.iter().find_map(|lane| {
+        lane.coverage.as_ref().map(|coverage| {
+            (
+                coverage.reviewed.len(),
+                coverage.reviewed.len() + coverage.unanswered.len(),
+            )
+        })
+    });
+    let unanswered_lane = lanes
+        .iter()
+        .any(|lane| lane.coverage.is_none() && !lane.unanswered.is_empty());
+    ReviewCoverage {
+        files,
+        unanswered_lane,
+    }
+}
+
 /// The check published the moment a review is accepted.
 ///
 /// Published before any model call, and before the review has read anything
@@ -94,17 +122,23 @@ pub fn completed(
     head_sha: &str,
     findings: usize,
     changes_requested: bool,
-    coverage: Option<(usize, usize)>,
-    incomplete: bool,
+    coverage: ReviewCoverage,
 ) -> CheckRun {
     let counted = match findings {
         0 => "nothing to report".to_string(),
         1 => "1 finding".to_string(),
         many => format!("{many} findings"),
     };
-    let (conclusion, title) = if let Some((reviewed, total)) = coverage {
+    let (conclusion, title) = if let Some((reviewed, total)) = coverage.files {
         let not_reviewed = total.saturating_sub(reviewed);
-        if changes_requested {
+        if coverage.unanswered_lane {
+            (
+                CheckConclusion::Neutral,
+                format!(
+                    "Review incomplete — lane unanswered; {reviewed} of {total} files reviewed"
+                ),
+            )
+        } else if changes_requested {
             (
                 CheckConclusion::Neutral,
                 format!(
@@ -113,7 +147,7 @@ pub fn completed(
             )
         } else {
             (
-                if incomplete {
+                if not_reviewed > 0 {
                     CheckConclusion::Neutral
                 } else {
                     CheckConclusion::Success
@@ -121,7 +155,7 @@ pub fn completed(
                 format!("Reviewed {reviewed} of {total} files — {not_reviewed} not reviewed"),
             )
         }
-    } else if incomplete {
+    } else if coverage.unanswered_lane {
         (
             CheckConclusion::Neutral,
             "Review incomplete — a lane did not respond".to_string(),

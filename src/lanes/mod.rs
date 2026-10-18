@@ -221,7 +221,16 @@ pub struct LaneOutcome {
     /// with "found nothing blocking · $0.0000 · 0 in / 0 out".
     pub unanswered: Vec<String>,
     /// Per-file review coverage, when this lane fans out over changed files.
-    pub coverage: Option<(usize, usize)>,
+    pub coverage: Option<FileCoverage>,
+}
+
+/// Paths a per-file lane considered, split by whether it received a response.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileCoverage {
+    /// Files this lane reviewed.
+    pub reviewed: Vec<String>,
+    /// Files this lane could not review.
+    pub unanswered: Vec<String>,
 }
 
 impl LaneOutcome {

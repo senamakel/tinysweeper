@@ -1637,7 +1637,6 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             findings,
             changes_requested,
             coverage,
-            incomplete,
         } => status::completed(
             &open.head_sha,
             findings,
@@ -2305,12 +2304,8 @@ async fn review_inner(
         installation,
     ));
 
-    let coverage = proposal.lanes.iter().find_map(|lane| lane.coverage);
-    let incomplete = proposal
-        .lanes
-        .iter()
-        .any(|lane| !lane.unanswered.is_empty());
-    Ok(Some((findings, changes_requested, coverage, incomplete)))
+    let coverage = status::aggregate_coverage(&proposal.lanes);
+    Ok(Some((findings, changes_requested, coverage)))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {

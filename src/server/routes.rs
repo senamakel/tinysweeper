@@ -2993,6 +2993,124 @@ mod tests {
         assert!(line.contains("outcome=deadline"), "{line}");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_forge_review_lifecycle_measures_each_success_stage() {
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
+
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(
+            7,
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                status: FileStatus::Modified,
+                patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                additions: 1,
+                ..ChangedFile::default()
+            }],
+        );
+        let forge = MockForge::with_state(state);
+        let repo = RepoId::parse("tinyhumansai/tinysweeper").unwrap();
+        let mut config: crate::config::Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = false;
+        config.overview.enabled = false;
+        let model = Arc::new(MockModel::always(serde_json::json!({
+            "summary": "Reviewed.", "findings": [], "resolved": []
+        })));
+        let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
+
+        crate::review_timing::measure(Some(&timing), "permit", async {
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        })
+        .await;
+        let published = server_review_lifecycle(
+            &timing,
+            || async {
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                let pr = forge.pull_request(&repo, 7).await?;
+                timing.record(|record| record.head_sha = pr.head_sha);
+                Ok(true)
+            },
+            || async {
+                checkout_then_review_before_deadline(
+                    &timing,
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                    &repo,
+                    7,
+                    || async {
+                        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                        Ok::<(), Error>(())
+                    },
+                    |_| async {
+                        crate::app::review::review_with_tree_observed(
+                            &forge,
+                            model,
+                            &config,
+                            &repo,
+                            7,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(timing.clone()),
+                        )
+                        .await
+                    },
+                )
+                .await
+                .map(|proposal| (config, proposal))
+            },
+            |(_config, proposal)| async {
+                crate::review_timing::measure(Some(&timing), "publish", async {
+                    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                    forge
+                        .publish_check(&repo, status::in_progress("abc123"))
+                        .await?;
+                    Ok(Some(proposal))
+                })
+                .await
+            },
+        )
+        .await
+        .expect("review lifecycle succeeds")
+        .expect("status check opens");
+        assert_eq!(published.head_sha, "abc123");
+        timing.finish("success");
+
+        let record = timing.snapshot();
+        assert_eq!(record.outcome, "success");
+        assert_eq!(record.head_sha, "abc123");
+        for phase in ["permit", "open_status", "checkout", "lanes", "publish"] {
+            assert!(
+                record.phases_ms[phase] > 0,
+                "{phase}: {:?}",
+                record.phases_ms
+            );
+        }
+        assert!(
+            record.phases_ms.values().sum::<u64>()
+                <= record.started.unwrap().elapsed().as_millis() as u64,
+            "phase durations overlap: {:?}",
+            record.phases_ms
+        );
+        assert_eq!(record.files_total, 1);
+    }
+
     #[tokio::test]
     async fn the_permit_pool_actually_bounds_concurrency() {
         // Asserting on the constant would be a tautology; this asserts the

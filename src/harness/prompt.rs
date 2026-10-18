@@ -1093,8 +1093,16 @@ mod tests {
         let prompt = build(&i);
 
         assert!(prompt.suffix().contains("[disputed by maintainer"));
-        assert!(prompt.suffix().contains("the earlier claim is not evidence"));
-        assert!(prompt.suffix().contains("independently supports the concern"));
+        assert!(
+            prompt
+                .suffix()
+                .contains("the earlier claim is not evidence")
+        );
+        assert!(
+            prompt
+                .suffix()
+                .contains("independently supports the concern")
+        );
     }
 
     #[test]

@@ -2174,7 +2174,10 @@ mod tests {
 
         let annotated = annotate_prior(&[title], &BTreeMap::new(), &prior);
 
-        assert!(annotated[0].starts_with("[disputed by maintainer; verify against current-head evidence]"));
+        assert!(
+            annotated[0]
+                .starts_with("[disputed by maintainer; verify against current-head evidence]")
+        );
         assert!(annotated[0].contains("Reject the stale caller contract"));
     }
     use crate::forge::types::{ChangedFile, FileStatus, PullRequest, ReviewThread, ThreadComment};

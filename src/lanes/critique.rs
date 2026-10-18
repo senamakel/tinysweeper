@@ -782,7 +782,7 @@ fn summarise(
     added_by_coverage: usize,
     withheld_for_degraded_context: usize,
 ) -> String {
-    let mut summary = if kept.is_empty() && !rejected.is_empty() {
+    let summary = if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
             .iter()
             .map(|item| format!("{} — {}", item.title.trim(), item.reason.trim()))
@@ -793,16 +793,19 @@ fn summarise(
             plural(rejected.len()),
             reasons.join("; ")
         )
-    } else if rejected.is_empty() {
+    } else if rejected.is_empty() && withheld_for_degraded_context == 0 {
         summary.to_string()
     } else {
-        format!(
-            "Surviving findings: {}.",
-            kept.iter()
-                .map(|finding| finding.title.trim())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
+        let titles = kept
+            .iter()
+            .map(|finding| finding.title.trim())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if titles.is_empty() {
+            "Nothing to report.".to_string()
+        } else {
+            format!("Surviving findings: {titles}.")
+        }
     };
     let rejected = rejected.len();
     let mut notes = Vec::new();
@@ -997,6 +1000,7 @@ fn helper() {
 
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert!(outcome.summary.contains("withheld from action"));
+        assert!(!outcome.summary.contains("old branch is broken"));
     }
 
     #[tokio::test]

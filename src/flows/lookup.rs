@@ -526,23 +526,31 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
 /// the declaring Rust source file (and therefore independent of index state).
 fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     use crate::evidence::diff::LineKind;
-    let parent = std::path::Path::new(&diff.path)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""));
+    let source = std::path::Path::new(&diff.path);
+    let parent = source.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let stem = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let module_parent = if matches!(stem, "lib" | "main" | "mod") {
+        parent.to_path_buf()
+    } else {
+        parent.join(stem)
+    };
     diff.hunks
         .iter()
         .flat_map(|hunk| &hunk.lines)
         .filter(|line| line.kind == LineKind::Added)
         .filter_map(|line| {
             let text = line.text.trim();
-            let declaration = text
-                .strip_prefix("pub ")
-                .unwrap_or(text)
+            let declaration = ["pub ", "pub(crate) ", "pub(super) ", ""]
+                .iter()
+                .find_map(|prefix| text.strip_prefix(prefix))?
                 .strip_prefix("mod ")?;
             let name = declaration.strip_suffix(';')?.trim();
             (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(
                 || {
-                    parent
+                    module_parent
                         .join(format!("{name}.rs"))
                         .to_string_lossy()
                         .into_owned()
@@ -554,8 +562,21 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
 
 /// Name of a function whose declaration was added or changed in this diff.
 fn added_function_name(text: &str) -> Option<&str> {
-    let start = text.find("fn ")? + 3;
-    let tail = &text[start..];
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("pub(") {
+            let end = after.find(')')?;
+            rest = after[end + 1..].trim_start();
+        } else if let Some(after) = ["pub ", "async ", "unsafe ", "const ", "default "]
+            .iter()
+            .find_map(|prefix| rest.strip_prefix(prefix))
+        {
+            rest = after;
+        } else {
+            break;
+        }
+    }
+    let tail = rest.strip_prefix("fn ")?;
     let end = tail.find('(')?;
     let name = tail[..end].trim();
     (!name.is_empty()
@@ -717,11 +738,12 @@ The definitions of what the changed lines call into,                  read from 
             if self.seen.contains(&lookup.key()) {
                 continue;
             }
-            let found = tree.lookup(&lookup).await.unwrap_or_else(|err| {
-                Found::Unavailable {
+            let found = tree
+                .lookup(&lookup)
+                .await
+                .unwrap_or_else(|err| Found::Unavailable {
                     reason: err.to_string(),
-                }
-            });
+                });
             let Found::Hits { hits, .. } = &found else {
                 self.seen.insert(lookup.key());
                 let body = format!(
@@ -974,18 +996,26 @@ mod tests {
             end: None,
         };
         let unavailable = MockTree::from_recorded(
-            [(read.key(), Found::Unavailable {
-                reason: "submodule is not checked out".into(),
-            })]
+            [(
+                read.key(),
+                Found::Unavailable {
+                    reason: "submodule is not checked out".into(),
+                },
+            )]
             .into_iter()
             .collect(),
         );
         let mut ledger = Ledger::default();
         let unavailable = ledger.seed(&unavailable, &[diff.clone()], &policy()).await;
-        assert!(unavailable.rendered.contains("Not available: submodule is not checked out"));
+        assert!(
+            unavailable
+                .rendered
+                .contains("Not available: submodule is not checked out")
+        );
         assert!(!unavailable.rendered.contains("No such file at this commit"));
 
-        let missing = MockTree::from_recorded([(read.key(), Found::NotFound)].into_iter().collect());
+        let missing =
+            MockTree::from_recorded([(read.key(), Found::NotFound)].into_iter().collect());
         let mut ledger = Ledger::default();
         let missing = ledger.seed(&missing, &[diff], &policy()).await;
         assert!(missing.rendered.contains("No such file at this commit"));

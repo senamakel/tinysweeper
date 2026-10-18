@@ -2322,14 +2322,12 @@ impl ReviewRun<'_> {
         };
 
         let (disposition, proposal, changes_requested) = outcome?;
-        let Some((findings, changes_requested, coverage)) =
-            published_review_result(
-                disposition,
-                proposal.findings().count(),
-                changes_requested,
-                status::aggregate_coverage(&proposal),
-            )
-        else {
+        let Some((findings, changes_requested, coverage)) = published_review_result(
+            disposition,
+            proposal.findings().count(),
+            changes_requested,
+            status::aggregate_coverage(&proposal),
+        ) else {
             // The head moved, or the PR closed/merged, after the lanes ran.
             // Leave the already-open umbrella check terminally NotReviewed;
             // neither count the attempt nor kick off automerge.
@@ -2996,17 +2994,26 @@ mod tests {
             coverage,
         );
 
-        assert!(result.is_none(), "closed publication must skip success effects");
+        assert!(
+            result.is_none(),
+            "closed publication must skip success effects"
+        );
         assert!(matches!(review_conclusion(result), Conclusion::NotReviewed));
         let terminal = status::not_reviewed("reviewed-head");
-        assert_eq!(terminal.conclusion, Some(crate::forge::CheckConclusion::Neutral));
+        assert_eq!(
+            terminal.conclusion,
+            Some(crate::forge::CheckConclusion::Neutral)
+        );
         let hub = crate::summary::failed(
             "reviewed-head",
             "This pass stopped before a review could be completed; the pull request may have closed or changed while it was running.",
             None,
         );
         assert!(hub.contains("stopped because the pull request closed or changed"));
-        assert!(!hub.contains("Error"), "the summary is explanatory, not a raw error");
+        assert!(
+            !hub.contains("Error"),
+            "the summary is explanatory, not a raw error"
+        );
     }
 
     #[tokio::test]

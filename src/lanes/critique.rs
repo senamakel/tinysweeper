@@ -52,22 +52,7 @@ use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
-use crate::ports::tree::{Found, Lookup, TreeReader};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
-
-/// A successful, typed source read from the reviewed head.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HeadReadEvidence {
-    path: String,
-    start: u32,
-    end: u32,
-}
-
-impl HeadReadEvidence {
-    fn proves_path(&self, path: &str) -> bool {
-        self.path == path && self.start > 0 && self.end >= self.start
-    }
-}
 
 /// Confidence retained for an external-context claim when its relevant source
 /// could not be read at the reviewed head.
@@ -532,59 +517,17 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
-    // A degraded index cannot prove an outside-diff claim wrong, but its
-    // silence cannot support one either. Keep every finding visible, while
-    // capping claims unless a successful typed read from the reviewed head
-    // supports the relevant source. Changed anchors alone are not evidence
-    // for claims about callers or other files. These decisions never trust
-    // model-controlled rendering.
+    // A degraded index cannot support model claims about repository context.
+    // Keep every critique finding visible, but conservatively limit its
+    // confidence regardless of anchor or lookup output: a changed anchor does
+    // not prove claims about callers or other files, and availability alone
+    // does not prove a claim true. Scanners have their own evidence and are
+    // outside this model-finding gate.
     if input.retrieval_status.is_degraded() {
-        let mut retained = Vec::with_capacity(findings.len());
-        for mut finding in findings {
-            let mut supported = if finding.late {
-                match input.tree {
-                    Some(tree) => head_read(tree, &finding.path, finding.line)
-                        .await
-                        .is_some_and(|proof| proof.proves_path(&finding.path)),
-                    None => false,
-                }
-            } else {
-                false
-            };
-
-            let module_paths = finding.line.and_then(|line| {
-                input
-                    .diffs
-                    .iter()
-                    .find(|diff| diff.path == finding.path)
-                    .map(|diff| crate::flows::lookup::module_paths_added_at(diff, line))
-            });
-            if !supported {
-                if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
-                    supported = if let Some(tree) = input.tree {
-                        let mut supported = false;
-                        for path in module_paths {
-                            if head_read(tree, &path, None)
-                                .await
-                                .is_some_and(|proof| proof.proves_path(&path))
-                            {
-                                supported = true;
-                                break;
-                            }
-                        }
-                        supported
-                    } else {
-                        false
-                    };
-                }
-            }
-            if !supported {
-                finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
-                capped_for_degraded_context += 1;
-            }
-            retained.push(finding);
+        capped_for_degraded_context = findings.len();
+        for finding in &mut findings {
+            finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
         }
-        findings = retained;
     }
 
     Ok(FileReview {
@@ -601,30 +544,6 @@ async fn review_group(
         resolved,
         spend,
     })
-}
-
-/// Read a path directly from the reviewed tree and retain only typed evidence
-/// that a source range was actually returned. `NotFound`, `Unavailable`, and
-/// arbitrary text that happens to mention the path are not proof.
-async fn head_read(
-    tree: &dyn TreeReader,
-    path: &str,
-    line: Option<u64>,
-) -> Option<HeadReadEvidence> {
-    let line = line.and_then(|line| u32::try_from(line).ok());
-    let lookup = Lookup::Read {
-        path: path.to_string(),
-        start: line,
-        end: line,
-    };
-    match tree.lookup(&lookup).await.ok()? {
-        Found::Text { start, end, .. } => Some(HeadReadEvidence {
-            path: path.to_string(),
-            start,
-            end,
-        }),
-        Found::Hits { .. } | Found::NotFound | Found::Unavailable { .. } => None,
-    }
 }
 
 /// Minimum changed lines a group needs before adaptive coverage passes
@@ -876,11 +795,11 @@ fn summarise(
             .collect::<Vec<_>>()
             .join("; ");
         if titles.is_empty() {
-            "No findings were independently supported at the reviewed head; retained findings were capped at Likely confidence because retrieval was degraded."
+            "No findings were reported. Retrieval was degraded, so model confidence was limited to Likely or lower."
                 .to_string()
         } else {
             format!(
-                "Findings were capped at Likely confidence where no typed head-source lookup supported the claim; retained findings include: {titles}."
+                "Critique findings were limited to Likely or lower confidence because retrieval was degraded: {titles}."
             )
         }
     } else if kept.is_empty() && !rejected.is_empty() {
@@ -936,7 +855,7 @@ fn summarise(
     }
     if capped_for_degraded_context > 0 {
         notes.push(format!(
-            "{capped_for_degraded_context} finding{} retained but capped at Likely confidence because no typed head-source lookup supported it",
+            "{capped_for_degraded_context} model finding{} retained at no more than Likely confidence because retrieval was degraded",
             plural(capped_for_degraded_context)
         ));
     }
@@ -959,6 +878,7 @@ mod tests {
     use crate::forge::types::CheckConclusion;
     use crate::forge::types::PullRequest;
     use crate::harness::mock::MockModel;
+    use crate::ports::tree::{Found, Lookup};
     use serde_json::json;
     use std::collections::BTreeMap;
 

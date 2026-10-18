@@ -80,6 +80,8 @@ pub enum Error {
         spent: f64,
         /// The configured ceiling.
         limit: f64,
+        /// Paid model usage from earlier turns, when this refusal follows them.
+        usage: Option<Box<crate::ports::model::Usage>>,
     },
 
     /// A pull request is larger than the review's deterministic input limits.
@@ -119,17 +121,30 @@ pub enum Error {
 }
 
 impl Error {
-    /// Paid usage retained by a model refusal, when available.
+    /// Paid model usage retained when an unsuccessful review has accounting.
     pub fn usage(&self) -> Option<crate::ports::model::Usage> {
         match self {
             Self::ModelUsage { usage, .. } => Some(**usage),
+            Self::Budget {
+                usage: Some(usage), ..
+            } => Some(**usage),
             _ => None,
         }
     }
 
     /// Keep safe paid accounting when a model cannot return an answer.
     pub fn with_usage(self, usage: crate::ports::model::Usage) -> Self {
-        let message = match self {
+        let error = match self {
+            Self::Budget { spent, limit, .. } => {
+                return Self::Budget {
+                    spent,
+                    limit,
+                    usage: Some(Box::new(usage)),
+                };
+            }
+            other => other,
+        };
+        let message = match error {
             Self::Model(message) | Self::ModelUsage { message, .. } => message,
             other => other.to_string(),
         };
@@ -197,8 +212,37 @@ mod tests {
         let err = Error::Budget {
             spent: 1.239,
             limit: 1.0,
+            usage: None,
         };
         assert_eq!(err.to_string(), "budget exhausted: spent $1.24 of $1.00");
+    }
+
+    #[test]
+    fn paid_budget_refusal_keeps_its_classification_and_usage() {
+        let usage = crate::ports::model::Usage {
+            input_tokens: 12,
+            output_tokens: 4,
+            cost_usd: 0.015,
+            ..Default::default()
+        };
+        let err = Error::Budget {
+            spent: 0.015,
+            limit: 0.02,
+            usage: None,
+        }
+        .with_usage(usage);
+        assert!(matches!(err, Error::Budget { .. }));
+        assert_eq!(err.usage(), Some(usage));
+    }
+
+    #[test]
+    fn a_budget_refusal_without_paid_turns_has_no_usage() {
+        let err = Error::Budget {
+            spent: 0.0,
+            limit: 0.02,
+            usage: None,
+        };
+        assert_eq!(err.usage(), None);
     }
 
     #[test]

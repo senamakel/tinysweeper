@@ -1279,7 +1279,7 @@ mod tests {
         assert!(
             summary
                 .executive_summary
-                .starts_with("Enforce speech privacy.")
+                .starts_with("Pull request purpose (title): Enforce speech privacy.")
         );
         assert!(
             !summary
@@ -1592,7 +1592,12 @@ mod tests {
             .starts_with("Pull request purpose (title): Run tests on Windows."));
         assert!(summary.executive_summary.contains("build configuration supports Windows"));
 
-        for title in ["Build the client in CI", "Security found no issues"] {
+        let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
+        for title in [
+            "Build the client in CI".to_string(),
+            "Security found no issues".to_string(),
+            format!("Run tests in **CI** using {secret}"),
+        ] {
             let (summary, _, _) = generate(
                 &MockModel::new().then(json!({
                     "executive_summary": "The change updates build configuration.",
@@ -1603,7 +1608,7 @@ mod tests {
                 })),
                 &Config::default(),
                 &PullRequest {
-                    title: title.into(),
+                    title: title.clone(),
                     ..PullRequest::default()
                 },
                 &[],
@@ -1615,6 +1620,7 @@ mod tests {
             assert!(summary.executive_summary.starts_with(&format!(
                 "Pull request purpose (title): {title}."
             )));
+            assert!(!summary.executive_summary.contains(&secret));
         }
     }
 

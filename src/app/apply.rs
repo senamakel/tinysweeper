@@ -2736,7 +2736,7 @@ mod tests {
         let forge = forge("abc123");
         let config = config();
         let model = MockModel::new().then(serde_json::json!({
-            "executive_summary": "Security found no issues. The parser now rejects unknown paths.",
+            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. The end-to-end lane confirms all checks are complete. The parser now rejects unknown paths.",
             "changes": "All checks report no issues. The parser handles unknown paths safely.",
             "features": [],
             "tests": [],
@@ -2806,7 +2806,10 @@ mod tests {
             .nth(1)
             .and_then(|text| text.lines().next())
             .expect("executive opening");
-        assert!(opening.starts_with("Enforce speech privacy."), "{opening}");
+        assert!(opening.starts_with("Pull request purpose (title): Enforce speech privacy."), "{opening}");
+        assert!(!body.to_ascii_lowercase().contains("security lane gives"));
+        assert!(!body.to_ascii_lowercase().contains("greenlight"));
+        assert!(!body.to_ascii_lowercase().contains("end-to-end lane confirms"));
         assert!(!body.contains("Security found no issues"));
         assert!(!body.contains("All checks report no issues"));
         assert!(body.contains("parser now rejects unknown paths"));

@@ -557,6 +557,9 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
     let mut brace_depth = 0usize;
     let mut modules: Vec<(usize, String)> = Vec::new();
     let mut path_attribute: Option<String> = None;
+    let mut unsupported_attribute = false;
+    let mut lexical_ambiguous = false;
+    let mut block_comment_depth = 0usize;
     let mut declarations = Vec::new();
 
     for line in diff.hunks.iter().flat_map(|hunk| &hunk.lines) {
@@ -564,14 +567,47 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
             continue;
         }
         let text = line.text.as_str();
-        if let Some(path) = rust_path_attribute(text) {
-            path_attribute = Some(path);
-        } else if !text.trim().starts_with('#') && !text.trim().is_empty() {
+        if text.trim().starts_with("#[") {
+            if let Some(path) = rust_path_attribute(text) {
+                path_attribute = Some(path);
+            } else {
+                // cfg_attr, raw-string path values, and unfamiliar attributes
+                // can change whether or where this declaration exists. Never
+                // turn those cases into evidence from Rust's default layout.
+                unsupported_attribute = true;
+            }
+            continue;
+        } else if !text.trim().is_empty() {
             let mut cursor = 0usize;
             let mut pending_inline: Option<String> = None;
             while cursor < text.len() {
                 let rest = &text[cursor..];
+                if block_comment_depth > 0 {
+                    if rest.starts_with("/*") {
+                        block_comment_depth += 1;
+                        cursor += 2;
+                    } else if rest.starts_with("*/") {
+                        block_comment_depth -= 1;
+                        cursor += 2;
+                    } else {
+                        cursor += rest.chars().next().expect("cursor in bounds").len_utf8();
+                    }
+                    continue;
+                }
+                if rest.starts_with("/*") {
+                    block_comment_depth = 1;
+                    cursor += 2;
+                    continue;
+                }
                 if rest.starts_with("//") {
+                    break;
+                }
+                if let Some(end) = raw_string_end(text, cursor) {
+                    cursor = end;
+                    continue;
+                }
+                if starts_raw_string(text, cursor) {
+                    lexical_ambiguous = true;
                     break;
                 }
                 if rest.starts_with('"') {
@@ -585,6 +621,12 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                             break;
                         }
                     }
+                    continue;
+                }
+                if rest.starts_with('\'')
+                    && let Some(end) = character_literal_end(text, cursor)
+                {
+                    cursor = end;
                     continue;
                 }
                 if rest.starts_with("mod")
@@ -610,6 +652,16 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                             declarations.push(AddedModulePaths::Unavailable {
                                 name: name.to_owned(),
                                 reason: "the diff does not show the enclosing module context",
+                            });
+                        } else if unsupported_attribute {
+                            declarations.push(AddedModulePaths::Unavailable {
+                                name: name.to_owned(),
+                                reason: "an unsupported attribute may change module resolution",
+                            });
+                        } else if lexical_ambiguous {
+                            declarations.push(AddedModulePaths::Unavailable {
+                                name: name.to_owned(),
+                                reason: "the diff contains lexical syntax the resolver cannot safely interpret",
                             });
                         } else if let Some(path) = path_attribute.take() {
                             if !modules.is_empty() {
@@ -658,6 +710,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                             });
                         }
                         cursor = name_end;
+                        unsupported_attribute = false;
                         continue;
                     }
                     if !name.is_empty() && suffix.starts_with('{') {
@@ -691,6 +744,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
             }
             if !text.trim().ends_with('{') {
                 path_attribute = None;
+                unsupported_attribute = false;
             }
         }
     }
@@ -705,6 +759,58 @@ fn rust_path_attribute(line: &str) -> Option<String> {
     let equals = text.find('=')?;
     let value = text[equals + 1..].trim().strip_prefix('"')?;
     Some(value.split('"').next()?.to_owned())
+}
+
+/// Return the byte immediately after a valid Rust raw string literal.
+fn raw_string_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut quote = start;
+    if bytes.get(quote) == Some(&b'b') {
+        quote += 1;
+    }
+    if bytes.get(quote) != Some(&b'r') {
+        return None;
+    }
+    quote += 1;
+    while bytes.get(quote) == Some(&b'#') {
+        quote += 1;
+    }
+    if bytes.get(quote) != Some(&b'"') {
+        return None;
+    }
+    let hashes = quote - start - usize::from(bytes[start] == b'b') - 1;
+    let closing = format!("\"{}", "#".repeat(hashes));
+    let end = text[quote + 1..].find(&closing)? + quote + 1 + closing.len();
+    Some(end)
+}
+
+fn starts_raw_string(text: &str, start: usize) -> bool {
+    let rest = &text[start..];
+    let rest = rest.strip_prefix('b').unwrap_or(rest);
+    rest.starts_with('r')
+        && rest[1..]
+            .bytes()
+            .take_while(|byte| *byte == b'#')
+            .count()
+            + 1
+            < rest.len()
+        && rest.as_bytes()[1 + rest[1..].bytes().take_while(|byte| *byte == b'#').count()] == b'"'
+}
+
+/// Return the byte immediately after a simple escaped or unescaped char literal.
+fn character_literal_end(text: &str, start: usize) -> Option<usize> {
+    let mut cursor = start + 1;
+    let first = text[cursor..].chars().next()?;
+    cursor += first.len_utf8();
+    if first == '\\' {
+        let escaped = text[cursor..].chars().next()?;
+        cursor += escaped.len_utf8();
+        if escaped == 'u' && text[cursor..].starts_with('{') {
+            cursor += 1;
+            cursor += text[cursor..].find('}')? + 1;
+        }
+    }
+    (text.as_bytes().get(cursor) == Some(&b'\'')).then_some(cursor + 1)
 }
 
 /// Name of a function whose declaration was added or changed in this diff.
@@ -1459,6 +1565,39 @@ mod tests {
             "the ignored default path must not be presented as missing: {}",
             seeded.rendered
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_raw_path_attributes_do_not_probe_default_module_paths() {
+        let diff = parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1 @@\n+#[path = r\"custom.rs\"]\n+pub mod foo;\n",
+        );
+        let tree = MockTree::default();
+        let mut ledger = Ledger::default();
+        let gathered = ledger
+            .gather(&tree, &[], &LookupPolicy::default())
+            .await;
+        let seeded = seed_lookups(&[diff], &tree, &mut ledger, &LookupPolicy::default()).await;
+
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(seeded.contains("no candidate path was probed"), "{seeded}");
+        assert!(tree.calls().is_empty(), "unexpected probes: {:?}", tree.calls());
+        drop(gathered);
+    }
+
+    #[tokio::test]
+    async fn braces_in_comments_and_character_literals_do_not_change_module_scope() {
+        let diff = parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,4 @@\n+/* } */\n+let brace = '}';\n+pub mod foo;\n",
+        );
+        let tree = MockTree::default();
+        let mut ledger = Ledger::default();
+        let seeded = seed_lookups(&[diff], &tree, &mut ledger, &LookupPolicy::default()).await;
+
+        assert!(seeded.contains("Declared module `foo` at `src/foo.rs`"), "{seeded}");
+        assert!(!seeded.contains("Unavailable"), "{seeded}");
     }
 
     #[tokio::test]

@@ -278,11 +278,17 @@ mod tests {
     #[test]
     fn the_title_counts_findings_and_gets_the_plural_right() {
         assert!(
-            completed("abc", 0, false)
+            completed("abc", 0, false, None)
                 .title
                 .contains("nothing to report")
         );
-        assert!(completed("abc", 1, false).title.contains("1 finding"));
-        assert!(completed("abc", 4, false).title.contains("4 findings"));
+        assert!(completed("abc", 1, false, None).title.contains("1 finding"));
+        assert!(completed("abc", 4, false, None).title.contains("4 findings"));
+    }
+
+    #[test]
+    fn partial_coverage_title_never_says_nothing_to_report() {
+        let check = completed("abc", 0, false, Some((8, 10)));
+        assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
     }
 }

@@ -21,7 +21,7 @@ impl OutputHistory {
 
     /// Record a physical attempt's observed output, bounded by its provider cap.
     pub(crate) fn record(&self, lane: &str, model: &str, tokens: u64, cap: u32) {
-        if tokens == 0 || cap == 0 {
+        if cap == 0 {
             return;
         }
         let tokens = tokens.min(u64::from(cap)) as u32;
@@ -88,6 +88,14 @@ pub(crate) fn call(
         request,
         extra_input_bytes,
         configured,
+        request
+            .response_format
+            .as_ref()
+            .map_or("text", |format| match format {
+                openhuman_embed::complete::ResponseFormat::JsonSchema { name, .. } => name,
+                openhuman_embed::complete::ResponseFormat::JsonObject => "json_object",
+                openhuman_embed::complete::ResponseFormat::Text => "text",
+            }),
         &OutputHistory::default(),
     )
 }
@@ -98,6 +106,7 @@ pub(crate) fn call_with_history(
     request: &CompletionRequest,
     extra_input_bytes: u64,
     configured: &std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
+    lane: &str,
     output_history: &OutputHistory,
 ) -> Result<ModelBudget> {
     let price = configured
@@ -145,11 +154,6 @@ pub(crate) fn call_with_history(
         .saturating_add(extra_input_bytes)
         .div_ceil(4)
         .saturating_add(1024);
-    let lane = match &request.response_format {
-        Some(openhuman_embed::complete::ResponseFormat::JsonSchema { name, .. }) => name.as_str(),
-        Some(openhuman_embed::complete::ResponseFormat::JsonObject) => "json_object",
-        Some(openhuman_embed::complete::ResponseFormat::Text) | None => "text",
-    };
     let expected_output_tokens = output_history.p90(lane, &request.model, output_tokens);
     let rate = price.input.max(price.cached);
     let cost_micros = (estimated_input_tokens as f64 * rate

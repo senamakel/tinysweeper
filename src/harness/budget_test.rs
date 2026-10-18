@@ -132,7 +132,15 @@ fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
         name: "review".into(),
         schema: serde_json::json!({"type":"object"}),
     });
-    let bound = call_with_history(&ledger(1.0), &request, 0, &deep_prices(), &history).unwrap();
+    let bound = call_with_history(
+        &ledger(1.0),
+        &request,
+        0,
+        &deep_prices(),
+        "review",
+        &history,
+    )
+    .unwrap();
     assert_eq!(
         bound.call.output_tokens, 64_000,
         "physical cap remains unchanged"
@@ -144,6 +152,30 @@ fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
         (input + 50_000.0 * 1.8).ceil() as u64
     );
     assert!(bound.call.cost_micros < (input + 64_000.0 * 1.8).ceil() as u64);
+
+    let small_cap = typical_deep_request(10_000).response_format(ResponseFormat::JsonSchema {
+        name: "review".into(),
+        schema: serde_json::json!({"type":"object"}),
+    });
+    let capped = call_with_history(
+        &ledger(1.0),
+        &small_cap,
+        0,
+        &deep_prices(),
+        "review",
+        &history,
+    )
+    .unwrap();
+    assert_eq!(capped.call.output_tokens, 10_000);
+    assert_eq!(
+        capped.call.cost_micros,
+        ((serde_json::to_vec(&small_cap).unwrap().len() as u64).div_ceil(4) + 1024) as f64
+            .mul_add(0.4, 10_000.0 * 1.8)
+            .ceil() as u64
+    );
+    assert_eq!(history.p90("unseen_lane", "deep", 64_000), 8_000);
+    history.record("zero_output_lane", "deep", 0, 1_000);
+    assert_eq!(history.p90("zero_output_lane", "deep", 1_000), 0);
 }
 
 #[test]

@@ -345,6 +345,7 @@ impl GatewayModel {
                 &bound,
                 0,
                 &self.budget_prices,
+                &request.schema_name,
                 &self.output_history,
             )?);
         }
@@ -537,6 +538,7 @@ impl GatewayModel {
                         .saturating_mul(12)
                         .saturating_add(32768),
                     &self.budget_prices,
+                    &request.schema_name,
                     &self.output_history,
                 )
             })

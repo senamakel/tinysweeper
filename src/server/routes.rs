@@ -2323,7 +2323,12 @@ impl ReviewRun<'_> {
 
         let (disposition, proposal, changes_requested) = outcome?;
         let Some((findings, changes_requested, coverage)) =
-            published_review_result(disposition, &proposal, changes_requested)
+            published_review_result(
+                disposition,
+                proposal.findings().count(),
+                changes_requested,
+                status::aggregate_coverage(&proposal),
+            )
         else {
             // The head moved, or the PR closed/merged, after the lanes ran.
             // Leave the already-open umbrella check terminally NotReviewed;
@@ -2380,17 +2385,14 @@ where
 
 fn published_review_result(
     disposition: crate::app::apply::ApplyDisposition,
-    proposal: &Proposal,
+    findings: usize,
     changes_requested: bool,
+    coverage: status::ReviewCoverage,
 ) -> Option<(usize, bool, status::ReviewCoverage)> {
     if disposition != crate::app::apply::ApplyDisposition::Published {
         return None;
     }
-    Some((
-        proposal.findings().count(),
-        changes_requested,
-        status::aggregate_coverage(proposal),
-    ))
+    Some((findings, changes_requested, coverage))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {
@@ -2979,6 +2981,32 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(model.calls(), 1);
         assert_eq!(forge.writes().len(), 1);
+    }
+
+    #[test]
+    fn a_closed_publication_stays_not_reviewed_and_does_not_produce_success() {
+        let coverage = status::ReviewCoverage {
+            files: Default::default(),
+            unanswered_lane: false,
+        };
+        let result = published_review_result(
+            crate::app::apply::ApplyDisposition::Closed,
+            3,
+            true,
+            coverage,
+        );
+
+        assert!(result.is_none(), "closed publication must skip success effects");
+        assert!(matches!(review_conclusion(result), Conclusion::NotReviewed));
+        let terminal = status::not_reviewed("reviewed-head");
+        assert_eq!(terminal.conclusion, Some(crate::forge::CheckConclusion::Neutral));
+        let hub = crate::summary::failed(
+            "reviewed-head",
+            "This pass stopped before a review could be completed; the pull request may have closed or changed while it was running.",
+            None,
+        );
+        assert!(hub.contains("pull request may have closed or changed"));
+        assert!(!hub.contains("Error"), "the summary is explanatory, not a raw error");
     }
 
     #[tokio::test]

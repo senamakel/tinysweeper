@@ -1530,9 +1530,11 @@ mod tests {
                 ..PullRequest::default()
             });
 
-            apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+            let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
                 .await
                 .expect("closed pull requests are declined without publishing");
+
+            assert_eq!(disposition, ApplyDisposition::Closed);
 
             assert!(
                 forge.writes().is_empty(),

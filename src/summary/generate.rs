@@ -805,9 +805,10 @@ fn claims_unsupported_lane_sentence(
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
-    let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
-    let broad_scope =
-        has_any(&["all", "every"]) && has_any(&["lane", "lanes", "reviewer", "reviewers"]);
+    let broad_scope = ["all", "every"].iter().any(|term| words.contains(term))
+        && ["lane", "lanes", "reviewer", "reviewers"]
+            .iter()
+            .any(|term| words.contains(term));
     if broad_scope
         && statuses
             .values()
@@ -825,12 +826,6 @@ fn claims_unsupported_lane_sentence(
 
 fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
     let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
-    let has_lane_subject = ["lane", "lanes", "reviewer", "reviewers"]
-        .iter()
-        .any(|subject| words.contains(subject));
-    if !has_lane_subject {
-        return false;
-    }
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -839,7 +834,18 @@ fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
         LaneId::Description => &[&["description"]],
         LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
     };
-    aliases.iter().any(|alias| has_phrase(alias))
+    aliases.iter().any(|alias| {
+        has_phrase(alias)
+            && ["lane", "lanes", "reviewer", "reviewers"]
+                .iter()
+                .any(|subject| {
+                    let mut after = alias.to_vec();
+                    after.push(*subject);
+                    let mut before = vec![*subject];
+                    before.extend_from_slice(alias);
+                    has_phrase(&after) || has_phrase(&before)
+                })
+    })
 }
 
 fn now_epoch() -> u64 {

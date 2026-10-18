@@ -1573,17 +1573,17 @@ mod tests {
             "src/lib.rs",
             "@@ -1 +1 @@\n+#[path = r\"custom.rs\"]\n+pub mod foo;\n",
         );
-        let tree = MockTree::default();
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
         let mut ledger = Ledger::default();
-        let gathered = ledger
-            .gather(&tree, &[], &LookupPolicy::default())
-            .await;
-        let seeded = seed_lookups(&[diff], &tree, &mut ledger, &LookupPolicy::default()).await;
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
 
         assert!(seeded.contains("Unavailable"), "{seeded}");
         assert!(seeded.contains("no candidate path was probed"), "{seeded}");
-        assert!(tree.calls().is_empty(), "unexpected probes: {:?}", tree.calls());
-        drop(gathered);
+        assert!(!seeded.contains("src/foo.rs"), "{seeded}");
+        assert!(!seeded.contains("src/foo/mod.rs"), "{seeded}");
     }
 
     #[tokio::test]
@@ -1592,9 +1592,12 @@ mod tests {
             "src/lib.rs",
             "@@ -1 +1,4 @@\n+/* } */\n+let brace = '}';\n+pub mod foo;\n",
         );
-        let tree = MockTree::default();
+        let tree = MockTree::from_files([("src/foo.rs", "pub fn ok() {}\n")]);
         let mut ledger = Ledger::default();
-        let seeded = seed_lookups(&[diff], &tree, &mut ledger, &LookupPolicy::default()).await;
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
 
         assert!(seeded.contains("Declared module `foo` at `src/foo.rs`"), "{seeded}");
         assert!(!seeded.contains("Unavailable"), "{seeded}");

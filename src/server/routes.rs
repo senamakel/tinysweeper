@@ -1366,6 +1366,17 @@ struct ManualDispatch {
 #[async_trait::async_trait]
 impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
+        // Manual expansion needs live GitHub reads to resolve the queued PRs.
+        // Refuse immediately when every worker slot is busy, before minting a
+        // token or making those reads. This temporary admission permit is
+        // released after the bounded queue entries have been reserved.
+        let admission = self
+            .state
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::ReviewCapacityFull)?;
+
         // A webhook names its installation. A button does not, so ask GitHub
         // which installation covers the repository; the app JWT can answer that
         // and nothing else.
@@ -1385,7 +1396,15 @@ impl FullReviews for ManualDispatch {
             None => open_numbers(&forge, repo, MAX_MANUAL_REVIEWS).await?,
         };
 
-        let mut queued = Vec::new();
+        // Reserve the whole expansion atomically before reading each PR head,
+        // so an overflow cannot leave a partially queued manual request.
+        let queue_slots = self
+            .state
+            .review_queue
+            .try_reserve_many(numbers.len())
+            .map_err(|_| Error::ReviewCapacityFull)?;
+
+        let mut jobs = Vec::with_capacity(numbers.len());
         for number in numbers {
             // The author is what the trust check is about, and only the pull
             // request knows it. One extra read per queued review, on a path
@@ -1401,8 +1420,8 @@ impl FullReviews for ManualDispatch {
                 installation,
                 head_sha: Some(pull_request.head_sha),
             };
-            try_enqueue_review(
-                &self.state.review_queue,
+            jobs.push((
+                number,
                 QueuedReview {
                     action,
                     delivery: None,
@@ -1410,11 +1429,16 @@ impl FullReviews for ManualDispatch {
                     mode: Mode::Full,
                     queued_at: tokio::time::Instant::now(),
                 },
-            )
-            .map_err(|err| Error::Forge(format!("review queue is full or closed: {err:?}")))?;
+            ));
+        }
+
+        let mut queued = Vec::with_capacity(jobs.len());
+        for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
+            slot.send(job);
             queued.push(number);
         }
 
+        drop(admission);
         Ok(queued)
     }
 }

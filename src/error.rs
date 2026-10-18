@@ -37,6 +37,11 @@ pub enum Error {
     #[error("forge: {0}")]
     Forge(String),
 
+    /// Review workers are at capacity and a manual request was refused before
+    /// it spent credentials or read pull request data.
+    #[error("review capacity is full; retry the manual request")]
+    ReviewCapacityFull,
+
     /// A model call failed, timed out, or returned output that did not match
     /// the lane's structured-output schema.
     #[error("model: {0}")]

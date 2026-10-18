@@ -80,6 +80,8 @@ pub enum Error {
         spent: f64,
         /// The configured ceiling.
         limit: f64,
+        /// Paid model usage from earlier turns, when this refusal follows them.
+        usage: Option<Box<crate::ports::model::Usage>>,
     },
 
     /// A pull request is larger than the review's deterministic input limits.
@@ -123,12 +125,25 @@ impl Error {
     pub fn usage(&self) -> Option<crate::ports::model::Usage> {
         match self {
             Self::ModelUsage { usage, .. } => Some(**usage),
+            Self::Budget {
+                usage: Some(usage), ..
+            } => Some(**usage),
             _ => None,
         }
     }
 
     /// Keep safe paid accounting when a model cannot return an answer.
     pub fn with_usage(self, usage: crate::ports::model::Usage) -> Self {
+        let self = match self {
+            Self::Budget { spent, limit, .. } => {
+                return Self::Budget {
+                    spent,
+                    limit,
+                    usage: Some(Box::new(usage)),
+                };
+            }
+            other => other,
+        };
         let message = match self {
             Self::Model(message) | Self::ModelUsage { message, .. } => message,
             other => other.to_string(),
@@ -197,6 +212,7 @@ mod tests {
         let err = Error::Budget {
             spent: 1.239,
             limit: 1.0,
+            usage: None,
         };
         assert_eq!(err.to_string(), "budget exhausted: spent $1.24 of $1.00");
     }

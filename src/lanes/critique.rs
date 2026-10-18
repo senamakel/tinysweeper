@@ -482,7 +482,12 @@ async fn review_group(
             // Falsify only what this pass added — free when empty, and it
             // never re-judges what round one's own pass already kept.
             let mut new_filtered = Falsifier::new(llm.model().as_ref(), config)
-                .filter_with(LaneId::Critique, new_findings, &evidence, &looked_up)
+                .filter_with(
+                    LaneId::Critique,
+                    new_findings,
+                    &falsifier_evidence,
+                    &looked_up,
+                )
                 .await;
             for finding in &mut new_filtered.findings {
                 finding.review_pass = pass_index + 1;

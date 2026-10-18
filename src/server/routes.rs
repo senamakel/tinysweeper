@@ -818,65 +818,48 @@ async fn run_owned_review(
         return;
     }
 
-    let worker_store = store.clone();
-    let worker_owned = owned.clone();
-    let start = with_paid_review_attempt(&*store, &owned, now_ms, || async move {
-        let (lost_tx, lost_rx) = watch::channel(false);
-        let (owner_until_tx, owner_until_rx) = watch::channel(
-            tokio::time::Instant::now()
-                + std::time::Duration::from_millis(
-                    (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
-                ),
-        );
-        let _heartbeat_guard = spawn_review_heartbeat(
-            worker_store.clone(),
-            worker_owned.clone(),
-            lost_tx,
-            owner_until_tx,
-            std::time::Duration::from_secs(15),
-        );
+    let (lost_tx, lost_rx) = watch::channel(false);
+    let (owner_until_tx, owner_until_rx) = watch::channel(
+        tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
+            ),
+    );
+    let _heartbeat_guard = spawn_review_heartbeat(
+        store.clone(),
+        owned.clone(),
+        lost_tx,
+        owner_until_tx,
+        std::time::Duration::from_secs(15),
+    );
 
-        let request = &worker_owned.request;
-        let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
-        let queued_at = tokio::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(elapsed_ms))
-            .unwrap_or_else(tokio::time::Instant::now);
-        let job = ReviewJob {
-            repo: request.repo.clone(),
-            number: request.number,
-            author: request.author.clone(),
-            installation: request.installation,
-            mode: match request.mode {
-                ReviewJobMode::Incremental => Mode::Incremental,
-                ReviewJobMode::Full => Mode::Full,
-            },
-            delivery: request.delivery.clone(),
-            expected_head: request.head_sha.clone(),
-            queued_at,
-            owned: Some(worker_owned.clone()),
-        };
-        handle_review(
-            state,
-            job,
-            Some(permit),
-            Some(lost_rx),
-            Some(owner_until_rx),
-        )
-        .await
-    })
-    .await;
-    let disposition = match start {
-        Ok(PaidWork::Started(disposition)) => disposition,
-        Ok(PaidWork::Exhausted) => {
-            tracing::warn!(job_id = %owned.request.id.0, "durable review recovery budget exhausted");
-            return;
-        }
-        Ok(PaidWork::OwnershipLost) => return,
-        Err(err) => {
-            tracing::error!(%err, job_id = %owned.request.id.0, "could not consume durable review attempt");
-            return;
-        }
+    let request = &owned.request;
+    let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
+    let queued_at = tokio::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(elapsed_ms))
+        .unwrap_or_else(tokio::time::Instant::now);
+    let job = ReviewJob {
+        repo: request.repo.clone(),
+        number: request.number,
+        author: request.author.clone(),
+        installation: request.installation,
+        mode: match request.mode {
+            ReviewJobMode::Incremental => Mode::Incremental,
+            ReviewJobMode::Full => Mode::Full,
+        },
+        delivery: request.delivery.clone(),
+        expected_head: request.head_sha.clone(),
+        queued_at,
+        owned: Some(owned.clone()),
     };
+    let disposition = handle_review(
+        state,
+        job,
+        Some(permit),
+        Some(lost_rx),
+        Some(owner_until_rx),
+    )
+    .await;
 
     let now_ms = unix_time_ms();
     let result = match disposition {

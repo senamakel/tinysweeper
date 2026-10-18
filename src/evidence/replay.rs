@@ -111,11 +111,22 @@ impl<'a> CrossFileEvidenceIndex<'a> {
         const MAX_BYTES: usize = 18_000;
         const TRUNCATION: &str = "\n[Cross-file evidence is incomplete: related files or bytes were omitted by the evidence bound.]\n";
 
-        let mut paths = BTreeSet::new();
+        let mut paths = Vec::new();
+        let mut seen = BTreeSet::new();
+        // Keep the group being reviewed first. Alphabetical ordering used to
+        // let unrelated `a*.rs` files crowd out the anchor under the file cap.
         for diff in group_diffs {
-            paths.insert(diff.path.as_str());
+            if seen.insert(diff.path.as_str()) {
+                paths.push(diff.path.as_str());
+            }
+        }
+        for diff in group_diffs {
             if let Some(related) = self.related.get(diff.path.as_str()) {
-                paths.extend(related.iter().copied());
+                for path in related {
+                    if seen.insert(*path) {
+                        paths.push(path);
+                    }
+                }
             }
         }
         let mut rendered = String::new();
@@ -124,29 +135,17 @@ impl<'a> CrossFileEvidenceIndex<'a> {
             let Some(diff) = self.by_path.get(path) else {
                 continue;
             };
-            let block = render(std::slice::from_ref(*diff));
             let separator = usize::from(!rendered.is_empty());
             let remaining = MAX_BYTES.saturating_sub(rendered.len() + separator);
-            if block.len() <= remaining {
-                if separator > 0 {
-                    rendered.push('\n');
-                }
-                rendered.push_str(&block);
-                continue;
-            }
-
-            incomplete = true;
-            let marker_len = TRUNCATION.len();
-            let take = remaining.saturating_sub(marker_len);
-            let mut boundary = take.min(block.len());
-            while !block.is_char_boundary(boundary) {
-                boundary -= 1;
-            }
+            let (block, cut) = render_bounded(diff, remaining.saturating_sub(TRUNCATION.len()));
+            incomplete |= cut;
             if separator > 0 {
                 rendered.push('\n');
             }
-            rendered.push_str(&block[..boundary]);
-            break;
+            rendered.push_str(&block);
+            if cut {
+                break;
+            }
         }
         if incomplete {
             if rendered.len() + TRUNCATION.len() > MAX_BYTES {
@@ -161,6 +160,47 @@ impl<'a> CrossFileEvidenceIndex<'a> {
         }
         rendered
     }
+}
+
+/// Render complete headers and diff lines until the byte bound is reached.
+/// Formatting each line as it is visited avoids first materializing an
+/// unbounded changed file just to throw most of it away.
+fn render_bounded(diff: &FileDiff, limit: usize) -> (String, bool) {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    if diff.hunks.is_empty() {
+        return (out, false);
+    }
+    let header = format!("--- {}\n", crate::scan::scrub(&diff.path));
+    if header.len() > limit {
+        return (out, true);
+    }
+    out.push_str(&header);
+    for hunk in &diff.hunks {
+        let header = format!("@@ -{},{} +{},{} @@\n", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines);
+        if out.len() + header.len() > limit {
+            return (out, true);
+        }
+        out.push_str(&header);
+        for line in &hunk.lines {
+            let marker = match line.kind {
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+                LineKind::Context => ' ',
+            };
+            let mut rendered = String::new();
+            match line.new_line {
+                Some(number) => { let _ = writeln!(rendered, "{number:>5} {marker}{}", line.text); }
+                None => { let _ = writeln!(rendered, "      {marker}{}", line.text); }
+            }
+            if out.len() + rendered.len() > limit {
+                return (out, true);
+            }
+            out.push_str(&rendered);
+        }
+    }
+    (out, false)
 }
 
 fn added_module_targets(diff: &FileDiff) -> Vec<String> {
@@ -244,24 +284,37 @@ fn changed_function_names(diff: &FileDiff) -> BTreeSet<&str> {
 }
 
 fn added_call_names(diff: &FileDiff) -> BTreeSet<String> {
-    diff.hunks
+    let mut calls = BTreeSet::new();
+    for line in diff
+        .hunks
         .iter()
         .flat_map(|hunk| &hunk.lines)
         .filter(|line| line.kind == LineKind::Added)
-        .flat_map(|line| {
-            line.text
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        })
-        .filter(|token| !token.is_empty())
-        .filter_map(|token| {
-            let pattern = format!("{token}(");
-            diff.hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .any(|line| line.kind == LineKind::Added && line.text.contains(&pattern))
-                .then(|| token.to_owned())
-        })
-        .collect()
+    {
+        let bytes = line.text.as_bytes();
+        let mut cursor = 0;
+        while cursor < bytes.len() {
+            if !(bytes[cursor].is_ascii_alphabetic() || bytes[cursor] == b'_') {
+                cursor += 1;
+                continue;
+            }
+            let start = cursor;
+            cursor += 1;
+            while cursor < bytes.len()
+                && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+            {
+                cursor += 1;
+            }
+            let end = cursor;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'(' {
+                calls.insert(line.text[start..end].to_owned());
+            }
+        }
+    }
+    calls
 }
 
 /// Split `current` into the part `previous` already contained, and the rest.

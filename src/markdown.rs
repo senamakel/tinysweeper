@@ -65,7 +65,32 @@ pub(crate) fn prose(text: &str) -> String {
         .then_some(end)
     });
     let mut out = String::with_capacity(text.len());
+    let mut skip_until = 0;
     for (index, character) in characters.iter().copied().enumerate() {
+        if index < skip_until {
+            continue;
+        }
+        if url_start(&characters, index) {
+            let end = characters[index..]
+                .iter()
+                .position(|character| character.is_whitespace() || character.is_control())
+                .map(|offset| index + offset)
+                .unwrap_or(characters.len());
+            for character in &characters[index..end] {
+                match character {
+                    ':' => out.push_str("&#58;"),
+                    '.' => out.push_str("&#46;"),
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    _ => out.push(*character),
+                }
+            }
+            skip_until = end;
+            // The URL token was emitted as text with its autolink punctuation
+            // entity-encoded. Skip the remaining characters in that token.
+            continue;
+        }
         if character.is_control() {
             if character == '\n' || character == '\r' {
                 out.push(' ');
@@ -102,6 +127,12 @@ pub(crate) fn prose(text: &str) -> String {
         }
     }
     out
+}
+
+fn url_start(characters: &[char], index: usize) -> bool {
+    let remaining: String = characters[index..].iter().take(8).collect();
+    let lower = remaining.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("www.")
 }
 
 /// Escape prose for a Markdown table cell.
@@ -215,6 +246,7 @@ mod tests {
         assert!(!rendered.contains("@user"));
         assert!(!rendered.contains("<script>"));
         assert!(!rendered.contains("[click]("));
+        assert!(!rendered.contains("https://evil.example"));
         assert!(!rendered.contains('\n'));
     }
 

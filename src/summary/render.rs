@@ -849,7 +849,7 @@ mod tests {
         assert!(!rendered.contains("[click](https://evil.example)"));
         assert!(!rendered.contains("@maintainer"));
         assert!(!rendered.contains("<img src=x>"));
-        assert!(rendered.contains("\\[click\\]\\(https://evil.example\\)"));
+        assert!(rendered.contains("\\[click\\](https&#58;//evil&#46;example)"));
         assert!(rendered.contains("&#64;maintainer"));
         assert!(rendered.contains("&lt;img src=x&gt;"));
     }

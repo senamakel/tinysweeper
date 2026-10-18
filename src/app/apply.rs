@@ -1661,6 +1661,7 @@ mod tests {
         assert!(!body.contains("[click](https://evil.example)"), "{body}");
         assert!(!body.contains("<script>"), "{body}");
         assert!(!body.contains("[link](https://evil.example)"), "{body}");
+        assert!(!body.contains("https://evil.example"), "{body}");
     }
 
     #[tokio::test]

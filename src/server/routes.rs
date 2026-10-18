@@ -4134,7 +4134,7 @@ mod tests {
                 .unwrap()
                 .expect("each paid start has an owner");
             assert!(matches!(
-                with_paid_review_attempt(&store, &owned, now_ms, || async { () })
+                with_paid_review_attempt(&store, &owned, now_ms, || async {})
                     .await
                     .unwrap(),
                 PaidWork::Started(())

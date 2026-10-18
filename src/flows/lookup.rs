@@ -474,6 +474,12 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
         if text.starts_with("//") || text.starts_with('*') || text.starts_with("///") {
             continue;
         }
+        if let Some(name) = added_function_name(text) {
+            let candidate = format!("@caller:{name}");
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
         let bytes = text.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -516,6 +522,40 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     out
 }
 
+/// Module files named by added out-of-line declarations, resolved relative to
+/// the declaring Rust source file (and therefore independent of index state).
+fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
+    use crate::evidence::diff::LineKind;
+    let parent = std::path::Path::new(&diff.path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    diff.hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind == LineKind::Added)
+        .filter_map(|line| {
+            let text = line.text.trim();
+            let declaration = text
+                .strip_prefix("pub ")
+                .unwrap_or(text)
+                .strip_prefix("mod ")?;
+            let name = declaration.strip_suffix(';')?.trim();
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| parent.join(format!("{name}.rs")).to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+/// Name of a function whose declaration was added or changed in this diff.
+fn added_function_name(text: &str) -> Option<&str> {
+    let start = text.find("fn ")? + 3;
+    let tail = &text[start..];
+    let end = tail.find('(')?;
+    let name = tail[..end].trim();
+    (!name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+        .then_some(name)
+}
+
 impl Ledger {
     /// Look up, before the reviewer's first turn, the definitions of what the
     /// changed lines of every file in `diffs` call into.
@@ -555,6 +595,40 @@ impl Ledger {
                     .collect()
             })
             .collect();
+
+        // A module declaration names a path rather than a symbol. Read the
+        // declared module at the reviewed head so a cold index cannot hide a
+        // file added by the pull request.
+        for diff in diffs {
+            for path in added_module_paths(diff) {
+                if answered >= SEED_SYMBOLS || self.chars >= policy.max_chars / 2 {
+                    break;
+                }
+                let lookup = Lookup::Read {
+                    path: path.clone(),
+                    start: None,
+                    end: None,
+                };
+                if !self.seen.insert(lookup.key()) {
+                    continue;
+                }
+                let result = tree.lookup(&lookup).await.unwrap_or_else(|err| {
+                    Found::Unavailable {
+                        reason: err.to_string(),
+                    }
+                });
+                let body = format!(
+                    "\n### Declared module `{path}` at the reviewed head\n\n{}\n",
+                    render_found(&result)
+                );
+                if self.chars + body.len() > policy.max_chars {
+                    break;
+                }
+                self.chars += body.len();
+                answered += 1;
+                rendered.push_str(&body);
+            }
+        }
 
         'rounds: loop {
             let mut made_progress = false;

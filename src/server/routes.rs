@@ -818,13 +818,19 @@ async fn run_owned_review(
         return;
     }
 
+    let initial_renewal_started = tokio::time::Instant::now();
+    match store.renew(&owned, unix_time_ms()).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(err) => {
+            tracing::error!(%err, job_id = %owned.request.id.0, "could not establish initial review ownership heartbeat");
+            return;
+        }
+    }
     let (lost_tx, lost_rx) = watch::channel(false);
-    let (owner_until_tx, owner_until_rx) = watch::channel(
-        tokio::time::Instant::now()
-            + std::time::Duration::from_millis(
-                (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
-            ),
-    );
+    let (owner_until_tx, owner_until_rx) = watch::channel(conservative_owner_deadline(
+        initial_renewal_started,
+    ));
     let _heartbeat_guard = spawn_review_heartbeat(
         store.clone(),
         owned.clone(),
@@ -923,12 +929,10 @@ fn spawn_review_heartbeat(
     AbortOnDrop(tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
+            let renewal_started = tokio::time::Instant::now();
             match store.renew(&owned, unix_time_ms()).await {
                 Ok(true) => {
-                    let conservative_ttl = std::time::Duration::from_millis(
-                        (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
-                    );
-                    let _ = owner_until.send(tokio::time::Instant::now() + conservative_ttl);
+                    let _ = owner_until.send(conservative_owner_deadline(renewal_started));
                 }
                 Ok(false) => {
                     let _ = lost.send(true);
@@ -942,6 +946,13 @@ fn spawn_review_heartbeat(
             }
         }
     }))
+}
+
+fn conservative_owner_deadline(started: tokio::time::Instant) -> tokio::time::Instant {
+    started
+        + std::time::Duration::from_millis(
+            (crate::ports::review_job::REVIEW_OWNER_TTL_MS - 10_000) as u64,
+        )
 }
 
 /// Claim the delivery, then run whatever it asked for.

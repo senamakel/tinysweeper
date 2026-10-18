@@ -889,9 +889,9 @@ async fn record_owned_disposition(
     now_ms: i64,
 ) -> Option<Result<bool>> {
     match disposition {
-        WorkerDisposition::Terminal(outcome) => store.finish(&owned, outcome, now_ms, now_ms).await,
+        WorkerDisposition::Terminal(outcome) => store.finish(owned, outcome, now_ms, now_ms).await,
         WorkerDisposition::Deferred(not_before_ms) => {
-            store.defer(&owned, now_ms, not_before_ms).await
+            store.defer(owned, now_ms, not_before_ms).await
         }
         WorkerDisposition::OwnershipLost => return None,
     }
@@ -3023,7 +3023,7 @@ impl ReviewRun<'_> {
             // survives the worker that took it. The boundary check first: the
             // metadata phase above was bounded per call, not by the deadline, so
             // this is where a budget it exhausted is noticed.
-            let lanes = match run.check(repo, number).and_then(|_| Ok(())) {
+            let lanes = match run.check(repo, number).map(|_| ()) {
                 Ok(()) => match run.check_owner(state).await {
                     Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                         state,

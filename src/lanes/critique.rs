@@ -1143,7 +1143,7 @@ fn helper() {
     }
 
     #[tokio::test]
-    async fn a_degraded_index_withholds_unsupported_unchanged_code_findings() {
+    async fn a_degraded_index_keeps_unsupported_unchanged_code_at_likely_confidence() {
         let config = config();
         let diffs = vec![parse_file_patch(
             "src/main.rs",
@@ -1174,8 +1174,13 @@ fn helper() {
         )
         .await;
 
-        assert!(outcome.findings.is_empty(), "{outcome:?}");
-        assert!(outcome.summary.contains("withheld from action"));
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+        assert!(outcome.summary.contains("capped at Likely confidence"));
         assert!(!outcome.summary.contains("old branch is broken"));
     }
 

@@ -69,7 +69,7 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
             usage.calls_errored = if !succeeded && !refused { attempts } else { 0 };
         }
         self.timing.record(|record| {
-            record.calls_attempted += 1;
+            record.calls_attempted += attempts;
             record.calls_succeeded += usage.calls_succeeded;
             record.calls_refused += usage.calls_refused;
             record.calls_errored += usage.calls_errored;

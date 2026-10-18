@@ -122,7 +122,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), &lane.summary),
+                    title: title_for(lane.findings.len(), &lane.summary, lane.coverage.as_ref()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -656,7 +656,19 @@ fn code_span(text: &str) -> String {
     }
 }
 
-fn title_for(findings: usize, summary: &str) -> String {
+fn title_for(
+    findings: usize,
+    summary: &str,
+    coverage: Option<&crate::lanes::FileCoverage>,
+) -> String {
+    if let Some(coverage) = coverage {
+        let reviewed = coverage.reviewed.len();
+        let total = reviewed + coverage.unanswered.len();
+        return format!(
+            "Reviewed {reviewed} of {total} files — {} not reviewed",
+            total.saturating_sub(reviewed)
+        );
+    }
     match findings {
         0 => summary.chars().take(80).collect(),
         1 => "1 finding".into(),
@@ -995,6 +1007,21 @@ mod tests {
     use crate::forge::types::{ChangedFile, CheckConclusion, IssueComment, PullRequest};
     use crate::forge::{MockForge, MockState, Write};
 
+    #[test]
+    fn a_partial_lane_title_reports_file_coverage() {
+        assert_eq!(
+            title_for(
+                0,
+                "Reviewed.",
+                Some(&crate::lanes::FileCoverage {
+                    reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
+                    unanswered: vec!["src/8.rs".into(), "src/9.rs".into()],
+                }),
+            ),
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
+    }
+
     #[cfg(feature = "serve")]
     #[tokio::test]
     async fn applying_an_mcp_issue_plan_performs_exactly_its_write() {
@@ -1059,6 +1086,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                coverage: None,
                 overflow: vec![],
             }],
             cost_usd: 0.01,
@@ -1457,14 +1485,26 @@ mod tests {
     #[tokio::test]
     async fn a_check_run_is_published_per_lane() {
         let forge = forge("abc123");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].conclusion = CheckConclusion::Neutral;
+        proposal.lanes[0].summary = "Reviewed 8 of 10 files — 2 not reviewed.".into();
+        proposal.lanes[0].unanswered = vec!["a.rs".into(), "b.rs".into()];
+        proposal.lanes[0].coverage = Some(crate::lanes::FileCoverage {
+            reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec!["a.rs".into(), "b.rs".into()],
+        });
+        apply(&forge, &forge, &config(), &proposal, None)
             .await
             .expect("applies");
 
         let checks = forge.checks();
         assert_eq!(
+            checks["tinysweeper/critique"].title,
+            "Reviewed 8 of 10 files — 2 not reviewed"
+        );
+        assert_eq!(
             checks["tinysweeper/critique"].conclusion,
-            Some(CheckConclusion::Success)
+            Some(CheckConclusion::Neutral)
         );
     }
 

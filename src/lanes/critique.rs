@@ -2464,11 +2464,3 @@ fn helper() {
             assert!(!system.contains("These files only"), "{system}");
         }
     }
-    if withheld_for_degraded_context > 0 {
-        format!(
-            "{summary} {withheld_for_degraded_context} unchanged-code finding(s) were withheld from action because retrieval was degraded and no current-head lookup supported them."
-        )
-    } else {
-        summary
-    }
-}

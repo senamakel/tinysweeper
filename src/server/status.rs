@@ -321,6 +321,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_lanes_keep_their_distinct_file_scopes() {
+        let lanes = [
+            file_lane("critique", &["src/a.rs", "README.md"], &[]),
+            file_lane("security", &["src/a.rs"], &[]),
+        ];
+
+        let check = publish_aggregate(&lanes, "abc").await;
+
+        assert_eq!(check.title, "Reviewed 2 of 2 files — 0 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Success));
+    }
+
+    #[tokio::test]
     async fn whole_pr_lane_gap_survives_complete_file_lane_coverage() {
         let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
         let all: Vec<_> = files.iter().map(String::as_str).collect();

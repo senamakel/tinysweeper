@@ -393,9 +393,14 @@ impl GatewayModel {
                         model, usage.input_tokens, usage.cached_tokens, usage.output_tokens,
                     )))
                 }).sum();
+                let reasoning_tokens = error.attempts.iter()
+                    .filter_map(|attempt| attempt.usage.as_ref())
+                    .map(|usage| usage.reasoning_tokens)
+                    .sum();
                 refusal.with_usage(Usage {
                     input_tokens: totals.input_tokens,
                     output_tokens: totals.output_tokens,
+                    reasoning_tokens,
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,

@@ -3,6 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use std::future::Future;
+use tracing::Span;
+use tracing::Instrument;
 
 use crate::ports::model::Usage;
 
@@ -75,6 +78,7 @@ impl ReviewTiming {
             name,
             lane: None,
             started: Instant::now(),
+            span: tracing::info_span!("review.phase", phase = name, duration_ms = tracing::field::Empty),
         }
     }
 
@@ -84,6 +88,7 @@ impl ReviewTiming {
             name: "lanes",
             lane: Some(name),
             started: Instant::now(),
+            span: tracing::info_span!("review.phase", phase = "lane", lane = name, duration_ms = tracing::field::Empty),
         }
     }
 
@@ -117,6 +122,24 @@ impl ReviewTiming {
     }
 }
 
+pub async fn measure<F: Future>(timing: Option<&ReviewTiming>, name: &'static str, future: F) -> F::Output {
+    if let Some(timing) = timing {
+        let guard = timing.phase(name);
+        let output = future.instrument(guard.span.clone()).await;
+        drop(guard);
+        output
+    } else { future.await }
+}
+
+pub async fn measure_lane<F: Future>(timing: Option<&ReviewTiming>, name: &'static str, future: F) -> F::Output {
+    if let Some(timing) = timing {
+        let guard = timing.lane(name);
+        let output = future.instrument(guard.span.clone()).await;
+        drop(guard);
+        output
+    } else { future.await }
+}
+
 impl Drop for ReviewTiming {
     fn drop(&mut self) {
         if Arc::strong_count(&self.0) == 1 {
@@ -130,10 +153,12 @@ pub struct PhaseGuard {
     name: &'static str,
     lane: Option<&'static str>,
     started: Instant,
+    pub span: Span,
 }
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed().as_millis() as u64;
+        self.span.record("duration_ms", elapsed);
         self.timing.record(|r| {
             if self.name == "permit" {
                 r.queue_wait_ms += elapsed;

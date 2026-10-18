@@ -546,16 +546,13 @@ pub async fn review_with_tree_observed(
     } else {
         model
     };
-    let context_phase = timing.as_ref().map(|t| t.phase("context"));
-    let mut context = forge
+    let mut context = crate::review_timing::measure(timing.as_ref(), "context", forge
         .pull_request_context_bounded(
             repo,
             number,
             config.review.max_changed_files,
             config.review.max_changed_lines,
-        )
-        .await?;
-    drop(context_phase);
+        )).await?;
     if let Some(timing) = &timing {
         let head_sha = context.pull_request.head_sha.clone();
         timing.record(|r| r.head_sha = head_sha);
@@ -756,8 +753,7 @@ pub async fn review_with_tree_observed(
     // instruction files at *this* head commit. The extraction is sandboxed and
     // its output is untrusted — see `crate::knowledge` — so the two halves go
     // to different halves of the prompt.
-    let knowledge_phase = timing.as_ref().map(|t| t.phase("knowledge"));
-    let (knowledge, knowledge_usage) = crate::knowledge::gather(
+    let (knowledge, knowledge_usage) = crate::review_timing::measure(timing.as_ref(), "knowledge", crate::knowledge::gather(
         forge,
         &model,
         config,
@@ -768,9 +764,7 @@ pub async fn review_with_tree_observed(
             .map(|diff| diff.path.clone())
             .collect::<Vec<_>>(),
         knowledge,
-    )
-    .await;
-    drop(knowledge_phase);
+    )).await;
     // `gather` has no response model to report when the instruction files are
     // absent. Do not turn that zero-cost no-op into a fictitious scan-model
     // entry in the review's model list.
@@ -783,8 +777,7 @@ pub async fn review_with_tree_observed(
     // Related code, retrieved once for the whole review rather than per lane:
     // the query is composed from the diff, so every lane would compose the same
     // one and pay for the same embedding.
-    let retrieval_phase = timing.as_ref().map(|t| t.phase("retrieval"));
-    let (retrieved, retrieval_spend) = match retrieval {
+    let (retrieved, retrieval_spend) = crate::review_timing::measure(timing.as_ref(), "retrieval", async { match retrieval {
         Some(retriever) => {
             retriever
                 .retrieve(
@@ -797,8 +790,7 @@ pub async fn review_with_tree_observed(
                 .await
         }
         None => (crate::retrieve::RetrievedContext::off(), Spend::default()),
-    };
-    drop(retrieval_phase);
+    }}).await;
     spend.merge(retrieval_spend);
     // Retrieval is separate from the diff pipeline, but its rendered chunks
     // become model input too. Apply the same path-independent stream scrub
@@ -836,13 +828,11 @@ pub async fn review_with_tree_observed(
     // `changed_neighbourhood_is_needed` — so a deployment with both off, or a
     // tests-only review with neither `critique` nor `security` enabled, costs
     // no query it never needed.
-    let graph_phase = timing.as_ref().map(|t| t.phase("graph"));
-    let changed_neighbourhood = if changed_neighbourhood_is_needed(config) {
+    let changed_neighbourhood = crate::review_timing::measure(timing.as_ref(), "graph", async { if changed_neighbourhood_is_needed(config) {
         walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
     } else {
         None
-    };
-    drop(graph_phase);
+    }}).await;
     let graph_for_lanes = changed_neighbourhood.as_ref().and_then(|w| w.as_ref().ok());
 
     // What the `e2e` lane needs beyond the diff, read at the head commit and
@@ -865,7 +855,6 @@ pub async fn review_with_tree_observed(
     };
 
     for lane_id in config.enabled_lanes() {
-        let lane_phase = timing.as_ref().map(|t| t.lane(lane_id.as_str()));
         let lane: Box<dyn Lane> = match lane_id {
             LaneId::Critique => Box::new(Critique::new(model.clone())),
             LaneId::Security => Box::new(Security::new(model.clone())),
@@ -875,7 +864,7 @@ pub async fn review_with_tree_observed(
             LaneId::E2e => Box::new(crate::lanes::e2e::E2e::new(model.clone())),
         };
 
-        let outcome = lane
+        let outcome = crate::review_timing::measure_lane(timing.as_ref(), lane_id.as_str(), lane
             .run(LaneInput {
                 config,
                 pull_request: &context.pull_request,
@@ -892,9 +881,7 @@ pub async fn review_with_tree_observed(
                 e2e: e2e_evidence.as_ref(),
                 tree: Some(tree),
                 graph: graph_for_lanes,
-            })
-            .await?;
-        drop(lane_phase);
+            })).await?;
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a

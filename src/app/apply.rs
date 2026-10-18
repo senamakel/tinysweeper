@@ -1683,7 +1683,7 @@ mod tests {
         let mut hostile = finding();
         hostile.line = None;
         hostile.title = "@maintainer <img src=x> [click](https://evil.example)".into();
-        hostile.body = "<script>alert(1)</script> @user [link](https://evil.example)".into();
+        hostile.body = "<script>alert(1)</script> @user [link](https://evil.example) https://a.b/[click](https://evil.example) @maintainer `code` **bold** |\\path".into();
 
         apply(
             &forge,
@@ -1702,6 +1702,11 @@ mod tests {
         assert!(!body.contains("<script>"), "{body}");
         assert!(!body.contains("[link](https://evil.example)"), "{body}");
         assert!(!body.contains("https://evil.example"), "{body}");
+        assert!(!body.contains("https://"), "{body}");
+        assert!(!body.contains("[click]("), "{body}");
+        assert!(!body.contains("@maintainer"), "{body}");
+        assert!(!body.contains("`code`"), "{body}");
+        assert!(!body.contains("**bold**"), "{body}");
     }
 
     #[tokio::test]

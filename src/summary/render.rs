@@ -855,6 +855,38 @@ mod tests {
     }
 
     #[test]
+    fn run_history_escapes_table_pipes_in_state_summary_and_head() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::RunDetails];
+        let rendered = render(
+            &config,
+            &proposal(
+                ReviewSummary {
+                    history: vec![crate::summary::types::ReviewPass {
+                        head_sha: "sha|injected".into(),
+                        state: "ready | **blocked**".into(),
+                        summary: "done | [click](https://evil.example)".into(),
+                        ..Default::default()
+                    }],
+                    ..ReviewSummary::default()
+                },
+                &[],
+            ),
+        );
+        assert!(rendered.contains("`sha\\|injected`"), "{rendered}");
+        assert!(
+            rendered.contains("ready \\| \\*\\*blocked\\*\\*"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("done \\| \\[click\\]"), "{rendered}");
+        assert!(!rendered.contains("| **blocked** |"), "{rendered}");
+        assert!(
+            !rendered.contains("| [click](https://evil.example) |"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn summary_citations_link_to_the_reviewed_head_and_keep_paths_in_code_spans() {
         let mut config = Config::default();
         config.summary.sections = vec![SummarySection::Features];

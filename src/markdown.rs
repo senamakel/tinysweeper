@@ -270,6 +270,19 @@ mod tests {
     }
 
     #[test]
+    fn url_tokens_escape_markdown_delimiters_as_well_as_autolink_punctuation() {
+        let rendered =
+            prose("https://a.b/[click](https://evil.example) @maintainer `code` **bold** |\\path");
+        assert!(!rendered.contains("[click]("), "{rendered}");
+        assert!(!rendered.contains("@maintainer"), "{rendered}");
+        assert!(!rendered.contains("`code`"), "{rendered}");
+        assert!(!rendered.contains("**bold**"), "{rendered}");
+        assert!(!rendered.contains("https://"), "{rendered}");
+        assert!(!rendered.contains("|"), "{rendered}");
+        assert!(!rendered.contains("\\path"), "{rendered}");
+    }
+
+    #[test]
     fn ordinary_punctuation_and_intra_word_underscores_remain_readable() {
         assert_eq!(
             prose("tiny-module savings_store.rs v1.2.3"),

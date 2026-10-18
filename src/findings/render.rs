@@ -701,6 +701,27 @@ mod cost_table_tests {
     }
 
     #[test]
+    fn provider_metadata_cannot_close_the_cost_code_block() {
+        let hostile = "vendor/model\n```\n@maintainer [click](https://evil.example)\n```";
+        let table = cost_table(
+            &usage(0.02, 100, 10, 0),
+            &[hostile.into()],
+            &[(
+                "critique".into(),
+                usage(0.01, 50, 5, 0),
+                vec![hostile.into()],
+            )],
+        );
+        assert!(table.starts_with("````\n"), "{table}");
+        assert!(table.ends_with("````"), "{table}");
+        assert!(
+            table.contains("```\n@maintainer [click](https://evil.example)"),
+            "{table}"
+        );
+        assert!(!table.contains("\n```\n"), "{table}");
+    }
+
+    #[test]
     fn no_row_carries_trailing_whitespace() {
         // Padding the last column would widen the block for nothing and show up
         // as ragged whitespace in a diff.

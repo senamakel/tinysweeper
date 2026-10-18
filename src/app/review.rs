@@ -3139,6 +3139,20 @@ mod tests {
     }
 
     #[cfg(feature = "serve")]
+    fn mechanical_rename_files(count: usize) -> Vec<ChangedFile> {
+        let old = "use openhuman_core::openhuman as oh;";
+        let new = old.replace("::openhuman", "");
+        (0..count)
+            .map(|index| {
+                changed_file(
+                    &format!("src/rename_{index}.rs"),
+                    &format!("@@ -1,1 +1,1 @@\n-{old}\n+{new}\n"),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn umbrella_coverage_includes_replayed_and_currently_reviewed_files() {
         let a_patch = "@@ -1,1 +1,2 @@\n let a = 1;\n+let a2 = 2;\n";
@@ -3187,21 +3201,28 @@ mod tests {
     #[cfg(feature = "serve")]
     #[tokio::test]
     async fn umbrella_coverage_includes_mechanically_verified_files_and_the_sample() {
-        let old = "use openhuman_core::openhuman as oh;";
-        let new = old.replace("::openhuman", "");
-        let files: Vec<_> = (0..59)
-            .map(|index| {
-                changed_file(
-                    &format!("src/rename_{index}.rs"),
-                    &format!("@@ -1,1 +1,1 @@\n-{old}\n+{new}\n"),
-                )
-            })
-            .collect();
-        let proposal = review_with_previous_evidence(files, &[], MockModel::silent()).await;
+        let proposal =
+            review_with_previous_evidence(mechanical_rename_files(59), &[], MockModel::silent())
+                .await;
 
         let check = umbrella_check_for(&proposal).await;
         assert_eq!(check.title, "Reviewed 59 of 59 files — 0 not reviewed");
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
+    }
+
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn failed_mechanical_sample_does_not_count_as_reviewed() {
+        let proposal = review_with_previous_evidence(
+            mechanical_rename_files(59),
+            &[],
+            MockModel::new().then_error("sample reviewer unavailable"),
+        )
+        .await;
+
+        let check = umbrella_check_for(&proposal).await;
+        assert_eq!(check.title, "Reviewed 58 of 59 files — 1 not reviewed");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
 
     fn rust_file() -> ChangedFile {

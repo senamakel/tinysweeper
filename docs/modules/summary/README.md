@@ -19,7 +19,10 @@ previously reviewed head and the new head, so that field says it is unavailable
 instead of presenting the full PR diff as a push delta. Each lane also carries
 a typed `answered`, `partial`, `no_response`, or `skipped` status derived from
 its explicit file coverage, unanswered paths, skip state, and response usage.
-Narrative that says a non-answered lane confirmed or passed is discarded.
+Partial file coverage carries its actual reviewed and total file counts;
+whole-pull-request lanes with waiting checks carry only the pending-check
+count, without a fabricated file denominator. Narrative that says a
+non-answered lane confirmed or passed is discarded.
 
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one

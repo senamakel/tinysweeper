@@ -37,16 +37,26 @@ struct GeneratedObservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum LaneReviewStatus {
+#[serde(rename_all = "snake_case")]
+enum LaneStatusKind {
     Answered,
-    Partial {
-        completed: usize,
-        total: usize,
-        unit: &'static str,
-    },
+    Partial,
     NoResponse,
     Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+struct LaneReviewStatus {
+    status: LaneStatusKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_coverage: Option<LaneFileCoverage>,
+    pending_checks: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+struct LaneFileCoverage {
+    reviewed: usize,
+    total: usize,
 }
 
 /// All contextual evidence supplied to one summary generation pass.
@@ -308,7 +318,10 @@ pub async fn generate_with_input(
         .filter_map(|(lane, observations)| {
             if !matches!(
                 lane_statuses.get(lane.as_str()),
-                Some(LaneReviewStatus::Answered)
+                Some(LaneReviewStatus {
+                    status: LaneStatusKind::Answered,
+                    ..
+                })
             ) {
                 return None;
             }
@@ -536,15 +549,25 @@ fn validated_model_narrative(
 
 fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneReviewStatus {
     if lane.skipped.is_some() {
-        return LaneReviewStatus::Skipped;
+        return lane_status_value(LaneStatusKind::Skipped, None, 0);
     }
     if let Some(coverage) = &lane.coverage {
         if changed_paths.is_empty() {
-            return if lane.models.is_empty() && lane.usage.input_tokens == 0 {
-                LaneReviewStatus::NoResponse
+            let status = if !lane_has_response(lane) {
+                LaneStatusKind::NoResponse
+            } else if !lane.pending.is_empty() {
+                LaneStatusKind::Partial
             } else {
-                LaneReviewStatus::Answered
+                LaneStatusKind::Answered
             };
+            return lane_status_value(
+                status,
+                Some(LaneFileCoverage {
+                    reviewed: 0,
+                    total: 0,
+                }),
+                lane.pending.len(),
+            );
         }
         let unanswered: BTreeSet<&str> = coverage.unanswered.iter().map(String::as_str).collect();
         let reviewed: BTreeSet<&str> = coverage
@@ -556,34 +579,60 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
             .collect();
         let count = reviewed.len();
         if count == 0 {
-            LaneReviewStatus::NoResponse
+            lane_status_value(
+                LaneStatusKind::NoResponse,
+                Some(LaneFileCoverage {
+                    reviewed: 0,
+                    total: changed_paths.len(),
+                }),
+                lane.pending.len(),
+            )
         } else if count == changed_paths.len() {
-            LaneReviewStatus::Answered
+            let status = if lane.pending.is_empty() {
+                LaneStatusKind::Answered
+            } else {
+                LaneStatusKind::Partial
+            };
+            lane_status_value(
+                status,
+                Some(LaneFileCoverage {
+                    reviewed: count,
+                    total: changed_paths.len(),
+                }),
+                lane.pending.len(),
+            )
         } else {
-            LaneReviewStatus::Partial {
-                completed: count,
-                total: changed_paths.len(),
-                unit: "files",
-            }
+            lane_status_value(
+                LaneStatusKind::Partial,
+                Some(LaneFileCoverage {
+                    reviewed: count,
+                    total: changed_paths.len(),
+                }),
+                lane.pending.len(),
+            )
         }
     } else if !lane.unanswered.is_empty() {
-        LaneReviewStatus::NoResponse
+        lane_status_value(LaneStatusKind::NoResponse, None, lane.pending.len())
     } else if !lane.pending.is_empty() && lane_has_response(lane) {
-        LaneReviewStatus::Partial {
-            completed: 1,
-            total: 1 + lane.pending.len(),
-            unit: "review_work",
-        }
-    } else if !lane.models.is_empty()
-        || lane.usage.input_tokens > 0
-        || lane.usage.output_tokens > 0
-        || lane.usage.cost_usd > 0.0
-    {
-        LaneReviewStatus::Answered
+        lane_status_value(LaneStatusKind::Partial, None, lane.pending.len())
+    } else if lane_has_response(lane) {
+        lane_status_value(LaneStatusKind::Answered, None, 0)
     } else {
         // Older proposal shapes and deterministic placeholders do not prove
         // that a reviewer answered.
-        LaneReviewStatus::NoResponse
+        lane_status_value(LaneStatusKind::NoResponse, None, lane.pending.len())
+    }
+}
+
+fn lane_status_value(
+    status: LaneStatusKind,
+    file_coverage: Option<LaneFileCoverage>,
+    pending_checks: usize,
+) -> LaneReviewStatus {
+    LaneReviewStatus {
+        status,
+        file_coverage,
+        pending_checks,
     }
 }
 
@@ -648,7 +697,7 @@ fn sanitize_prior_narrative(
     summary.positive_observations.retain(|lane, observations| {
         statuses
             .get(lane.as_str())
-            .is_some_and(|status| matches!(status, LaneReviewStatus::Answered))
+            .is_some_and(|status| matches!(status.status, LaneStatusKind::Answered))
             && {
                 observations.retain(|observation| {
                     validated_model_narrative(observation, statuses).is_some()
@@ -688,7 +737,7 @@ fn claims_unsupported_lane_success(
     if broad_all_lane_claim
         && statuses
             .values()
-            .any(|status| !matches!(status, LaneReviewStatus::Answered))
+            .any(|status| !matches!(status.status, LaneStatusKind::Answered))
     {
         return true;
     }
@@ -700,7 +749,7 @@ fn claims_unsupported_lane_success(
         return false;
     }
     statuses.iter().any(|(lane, status)| {
-        !matches!(status, LaneReviewStatus::Answered) && words.contains(lane.as_str())
+        !matches!(status.status, LaneStatusKind::Answered) && words.contains(lane.as_str())
     })
 }
 
@@ -1076,14 +1125,16 @@ mod tests {
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
         assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
         assert_eq!(request["lanes"][0]["status"]["status"], "partial");
-        assert_eq!(request["lanes"][0]["status"]["completed"], 1);
-        assert_eq!(request["lanes"][0]["status"]["unit"], "files");
+        assert_eq!(
+            request["lanes"][0]["status"]["file_coverage"]["reviewed"],
+            1
+        );
+        assert_eq!(request["lanes"][0]["status"]["file_coverage"]["total"], 2);
         assert_eq!(request["lanes"][1]["status"]["status"], "answered");
         assert_eq!(request["lanes"][3]["status"]["status"], "skipped");
         assert_eq!(request["lanes"][5]["status"]["status"], "partial");
-        assert_eq!(request["lanes"][5]["status"]["completed"], 1);
-        assert_eq!(request["lanes"][5]["status"]["total"], 2);
-        assert_eq!(request["lanes"][5]["status"]["unit"], "review_work");
+        assert_eq!(request["lanes"][5]["status"]["pending_checks"], 1);
+        assert!(request["lanes"][5]["status"].get("file_coverage").is_none());
     }
 
     #[tokio::test]

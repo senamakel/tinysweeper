@@ -2797,12 +2797,6 @@ async fn review_inner(
         return Ok(result);
     }
     if run
-        .paid_exhausted
-        .swap(false, std::sync::atomic::Ordering::SeqCst)
-    {
-        return Ok(InnerReview::Exhausted);
-    }
-    if run
         .lease_busy
         .swap(false, std::sync::atomic::Ordering::SeqCst)
     {
@@ -2948,41 +2942,9 @@ impl ReviewRun<'_> {
         };
         run.check_owner(state).await?;
 
-        if let Some(owned) = &run.owned {
-            match with_paid_review_attempt(
-                state.review_jobs.as_ref(),
-                owned,
-                unix_time_ms(),
-                || async {
-                    run.check_owner(state).await?;
-                    if let Some(backend) = &state.index {
-                        tokio::spawn(index_in_background(
-                            backend.clone(),
-                            Arc::new(state.config.config.clone()),
-                            state.index_permits.clone(),
-                            repo_id.clone(),
-                            pull_request.head_sha.clone(),
-                            read_token.to_owned(),
-                        ));
-                    }
-                    Ok::<(), Error>(())
-                },
-            )
-            .await?
-            {
-                PaidWork::Started(Ok(())) => {}
-                PaidWork::Started(Err(err)) => return Err(err),
-                PaidWork::Exhausted => {
-                    run.paid_exhausted
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    return Ok(InnerReview::Exhausted);
-                }
-                PaidWork::OwnershipLost => return Err(Error::ReviewOwnershipLost),
-            }
-        }
-
-        // Nothing lease-held starts on a spent budget. Before this point the run
-        // has only read metadata and holds nothing another worker could want.
+        // Admit the deadline before opening a status, but spend the durable paid
+        // attempt only after that status exists. A recovered exhausted job has
+        // no process-local slot, so it must open a fresh check it can conclude.
         run.check(repo, number)?;
 
         // A manual review deliberately takes a lease of its own: the operator asked
@@ -3013,8 +2975,23 @@ impl ReviewRun<'_> {
             installation,
         )
         .await;
-        continue_after_open_status(go_on, || async {
+        continue_after_open_status_with_paid_budget(
+            go_on,
+            state.review_jobs.as_ref(),
+            run.owned.as_ref(),
+            unix_time_ms(),
+            || async {
             run.check_owner(state).await?;
+            if let Some(backend) = &state.index {
+                tokio::spawn(index_in_background(
+                    backend.clone(),
+                    Arc::new(state.config.config.clone()),
+                    state.index_permits.clone(),
+                    repo_id.clone(),
+                    pull_request.head_sha.clone(),
+                    read_token.to_owned(),
+                ));
+            }
             let outcome = {
 
             // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
@@ -3174,7 +3151,8 @@ impl ReviewRun<'_> {
                 changes_requested,
                 coverage,
             ))))
-        })
+        },
+        )
         .await
     }
 }

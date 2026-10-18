@@ -81,6 +81,7 @@ pub enum ApplyDisposition {
     Superseded,
 }
 
+/// Publish a proposal and report whether its reviewed head was still current.
 pub async fn apply(
     read: &dyn ForgeRead,
     write: &dyn ForgeWrite,
@@ -100,7 +101,7 @@ pub async fn apply(
             live = %live.head_sha,
             "head moved since the review; not publishing a stale verdict"
         );
-        return Ok(ApplyDisposition::Published);
+        return Ok(ApplyDisposition::Superseded);
     }
 
     // Housekeeping first: threads this run decided are settled. Deterministic

@@ -3772,7 +3772,7 @@ mod tests {
     async fn status_open_shutdown_defers_job_for_replacement_owner() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = queued_test_review(71);
         assert_eq!(
             store.admit_batch(vec![request]).await.unwrap(),
@@ -3829,7 +3829,7 @@ mod tests {
         );
         assert_eq!(store.unfinished(), 0);
 
-        let normal_store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let normal_store = crate::ports::review_job_mock::MockReviewJobStore::default();
         assert_eq!(
             normal_store
                 .admit_batch(vec![queued_test_review(72)])
@@ -3866,7 +3866,7 @@ mod tests {
     async fn recovered_paid_attempts_are_bounded_before_worker_work_starts() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = ReviewRequest {
             id: crate::ports::review_job::ReviewJobId("webhook:recovery-budget".into()),
             repo: "owner/repo".into(),
@@ -3945,7 +3945,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_an_owned_worker_drops_heartbeat_and_allows_expiry_recovery() {
-        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let request = ReviewRequest {
             id: crate::ports::review_job::ReviewJobId("webhook:cancelled".into()),
             repo: "owner/repo".into(),
@@ -4041,7 +4041,7 @@ mod tests {
     async fn durable_full_manual_queue_refuses_before_credentials_or_pull_request_reads() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let full = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let full = crate::ports::review_job_mock::MockReviewJobStore::default();
         let requests = (0..crate::ports::review_job::MAX_UNFINISHED_REVIEWS)
             .map(|number| queued_test_review(number as u64 + 1))
             .collect();
@@ -4061,7 +4061,7 @@ mod tests {
         assert_eq!(credentials.load(Ordering::SeqCst), 0);
         assert_eq!(pull_requests.load(Ordering::SeqCst), 0);
 
-        let available = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let available = crate::ports::review_job_mock::MockReviewJobStore::default();
         with_durable_manual_capacity(&available, 1, || async {
             credentials.fetch_add(1, Ordering::SeqCst);
             pull_requests.fetch_add(1, Ordering::SeqCst);
@@ -4145,7 +4145,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (sender, mut receiver) = mpsc::channel(2);
-        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = reads.clone();
         let result = enqueue_manual_jobs(
@@ -4191,7 +4191,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (sender, _receiver) = mpsc::channel(1);
-        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = reads.clone();
         let result = enqueue_manual_jobs(&sender, &store, "owner/repo", 1, vec![7, 8], move |_| {
@@ -4284,7 +4284,7 @@ mod tests {
     async fn accepted_webhook_and_manual_reviews_recover_after_wakeup_loss() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let webhook = Action::Review {
             repo: "owner/repo".into(),
             number: 7,
@@ -4377,7 +4377,7 @@ mod tests {
         let held = permits.clone().acquire_owned().await.expect("slot");
         let (sender, receiver) = mpsc::channel(1);
         sender.try_send(()).expect("queued wakeup");
-        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         assert_eq!(
             store
                 .admit_batch(vec![queued_test_review(7)])

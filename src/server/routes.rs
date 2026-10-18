@@ -2829,28 +2829,33 @@ where
     }
 }
 
-async fn continue_after_open_status_with_paid_budget<F, Fut>(
-    go_on: bool,
+async fn review_with_paid_budget_and_status<Start, StartFuture, OpenStatus, OpenStatusFuture, Review, ReviewFuture>(
     store: &dyn ReviewJobStore,
     owned: Option<&OwnedReview>,
     now_ms: i64,
-    review: F,
+    start: Start,
+    open_status: OpenStatus,
+    review: Review,
 ) -> Result<InnerReview>
 where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<InnerReview>>,
+    Start: FnOnce() -> StartFuture,
+    StartFuture: std::future::Future<Output = Result<()>>,
+    OpenStatus: FnOnce() -> OpenStatusFuture,
+    OpenStatusFuture: std::future::Future<Output = bool>,
+    Review: FnOnce() -> ReviewFuture,
+    ReviewFuture: std::future::Future<Output = Result<InnerReview>>,
 {
-    continue_after_open_status(go_on, || async {
-        let Some(owned) = owned else {
-            return review().await;
-        };
-        match with_paid_review_attempt(store, owned, now_ms, review).await? {
-            PaidWork::Started(result) => result,
-            PaidWork::Exhausted => Ok(InnerReview::Exhausted),
-            PaidWork::OwnershipLost => Err(Error::ReviewOwnershipLost),
+    if let Some(owned) = owned {
+        match with_paid_review_attempt(store, owned, now_ms, start).await? {
+            PaidWork::Started(result) => result?,
+            PaidWork::Exhausted => return Ok(InnerReview::Exhausted),
+            PaidWork::OwnershipLost => return Err(Error::ReviewOwnershipLost),
         }
-    })
-    .await
+    } else {
+        start().await?;
+    }
+    let go_on = open_status().await;
+    continue_after_open_status(go_on, review).await
 }
 
 fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {
@@ -2942,11 +2947,6 @@ impl ReviewRun<'_> {
         };
         run.check_owner(state).await?;
 
-        // Admit the deadline before opening a status, but spend the durable paid
-        // attempt only after that status exists. A recovered exhausted job has
-        // no process-local slot, so it must open a fresh check it can conclude.
-        run.check(repo, number)?;
-
         // A manual review deliberately takes a lease of its own: the operator asked
         // for this run *because* the ordinary one already happened, so sharing the
         // webhook path's key would make the button a silent no-op.
@@ -2966,32 +2966,38 @@ impl ReviewRun<'_> {
         // this function exists to conclude. The forge calls here are bounded on
         // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
         // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
-        run.check_owner(state).await?;
-        let go_on = open_status(
-            state,
-            &run.slot,
-            repo_id,
-            &pull_request.head_sha,
-            installation,
-        )
-        .await;
-        continue_after_open_status_with_paid_budget(
-            go_on,
+        review_with_paid_budget_and_status(
             state.review_jobs.as_ref(),
             run.owned.as_ref(),
             unix_time_ms(),
             || async {
-            run.check_owner(state).await?;
-            if let Some(backend) = &state.index {
-                tokio::spawn(index_in_background(
-                    backend.clone(),
-                    Arc::new(state.config.config.clone()),
-                    state.index_permits.clone(),
-                    repo_id.clone(),
-                    pull_request.head_sha.clone(),
-                    read_token.to_owned(),
-                ));
-            }
+                run.check_owner(state).await?;
+                run.check(repo, number)?;
+                if let Some(backend) = &state.index {
+                    tokio::spawn(index_in_background(
+                        backend.clone(),
+                        Arc::new(state.config.config.clone()),
+                        state.index_permits.clone(),
+                        repo_id.clone(),
+                        pull_request.head_sha.clone(),
+                        read_token.to_owned(),
+                    ));
+                }
+                Ok(())
+            },
+            || async {
+                run.check_owner(state).await?;
+                open_status(
+                    state,
+                    &run.slot,
+                    repo_id,
+                    &pull_request.head_sha,
+                    installation,
+                )
+                .await
+            },
+            || async {
+                run.check_owner(state).await?;
             let outcome = {
 
             // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
@@ -3151,7 +3157,7 @@ impl ReviewRun<'_> {
                 changes_requested,
                 coverage,
             ))))
-        },
+            },
         )
         .await
     }

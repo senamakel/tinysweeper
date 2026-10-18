@@ -292,7 +292,10 @@ Two decisions worth knowing:
 The escape hatch for when a review has to be redone wholesale. The body is
 `{"number": 12}` for one pull request, or `{}` for every open one — capped at 20
 per request, because each queued review is model spend. Reviews run off the
-request path; the response says which were queued, not what they found.
+request path; the response says which were queued, not what they found. If all
+review permits are occupied, the endpoint returns `503` before minting an
+installation token or reading pull request state. Queue slots for an expanded
+request are reserved together, so an overflow cannot partially enqueue it.
 
 **What "full" means.** The run sets `review.incremental = false` for itself and
 changes nothing else. That single flag gates all three halves of the incremental

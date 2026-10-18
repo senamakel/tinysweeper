@@ -9,7 +9,7 @@ use tracing::Span;
 
 use crate::ports::model::Usage;
 
-pub const PHASES: &[&str] = &[
+pub(crate) const PHASES: &[&str] = &[
     "permit",
     "open_status",
     "checkout",
@@ -24,7 +24,7 @@ pub const PHASES: &[&str] = &[
     "publish",
 ];
 
-pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
+pub(crate) fn outcome_for_error(error: &crate::error::Error) -> &'static str {
     if matches!(error, crate::error::Error::Timeout { .. }) {
         "deadline"
     } else {
@@ -33,7 +33,7 @@ pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReviewTiming(Arc<Inner>);
+pub(crate) struct ReviewTiming(Arc<Inner>);
 
 #[derive(Debug)]
 struct Inner {
@@ -43,28 +43,28 @@ struct Inner {
 
 /// Snapshot of the server's structured telemetry for one review run.
 #[derive(Debug, Clone, Default)]
-pub struct Record {
-    pub repo: String,
-    pub pr: u64,
-    pub head_sha: String,
-    pub mode: String,
-    pub outcome: String,
-    pub started: Option<Instant>,
-    pub queue_wait_ms: u64,
-    pub phases_ms: BTreeMap<String, u64>,
-    pub lanes_ms: BTreeMap<String, u64>,
-    pub calls_attempted: u64,
-    pub calls_succeeded: u64,
-    pub calls_refused: u64,
-    pub calls_errored: u64,
-    pub usage: Usage,
-    pub files_total: usize,
-    pub files_answered: usize,
-    pub files_unanswered: usize,
+pub(crate) struct Record {
+    pub(crate) repo: String,
+    pub(crate) pr: u64,
+    pub(crate) head_sha: String,
+    pub(crate) mode: String,
+    pub(crate) outcome: String,
+    pub(crate) started: Option<Instant>,
+    pub(crate) queue_wait_ms: u64,
+    pub(crate) phases_ms: BTreeMap<String, u64>,
+    pub(crate) lanes_ms: BTreeMap<String, u64>,
+    pub(crate) calls_attempted: u64,
+    pub(crate) calls_succeeded: u64,
+    pub(crate) calls_refused: u64,
+    pub(crate) calls_errored: u64,
+    pub(crate) usage: Usage,
+    pub(crate) files_total: usize,
+    pub(crate) files_answered: usize,
+    pub(crate) files_unanswered: usize,
 }
 
 impl ReviewTiming {
-    pub fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
+    pub(crate) fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
         let mut record = Record {
             repo: repo.into(),
             pr,
@@ -82,7 +82,7 @@ impl ReviewTiming {
         }))
     }
 
-    pub fn phase(&self, name: &'static str) -> PhaseGuard {
+    pub(crate) fn phase(&self, name: &'static str) -> PhaseGuard {
         let record = self.snapshot();
         PhaseGuard {
             timing: self.clone(),
@@ -101,7 +101,7 @@ impl ReviewTiming {
         }
     }
 
-    pub fn lane(&self, name: &'static str) -> PhaseGuard {
+    pub(crate) fn lane(&self, name: &'static str) -> PhaseGuard {
         let record = self.snapshot();
         PhaseGuard {
             timing: self.clone(),
@@ -121,7 +121,7 @@ impl ReviewTiming {
         }
     }
 
-    pub fn record(&self, update: impl FnOnce(&mut Record)) {
+    pub(crate) fn record(&self, update: impl FnOnce(&mut Record)) {
         let head_sha = {
             let mut record = self.0.record.lock().expect("review timing lock");
             update(&mut record);
@@ -132,16 +132,16 @@ impl ReviewTiming {
         }
     }
 
-    pub fn snapshot(&self) -> Record {
+    pub(crate) fn snapshot(&self) -> Record {
         self.0.record.lock().expect("review timing lock").clone()
     }
 
-    pub fn finish(&self, outcome: &str) {
+    pub(crate) fn finish(&self, outcome: &str) {
         self.record(|r| r.outcome = outcome.to_owned());
     }
 }
 
-pub async fn measure<F: Future>(
+pub(crate) async fn measure<F: Future>(
     timing: Option<&ReviewTiming>,
     name: &'static str,
     future: F,
@@ -156,7 +156,7 @@ pub async fn measure<F: Future>(
     }
 }
 
-pub async fn measure_lane<F: Future>(
+pub(crate) async fn measure_lane<F: Future>(
     timing: Option<&ReviewTiming>,
     name: &'static str,
     future: F,
@@ -192,12 +192,12 @@ impl Drop for Inner {
     }
 }
 
-pub struct PhaseGuard {
+pub(crate) struct PhaseGuard {
     timing: ReviewTiming,
     name: &'static str,
     lane: Option<&'static str>,
     started: Instant,
-    pub span: Span,
+    pub(crate) span: Span,
 }
 impl Drop for PhaseGuard {
     fn drop(&mut self) {

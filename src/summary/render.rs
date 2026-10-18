@@ -697,6 +697,9 @@ fn reviewed_sha(report: &str) -> Option<&str> {
 
 fn safe_failure_reason(message: &str) -> String {
     let message = message.to_ascii_lowercase();
+    if message.contains("pull request may have closed or changed") {
+        return "stopped because the pull request closed or changed".to_string();
+    }
     if message.contains("timeout") || message.contains("timed out") || message.contains("within ") {
         let seconds = message
             .split_once("within ")

@@ -293,6 +293,17 @@ impl MockForge {
         self
     }
 
+    /// Replace a pull request after a queued action has captured its number.
+    ///
+    /// This models state changing between webhook admission and worker start.
+    pub fn replace_pull_request(&self, pull_request: PullRequest) {
+        self.state
+            .lock()
+            .expect("mock state lock")
+            .pull_requests
+            .insert(pull_request.number, pull_request);
+    }
+
     /// Serve `content` for `path` at `sha`.
     ///
     /// The builder form of [`MockState::set_file`], so a pull request and the

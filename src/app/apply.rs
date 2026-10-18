@@ -17,6 +17,17 @@ use crate::ports::forge::{ForgeRead, ForgeWrite};
 use crate::ports::review_state::ReviewStateStore;
 use crate::{MARKER_PREFIX, VERSION};
 
+/// Whether a review proposal was published against the live pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDisposition {
+    /// The review was published (or was already present for this exact head).
+    Published,
+    /// The pull request head changed before publication.
+    Superseded,
+    /// The pull request was closed or merged before publication.
+    Closed,
+}
+
 /// A fully decided MCP issue creation.
 #[cfg(feature = "serve")]
 pub struct McpIssuePlan {
@@ -79,20 +90,28 @@ pub async fn apply(
     config: &Config,
     proposal: &Proposal,
     store: Option<&dyn ReviewStateStore>,
-) -> Result<()> {
+) -> Result<ApplyDisposition> {
     let repo = RepoId::parse(&proposal.repo)
         .ok_or_else(|| Error::Forge(format!("`{}` is not owner/name", proposal.repo)))?;
 
     // Re-validate against live state. The review ran minutes ago in another
     // job, and the world moves.
     let live = read.pull_request(&repo, proposal.number).await?;
+    if !live.open || live.merged {
+        tracing::info!(
+            number = proposal.number,
+            merged = live.merged,
+            "pull request is closed; not publishing the review"
+        );
+        return Ok(ApplyDisposition::Closed);
+    }
     if live.head_sha != proposal.head_sha {
         tracing::info!(
             reviewed = %proposal.head_sha,
             live = %live.head_sha,
             "head moved since the review; not publishing a stale verdict"
         );
-        return Ok(());
+        return Ok(ApplyDisposition::Superseded);
     }
 
     // Housekeeping first: threads this run decided are settled. Deterministic
@@ -290,7 +309,7 @@ pub async fn apply(
     // not be undone is reported as the failure it is.
     match withdrawal_failed {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => Ok(ApplyDisposition::Published),
     }
 }
 
@@ -1500,6 +1519,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_closed_or_merged_pull_request_is_not_published_after_review() {
+        for (open, merged) in [(false, false), (false, true)] {
+            let forge = forge("abc123");
+            forge.replace_pull_request(PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                open,
+                merged,
+                ..PullRequest::default()
+            });
+
+            let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+                .await
+                .expect("closed pull requests are declined without publishing");
+
+            assert_eq!(disposition, ApplyDisposition::Closed);
+
+            assert!(
+                forge.writes().is_empty(),
+                "closed state open={open} merged={merged} must not publish a review"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn publishing_also_triages_the_pull_request() {
         // Triage rides on `apply` rather than on a job of its own so it reaches
         // every trigger the review already has, and so a labelled severity can
@@ -1534,10 +1578,11 @@ mod tests {
         // The review ran against a commit that has since been replaced.
         // Publishing would report on code nobody is looking at.
         let forge = forge("newer456");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
             .await
             .expect("returns cleanly");
 
+        assert_eq!(disposition, ApplyDisposition::Superseded);
         assert!(forge.wrote_nothing(), "{:#?}", forge.writes());
     }
 

@@ -43,7 +43,7 @@ pub(crate) fn prose(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '@' => out.push_str("&#64;"),
             '`' => out.push_str("&#96;"),
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '#' | '+' | '-' | '~' => {
+            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '#' | '~' => {
                 out.push('\\');
                 out.push(character);
             }

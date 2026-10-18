@@ -238,9 +238,6 @@ pub fn rule_line(rule: &str) -> String {
 /// Escape model-authored text placed inside a Markdown emphasis run.
 pub fn escape_emphasis(text: &str) -> String {
     prose(text)
-        .replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
 }
 
 /// A `<summary>` renders as HTML, so a stray tag in a title would break out of

@@ -143,9 +143,7 @@ pub fn completed(
         if changes_requested && coverage.unanswered_lane {
             (
                 CheckConclusion::Neutral,
-                format!(
-                    "Changes requested — review incomplete; {reviewed}/{total} files reviewed"
-                ),
+                format!("Changes requested — review incomplete; {reviewed}/{total} files reviewed"),
             )
         } else if coverage.unanswered_lane {
             (
@@ -269,16 +267,16 @@ mod tests {
         lane
     }
 
-    async fn publish_aggregate(lanes: &[LaneProposal], head: &str) -> crate::forge::types::CheckRun {
+    async fn publish_aggregate(
+        lanes: &[LaneProposal],
+        head: &str,
+    ) -> crate::forge::types::CheckRun {
         use crate::ports::forge::ForgeWrite;
 
         let forge = MockForge::new();
         let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
         forge
-            .publish_check(
-                &repo,
-                completed(head, 0, false, aggregate_coverage(lanes)),
-            )
+            .publish_check(&repo, completed(head, 0, false, aggregate_coverage(lanes)))
             .await
             .expect("publishes aggregate check");
         forge.checks().remove(CHECK_NAME).unwrap()
@@ -344,8 +342,17 @@ mod tests {
         };
         let check = completed("abc", 1, true, coverage);
 
-        assert!(check.title.starts_with("Changes requested"), "{}", check.title);
-        assert!(check.title.len() <= 80, "{} chars: {}", check.title.len(), check.title);
+        assert!(
+            check.title.starts_with("Changes requested"),
+            "{}",
+            check.title
+        );
+        assert!(
+            check.title.len() <= 80,
+            "{} chars: {}",
+            check.title.len(),
+            check.title
+        );
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
 
@@ -372,7 +379,10 @@ mod tests {
         // the others.
         let err = crate::error::Error::Model("gateway returned 403".into());
         assert_eq!(in_progress("abc123").name, CHECK_NAME);
-        assert_eq!(completed("abc123", 0, false, ReviewCoverage::default()).name, CHECK_NAME);
+        assert_eq!(
+            completed("abc123", 0, false, ReviewCoverage::default()).name,
+            CHECK_NAME
+        );
         assert_eq!(
             crate::server::failure::check_run("abc123", &err).name,
             CHECK_NAME
@@ -478,13 +488,29 @@ mod tests {
 
     #[test]
     fn partial_coverage_title_never_says_nothing_to_report() {
-        let check = completed("abc", 0, false, ReviewCoverage { files: Some((8, 10)), unanswered_lane: false });
+        let check = completed(
+            "abc",
+            0,
+            false,
+            ReviewCoverage {
+                files: Some((8, 10)),
+                unanswered_lane: false,
+            },
+        );
         assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
     }
 
     #[test]
     fn an_unanswered_whole_pr_lane_never_uses_the_empty_review_title() {
-        let check = completed("abc", 0, false, ReviewCoverage { files: None, unanswered_lane: true });
+        let check = completed(
+            "abc",
+            0,
+            false,
+            ReviewCoverage {
+                files: None,
+                unanswered_lane: true,
+            },
+        );
         assert_eq!(check.title, "Review incomplete — a lane did not respond");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
@@ -496,7 +522,18 @@ mod tests {
         let forge = crate::forge::MockForge::new();
         let repo = crate::forge::types::RepoId::parse("acme/widget").unwrap();
         forge
-            .publish_check(&repo, completed("abc", 0, false, ReviewCoverage { files: Some((8, 10)), unanswered_lane: false }))
+            .publish_check(
+                &repo,
+                completed(
+                    "abc",
+                    0,
+                    false,
+                    ReviewCoverage {
+                        files: Some((8, 10)),
+                        unanswered_lane: false,
+                    },
+                ),
+            )
             .await
             .expect("publishes partial status");
         assert_eq!(
@@ -504,7 +541,18 @@ mod tests {
             "Reviewed 8 of 10 files — 2 not reviewed"
         );
         forge
-            .publish_check(&repo, completed("def", 0, false, ReviewCoverage { files: None, unanswered_lane: true }))
+            .publish_check(
+                &repo,
+                completed(
+                    "def",
+                    0,
+                    false,
+                    ReviewCoverage {
+                        files: None,
+                        unanswered_lane: true,
+                    },
+                ),
+            )
             .await
             .expect("publishes unanswered status");
         let checks = forge.checks();

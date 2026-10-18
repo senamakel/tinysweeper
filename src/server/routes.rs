@@ -1920,13 +1920,11 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested, coverage)) => {
-                        Conclusion::Reviewed {
-                            findings,
-                            changes_requested,
-                            coverage,
-                        }
-                    }
+                    Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
+                        findings,
+                        changes_requested,
+                        coverage,
+                    },
                     None => Conclusion::NotReviewed,
                 };
                 // The review is over; concluding the check is one GitHub

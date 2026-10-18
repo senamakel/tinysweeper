@@ -231,6 +231,7 @@ enum InnerReview {
     Complete(Option<(usize, bool, status::ReviewCoverage)>),
     Busy,
     Exhausted,
+    Shutdown,
 }
 
 /// Run the server until the process is stopped.
@@ -899,6 +900,10 @@ async fn record_owned_disposition(
 
 fn defer_interrupted_review() -> WorkerDisposition {
     WorkerDisposition::Deferred(unix_time_ms())
+}
+
+fn shutdown_disposition(review: &InnerReview, now_ms: i64) -> Option<WorkerDisposition> {
+    matches!(review, InnerReview::Shutdown).then_some(WorkerDisposition::Deferred(now_ms))
 }
 
 enum PaidWork<T> {
@@ -2796,6 +2801,21 @@ where
         return Ok(None);
     }
     work().await.map(Some)
+}
+
+async fn continue_after_open_status<F, Fut>(
+    go_on: bool,
+    review: F,
+) -> Result<InnerReview>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<InnerReview>>,
+{
+    if go_on {
+        review().await
+    } else {
+        Ok(InnerReview::Shutdown)
+    }
 }
 
 fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {

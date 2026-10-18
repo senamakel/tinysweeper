@@ -10,6 +10,10 @@ pub(crate) fn accumulate_usage(total: &mut Usage, usage: Usage) {
     total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
     total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
+    total.calls_attempted = total.calls_attempted.saturating_add(usage.calls_attempted);
+    total.calls_succeeded = total.calls_succeeded.saturating_add(usage.calls_succeeded);
+    total.calls_refused = total.calls_refused.saturating_add(usage.calls_refused);
+    total.calls_errored = total.calls_errored.saturating_add(usage.calls_errored);
     total.embed_tokens = total.embed_tokens.saturating_add(usage.embed_tokens);
     total.cost_usd = (total.cost_usd + usage.cost_usd).min(f64::MAX);
 }
@@ -90,6 +94,10 @@ impl ReviewFailure {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     reasoning_tokens: usage.reasoning_tokens,
+                    calls_attempted: 1,
+                    calls_succeeded: 0,
+                    calls_refused: 0,
+                    calls_errored: 1,
                     cached_tokens: usage.cached_tokens,
                     cost_usd: cost,
                     embed_tokens: 0,
@@ -116,6 +124,10 @@ impl ReviewFailure {
                         input_tokens: spent.tokens,
                         output_tokens: 0,
                         reasoning_tokens: 0,
+                        calls_attempted: 1,
+                        calls_succeeded: 0,
+                        calls_refused: 0,
+                        calls_errored: 1,
                         cached_tokens: 0,
                         cost_usd: spent.cost_micros as f64 / 1_000_000.0,
                         embed_tokens: 0,

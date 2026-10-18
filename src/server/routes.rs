@@ -2331,6 +2331,7 @@ async fn handle_review(
         expected_head,
         owned: owned.clone(),
         owner_lost: owner_lost.clone(),
+        lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let mut attempt = 1;
@@ -2625,6 +2626,8 @@ impl ReviewRun<'_> {
                 .is_none()
             {
                 tracing::debug!(%next, "another worker holds the live pull request head");
+                run.lease_busy
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return Ok(None);
             }
             if let Some(previous) = lease.replace(next)
@@ -4083,6 +4086,7 @@ mod tests {
             expected_head: None,
             owned: None,
             owner_lost: None,
+            lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let err = spent
             .check("o/r", 7)
@@ -4097,6 +4101,7 @@ mod tests {
             expected_head: None,
             owned: None,
             owner_lost: None,
+            lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert!(
             live.check("o/r", 7).is_ok(),

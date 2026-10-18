@@ -503,4 +503,13 @@ mod outcome_tests {
         assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Neutral);
         assert!(!outcome.conclusion(Severity::High).blocks());
     }
+
+    #[test]
+    fn an_outcome_with_unanswered_files_is_neutral() {
+        let outcome = LaneOutcome {
+            unanswered: vec!["src/unread.rs".into()],
+            ..LaneOutcome::default()
+        };
+        assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Neutral);
+    }
 }

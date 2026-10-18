@@ -904,8 +904,8 @@ pub async fn review_with_tree(
                         deletions: context.files.iter().map(|file| file.deletions).sum(),
                     },
                     previous_reviewed_head: remembered
-                    .as_ref()
-                    .map(|state| state.head_sha.as_str()),
+                        .as_ref()
+                        .map(|state| state.head_sha.as_str()),
                     lanes: &lanes,
                     prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
                     prior_transcript: stored

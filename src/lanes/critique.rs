@@ -1246,7 +1246,54 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(!outcome.findings[0].late);
-        assert_eq!(outcome.findings[0].confidence, 0.9);
+        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+    }
+
+    #[tokio::test]
+    async fn cold_retrieval_caps_changed_signature_claims_about_unavailable_callers() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/parser.rs",
+            "@@ -1,1 +1,2 @@\n fn helper() {}\n+pub fn parse(input: i32) -> i32 { input }\n",
+        )];
+        let lookup = Lookup::Read {
+            path: "src/parser.rs".into(),
+            start: Some(2),
+            end: Some(2),
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [(lookup.key(), Found::Unavailable { reason: "cold index".into() })]
+                .into_iter()
+                .collect(),
+        );
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "An unchanged caller still uses the old signature.",
+                "findings": [{
+                    "path": "src/parser.rs",
+                    "existing_code": "pub fn parse(input: i32) -> i32 { input }",
+                    "rule": "stale-caller",
+                    "title": "Update callers of parse",
+                    "body": "An unchanged caller still invokes parse with the old argument shape.",
+                    "severity": "critical",
+                    "confidence": 0.99
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "the finding stays visible: {outcome:?}");
+        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
     }
 
     #[tokio::test]

@@ -37,6 +37,11 @@ pub enum Error {
     #[error("forge: {0}")]
     Forge(String),
 
+    /// Review workers are at capacity and a manual request was refused before
+    /// it spent credentials or read pull request data.
+    #[error("review capacity is full; retry the manual request")]
+    ReviewCapacityFull,
+
     /// A model call failed, timed out, or returned output that did not match
     /// the lane's structured-output schema.
     #[error("model: {0}")]
@@ -102,6 +107,17 @@ pub enum Error {
         /// Configured changed-line ceiling.
         max_lines: u64,
     },
+
+    /// The pull request head changed after the server claimed a review lease.
+    /// This is a clean skip: retry on the new head rather than reviewing it
+    /// under a lease for a different revision.
+    #[error("pull request head changed before the review started")]
+    ReviewSuperseded,
+
+    /// This process lost its durable scheduler ownership before a protected
+    /// review phase could start or publish.
+    #[error("review worker ownership expired or was replaced")]
+    ReviewOwnershipLost,
 
     /// A feature required for this code path was not compiled in.
     #[error("{0} requires the `{1}` feature; rebuild with --features {1}")]

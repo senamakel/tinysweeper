@@ -51,7 +51,11 @@ impl OutputHistory {
         };
         let mut ordered: Vec<u32> = observations.iter().copied().collect();
         ordered.sort_unstable();
-        let index = ordered.len().saturating_mul(9).div_ceil(10).saturating_sub(1);
+        let index = ordered
+            .len()
+            .saturating_mul(9)
+            .div_ceil(10)
+            .saturating_sub(1);
         ordered[index].min(cap)
     }
 }

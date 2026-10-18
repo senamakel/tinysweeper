@@ -57,9 +57,11 @@ fn explicit_alias_bounds_admit_known_rates_and_refuse_invalid_rates() {
     )]);
     let bound = call(&ledger, &alias, 0, &prices).unwrap();
     assert_eq!(bound.call.output_tokens, 128);
+    let monetary_input_tokens =
+        (serde_json::to_vec(&alias).unwrap().len() as u64).div_ceil(4) + 1024;
     assert_eq!(
         bound.call.cost_micros,
-        (bound.call.input_tokens as f64 * 0.4 + 128.0 * 1.8).ceil() as u64
+        (monetary_input_tokens as f64 * 0.4 + 16.0 * 1.8).ceil() as u64
     );
     for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
         prices.get_mut("deep").unwrap().output = invalid;
@@ -116,6 +118,32 @@ fn budget_expected_output_reservation_preserves_the_provider_output_cap() {
         "a cold-start expected output plus this input should reserve less than the full output cap alone; got {} micros",
         bound.call.cost_micros
     );
+}
+
+#[test]
+fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
+    let history = OutputHistory::default();
+    for output in [
+        1_000, 2_000, 4_000, 8_000, 12_000, 20_000, 30_000, 40_000, 50_000, 60_000,
+    ] {
+        history.record("review", "deep", output, 64_000);
+    }
+    let request = typical_deep_request(64_000).response_format(ResponseFormat::JsonSchema {
+        name: "review".into(),
+        schema: serde_json::json!({"type":"object"}),
+    });
+    let bound = call_with_history(&ledger(1.0), &request, 0, &deep_prices(), &history).unwrap();
+    assert_eq!(
+        bound.call.output_tokens, 64_000,
+        "physical cap remains unchanged"
+    );
+    let bytes = serde_json::to_vec(&request).unwrap().len() as u64;
+    let input = (bytes.div_ceil(4) + 1024) as f64 * 0.4;
+    assert_eq!(
+        bound.call.cost_micros,
+        (input + 60_000.0 * 1.8).ceil() as u64
+    );
+    assert!(bound.call.cost_micros < (input + 64_000.0 * 1.8).ceil() as u64);
 }
 
 #[test]

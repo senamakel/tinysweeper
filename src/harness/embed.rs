@@ -17,7 +17,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openhuman_embed::Route;
 use openhuman_embed::complete::{ChatMessage, Completer, CompletionRequest, ResponseFormat};
-use openhuman_embed::routing::{CompletionAttempt, CompletionLadder, CompletionRung, TruncationRetry};
+use openhuman_embed::routing::{
+    CompletionAttempt, CompletionLadder, CompletionRung, TruncationRetry,
+};
 use serde_json::json;
 
 use crate::config::types::{Models, ProviderRouting, StructuredOutput};
@@ -432,11 +434,7 @@ impl GatewayModel {
                 refusal
             }
         })?;
-        record_output_attempts(
-            &self.output_history,
-            &request.schema_name,
-            &result.attempts,
-        );
+        record_output_attempts(&self.output_history, &request.schema_name, &result.attempts);
         let response = result.response;
         let answered = response
             .answered_model
@@ -753,6 +751,47 @@ mod tests {
             max_tokens: 100,
         };
         (model, gateway, request)
+    }
+
+    #[tokio::test]
+    async fn budget_capacity_refusal_is_typed_and_does_not_wait_for_a_live_call() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let (gateway, release) = FakeGateway::start_paused(vec![Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+        )])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        let model = model.scoped_budget(0.003).unwrap();
+        let first_model = model.clone();
+        let first_request = request.clone();
+        let first = tokio::spawn(async move { first_model.complete(first_request).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("first call reached the paused gateway");
+
+        let refusal = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            model.complete(request),
+        )
+        .await
+        .expect("capacity refusal must fail fast")
+        .expect_err("live reservation leaves insufficient capacity");
+        assert!(matches!(refusal, Error::Budget { .. }), "{refusal:?}");
+        assert_eq!(gateway.requests().len(), 1, "refused call never dispatches");
+
+        release.add_permits(1);
+        first.await.unwrap().expect("first call settles");
     }
 
     #[tokio::test]

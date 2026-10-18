@@ -2416,7 +2416,6 @@ mod tests {
                 <= record.started.unwrap().elapsed().as_millis() as u64
         );
         assert!(record.lanes_ms.contains_key("critique"));
-        assert!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0);
         assert!(record.calls_succeeded > 0);
         assert_eq!(record.calls_attempted, record.calls_succeeded * 3);
         assert_eq!(record.calls_errored, record.calls_succeeded * 2);

@@ -1398,11 +1398,11 @@ fn helper() {
         .await;
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(tree.lookups.lock().expect("lookup calls").is_empty());
         assert_eq!(
             outcome.findings[0].confidence,
             DEGRADED_CONTEXT_CONFIDENCE_CAP
         );
-        assert!(tree.lookups.lock().expect("lookup calls").is_empty());
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal

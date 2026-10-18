@@ -681,9 +681,15 @@ fn render_lane_summary(lane: &crate::app::review::LaneProposal) -> String {
     // Below the gate, above notice. A line each: where, what, how sure. Not a
     // comment and not a verdict, so the wording says so.
     if lane.noted.iter().any(|finding| !finding.grouped) {
-        out.push_str(
-            "\n**Worth a look** — below the posting gate, so not a comment and not a block:\n\n",
-        );
+        if lane.context_degraded {
+            out.push_str(
+                "\n**Unverified findings** — repository context was unavailable; these notes are not comments and do not affect the check verdict:\n\n",
+            );
+        } else {
+            out.push_str(
+                "\n**Worth a look** — below the posting gate, so not a comment and not a block:\n\n",
+            );
+        }
         for finding in lane.noted.iter().filter(|finding| !finding.grouped) {
             out.push_str(&format!(
                 "- {} — {} {}\n",

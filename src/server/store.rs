@@ -559,6 +559,15 @@ impl Store {
         Ok(())
     }
 
+    /// Release only the lease still held by this owner generation.
+    pub async fn release_lease_for(&self, key: &str, holder: &str) -> Result<()> {
+        self.leases
+            .delete_one(doc! { "key": key, "holder": holder })
+            .await
+            .map_err(|err| Error::Forge(err.to_string()))?;
+        Ok(())
+    }
+
     /// Record an installation.
     pub async fn record_installation(&self, id: u64, account: &str) -> Result<()> {
         self.installations

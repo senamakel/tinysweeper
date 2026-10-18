@@ -187,6 +187,10 @@ pub struct LaneProposal {
     pub conclusion: CheckConclusion,
     /// Summary line.
     pub summary: String,
+    /// Whether this lane completed an answer, model-based or deterministic.
+    /// Missing values from older proposals mean completion is unknown.
+    #[serde(default)]
+    pub completed: bool,
     /// Findings that survived filtering.
     pub findings: Vec<Finding>,
     /// Findings that missed the posting gate but were worth a line in the

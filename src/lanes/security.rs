@@ -1290,6 +1290,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replayed_security_coverage_excludes_out_of_scope_prose() {
+        let handler = parse_file_patch("src/handler.rs", PATCH);
+        let readme = parse_file_patch("README.md", "@@ -1,1 +1,2 @@\n description\n+more prose\n");
+        let previous = crate::evidence::replay::render(std::slice::from_ref(&handler));
+
+        let outcome = run_with_reviewed(
+            MockModel::silent(),
+            &config(),
+            &[handler, readme],
+            &[],
+            &previous,
+        )
+        .await;
+
+        let coverage = outcome.coverage.expect("security coverage is recorded");
+        assert!(coverage.reviewed.contains(&"src/handler.rs".to_owned()));
+        assert!(
+            !coverage.reviewed.contains(&"README.md".to_owned())
+                && !coverage.unanswered.contains(&"README.md".to_owned()),
+            "out-of-scope prose is not an uncovered security path: {coverage:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_scanner_match_is_re_reported_even_on_an_unchanged_file() {
         // A committed key is reported every push until it is gone. "We
         // mentioned it last time" is not a reason to stop, so a scanner match

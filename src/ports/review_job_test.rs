@@ -4,26 +4,14 @@ use std::sync::Mutex;
 
 use super::{
     Admission, OwnedReview, ReviewJobId, ReviewJobMode, ReviewJobStore, ReviewRequest,
-    TerminalOutcome, MAX_RUNNING_REVIEWS, MAX_UNFINISHED_REVIEWS, REVIEW_OWNER_TTL_MS,
-    REVIEW_TOMBSTONE_TTL_MS,
+    ReviewSchedulerState, TerminalOutcome, MAX_RUNNING_REVIEWS, MAX_UNFINISHED_REVIEWS,
+    REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS,
 };
 use crate::error::{Error, Result};
 
-const MAX_TERMINAL: usize = 1_000;
-
-#[derive(Clone)]
-struct Entry {
-    request: ReviewRequest,
-    owner: Option<String>,
-    generation: u64,
-    owner_until_ms: i64,
-    not_before_ms: i64,
-    terminal: Option<(TerminalOutcome, i64)>,
-}
-
 #[derive(Default)]
 pub(crate) struct MockReviewJobStore {
-    entries: Mutex<Vec<Entry>>,
+    state: Mutex<ReviewSchedulerState>,
     fail_admission: Mutex<bool>,
 }
 
@@ -33,12 +21,11 @@ impl MockReviewJobStore {
     }
 
     pub(crate) fn unfinished(&self) -> usize {
-        self.entries
+        self.state
             .lock()
-            .expect("entries")
-            .iter()
-            .filter(|entry| entry.terminal.is_none())
-            .count()
+            .expect("state")
+            .unfinished
+            .len()
     }
 }
 
@@ -48,99 +35,27 @@ impl ReviewJobStore for MockReviewJobStore {
         if std::mem::take(&mut *self.fail_admission.lock().expect("admission failure")) {
             return Err(Error::Forge("simulated scheduler write failure".into()));
         }
-        if requests.is_empty() {
-            return Ok(Admission::Duplicate);
-        }
-        let mut entries = self.entries.lock().expect("entries");
-        entries.retain(|entry| {
-            entry
-                .terminal
-                .is_none_or(|(_, until)| until > requests[0].accepted_at_ms)
-        });
-        let mut ids = std::collections::HashSet::new();
-        if requests.iter().any(|request| !ids.insert(request.id.clone())) {
-            return Err(Error::Forge("duplicate ID in review batch".into()));
-        }
-        let already = requests
-            .iter()
-            .filter(|request| entries.iter().any(|entry| entry.request.id == request.id))
-            .count();
-        if already == requests.len() {
-            return Ok(Admission::Duplicate);
-        }
-        if already != 0
-            || entries.iter().filter(|entry| entry.terminal.is_none()).count()
-                + requests.len()
-                > MAX_UNFINISHED_REVIEWS
-            || entries.iter().filter(|entry| entry.terminal.is_some()).count() + requests.len()
-                > MAX_TERMINAL
-        {
-            return Ok(Admission::Full);
-        }
-        entries.extend(requests.into_iter().map(|request| Entry {
-            request,
-            owner: None,
-            generation: 0,
-            owner_until_ms: 0,
-            not_before_ms: 0,
-            terminal: None,
-        }));
-        Ok(Admission::Admitted)
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .admit_batch(requests))
     }
 
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
-        let mut entries = self.entries.lock().expect("entries");
-        let running = entries
-            .iter()
-            .filter(|entry| entry.terminal.is_none() && entry.owner.is_some())
-            .filter(|entry| entry.owner_until_ms > now_ms)
-            .count();
-        if running >= MAX_RUNNING_REVIEWS {
-            return Ok(None);
-        }
-        let Some(entry) = entries.iter_mut().find(|entry| {
-            entry.terminal.is_none()
-                && entry.not_before_ms <= now_ms
-                && entry.owner_until_ms <= now_ms
-        }) else {
-            return Ok(None);
-        };
-        entry.generation += 1;
-        entry.owner = Some(owner.to_owned());
-        entry.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
-        Ok(Some(OwnedReview {
-            request: entry.request.clone(),
-            owner: owner.to_owned(),
-            generation: entry.generation,
-        }))
+        Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
     }
 
     async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        let mut entries = self.entries.lock().expect("entries");
-        let Some(entry) = entries.iter_mut().find(|entry| owns(entry, owned)) else {
-            return Ok(false);
-        };
-        entry.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
-        Ok(true)
+        Ok(self.state.lock().expect("state").renew(owned, now_ms))
     }
 
     async fn owns(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        let entries = self.entries.lock().expect("entries");
-        Ok(entries
-            .iter()
-            .find(|entry| owns(entry, owned))
-            .is_some_and(|entry| entry.owner_until_ms > now_ms))
+        Ok(self.state.lock().expect("state").owns(owned, now_ms))
     }
 
     async fn defer(&self, owned: &OwnedReview, not_before_ms: i64) -> Result<bool> {
-        let mut entries = self.entries.lock().expect("entries");
-        let Some(entry) = entries.iter_mut().find(|entry| owns(entry, owned)) else {
-            return Ok(false);
-        };
-        entry.owner = None;
-        entry.owner_until_ms = 0;
-        entry.not_before_ms = not_before_ms;
-        Ok(true)
+        Ok(self.state.lock().expect("state").defer(owned, not_before_ms))
     }
 
     async fn finish(
@@ -149,22 +64,12 @@ impl ReviewJobStore for MockReviewJobStore {
         outcome: TerminalOutcome,
         completed_at_ms: i64,
     ) -> Result<bool> {
-        let mut entries = self.entries.lock().expect("entries");
-        let Some(entry) = entries.iter_mut().find(|entry| owns(entry, owned)) else {
-            return Ok(false);
-        };
-        entry.owner = None;
-        entry.owner_until_ms = 0;
-        entry.terminal = Some((outcome, completed_at_ms + TOMBSTONE_TTL_MS));
-        Ok(true)
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .finish(owned, outcome, completed_at_ms))
     }
-}
-
-fn owns(entry: &Entry, owned: &OwnedReview) -> bool {
-    entry.terminal.is_none()
-        && entry.request.id == owned.request.id
-        && entry.owner.as_deref() == Some(&owned.owner)
-        && entry.generation == owned.generation
 }
 
 fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
@@ -213,11 +118,11 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
 #[tokio::test]
 async fn whole_manual_batch_is_rejected_without_partial_admission() {
     let store = MockReviewJobStore::default();
-    let mut full = (0..MAX_UNFINISHED)
+    let full = (0..MAX_UNFINISHED_REVIEWS)
         .map(|index| request(&format!("job-{index}"), 1))
         .collect::<Vec<_>>();
     assert_eq!(
-        store.admit_batch(std::mem::take(&mut full)).await.unwrap(),
+        store.admit_batch(full).await.unwrap(),
         Admission::Admitted
     );
     assert_eq!(
@@ -273,6 +178,54 @@ async fn live_lease_contention_defers_without_converting_it_to_a_success() {
         .await
         .unwrap()
         .is_some());
+}
+
+#[tokio::test]
+async fn running_claims_are_bounded_across_process_owners() {
+    let store = MockReviewJobStore::default();
+    let jobs = (0..=MAX_RUNNING_REVIEWS)
+        .map(|index| request(&format!("delivery-{index}"), 1))
+        .collect();
+    assert_eq!(store.admit_batch(jobs).await.unwrap(), Admission::Admitted);
+    for index in 0..MAX_RUNNING_REVIEWS {
+        assert!(store
+            .claim_next(&format!("process-{index}"), 2)
+            .await
+            .unwrap()
+            .is_some());
+    }
+    assert!(store
+        .claim_next("process-overflow", 3)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn only_a_live_generation_can_renew_or_finish() {
+    let store = MockReviewJobStore::default();
+    store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
+    let first = store.claim_next("process-a", 2).await.unwrap().unwrap();
+    assert!(store.renew(&first, 10_000).await.unwrap());
+    assert!(store.owns(&first, 10_001).await.unwrap());
+    assert!(!store
+        .owns(&first, 10_000 + REVIEW_OWNER_TTL_MS)
+        .await
+        .unwrap());
+    assert!(!store.renew(&first, 10_000 + REVIEW_OWNER_TTL_MS).await.unwrap());
+    let recovered = store
+        .claim_next("process-b", 10_000 + REVIEW_OWNER_TTL_MS)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!store
+        .finish(&first, TerminalOutcome::Published, 50_000)
+        .await
+        .unwrap());
+    assert!(store
+        .owns(&recovered, 10_001 + REVIEW_OWNER_TTL_MS)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

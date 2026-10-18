@@ -14,13 +14,17 @@ pub const MAX_RUNNING_REVIEWS: usize = 4;
 pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
 /// How long terminal delivery IDs remain deduped.
 pub const REVIEW_TOMBSTONE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+/// Upper bound for any persisted identifier or descriptive field.
+pub const REVIEW_JOB_FIELD_LIMIT: usize = 300;
 
 /// Stable identity for one accepted review request.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct ReviewJobId(pub String);
 
 /// Whether a recovered review should reuse incremental state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewJobMode {
     /// Reuse prior evidence and finding fingerprints.
     Incremental,
@@ -29,7 +33,7 @@ pub enum ReviewJobMode {
 }
 
 /// Minimal request metadata needed to resume an accepted review.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReviewRequest {
     /// Stable webhook delivery ID or generated manual-review ID.
     pub id: ReviewJobId,
@@ -88,6 +92,183 @@ pub enum TerminalOutcome {
     Exhausted,
 }
 
+/// One unfinished scheduler record and its fenced owner, if running.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScheduledReview {
+    /// Accepted request metadata.
+    pub request: ReviewRequest,
+    /// Owner identity, absent while pending.
+    pub owner: Option<String>,
+    /// Ownership generation, increased on every claim.
+    pub generation: u64,
+    /// Owner lease expiry in Unix milliseconds.
+    pub owner_until_ms: i64,
+    /// Earliest retry time in Unix milliseconds.
+    pub not_before_ms: i64,
+    /// Failures observed across process restarts.
+    pub attempts: u32,
+}
+
+/// A completed ID retained to dedupe redeliveries for seven days.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewTombstone {
+    /// Original request ID.
+    pub id: ReviewJobId,
+    /// Durable terminal outcome.
+    pub outcome: TerminalOutcome,
+    /// Unix millisecond expiration time.
+    pub expires_at_ms: i64,
+}
+
+/// Whole single-document Mongo scheduler state, updated by revision CAS.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewSchedulerState {
+    /// Monotonic revision used for compare-and-swap writes.
+    pub revision: u64,
+    /// Pending and running work. This list is never TTL-expired.
+    pub unfinished: Vec<ScheduledReview>,
+    /// Bounded, expiring delivery dedupe records.
+    pub terminal: Vec<ReviewTombstone>,
+}
+
+impl ReviewSchedulerState {
+    /// Atomically admit a whole batch in memory before the Mongo CAS persists it.
+    pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>) -> Admission {
+        if requests.is_empty() {
+            return Admission::Duplicate;
+        }
+        let now_ms = requests
+            .iter()
+            .map(|request| request.accepted_at_ms)
+            .max()
+            .unwrap_or_default();
+        self.terminal.retain(|record| record.expires_at_ms > now_ms);
+        let mut incoming = std::collections::HashSet::new();
+        if requests.iter().any(|request| {
+            !incoming.insert(request.id.clone()) || !metadata_is_bounded(request)
+        }) {
+            return Admission::Full;
+        }
+        let already = requests
+            .iter()
+            .filter(|request| {
+                self.unfinished
+                    .iter()
+                    .any(|record| record.request.id == request.id)
+                    || self.terminal.iter().any(|record| record.id == request.id)
+            })
+            .count();
+        if already == requests.len() {
+            return Admission::Duplicate;
+        }
+        if already != 0
+            || self.unfinished.len() + requests.len() > MAX_UNFINISHED_REVIEWS
+            || self.terminal.len() + self.unfinished.len() + requests.len() > 1_000
+        {
+            return Admission::Full;
+        }
+        self.unfinished.extend(requests.into_iter().map(|request| ScheduledReview {
+            request,
+            owner: None,
+            generation: 0,
+            owner_until_ms: 0,
+            not_before_ms: 0,
+            attempts: 0,
+        }));
+        Admission::Admitted
+    }
+
+    /// Claim the oldest eligible record within the four-process global bound.
+    pub fn claim_next(&mut self, owner: &str, now_ms: i64) -> Option<OwnedReview> {
+        let running = self
+            .unfinished
+            .iter()
+            .filter(|record| record.owner.is_some() && record.owner_until_ms > now_ms)
+            .count();
+        if running >= MAX_RUNNING_REVIEWS {
+            return None;
+        }
+        let record = self.unfinished.iter_mut().find(|record| {
+            record.not_before_ms <= now_ms
+                && (record.owner.is_none() || record.owner_until_ms <= now_ms)
+        })?;
+        record.generation += 1;
+        record.owner = Some(owner.to_owned());
+        record.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
+        record.attempts = record.attempts.saturating_add(1);
+        Some(OwnedReview {
+            request: record.request.clone(),
+            owner: owner.to_owned(),
+            generation: record.generation,
+        })
+    }
+
+    /// Extend the current unexpired owner's lease.
+    pub fn renew(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
+        let Some(record) = self.unfinished.iter_mut().find(|record| owns(record, owned)) else {
+            return false;
+        };
+        if record.owner_until_ms <= now_ms {
+            return false;
+        }
+        record.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
+        true
+    }
+
+    /// Check the current unexpired claim before paid work or publication.
+    pub fn owns(&self, owned: &OwnedReview, now_ms: i64) -> bool {
+        self.unfinished
+            .iter()
+            .find(|record| owns(record, owned))
+            .is_some_and(|record| record.owner_until_ms > now_ms)
+    }
+
+    /// Return the current owner's request to pending with bounded backoff.
+    pub fn defer(&mut self, owned: &OwnedReview, not_before_ms: i64) -> bool {
+        let Some(record) = self.unfinished.iter_mut().find(|record| owns(record, owned)) else {
+            return false;
+        };
+        record.owner = None;
+        record.owner_until_ms = 0;
+        record.not_before_ms = not_before_ms;
+        true
+    }
+
+    /// Complete the current owner's request and reserve its dedupe tombstone.
+    pub fn finish(
+        &mut self,
+        owned: &OwnedReview,
+        outcome: TerminalOutcome,
+        completed_at_ms: i64,
+    ) -> bool {
+        let Some(index) = self.unfinished.iter().position(|record| owns(record, owned)) else {
+            return false;
+        };
+        let record = self.unfinished.remove(index);
+        self.terminal.push(ReviewTombstone {
+            id: record.request.id,
+            outcome,
+            expires_at_ms: completed_at_ms + REVIEW_TOMBSTONE_TTL_MS,
+        });
+        true
+    }
+}
+
+fn metadata_is_bounded(request: &ReviewRequest) -> bool {
+    request.id.0.len() <= REVIEW_JOB_FIELD_LIMIT
+        && request.repo.len() <= REVIEW_JOB_FIELD_LIMIT
+        && request.author.len() <= REVIEW_JOB_FIELD_LIMIT
+        && request.head_sha.as_ref().is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
+        && request.delivery.as_ref().is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
+        && request.event.len() <= REVIEW_JOB_FIELD_LIMIT
+}
+
+fn owns(record: &ScheduledReview, owned: &OwnedReview) -> bool {
+    record.request.id == owned.request.id
+        && record.owner.as_deref() == Some(owned.owner.as_str())
+        && record.generation == owned.generation
+}
+
 /// Atomic journal for accepted server reviews.
 #[async_trait::async_trait]
 pub trait ReviewJobStore: Send + Sync {
@@ -123,4 +304,4 @@ pub trait ReviewJobStore: Send + Sync {
 
 #[cfg(test)]
 #[path = "review_job_test.rs"]
-mod tests;
+pub(crate) mod tests;

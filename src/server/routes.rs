@@ -3008,6 +3008,72 @@ impl Previews for PreviewDispatch {
 mod tests {
     use super::*;
 
+    fn queued_test_review(number: u64) -> QueuedReview {
+        QueuedReview {
+            action: Action::Review {
+                repo: "owner/repo".into(),
+                number,
+                author: "contributor".into(),
+                installation: 1,
+                head_sha: Some(format!("sha-{number}")),
+            },
+            delivery: Some(format!("delivery-{number}")),
+            event: "pull_request".into(),
+            mode: Mode::Incremental,
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_review_queue_keeps_backlog_as_data_and_starts_after_a_permit_frees() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let permits = Arc::new(Semaphore::new(1));
+        let held = permits.clone().acquire_owned().await.expect("slot");
+        let (sender, receiver) = mpsc::channel(1);
+        try_enqueue_review(&sender, queued_test_review(7)).expect("queued");
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let observed = started.clone();
+        let dispatcher = tokio::spawn(drain_review_queue(receiver, permits, move |_job, permit| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            drop(permit);
+        }));
+        tokio::task::yield_now().await;
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a freed permit starts the queued worker");
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        dispatcher.abort();
+    }
+
+    #[test]
+    fn a_full_review_queue_refuses_work_without_accepting_it() {
+        let (sender, _receiver) = mpsc::channel(1);
+        try_enqueue_review(&sender, queued_test_review(7)).expect("first job fits");
+
+        let rejected = try_enqueue_review(&sender, queued_test_review(8));
+        assert!(matches!(rejected, Err(mpsc::error::TrySendError::Full(_))));
+    }
+
+    #[test]
+    fn manual_full_reviews_have_a_distinct_claim_key() {
+        assert_ne!(
+            review_lease("owner/repo", 7, Mode::Full, Some("abc")),
+            review_lease("owner/repo", 7, Mode::Incremental, Some("abc"))
+        );
+        assert_ne!(
+            review_lease("owner/repo", 7, Mode::Full, Some("abc")),
+            review_lease("owner/repo", 7, Mode::Full, None)
+        );
+    }
+
     #[tokio::test]
     async fn a_queued_review_that_is_closed_before_start_does_no_work() {
         use crate::forge::types::PullRequest as PullRequestData;

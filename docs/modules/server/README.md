@@ -36,6 +36,24 @@ receives GitHub credentials; write-token ordering remains independent of model
 construction. Credentials and provider policy are fixed for the server's
 lifetime; restart to pick up a rotated model key.
 
+## Bounded review scheduling
+
+Webhook reviews enter a bounded in-memory queue of 256 records. One dispatcher
+waits for a review permit before spawning work, so a burst occupies queue slots
+as data instead of creating an unbounded set of waiting tasks. Manual full
+reviews use the same queue and retain a separate `!full` lease key. If the
+queue is full, the server returns `503` without acknowledging the delivery and
+logs the pull request and delivery ID; GitHub does not retry automatically, so
+an operator must redeliver that overflowed event. Other webhook actions keep
+their existing dispatch path.
+
+When a pull-request event supplies its head SHA, the worker claims that SHA
+before minting a read token or fetching live PR state. Comment and manual
+requests first claim a per-PR key, then claim the live SHA before indexing. If
+the head moved, the worker transfers its lease to the new SHA. The app checks
+the leased SHA again immediately after loading review context and skips before
+any model call if the context moved in the meantime.
+
 ## The write-token boundary
 
 `AGENTS.md` says the model never holds a write token. The two-job Actions split
@@ -69,9 +87,9 @@ thin review for a late one, and a late review is the one nobody reads.
 Webhook routing ignores a pull request event when GitHub supplies a non-open
 state or `merged: true`. Comment deliveries use the issue-shaped PR reference;
 when it includes a closed state, a mention is ignored before it is queued.
-Some trigger payloads have no state, so the worker reads the live pull request
-again before indexing, claiming a review lease, opening a check, or starting
-the lanes. This also protects `/admin/reviews`: its queued head can close while
+Some trigger payloads have no state, so the worker claims its supplied revision
+before reading the live pull request, then applies this gate before indexing,
+opening a check, or starting the lanes. This also protects `/admin/reviews`: its queued head can close while
 waiting for a worker, and a manual request follows the same live-state gate.
 After the lanes return, `app::apply` reads live state again before its first
 write, so a pull request merged while a model call was running receives no

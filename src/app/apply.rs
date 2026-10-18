@@ -1084,6 +1084,7 @@ mod tests {
                     CheckConclusion::Failure
                 },
                 summary: "Reviewed.".into(),
+                completed: true,
                 findings,
                 noted: Vec::new(),
                 resolved: vec![],
@@ -2750,6 +2751,7 @@ mod tests {
             check_name: LaneId::Tests.check_name(),
             conclusion: CheckConclusion::Neutral,
             summary: outcome.summary,
+            completed: outcome.completed,
             findings: vec![],
             noted: vec![],
             resolved: vec![],

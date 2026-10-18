@@ -859,6 +859,7 @@ mod tests {
             check_name: lane.check_name(),
             conclusion,
             summary: summary.into(),
+            completed: !models.is_empty(),
             findings: vec![],
             noted: vec![],
             resolved: vec![],

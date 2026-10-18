@@ -294,6 +294,7 @@ fn lane_of(findings: Vec<Finding>) -> LaneProposal {
         check_name: LaneId::Critique.check_name(),
         conclusion: CheckConclusion::Failure,
         summary: "Reviewed.".into(),
+        completed: true,
         findings,
         noted: Vec::new(),
         resolved: vec![],

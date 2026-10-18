@@ -854,7 +854,12 @@ mod tests {
                 "changes": "Behavior changed.",
                 "features": [],
                 "tests": [],
-                "positive_observations": {}
+                "positive_observations": {
+                    "critique": [{
+                        "observation": "The corrected known-lane observation is retained.",
+                        "citations": ["src/lib.rs"]
+                    }]
+                }
             }))
             .with_usage(crate::ports::model::Usage {
                 input_tokens: 10,
@@ -884,6 +889,10 @@ mod tests {
             summary.executive_summary,
             "The pull request preserves its stated purpose."
         );
+        assert_eq!(
+            summary.positive_observations[&LaneId::Critique],
+            ["The corrected known-lane observation is retained."]
+        );
         assert_eq!(spend.usage.input_tokens, 20);
         assert_eq!(spend.usage.output_tokens, 4);
         assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
@@ -892,6 +901,14 @@ mod tests {
         assert!(
             request[0].schema["properties"]["positive_observations"]["additionalProperties"]
                 == false
+        );
+        assert!(
+            request[0].schema["properties"]["positive_observations"]["properties"]["correctness"]
+                .is_null()
+        );
+        assert!(
+            !request[0].schema["properties"]["positive_observations"]["properties"]["critique"]
+                .is_null()
         );
         assert!(
             request[1]
@@ -1087,7 +1104,7 @@ mod tests {
             additions: 83,
             deletions: 12,
         };
-        let _ = generate_with_input(
+        let (summary, _, _) = generate_with_input(
             &model,
             &Config::default(),
             &pull_request,
@@ -1135,6 +1152,11 @@ mod tests {
         assert_eq!(request["lanes"][5]["status"]["status"], "partial");
         assert_eq!(request["lanes"][5]["status"]["pending_checks"], 1);
         assert!(request["lanes"][5]["status"].get("file_coverage").is_none());
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("The pull request protects speech privacy.")
+        );
     }
 
     #[tokio::test]

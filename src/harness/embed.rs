@@ -1080,6 +1080,105 @@ mod tests {
         assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
     }
 
+    #[tokio::test]
+    async fn agentic_paid_call_is_retained_when_the_next_dispatch_is_cancelled() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Message;
+        use crate::ports::tree::MockTree;
+        use std::time::Duration;
+        use tracing::instrument::WithSubscriber;
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let tool_reply = Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic-cancelled",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"list-1","type":"function","function":{"name":"repo_list","arguments":"{\"path\":\".\",\"limit\":5}"}
+                }]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let (gateway, releases) = FakeGateway::start_paused(vec![
+            tool_reply,
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"total_tokens":20,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                Message::system("Review this evidence."),
+                Message::user("Check the implementation."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let calls = Arc::new(RecordedModelCalls::default());
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(std::io::sink)
+            .finish();
+        let running = crate::ports::model::with_model_call_observer(
+            calls.clone(),
+            model
+                .review(
+                    request,
+                    &tree,
+                    &crate::config::types::LookupPolicy::default(),
+                )
+                .with_subscriber(tracing::Dispatch::new(subscriber)),
+        );
+        let mut running = Box::pin(running);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut running => panic!("review completed before its first response: {result:?}"),
+                _ = async { while gateway.requests().is_empty() { tokio::task::yield_now().await; } } => (),
+            }
+        })
+        .await
+        .expect("first agentic dispatch reaches the gateway");
+        releases.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut running => panic!("review completed before its next response: {result:?}"),
+                _ = async { while gateway.requests().len() < 2 { tokio::task::yield_now().await; } } => (),
+            }
+        })
+        .await
+        .expect("the next agentic dispatch reaches the gateway");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut running)
+                .await
+                .is_err()
+        );
+        drop(running);
+
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the paid model event is recorded once");
+        assert_eq!(calls[0].0.input_tokens, 12);
+        assert_eq!(calls[0].0.output_tokens, 3);
+        assert_eq!(calls[0].0.calls_attempted, 1);
+        assert_eq!(calls[0].0.calls_succeeded, 1);
+        assert!(calls[0].3 > Duration::ZERO);
+    }
+
     fn models() -> Models {
         Models {
             agentic_reviewers: false,

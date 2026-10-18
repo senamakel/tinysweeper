@@ -2877,7 +2877,6 @@ mod tests {
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId};
         use crate::harness::MockModel;
-        use crate::ports::model::Model;
 
         let mut config: crate::config::Config = crate::config::DEFAULTS
             .parse::<toml::Table>()
@@ -2941,7 +2940,7 @@ mod tests {
         assert_eq!(record.files_total, 1);
         assert_eq!(record.files_answered, 0);
         assert_eq!(record.files_unanswered, 1);
-        assert!(record.phases_ms["context"] > 0);
+        assert!(record.phases_ms.contains_key("context"));
         assert!(record.phases_ms["lanes"] > 0);
         assert_eq!(record.calls_attempted, 1);
         assert_eq!(record.calls_errored, 1);

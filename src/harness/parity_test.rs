@@ -362,7 +362,7 @@ async fn configured_alias_prices_allow_budgeted_truncation_retries() {
             output: 1.8,
         },
     );
-    let model = adapter(&models).scoped_budget(0.11).unwrap();
+    let model = adapter(&models).scoped_budget(1.0).unwrap();
     let response = model.complete(request("deep")).await.unwrap();
     assert_eq!(response.usage.input_tokens, 240);
     assert!((response.usage.cost_usd - 0.0042).abs() < 1e-12);
@@ -647,7 +647,7 @@ async fn fitting_paid_calls_dispatch_together_while_excess_capacity_waits() {
             output: 100.0,
         },
     );
-    let model = adapter(&models).scoped_budget(1.0).unwrap();
+    let model = adapter(&models).scoped_budget(0.11).unwrap();
     let mut tasks = Vec::new();
     for _ in 0..3 {
         let model = model.clone();

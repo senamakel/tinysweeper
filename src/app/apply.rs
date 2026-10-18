@@ -2736,7 +2736,7 @@ mod tests {
         let forge = forge("abc123");
         let config = config();
         let model = MockModel::new().then(serde_json::json!({
-            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. The end-to-end lane confirms all checks are complete. The transaction commits each event once. The test fixture maps the empty-state case. The commit reviewer found no issues.",
+            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. The end-to-end lane confirms all checks are complete. The transaction commits each event once. The test fixture maps the empty-state case. The commit reviewer found no issues. The parser now rejects unknown paths.",
             "changes": "All checks report no issues. The parser handles unknown paths safely.",
             "features": [{
                 "kind": "addition",

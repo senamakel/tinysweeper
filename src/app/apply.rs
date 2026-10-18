@@ -113,7 +113,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), &lane.summary),
+                    title: title_for(lane.findings.len(), lane.coverage.as_ref()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -634,25 +634,17 @@ pub async fn settle_e2e(
 /// fenced with one more backtick than the longest run inside, which is how
 /// CommonMark spells a literal backtick, and control characters — a newline
 /// ends a span — are dropped.
-fn code_span(text: &str) -> String {
-    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-    let longest = clean.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-    let fence = "`".repeat(longest + 1);
-    if clean.contains('`') {
-        // A space each side is what lets a span begin or end with a backtick;
-        // CommonMark strips exactly one from each end.
-        format!("{fence} {clean} {fence}")
-    } else {
-        format!("{fence}{clean}{fence}")
-    }
-}
-
-fn title_for(findings: usize, summary: &str) -> String {
-    match findings {
-        0 => summary.chars().take(80).collect(),
-        1 => "1 finding".into(),
-        n => format!("{n} findings"),
-    }
+fn title_for(findings: usize, coverage: Option<&crate::lanes::FileCoverage>) -> String {
+    let finding_count = match findings {
+        1 => "1 finding".to_string(),
+        count => format!("{count} findings"),
+    };
+    let Some(coverage) = coverage else {
+        return finding_count;
+    };
+    let reviewed = coverage.reviewed.len();
+    let total = reviewed + coverage.unanswered.len();
+    format!("{finding_count} · {reviewed} of {total} files reviewed")
 }
 
 /// The rendered summary, for tests in sibling modules.

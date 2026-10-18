@@ -133,10 +133,11 @@ pub fn lane_summary(
 
 /// One finding, folded away.
 fn detail(finding: &Finding) -> String {
-    let location = match finding.line {
-        Some(line) => format!("`{}:{line}`", finding.path),
-        None => format!("`{}`", finding.path),
-    };
+    let location = code_span(&format!(
+        "{}{}",
+        finding.path,
+        finding.line.map(|line| format!(":{line}")).unwrap_or_default()
+    ));
 
     // Three lines rather than one run-on: where it is, why it was raised, and
     // then the argument. The rule used to be tacked onto the location line
@@ -237,12 +238,6 @@ pub fn escape_emphasis(text: &str) -> String {
 
 /// A `<summary>` renders as HTML, so a stray tag in a title would break out of
 /// the disclosure and mangle the rest of the page.
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 /// Render the cost line shown under every review.
 ///
 /// Cache hit rate is here rather than buried in a log because it is the number

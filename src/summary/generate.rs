@@ -580,7 +580,7 @@ fn validated_model_narrative(
     validated_narrative(text)
 }
 
-fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneReviewStatus {
+fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneReviewStatus {
     // `LaneOutcome::unanswered` uses `skipped` to explain why its lane is
     // neutral, while `unanswered` carries the typed distinction from an
     // intentional policy skip. Prefer that structured evidence over prose.
@@ -588,7 +588,7 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
         return lane_status_value(LaneStatusKind::Skipped, None, 0);
     }
     if let Some(coverage) = &lane.coverage {
-        if changed_paths.is_empty() {
+        if full_pr_paths.is_empty() {
             let status = if !lane_has_response(lane) {
                 LaneStatusKind::NoResponse
             } else if !lane.pending.is_empty() {
@@ -598,19 +598,21 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
             };
             return lane_status_value(
                 status,
-                Some(LaneFileCoverage {
-                    reviewed: 0,
-                    total: 0,
-                }),
+                None,
                 lane.pending.len(),
             );
         }
-        let unanswered: BTreeSet<&str> = coverage.unanswered.iter().map(String::as_str).collect();
+        let unanswered: BTreeSet<&str> = coverage
+            .unanswered
+            .iter()
+            .chain(lane.unanswered.iter())
+            .map(String::as_str)
+            .collect();
         let reviewed: BTreeSet<&str> = coverage
             .reviewed
             .iter()
             .map(String::as_str)
-            .filter(|path| changed_paths.contains(*path))
+            .filter(|path| full_pr_paths.contains(*path))
             .filter(|path| !unanswered.contains(path))
             .collect();
         let count = reviewed.len();
@@ -619,11 +621,11 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
                 LaneStatusKind::NoResponse,
                 Some(LaneFileCoverage {
                     reviewed: 0,
-                    total: changed_paths.len(),
+                    total: full_pr_paths.len(),
                 }),
                 lane.pending.len(),
             )
-        } else if count == changed_paths.len() {
+        } else if count == full_pr_paths.len() && unanswered.is_empty() {
             let status = if lane.pending.is_empty() {
                 LaneStatusKind::Answered
             } else {
@@ -633,7 +635,7 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
                 status,
                 Some(LaneFileCoverage {
                     reviewed: count,
-                    total: changed_paths.len(),
+                    total: full_pr_paths.len(),
                 }),
                 lane.pending.len(),
             )
@@ -642,7 +644,7 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
                 LaneStatusKind::Partial,
                 Some(LaneFileCoverage {
                     reviewed: count,
-                    total: changed_paths.len(),
+                    total: full_pr_paths.len(),
                 }),
                 lane.pending.len(),
             )
@@ -730,16 +732,21 @@ fn sanitize_prior_narrative(
         test.assessment = assessment;
         true
     });
-    summary.positive_observations.retain(|lane, observations| {
-        statuses
+    summary.positive_observations.retain_mut(|lane, observations| {
+        if !statuses
             .get(lane.as_str())
             .is_some_and(|status| matches!(status.status, LaneStatusKind::Answered))
-            && {
-                observations.retain(|observation| {
-                    validated_model_narrative(observation, statuses).is_some()
-                });
-                !observations.is_empty()
-            }
+        {
+            return false;
+        }
+        observations.retain_mut(|observation| {
+            let Some(validated) = validated_model_narrative(observation, statuses) else {
+                return false;
+            };
+            *observation = validated;
+            true
+        });
+        !observations.is_empty()
     });
 }
 
@@ -767,9 +774,15 @@ fn claims_unsupported_lane_success(
         "approve",
         "approved",
     ];
-    let broad_all_lane_claim = (lower.contains("all lane") || lower.contains("every lane"))
-        && positive.iter().any(|word| words.contains(word))
-        || lower.contains("all reviewers") && positive.iter().any(|word| words.contains(word));
+    let broad_scope = (words.contains("all") || words.contains("every"))
+        && (["lane", "lanes", "reviewer", "reviewers"]
+            .iter()
+            .any(|word| words.contains(word)));
+    let positive_phrase = positive.iter().any(|word| words.contains(word))
+        || lower.contains("no findings")
+        || lower.contains("found none")
+        || lower.contains("no issues");
+    let broad_all_lane_claim = broad_scope && positive_phrase;
     if broad_all_lane_claim
         && statuses
             .values()
@@ -777,10 +790,6 @@ fn claims_unsupported_lane_success(
     {
         return true;
     }
-    let positive_phrase = positive.iter().any(|word| words.contains(word))
-        || lower.contains("no findings")
-        || lower.contains("found none")
-        || lower.contains("no issues");
     if !positive_phrase {
         return false;
     }

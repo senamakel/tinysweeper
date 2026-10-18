@@ -349,12 +349,15 @@ impl ReviewSchedulerState {
             }) else {
                 return PaidStart::OwnershipLost;
             };
-            if budget.deadline_hit || self.head_history.iter().any(|deadline| {
-                deadline.repo == request.repo
-                    && deadline.number == request.number
-                    && deadline.head_sha == budget.head_sha
-                    && deadline.expires_at_ms > now_ms
-            }) {
+            if budget.terminal_outcome.is_some()
+                || budget.deadline_hit
+                || self.head_history.iter().any(|record| {
+                    record.repo == request.repo
+                        && record.number == request.number
+                        && record.head_sha == budget.head_sha
+                        && record.expires_at_ms > now_ms
+                })
+            {
                 return PaidStart::Exhausted;
             }
             if budget.paid_attempts >= MAX_REVIEW_PAID_ATTEMPTS {
@@ -454,9 +457,7 @@ impl ReviewSchedulerState {
                 })
             })
             .is_some_and(|budget| {
-                budget.terminal_outcome.is_some()
-                    || budget.deadline_hit
-                    || budget.paid_attempts >= MAX_REVIEW_PAID_ATTEMPTS
+                budget.terminal_outcome.is_some() || budget.deadline_hit
             })
     }
 
@@ -468,7 +469,7 @@ impl ReviewSchedulerState {
         }) else {
             return false;
         };
-        let request = &self.unfinished[index].request;
+        let request = self.unfinished[index].request.clone();
         if request.mode == ReviewJobMode::Incremental {
             let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
                 budget.repo == request.repo && budget.number == request.number
@@ -479,23 +480,6 @@ impl ReviewSchedulerState {
             budget.terminal_outcome = Some(TerminalOutcome::Deadline);
         }
         let record = self.unfinished.remove(index);
-        if record.request.mode == ReviewJobMode::Incremental
-            && matches!(
-                outcome,
-                TerminalOutcome::Published
-                    | TerminalOutcome::Declined
-                    | TerminalOutcome::Exhausted
-                    | TerminalOutcome::Deadline
-            )
-            && let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
-                budget.repo == record.request.repo && budget.number == record.request.number
-            })
-        {
-            budget.terminal_outcome = Some(outcome);
-            if outcome == TerminalOutcome::Deadline {
-                budget.deadline_hit = true;
-            }
-        }
         self.terminal.extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
             id,
             outcome: TerminalOutcome::Deadline,
@@ -600,10 +584,39 @@ impl ReviewSchedulerState {
             return false;
         };
         let record = self.unfinished.remove(index);
+        let existing_terminal = if record.request.mode == ReviewJobMode::Incremental {
+            self.incremental_heads
+                .iter()
+                .find(|budget| {
+                    budget.repo == record.request.repo && budget.number == record.request.number
+                })
+                .and_then(|budget| budget.terminal_outcome)
+        } else {
+            None
+        };
+        if existing_terminal.is_none()
+            && record.request.mode == ReviewJobMode::Incremental
+            && matches!(
+                outcome,
+                TerminalOutcome::Published
+                    | TerminalOutcome::Declined
+                    | TerminalOutcome::Exhausted
+                    | TerminalOutcome::Deadline
+            )
+            && let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
+                budget.repo == record.request.repo && budget.number == record.request.number
+            })
+        {
+            budget.terminal_outcome = Some(outcome);
+            if outcome == TerminalOutcome::Deadline {
+                budget.deadline_hit = true;
+            }
+        }
+        let dedupe_outcome = existing_terminal.unwrap_or(outcome);
         self.terminal.extend(record.accepted_ids.into_iter().map(|id| {
             ReviewTombstone {
                 id,
-                outcome,
+                outcome: dedupe_outcome,
                 expires_at_ms: completed_at_ms + REVIEW_TOMBSTONE_TTL_MS,
             }
         }));

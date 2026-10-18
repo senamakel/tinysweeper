@@ -56,7 +56,7 @@ impl ReviewJobStore for MockReviewJobStore {
                     .map(|record| record.accepted_ids.len())
                     .sum::<usize>()
                 + state.incremental_heads.len()
-                + state.deadline_heads.len()
+                + state.head_history.len()
                 + count
                 <= MAX_TERMINAL_REVIEW_RESERVATIONS)
     }

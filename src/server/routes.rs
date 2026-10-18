@@ -3017,6 +3017,20 @@ impl ReviewRun<'_> {
         }
         run.check_work(state).await?;
 
+        // A delayed or out-of-order webhook can point at a head that has
+        // already completed while this worker was fetching the live PR. The
+        // authoritative head was just confirmed under the durable owner; stop
+        // here so that hint cannot reopen status or spend another model call.
+        if let Some(owned) = &run.owned
+            && run.mode == Mode::Incremental
+            && state
+                .review_jobs
+                .head_is_terminal(owned, unix_time_ms())
+                .await?
+        {
+            return Ok(InnerReview::Complete(None));
+        }
+
         // A manual review deliberately takes a lease of its own: the operator asked
         // for this run *because* the ordinary one already happened, so sharing the
         // webhook path's key would make the button a silent no-op.

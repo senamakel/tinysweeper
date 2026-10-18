@@ -3789,7 +3789,6 @@ mod tests {
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         // This is the signal `ReviewRun::run` sets when open_status discovers
@@ -4667,6 +4666,7 @@ mod tests {
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert!(
             live.check("o/r", 7).is_ok(),

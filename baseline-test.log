@@ -1,5 +1,58 @@
-error: no matching package named `tinycomputer-accessibility` found
-location searched: /home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/vendor/tinycomputer/crates/tinycomputer-accessibility
-required by package `openhuman v0.64.15 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/crates/openhuman-core)`
-    ... which satisfies path dependency `openhuman-core` (locked to 0.64.15) of package `openhuman-embed v0.64.15 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/crates/openhuman-embed)`
-    ... which satisfies path dependency `openhuman-embed` (locked to 0.64.15) of package `tinysweeper v0.1.2 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest)`
+warning: patch `tinyinference-decisions v0.3.1 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-decisions)` was not used in the crate graph
+warning: patch `tinychannels v0.1.13 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/vendor/tinychannels)` was not used in the crate graph
+warning: patch `tinyflows v0.8.8 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/vendor/tinyflows/crates/tinyflows)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling tree-sitter-language v0.1.9
+   Compiling memchr v2.8.3
+   Compiling stable_deref_trait v1.2.1
+   Compiling cc v1.7.0
+   Compiling libc v0.2.190
+   Compiling writeable v0.6.4
+   Compiling serde_core v1.0.229
+   Compiling litemap v0.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling zmij v1.0.23
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling syn v3.0.7
+   Compiling regex-automata v0.4.18
+   Compiling itoa v1.0.18
+   Compiling synstructure v0.14.0
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling hashbrown v0.17.1
+   Compiling zerofrom v0.1.8
+   Compiling futures-sink v0.3.34
+   Compiling equivalent v1.0.2
+   Compiling yoke v0.8.3
+   Compiling smallvec v1.16.3
+   Compiling cfg-if v1.0.5
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling futures-core v0.3.34
+   Compiling serde_json v1.0.151
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling once_cell v1.21.4
+   Compiling typenum v1.20.1
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling futures-channel v0.3.34
+   Compiling hybrid-array v0.4.15
+   Compiling icu_provider v2.3.1
+   Compiling indexmap v2.14.2
+   Compiling futures-macro v0.3.34
+   Compiling utf8parse v0.2.2

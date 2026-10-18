@@ -884,11 +884,7 @@ pub async fn review_with_tree(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let full_pr_paths: Vec<String> = context
-        .files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect();
+    let full_pr_paths: Vec<String> = context.files.iter().map(|file| file.path.clone()).collect();
     let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
         if summary_generation_needed(config, &diffs) {
             let (summary, spend, transcript) = crate::summary::generate_with_input(

@@ -635,7 +635,14 @@ async fn receive(
             )
                 .into_response();
         }
-        let admission = match admit_webhook_review(&state, &action, &delivery, &event).await {
+        let admission = match admit_webhook_review(
+            state.review_jobs.as_ref(),
+            &action,
+            &delivery,
+            &event,
+        )
+        .await
+        {
             Ok(admission) => admission,
             Err(err) => {
                 tracing::error!(%err, %delivery, "could not durably accept review; operator redelivery required");
@@ -698,7 +705,7 @@ async fn receive(
 }
 
 async fn admit_webhook_review(
-    state: &AppState,
+    jobs: &dyn ReviewJobStore,
     action: &Action,
     delivery: &str,
     event: &str,
@@ -716,8 +723,7 @@ async fn admit_webhook_review(
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
-    state
-        .review_jobs
+    jobs
         .admit_batch(vec![ReviewRequest {
             id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
             repo: repo.clone(),
@@ -830,6 +836,7 @@ async fn dispatch(
                     delivery,
                     expected_head: head_sha,
                     queued_at: queued_at.unwrap_or_else(tokio::time::Instant::now),
+                    owned: None,
                 },
                 review_permit,
             )
@@ -3478,11 +3485,13 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         sender.try_send(()).expect("queued wakeup");
         let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
-        store
-            .admit_batch(vec![queued_test_review(7)])
-            .await
-            .expect("admitted")
-            .eq(&Admission::Admitted);
+        assert_eq!(
+            store
+                .admit_batch(vec![queued_test_review(7)])
+                .await
+                .expect("admitted"),
+            Admission::Admitted
+        );
 
         let started = Arc::new(AtomicUsize::new(0));
         let observed = started.clone();

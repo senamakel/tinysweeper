@@ -14,8 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::FutureExt;
 use serde_json::json;
-use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 
 use crate::automerge::types::Outcome;
 use crate::config::Config;
@@ -51,10 +51,6 @@ const MAX_CONCURRENT_REVIEWS: usize = 4;
 /// Backlog accepted while the four review slots are occupied. Queue entries
 /// are data, not Tokio tasks, so this is also the cap on pending review work.
 const MAX_QUEUED_REVIEWS: usize = 256;
-/// Keep a small bounded backlog so ordinary webhook bursts are acknowledged
-/// promptly while work waits as data rather than as spawned futures.
-const MAX_QUEUED_REVIEWS: usize = 16;
-
 /// How long one review may take, wall clock, from delivery to verdict.
 ///
 /// Every model call is bounded on its own — the gateway client caps a unary
@@ -288,7 +284,6 @@ pub async fn serve_with_model_factory(
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
-
 
     let shutdown_state = state.clone();
     let manual_state = state.clone();
@@ -1375,13 +1370,16 @@ impl FullReviews for ManualDispatch {
                 installation,
                 head_sha: Some(pull_request.head_sha),
             };
-            try_enqueue_review(&self.state.review_queue, QueuedReview {
+            try_enqueue_review(
+                &self.state.review_queue,
+                QueuedReview {
                     action,
                     delivery: None,
                     event: "manual-review".into(),
                     mode: Mode::Full,
-                })
-                .map_err(|err| Error::Forge(format!("review queue is full or closed: {err}")))?;
+                },
+            )
+            .map_err(|err| Error::Forge(format!("review queue is full or closed: {err}")))?;
             queued.push(number);
         }
 
@@ -3034,10 +3032,14 @@ mod tests {
 
         let started = Arc::new(AtomicUsize::new(0));
         let observed = started.clone();
-        let dispatcher = tokio::spawn(drain_review_queue(receiver, permits, move |_job, permit| {
-            observed.fetch_add(1, Ordering::SeqCst);
-            drop(permit);
-        }));
+        let dispatcher = tokio::spawn(drain_review_queue(
+            receiver,
+            permits,
+            move |_job, permit| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                drop(permit);
+            },
+        ));
         tokio::task::yield_now().await;
         assert_eq!(started.load(Ordering::SeqCst), 0);
 

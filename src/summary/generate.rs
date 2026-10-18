@@ -2213,6 +2213,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn purpose_title_metadata_reuses_a_multisentence_title_exactly() {
+        let old_title = "Run tests on Windows. Verify output";
+        let prior = ReviewSummary {
+            executive_summary: format!(
+                "Pull request purpose (title): {old_title}. The parser retains strict lane keys."
+            ),
+            purpose_title: Some(old_title.into()),
+            ..ReviewSummary::default()
+        };
+        let model = MockModel::new().then_error("offline");
+        let (summary, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest {
+                title: "Harden parser input".into(),
+                ..PullRequest::default()
+            },
+            &[],
+            &[],
+            Some(&prior),
+            &[],
+        )
+        .await;
+
+        assert!(
+            summary
+                .executive_summary
+                .starts_with("Pull request purpose (title): Harden parser input.")
+        );
+        assert!(
+            summary
+                .executive_summary
+                .contains("The parser retains strict lane keys")
+        );
+        assert!(!summary.executive_summary.contains(old_title));
+        assert_eq!(
+            summary.purpose_title.as_deref(),
+            Some("Harden parser input")
+        );
+    }
+
+    #[test]
+    fn legacy_title_wrapper_strips_only_its_exact_first_sentence() {
+        let text = "Pull request purpose (title): Previous title. Preserve this model claim. Keep this later claim.";
+        assert_eq!(
+            strip_prior_purpose_opening(text, None),
+            "Preserve this model claim. Keep this later claim."
+        );
+        let prose = "The model says Pull request purpose (title): Previous title. Preserve this model claim.";
+        assert_eq!(strip_prior_purpose_opening(prose, None), prose);
+    }
+
+    #[tokio::test]
     async fn deterministic_fallback_stores_scrubbed_prior_observations() {
         let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
         let prior_observation = format!("The old note quoted {secret}.");

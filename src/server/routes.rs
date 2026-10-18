@@ -907,6 +907,11 @@ fn take_shutdown_status_result(run: &Run) -> Option<InnerReview> {
         .then_some(InnerReview::Shutdown)
 }
 
+fn mark_shutdown_status_result(run: &Run) {
+    run.shutdown_deferred
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 enum PaidWork<T> {
     Started(T),
     Exhausted,
@@ -2971,8 +2976,7 @@ impl ReviewRun<'_> {
                 // next push, or the manual review the check points at, reviews
                 // this commit properly.
                 tracing::info!(%repo, number, "shutting down; not starting this review");
-                run.shutdown_deferred
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                mark_shutdown_status_result(run);
                 return Ok(None);
             }
             run.check_owner(state).await?;

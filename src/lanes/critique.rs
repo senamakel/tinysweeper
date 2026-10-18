@@ -372,7 +372,6 @@ async fn review_group(
 
     let mut findings = filtered.findings;
     let mut rejected = filtered.rejected;
-    let mut withheld_for_degraded_context = 0usize;
     let mut capped_for_degraded_context = 0usize;
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole
@@ -534,26 +533,24 @@ async fn review_group(
     }
 
     // A degraded index cannot prove an outside-diff claim wrong, but its
-    // silence cannot support one either. Late findings need a successful read
-    // of their own file. A changed module declaration can also assert a fact
-    // about a different file, so keep that claim at low confidence until one
-    // of Rust's valid module paths is successfully read. These decisions use
-    // typed outcomes from the pinned tree, never model-controlled rendering.
+    // silence cannot support one either. Keep every finding visible, while
+    // capping claims unless a successful typed read from the reviewed head
+    // supports the relevant source. Changed anchors alone are not evidence
+    // for claims about callers or other files. These decisions never trust
+    // model-controlled rendering.
     if input.retrieval_status.is_degraded() {
-        let mut actionable = Vec::with_capacity(findings.len());
+        let mut retained = Vec::with_capacity(findings.len());
         for mut finding in findings {
-            if finding.late {
-                let supported = match input.tree {
+            let mut supported = if finding.late {
+                match input.tree {
                     Some(tree) => head_read(tree, &finding.path, finding.line)
                         .await
                         .is_some_and(|proof| proof.proves_path(&finding.path)),
                     None => false,
-                };
-                if !supported {
-                    withheld_for_degraded_context += 1;
-                    continue;
                 }
-            }
+            } else {
+                false
+            };
 
             let module_paths = finding.line.and_then(|line| {
                 input
@@ -562,8 +559,9 @@ async fn review_group(
                     .find(|diff| diff.path == finding.path)
                     .map(|diff| crate::flows::lookup::module_paths_added_at(diff, line))
             });
-            if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
-                let supported = if let Some(tree) = input.tree {
+            if !supported {
+                if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
+                    supported = if let Some(tree) = input.tree {
                     let mut supported = false;
                     for path in module_paths {
                         if head_read(tree, &path, None)
@@ -578,14 +576,15 @@ async fn review_group(
                 } else {
                     false
                 };
-                if !supported {
-                    finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
-                    capped_for_degraded_context += 1;
                 }
             }
-            actionable.push(finding);
+            if !supported {
+                finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+                capped_for_degraded_context += 1;
+            }
+            retained.push(finding);
         }
-        findings = actionable;
+        findings = retained;
     }
 
     Ok(FileReview {
@@ -596,7 +595,6 @@ async fn review_group(
             &rejected,
             &findings,
             added_by_coverage,
-            withheld_for_degraded_context,
             capped_for_degraded_context,
         ),
         findings,
@@ -869,7 +867,6 @@ fn summarise(
     rejected: &[Rejection],
     kept: &[Finding],
     added_by_coverage: usize,
-    withheld_for_degraded_context: usize,
     capped_for_degraded_context: usize,
 ) -> String {
     let summary = if capped_for_degraded_context > 0 {
@@ -879,10 +876,10 @@ fn summarise(
             .collect::<Vec<_>>()
             .join("; ");
         if titles.is_empty() {
-            "Nothing to report confidently. Unsupported module claims were kept at Likely confidence."
+            "No findings were independently supported at the reviewed head; retained findings were capped at Likely confidence because retrieval was degraded."
                 .to_string()
         } else {
-            format!("Unsupported module claims were kept at Likely confidence: {titles}.")
+            format!("Retained findings were capped at Likely confidence because retrieval was degraded and no typed head-source lookup supported them: {titles}.")
         }
     } else if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
@@ -895,7 +892,7 @@ fn summarise(
             plural(rejected.len()),
             reasons.join("; ")
         )
-    } else if rejected.is_empty() && withheld_for_degraded_context == 0 {
+    } else if rejected.is_empty() {
         summary.to_string()
     } else {
         let titles = kept
@@ -935,15 +932,9 @@ fn summarise(
             plural(added_by_coverage)
         ));
     }
-    if withheld_for_degraded_context > 0 {
-        notes.push(format!(
-            "{withheld_for_degraded_context} unchanged-code finding{} withheld from action because retrieval was degraded and no current-head lookup supported it",
-            plural(withheld_for_degraded_context)
-        ));
-    }
     if capped_for_degraded_context > 0 {
         notes.push(format!(
-            "{capped_for_degraded_context} module-declaration finding{} capped at Likely confidence because no declared module path was successfully read at the reviewed head",
+            "{capped_for_degraded_context} finding{} retained but capped at Likely confidence because no typed head-source lookup supported it",
             plural(capped_for_degraded_context)
         ));
     }

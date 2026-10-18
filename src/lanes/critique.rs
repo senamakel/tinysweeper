@@ -1058,6 +1058,132 @@ fn helper() {
         );
     }
 
+    #[derive(Debug, Default)]
+    struct AddedModuleModel {
+        requests: std::sync::Mutex<Vec<crate::ports::model::ModelRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::model::Model for AddedModuleModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+            use crate::ports::model::{ModelResponse, Usage};
+
+            let prompt = request
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let value = if request.schema_name.contains("falsify") {
+                if prompt.contains("src/foo.rs") && prompt.contains("pub fn foo()") {
+                    json!({"incorrect": [{"index": 1, "reason": "the pull request adds src/foo.rs with the module implementation"}]})
+                } else {
+                    json!({"incorrect": []})
+                }
+            } else if request.schema_name.contains("critique")
+                && prompt.contains("The file is `src/lib.rs`")
+            {
+                json!({
+                    "summary": "The module file is missing.",
+                    "findings": [{
+                        "path": "src/lib.rs",
+                        "existing_code": "pub mod foo;",
+                        "rule": "missing-module",
+                        "title": "Add the missing foo module",
+                        "body": "The declared module has no source file.",
+                        "severity": "critical",
+                        "confidence": 0.99
+                    }]
+                })
+            } else {
+                json!({"summary": "Nothing to report.", "findings": []})
+            };
+            self.requests
+                .lock()
+                .expect("record requests")
+                .push(request.clone());
+            Ok(ModelResponse {
+                value,
+                model: request.model,
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_added_module_file_falsifies_a_missing_module_claim_across_groups() {
+        let mut config = config();
+        config.grouping.enabled = false;
+        let pr = pull_request();
+        let diffs = vec![
+            parse_file_patch(
+                "src/lib.rs",
+                "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+            ),
+            parse_file_patch(
+                "src/foo.rs",
+                "@@ -0,0 +1,1 @@\n+pub fn foo() {}\n",
+            ),
+        ];
+        let tree = crate::ports::tree::MockTree::from_files([(
+            "src/foo.rs",
+            "pub fn foo() {}\n",
+        )]);
+        let model = Arc::new(AddedModuleModel::default());
+
+        let outcome = Critique::new(model.clone())
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            })
+            .await
+            .expect("lane runs");
+
+        assert!(outcome.findings.is_empty(), "{outcome:?}");
+        let requests = model.requests.lock().expect("recorded requests");
+        let falsifier = requests
+            .iter()
+            .find(|request| request.schema_name.contains("falsify"))
+            .expect("the false finding reaches falsification");
+        let falsifier_prompt = falsifier
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            falsifier_prompt.contains("src/foo.rs")
+                && falsifier_prompt.contains("pub fn foo()"),
+            "falsification must see the added file even though another group owns it: {falsifier_prompt}"
+        );
+        assert!(
+            requests.iter().any(|request| {
+                request.schema_name.contains("critique")
+                    && request
+                        .messages
+                        .iter()
+                        .any(|message| message.content.contains("pub fn foo()"))
+            }),
+            "the module declaration's seed must read the new file from the head tree"
+        );
+    }
+
     /// How many changed lines a group needs to clear [`COVERAGE_PASS_MIN_LINES`].
     const LARGE_LINES: usize = COVERAGE_PASS_MIN_LINES;
 

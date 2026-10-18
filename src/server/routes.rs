@@ -3283,6 +3283,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_full_manual_queue_refuses_before_resolving_pull_requests() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (sender, _receiver) = mpsc::channel(1);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed = reads.clone();
+        let result = enqueue_manual_jobs(&sender, "owner/repo", 1, vec![7, 8], move |_| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::forge::types::PullRequest::default())
+            })
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::ReviewCapacityFull)));
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(sender.capacity(), 1, "failed reservation leaves queue intact");
+    }
+
+    #[tokio::test]
     async fn a_duplicate_revision_lease_skips_token_and_live_pr_reads() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -26,6 +26,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::lanes::e2e::runs::Watch;
 use crate::preview::session::Session as PreviewSession;
+use crate::ports::review_job::{
+    Admission, OwnedReview, ReviewJobStore, ReviewSchedulerState, TerminalOutcome,
+};
 use crate::state::types::ReviewedState;
 
 /// How long a lease survives without being released.
@@ -37,6 +40,10 @@ pub const LEASE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 6
 /// Environment variable naming the test database. Absent means the store tests
 /// skip, which is what keeps `cargo test` offline by default.
 pub const TEST_URI_ENV: &str = "TINYSWEEPER_TEST_MONGODB_URI";
+
+const REVIEW_SCHEDULER_ID: &str = "review-scheduler-v1";
+const REVIEW_SCHEDULER_CAS_RETRIES: usize = 16;
+const REVIEW_SCHEDULER_BSON_LIMIT: usize = 8 * 1024 * 1024;
 
 /// How much a contributor is trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +134,60 @@ pub struct Store {
     installations: Collection<Document>,
     review_state: Collection<Document>,
     preview_sessions: Collection<Document>,
+    review_scheduler: Collection<Document>,
+}
+
+#[async_trait::async_trait]
+impl ReviewJobStore for Store {
+    async fn admit_batch(
+        &self,
+        requests: Vec<crate::ports::review_job::ReviewRequest>,
+    ) -> Result<Admission> {
+        self.change_review_scheduler(move |state| state.admit_batch(requests.clone()))
+            .await
+    }
+
+    async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
+        let owner = owner.to_owned();
+        self.change_review_scheduler(move |state| state.claim_next(&owner, now_ms))
+            .await
+    }
+
+    async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state| state.renew(&owned, now_ms))
+            .await
+    }
+
+    async fn owns(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.owns(owned, now_ms))
+    }
+
+    async fn defer(
+        &self,
+        owned: &OwnedReview,
+        now_ms: i64,
+        not_before_ms: i64,
+    ) -> Result<bool> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state| state.defer(&owned, now_ms, not_before_ms))
+            .await
+    }
+
+    async fn finish(
+        &self,
+        owned: &OwnedReview,
+        outcome: TerminalOutcome,
+        now_ms: i64,
+        completed_at_ms: i64,
+    ) -> Result<bool> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state| {
+            state.finish(&owned, outcome, now_ms, completed_at_ms)
+        })
+        .await
+    }
 }
 
 impl Store {
@@ -145,6 +206,7 @@ impl Store {
             installations: database.collection("installations"),
             review_state: database.collection("review_state"),
             preview_sessions: database.collection("preview_sessions"),
+            review_scheduler: database.collection("review_scheduler"),
         };
         store.ensure_indexes().await?;
         Ok(store)
@@ -159,8 +221,75 @@ impl Store {
         Self::connect(&uri, &name).await
     }
 
+    async fn review_scheduler_state(&self) -> Result<ReviewSchedulerState> {
+        let Some(mut document) = self
+            .review_scheduler
+            .find_one(doc! { "_id": REVIEW_SCHEDULER_ID })
+            .await
+            .map_err(|err| Error::Forge(format!("could not read review scheduler: {err}")))?
+        else {
+            return Ok(ReviewSchedulerState::default());
+        };
+        document.remove("_id");
+        bson::deserialize_from_document(document)
+            .map_err(|err| Error::Forge(format!("could not decode review scheduler: {err}")))
+    }
+
+    async fn change_review_scheduler<T>(
+        &self,
+        mut change: impl FnMut(&mut ReviewSchedulerState) -> T,
+    ) -> Result<T> {
+        for _ in 0..REVIEW_SCHEDULER_CAS_RETRIES {
+            let mut state = self.review_scheduler_state().await?;
+            let before = state.clone();
+            let result = change(&mut state);
+            if state == before {
+                return Ok(result);
+            }
+            state.revision = before.revision.saturating_add(1);
+            let mut document = bson::serialize_to_document(&state)
+                .map_err(|err| Error::Forge(format!("could not encode review scheduler: {err}")))?;
+            if bson::to_vec(&document)
+                .map_err(|err| Error::Forge(format!("could not size review scheduler: {err}")))?
+                .len()
+                > REVIEW_SCHEDULER_BSON_LIMIT
+            {
+                return Err(Error::ReviewCapacityFull);
+            }
+
+            let updated = self
+                .review_scheduler
+                .update_one(
+                    doc! { "_id": REVIEW_SCHEDULER_ID, "revision": before.revision as i64 },
+                    doc! { "$set": document },
+                )
+                .await
+                .map_err(|err| Error::Forge(format!("could not update review scheduler: {err}")))?;
+            if updated.matched_count == 1 {
+                return Ok(result);
+            }
+            // Another process won the revision CAS. Reload and apply the same
+            // whole-batch operation against its committed state.
+        }
+        Err(Error::Forge(
+            "review scheduler remained contended after bounded retries".into(),
+        ))
+    }
+
     async fn ensure_indexes(&self) -> Result<()> {
         let unique = IndexOptions::builder().unique(true).build();
+
+        // One document is the entire bounded scheduler. A single-document CAS
+        // keeps admission atomic on standalone Mongo deployments; in
+        // particular, a manual batch never depends on replica-set transactions.
+        if let Err(err) = self
+            .review_scheduler
+            .insert_one(doc! { "_id": REVIEW_SCHEDULER_ID, "revision": 0_i64, "unfinished": [], "terminal": [] })
+            .await
+            && !is_duplicate_key(&err)
+        {
+            return Err(Error::Forge(format!("could not initialize review scheduler: {err}")));
+        }
 
         // The whole claim mechanism rests on these being unique: without them a
         // redelivered webhook quietly reviews twice.

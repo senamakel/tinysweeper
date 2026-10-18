@@ -2868,6 +2868,7 @@ mod tests {
         let spent = Run {
             mode: Mode::Incremental,
             slot: slot.clone(),
+            timing: crate::review_timing::ReviewTiming::new("o/r", 7, "Incremental"),
             deadline: now
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(now),
@@ -2881,6 +2882,7 @@ mod tests {
         let live = Run {
             mode: Mode::Incremental,
             slot,
+            timing: crate::review_timing::ReviewTiming::new("o/r", 7, "Incremental"),
             deadline: now + REVIEW_DEADLINE,
         };
         assert!(

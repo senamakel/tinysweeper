@@ -9,6 +9,7 @@ use tracing::Span;
 
 use crate::ports::model::Usage;
 
+/// Stable phase keys included in every terminal timing record.
 pub(crate) const PHASES: &[&str] = &[
     "permit",
     "open_status",
@@ -24,6 +25,7 @@ pub(crate) const PHASES: &[&str] = &[
     "publish",
 ];
 
+/// Classify a review error for timing and operator dashboards.
 pub(crate) fn outcome_for_error(error: &crate::error::Error) -> &'static str {
     if matches!(error, crate::error::Error::Timeout { .. }) {
         "deadline"
@@ -33,6 +35,7 @@ pub(crate) fn outcome_for_error(error: &crate::error::Error) -> &'static str {
 }
 
 #[derive(Debug, Clone)]
+/// Shared, cancellation-safe telemetry for a single review worker.
 pub(crate) struct ReviewTiming(Arc<Inner>);
 
 #[derive(Debug)]
@@ -44,26 +47,44 @@ struct Inner {
 /// Snapshot of the server's structured telemetry for one review run.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Record {
+    /// GitHub repository slug.
     pub(crate) repo: String,
+    /// Pull-request number.
     pub(crate) pr: u64,
+    /// Commit SHA being reviewed, when known.
     pub(crate) head_sha: String,
+    /// Review mode selected by the server.
     pub(crate) mode: String,
+    /// Terminal outcome, defaulting to `cancelled` until explicitly finished.
     pub(crate) outcome: String,
+    /// Worker start instant used to derive total wall time.
     pub(crate) started: Option<Instant>,
+    /// Time spent waiting for a review permit.
     pub(crate) queue_wait_ms: u64,
+    /// Accumulated duration per top-level phase.
     pub(crate) phases_ms: BTreeMap<String, u64>,
+    /// Accumulated duration per review lane.
     pub(crate) lanes_ms: BTreeMap<String, u64>,
+    /// Physical model attempts, plus one for pre-dispatch refusals.
     pub(crate) calls_attempted: u64,
+    /// Model attempts returning a usable answer.
     pub(crate) calls_succeeded: u64,
+    /// Model requests refused by admission or the provider.
     pub(crate) calls_refused: u64,
+    /// Model attempts that failed without a refusal.
     pub(crate) calls_errored: u64,
+    /// Aggregated tokens and cost retained by model adapters.
     pub(crate) usage: Usage,
+    /// Files changed in the pull request.
     pub(crate) files_total: usize,
+    /// Files without any known unanswered coverage.
     pub(crate) files_answered: usize,
+    /// Files omitted or unanswered by review lanes.
     pub(crate) files_unanswered: usize,
 }
 
 impl ReviewTiming {
+    /// Start a timing record for the repository, PR, and review mode.
     pub(crate) fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
         let mut record = Record {
             repo: repo.into(),
@@ -82,6 +103,7 @@ impl ReviewTiming {
         }))
     }
 
+    /// Measure a top-level phase and attach correlation fields.
     pub(crate) fn phase(&self, name: &'static str) -> PhaseGuard {
         let record = self.snapshot();
         PhaseGuard {
@@ -101,6 +123,7 @@ impl ReviewTiming {
         }
     }
 
+    /// Measure one lane without adding overlapping lane time to phase totals.
     pub(crate) fn lane(&self, name: &'static str) -> PhaseGuard {
         let record = self.snapshot();
         PhaseGuard {
@@ -121,6 +144,7 @@ impl ReviewTiming {
         }
     }
 
+    /// Apply a synchronized update to the telemetry snapshot.
     pub(crate) fn record(&self, update: impl FnOnce(&mut Record)) {
         let head_sha = {
             let mut record = self.0.record.lock().expect("review timing lock");
@@ -132,15 +156,18 @@ impl ReviewTiming {
         }
     }
 
+    /// Clone the current record for assertions or intermediate reporting.
     pub(crate) fn snapshot(&self) -> Record {
         self.0.record.lock().expect("review timing lock").clone()
     }
 
+    /// Mark the terminal outcome emitted when the final handle is dropped.
     pub(crate) fn finish(&self, outcome: &str) {
         self.record(|r| r.outcome = outcome.to_owned());
     }
 }
 
+/// Run a future inside a named phase, recording time on cancellation too.
 pub(crate) async fn measure<F: Future>(
     timing: Option<&ReviewTiming>,
     name: &'static str,
@@ -156,6 +183,7 @@ pub(crate) async fn measure<F: Future>(
     }
 }
 
+/// Run a future inside a named lane span and record elapsed time.
 pub(crate) async fn measure_lane<F: Future>(
     timing: Option<&ReviewTiming>,
     name: &'static str,
@@ -192,11 +220,13 @@ impl Drop for Inner {
     }
 }
 
+/// RAII timer that records elapsed time even when its future is cancelled.
 pub(crate) struct PhaseGuard {
     timing: ReviewTiming,
     name: &'static str,
     lane: Option<&'static str>,
     started: Instant,
+    /// Tracing span wrapped around the measured future.
     pub(crate) span: Span,
 }
 impl Drop for PhaseGuard {

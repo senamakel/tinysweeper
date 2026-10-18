@@ -319,9 +319,10 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
     .await;
     let model = adapter(&models(&gateway.base_url));
     let calls = Arc::new(Calls::default());
-    let request = model.complete(request("vendor/deep"));
-    let request = crate::ports::model::with_model_call_observer(calls.clone(), request);
-    tokio::pin!(request);
+    let request = Box::pin(crate::ports::model::with_model_call_observer(
+        calls.clone(),
+        model.complete(request("vendor/deep")),
+    ));
 
     tokio::time::timeout(Duration::from_secs(2), async {
         while gateway.requests().is_empty() {
@@ -340,7 +341,7 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
     .expect("the truncation retry reaches the fake gateway");
 
     assert!(
-        tokio::time::timeout(Duration::from_millis(30), &mut request)
+        tokio::time::timeout(Duration::from_millis(30), request)
             .await
             .is_err(),
         "the second provider response remains paused until cancellation"

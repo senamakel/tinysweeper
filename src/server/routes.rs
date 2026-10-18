@@ -630,7 +630,7 @@ async fn receive(
         };
         return match try_enqueue_review(&state.review_queue, queued) {
             Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
-            Err(mpsc::error::TrySendError::Full(job)) => {
+            Err(ReviewQueueError::Full(job)) => {
                 let subject = match &job.action {
                     Action::Review { repo, number, .. } => format!("{repo}#{number}"),
                     _ => "unknown subject".to_owned(),
@@ -642,7 +642,7 @@ async fn receive(
                 )
                     .into_response()
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(ReviewQueueError::Closed(_)) => {
                 tracing::error!("review queue is closed");
                 (StatusCode::SERVICE_UNAVAILABLE, "review queue unavailable").into_response()
             }
@@ -682,11 +682,19 @@ async fn receive(
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
+enum ReviewQueueError {
+    Full(Box<QueuedReview>),
+    Closed(Box<QueuedReview>),
+}
+
 fn try_enqueue_review(
     sender: &mpsc::Sender<QueuedReview>,
     job: QueuedReview,
-) -> std::result::Result<(), mpsc::error::TrySendError<QueuedReview>> {
-    sender.try_send(job)
+) -> std::result::Result<(), ReviewQueueError> {
+    sender.try_send(job).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(job) => ReviewQueueError::Full(Box::new(job)),
+        mpsc::error::TrySendError::Closed(job) => ReviewQueueError::Closed(Box::new(job)),
+    })
 }
 
 /// Drain the bounded review queue, acquiring capacity before each worker is
@@ -2457,7 +2465,7 @@ impl ReviewRun<'_> {
             // publish that is stuck. See `PUBLISH_DEADLINE`. The write token is
             // minted only now, after every model call has returned — the
             // boundary in `AGENTS.md`.
-            let outcome = match lanes {
+            match lanes {
                 Ok((config, proposal)) => {
                     // `AssertUnwindSafe` + `catch_unwind` here too, same reason as
                     // around `run_lanes`: without it a panic inside `apply` skips
@@ -2499,9 +2507,7 @@ impl ReviewRun<'_> {
                         })
                 }
                 Err(err) => Err(err),
-            };
-
-            outcome
+            }
         };
 
         let (disposition, proposal, changes_requested) = outcome?;
@@ -3108,7 +3114,7 @@ mod tests {
         try_enqueue_review(&sender, queued_test_review(7)).expect("first job fits");
 
         let rejected = try_enqueue_review(&sender, queued_test_review(8));
-        assert!(matches!(rejected, Err(mpsc::error::TrySendError::Full(_))));
+        assert!(matches!(rejected, Err(ReviewQueueError::Full(_))));
     }
 
     #[test]

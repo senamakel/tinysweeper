@@ -548,7 +548,10 @@ fn validated_model_narrative(
 }
 
 fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneReviewStatus {
-    if lane.skipped.is_some() {
+    // `LaneOutcome::unanswered` uses `skipped` to explain why its lane is
+    // neutral, while `unanswered` carries the typed distinction from an
+    // intentional policy skip. Prefer that structured evidence over prose.
+    if lane.skipped.is_some() && lane.unanswered.is_empty() {
         return lane_status_value(LaneStatusKind::Skipped, None, 0);
     }
     if let Some(coverage) = &lane.coverage {

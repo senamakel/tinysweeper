@@ -2741,22 +2741,26 @@ mod tests {
             "tests": [],
             "positive_observations": {}
         }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(
+            LaneId::Tests,
+            crate::ports::model::Spend::default(),
+        );
         let lanes = vec![LaneProposal {
             lane: LaneId::Tests,
             check_name: LaneId::Tests.check_name(),
             conclusion: CheckConclusion::Neutral,
-            summary: "No reviewer produced a usable response.".into(),
+            summary: outcome.summary,
             findings: vec![],
             noted: vec![],
             resolved: vec![],
             pending: vec![],
-            skipped: None,
+            skipped: outcome.skipped,
             deduped: 0,
             highest_severity: None,
             usage: Default::default(),
             models: vec![],
-            unanswered: vec!["tests".into()],
-            coverage: None,
+            unanswered: outcome.unanswered,
+            coverage: outcome.coverage,
             overflow: vec![],
         }];
         let (summary, _, _) = crate::summary::generate(

@@ -209,6 +209,17 @@ struct QueuedReview {
     mode: Mode,
 }
 
+/// The admitted review's identity and revision, carried together into a worker.
+struct ReviewJob {
+    repo: String,
+    number: u64,
+    author: String,
+    installation: u64,
+    mode: Mode,
+    delivery: Option<String>,
+    expected_head: Option<String>,
+}
+
 /// Run the server until the process is stopped.
 pub async fn serve(config: ServerConfig, store: Store, auth: AppAuth) -> Result<()> {
     serve_with_model_factory(config, store, auth, Arc::new(GatewayModelFactory)).await
@@ -733,13 +744,15 @@ async fn dispatch(
         } => {
             handle_review(
                 state,
-                repo,
-                number,
-                author,
-                installation,
-                mode,
-                delivery,
-                head_sha,
+                ReviewJob {
+                    repo,
+                    number,
+                    author,
+                    installation,
+                    mode,
+                    delivery,
+                    expected_head: head_sha,
+                },
                 review_permit,
             )
             .await;
@@ -1564,6 +1577,8 @@ struct Run {
     slot: StatusSlot,
     /// Fixed when the review is accepted, not per attempt. See `handle_review`.
     deadline: tokio::time::Instant,
+    /// Revision admitted by the queue, retained across retries and all phases.
+    expected_head: Option<String>,
 }
 
 impl Run {
@@ -1962,15 +1977,18 @@ enum Conclusion<'a> {
 /// the log line alone was not enough.
 async fn handle_review(
     state: AppState,
-    repo: String,
-    number: u64,
-    author: String,
-    installation: u64,
-    mode: Mode,
-    delivery: Option<String>,
-    expected_head: Option<String>,
+    job: ReviewJob,
     queued_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
+    let ReviewJob {
+        repo,
+        number,
+        author,
+        installation,
+        mode,
+        delivery,
+        expected_head,
+    } = job;
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
@@ -2026,6 +2044,7 @@ async fn handle_review(
         mode,
         slot: slot.clone(),
         deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+        expected_head,
     };
 
     let mut attempt = 1;
@@ -2037,7 +2056,6 @@ async fn handle_review(
             &author,
             installation,
             &run,
-            expected_head.as_deref(),
         )
         .await
         {
@@ -2185,7 +2203,6 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-    expected_head: Option<&str>,
 ) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
@@ -2200,7 +2217,7 @@ async fn review_inner(
     // so claim it before spending a credential or a forge read. Comment and
     // manual requests have no revision; serialize those per pull request until
     // the live head is known, then take its revision lease before any indexing.
-    let initial_lease = review_lease(repo, number, run.mode, expected_head);
+    let initial_lease = review_lease(repo, number, run.mode, run.expected_head.as_deref());
     let mut lease = Some(initial_lease.clone());
     if !state.store.claim_lease(&initial_lease, "server").await? {
         tracing::debug!(%initial_lease, "another worker holds this review");
@@ -2222,7 +2239,6 @@ async fn review_inner(
             read_token: &read_token,
             forge: &forge,
             lease: &mut lease,
-            expected_head,
         };
         with_open_pull_request(&forge, &repo_id, number, |pull_request| {
             worker.run(pull_request)
@@ -2258,7 +2274,6 @@ struct ReviewRun<'a> {
     read_token: &'a String,
     forge: &'a crate::forge::github::GitHubRead,
     lease: &'a mut Option<String>,
-    expected_head: Option<&'a str>,
 }
 
 impl ReviewRun<'_> {
@@ -2278,7 +2293,6 @@ impl ReviewRun<'_> {
             read_token,
             forge,
             lease,
-            expected_head,
         } = self;
         // Comment and review-comment deliveries do not carry the draft flag, so
         // routing alone cannot prevent a manual-looking request from waking the
@@ -2296,7 +2310,7 @@ impl ReviewRun<'_> {
         // indexing or model work. The caller releases this final key on every
         // normal return, while the old claim is released only after the new
         // one is acquired.
-        if expected_head != Some(pull_request.head_sha.as_str()) {
+        if run.expected_head.as_deref() != Some(pull_request.head_sha.as_str()) {
             let next = review_lease(repo, number, run.mode, Some(&pull_request.head_sha));
             if !state.store.claim_lease(&next, "server").await? {
                 tracing::debug!(%next, "another worker holds the live pull request head");
@@ -2420,7 +2434,6 @@ impl ReviewRun<'_> {
                     forge,
                     read_token,
                     run,
-                    Some(&pull_request.head_sha),
                 ))
                 .catch_unwind()
                 .await
@@ -2561,7 +2574,6 @@ async fn run_lanes(
     forge: &crate::forge::github::GitHubRead,
     read_token: &str,
     run: &Run,
-    expected_head: Option<&str>,
 ) -> Result<(Config, crate::app::Proposal)> {
     let model = state.models.text();
 
@@ -2655,7 +2667,7 @@ async fn run_lanes(
             state.knowledge.as_deref(),
             retriever.as_ref(),
             tree,
-            expected_head,
+            run.expected_head.as_deref(),
         )
         .await
     };

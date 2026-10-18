@@ -343,6 +343,12 @@ fn citations_supported(
             if paths.contains(citation) {
                 return true;
             }
+            if let Some((path, line)) = citation.rsplit_once(':')
+                && paths.contains(path)
+                && line.parse::<u32>().is_ok_and(|line| line > 0)
+            {
+                return true;
+            }
             let Some((path, symbol)) = citation.split_once('#') else {
                 return false;
             };

@@ -8,6 +8,7 @@
 
 use crate::config::types::{LaneId, Severity};
 use crate::findings::types::Finding;
+use crate::markdown::{code_span, prose, table_cell};
 use crate::ports::model::Usage;
 
 /// Colour and label for each severity, as a shields.io badge.
@@ -114,11 +115,10 @@ pub fn lane_summary(
     out.push_str("| | Finding | Where |\n|---|---|---|\n");
     for finding in &sorted {
         out.push_str(&format!(
-            "| {} | {} | `{}`{} |\n",
+            "| {} | {} | {} |\n",
             badge(finding.severity),
             escape_cell(&finding.title),
-            finding.path,
-            finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+            table_cell(&format!("{}{}", finding.path, finding.line.map(|l| format!(":{l}")).unwrap_or_default()))
         ));
     }
 
@@ -145,7 +145,7 @@ fn detail(finding: &Finding) -> String {
     let mut out = format!(
         "<details>\n<summary>{} {}</summary>\n\n{} {}{}\n\n{}\n\n{}\n",
         badge(finding.severity),
-        escape_html(&finding.title),
+        prose(&finding.title),
         location,
         confidence_badge(finding.confidence),
         if finding.late {
@@ -154,7 +154,7 @@ fn detail(finding: &Finding) -> String {
             ""
         },
         rule_line(&finding.rule),
-        finding.body.trim(),
+        prose(finding.body.trim()),
     );
 
     if let Some(suggestion) = &finding.suggestion {
@@ -188,7 +188,7 @@ fn footer(version: &str) -> String {
 /// page. Escaping only pipes here was a bug a test caught — the disclosure
 /// below was escaped and the table above it was not.
 pub fn escape_cell(text: &str) -> String {
-    escape_html(text).replace('|', "\\|")
+    table_cell(text)
 }
 
 /// Render a rule as its own labelled line.
@@ -220,7 +220,7 @@ pub fn rule_line(rule: &str) -> String {
             format!(
                 "**[RULE] {}**: {}",
                 escape_emphasis(head.trim()),
-                escape_cell(rest.trim())
+                prose(rest.trim())
             )
         }
         _ => format!("**[RULE] {}**", escape_emphasis(rule)),
@@ -229,7 +229,7 @@ pub fn rule_line(rule: &str) -> String {
 
 /// Escape model-authored text placed inside a Markdown emphasis run.
 pub fn escape_emphasis(text: &str) -> String {
-    escape_html(text)
+    prose(text)
         .replace('\\', "\\\\")
         .replace('*', "\\*")
         .replace('_', "\\_")

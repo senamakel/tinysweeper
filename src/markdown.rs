@@ -156,7 +156,7 @@ fn emphasis_boundary(characters: &[char], index: usize) -> bool {
 
 /// Render a citation as a pinned GitHub link, or as code spans for symbols.
 pub(crate) fn citation(citation: &str, repo: &str, sha: &str) -> String {
-    if !valid_repo(repo) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !valid_repo(repo) || sha.is_empty() || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return code_span(citation);
     }
     if let Some((path, line)) = citation.rsplit_once(':')
@@ -188,6 +188,8 @@ fn valid_repo(repo: &str) -> bool {
     parts.clone().count() == 2
         && parts.all(|part| {
             !part.is_empty()
+                && part != "."
+                && part != ".."
                 && part
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
@@ -281,7 +283,8 @@ mod tests {
             ),
             "`src/savings/ledger.rs` `impl SavingsLedger`"
         );
-        assert!(citation("src/arr[0].rs:7", "acme/widget", "abc123")
-            .contains("src/arr%5B0%5D.rs#L7"));
+        assert!(
+            citation("src/arr[0].rs:7", "acme/widget", "abc123").contains("src/arr%5B0%5D.rs#L7")
+        );
     }
 }

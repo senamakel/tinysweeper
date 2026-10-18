@@ -505,12 +505,7 @@ mod tests {
         // Titles are model output, and a bare `|` ends the cell.
         let mut item = finding(Severity::High, "Handle a | b");
         item.path = "src/a|b.rs".into();
-        let out = lane_summary(
-            "…",
-            &[item],
-            "0.1.0",
-            true,
-        );
+        let out = lane_summary("…", &[item], "0.1.0", true);
         let row = out.lines().find(|l| l.contains("Handle a")).expect("row");
         assert!(row.contains("\\|"), "{row}");
         assert!(row.contains("`src/a\\|b.rs`"), "{row}");

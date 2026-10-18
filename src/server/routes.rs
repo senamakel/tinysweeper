@@ -898,6 +898,23 @@ async fn record_owned_disposition(
     .into()
 }
 
+async fn finalize_exhausted_review<CheckOwner, CheckOwnerFuture, Conclude, ConcludeFuture>(
+    check_owner: CheckOwner,
+    conclude: Conclude,
+) -> WorkerDisposition
+where
+    CheckOwner: FnOnce() -> CheckOwnerFuture,
+    CheckOwnerFuture: std::future::Future<Output = Result<()>>,
+    Conclude: FnOnce() -> ConcludeFuture,
+    ConcludeFuture: std::future::Future<Output = ()>,
+{
+    if check_owner().await.is_err() {
+        return WorkerDisposition::OwnershipLost;
+    }
+    conclude().await;
+    WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
+}
+
 fn shutdown_disposition(review: &InnerReview, now_ms: i64) -> Option<WorkerDisposition> {
     matches!(review, InnerReview::Shutdown).then_some(WorkerDisposition::Deferred(now_ms))
 }
@@ -1940,7 +1957,6 @@ struct Run {
     owner_lost: Option<watch::Receiver<bool>>,
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
-    paid_exhausted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Refuse an individual paid model dispatch after durable ownership expires.
@@ -2530,7 +2546,6 @@ async fn handle_review(
         owner_lost: owner_lost.clone(),
         owner_until: owner_until.clone(),
         lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let mut attempt = 1;
@@ -2581,13 +2596,12 @@ async fn handle_review(
                 return WorkerDisposition::Deferred(unix_time_ms() + 5_000);
             }
             Ok(InnerReview::Exhausted) => {
-                if run.check_owner(&state).await.is_err() {
-                    drop(permit);
-                    return WorkerDisposition::OwnershipLost;
-                }
                 drop(permit);
-                close_status(&state, &slot, Conclusion::NotReviewed).await;
-                return WorkerDisposition::Terminal(TerminalOutcome::Exhausted);
+                return finalize_exhausted_review(
+                    || run.check_owner(&state),
+                    || async { close_status(&state, &slot, Conclusion::NotReviewed).await },
+                )
+                .await;
             }
             Ok(review @ InnerReview::Shutdown) => {
                 let disposition = shutdown_disposition(&review, unix_time_ms())
@@ -2819,6 +2833,30 @@ where
     } else {
         Ok(InnerReview::Shutdown)
     }
+}
+
+async fn continue_after_open_status_with_paid_budget<F, Fut>(
+    go_on: bool,
+    store: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+    now_ms: i64,
+    review: F,
+) -> Result<InnerReview>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<InnerReview>>,
+{
+    continue_after_open_status(go_on, || async {
+        let Some(owned) = owned else {
+            return review().await;
+        };
+        match with_paid_review_attempt(store, owned, now_ms, review).await? {
+            PaidWork::Started(result) => result,
+            PaidWork::Exhausted => Ok(InnerReview::Exhausted),
+            PaidWork::OwnershipLost => Err(Error::ReviewOwnershipLost),
+        }
+    })
+    .await
 }
 
 fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {

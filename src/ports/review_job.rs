@@ -217,7 +217,12 @@ impl ReviewSchedulerState {
         })
     }
 
-    /// Consume one paid attempt, terminalizing the job after the bounded budget.
+    /// Consume one paid attempt, reporting exhaustion without dropping its owner.
+    ///
+    /// The request stays unfinished when the budget is spent so the server can
+    /// conclude any open status under this generation before `finish` records
+    /// the terminal tombstone. Removing it here would make that final status
+    /// write fail its required ownership check.
     pub fn begin_paid(&mut self, owned: &OwnedReview, now_ms: i64) -> PaidStart {
         let Some(index) = self
             .unfinished
@@ -227,12 +232,6 @@ impl ReviewSchedulerState {
             return PaidStart::OwnershipLost;
         };
         if self.unfinished[index].paid_attempts >= MAX_REVIEW_PAID_ATTEMPTS {
-            let record = self.unfinished.remove(index);
-            self.terminal.push(ReviewTombstone {
-                id: record.request.id,
-                outcome: TerminalOutcome::Exhausted,
-                expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
-            });
             return PaidStart::Exhausted;
         }
         self.unfinished[index].paid_attempts += 1;

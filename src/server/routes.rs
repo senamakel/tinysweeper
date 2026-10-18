@@ -3197,6 +3197,7 @@ async fn wait_for_owner_fence(
                 let deadline = *until.borrow();
                 tokio::select! {
                     changed = lost.changed() => if changed.is_err() { return; },
+                    changed = until.changed() => if changed.is_err() { return; },
                     _ = tokio::time::sleep_until(deadline) => return,
                 }
             }

@@ -1669,6 +1669,11 @@ fn helper() {
             "cross-file falsification must not replay unrelated PR files: {falsifier_prompt}"
         );
         assert!(
+            falsifier_prompt.len() < 20_000,
+            "cross-file evidence must have a deterministic byte ceiling: {} bytes",
+            falsifier_prompt.len()
+        );
+        assert!(
             requests.iter().any(|request| {
                 request.schema_name.contains("critique")
                     && request

@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_fallback_replaces_only_the_prior_attributed_title() {
+    async fn same_title_transport_fallback_keeps_trustworthy_prior_narrative() {
         let prior = ReviewSummary {
             executive_summary: "Pull request purpose (title): Run tests on Windows. The parser retains strict lane keys.".into(),
             ..ReviewSummary::default()
@@ -2063,7 +2063,7 @@ mod tests {
             &model,
             &Config::default(),
             &PullRequest {
-                title: "Build the client in CI".into(),
+                title: "Run tests on Windows".into(),
                 ..PullRequest::default()
             },
             &[],
@@ -2081,9 +2081,58 @@ mod tests {
         assert!(
             summary
                 .executive_summary
-                .starts_with("Pull request purpose (title): Build the client in CI.")
+                .starts_with("Pull request purpose (title): Run tests on Windows.")
         );
-        assert!(!summary.executive_summary.contains("Run tests on Windows"));
+        assert_eq!(
+            summary
+                .executive_summary
+                .matches("Pull request purpose (title):")
+                .count(),
+            1
+        );
+        assert_eq!(model.calls(), 1);
+        assert_eq!(spend.usage.input_tokens, 7);
+        assert_eq!(spend.usage.output_tokens, 2);
+        assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn edited_title_transport_fallback_drops_the_stale_deterministic_prefix() {
+        let prior = ReviewSummary {
+            executive_summary: "Pull request purpose (title): Preserve parser behavior. The parser retains strict lane keys.".into(),
+            ..ReviewSummary::default()
+        };
+        let model = MockModel::new().then_error_with_usage(
+            "HTTP 502",
+            crate::ports::model::Usage {
+                input_tokens: 7,
+                output_tokens: 2,
+                cost_usd: 0.02,
+                ..Default::default()
+            },
+        );
+
+        let (summary, spend, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest {
+                title: "Harden parser input".into(),
+                ..PullRequest::default()
+            },
+            &[],
+            &[],
+            Some(&prior),
+            &[],
+        )
+        .await;
+
+        assert!(summary
+            .executive_summary
+            .contains("The parser retains strict lane keys"));
+        assert!(summary
+            .executive_summary
+            .starts_with("Pull request purpose (title): Harden parser input."));
+        assert!(!summary.executive_summary.contains("Preserve parser behavior"));
         assert_eq!(
             summary
                 .executive_summary

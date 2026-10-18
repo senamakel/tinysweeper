@@ -108,6 +108,79 @@ impl CompletionObserver for ModelCallObserver {
     }
 }
 
+struct AgenticCallObserver {
+    downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
+    timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
+    fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
+        use openhuman_embed::observe::TurnObservation;
+
+        if let TurnObservation::Model {
+            requested_model,
+            answered_model,
+            finish_reason,
+            duration_ms,
+            failed,
+            usage,
+            ..
+        } = event
+        {
+            let provider_responded = usage.is_some() || finish_reason.is_some() || !failed;
+            let observed_usage = Usage {
+                input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
+                output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
+                reasoning_tokens: usage.as_ref().map_or(0, |usage| usage.reasoning_tokens),
+                cached_tokens: usage.as_ref().map_or(0, |usage| usage.cached_tokens),
+                cost_usd: usage
+                    .as_ref()
+                    .and_then(|usage| usage.cost_usd)
+                    .unwrap_or_default(),
+                calls_attempted: 1,
+                calls_succeeded: u64::from(provider_responded),
+                calls_errored: u64::from(!provider_responded),
+                ..Usage::default()
+            };
+            let model = answered_model
+                .as_deref()
+                .or(requested_model.as_deref())
+                .unwrap_or("unknown");
+            tracing::dispatcher::with_default(&self.dispatch, || {
+                self.span.in_scope(|| {
+                    tracing::info!(target: "tinysweeper::model", model,
+                        latency_ms = *duration_ms, succeeded = provider_responded,
+                        completion_valid = !failed,
+                        input_tokens = observed_usage.input_tokens,
+                        output_tokens = observed_usage.output_tokens,
+                        reasoning_tokens = observed_usage.reasoning_tokens,
+                        cached_tokens = observed_usage.cached_tokens,
+                        "model call");
+                });
+            });
+            if let Some(observer) = &self.timing {
+                observer.completed(
+                    observed_usage,
+                    provider_responded,
+                    false,
+                    std::time::Duration::from_millis(*duration_ms),
+                );
+            }
+        }
+        if let Some(downstream) = &self.downstream {
+            downstream.on_event(event);
+        }
+    }
+
+    fn on_turn(&self, trace: &openhuman_embed::observe::TurnTrace<'_>) {
+        if let Some(downstream) = &self.downstream {
+            downstream.on_turn(trace);
+        }
+    }
+}
+
 impl std::fmt::Debug for GatewayModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GatewayModel")
@@ -620,6 +693,15 @@ impl GatewayModel {
             .transpose()?;
         let provider = openhuman_embed::Provider::openai_compatible(&self.base_url, &self.api_key)
             .model(&request.model);
+        let downstream = self.langfuse.clone().map(|observer| {
+            observer as Arc<dyn openhuman_embed::observe::TurnObserver>
+        });
+        let observer = Arc::new(AgenticCallObserver {
+            downstream,
+            timing: crate::ports::model::current_model_call_observer(),
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::current(),
+        });
         crate::harness::agentic::review_accounted(
             request,
             tree,
@@ -630,9 +712,7 @@ impl GatewayModel {
                 model_budget: budget,
                 lookup_budget: lookup_budget.clone(),
             },
-            self.langfuse.as_ref().map(|observer| {
-                observer.clone() as Arc<dyn openhuman_embed::observe::TurnObserver>
-            }),
+            Some(observer),
         )
         .await
     }

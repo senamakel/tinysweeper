@@ -1707,7 +1707,6 @@ mod tests {
             .remove("tinysweeper/critique")
             .expect("critique check")
             .summary;
-        std::fs::write("target/mockforge-path-pipes.md", &summary).unwrap();
         for count in 1..=3 {
             let row = summary
                 .lines()

@@ -400,7 +400,20 @@ pub async fn serve_with_model_factory(
         .map_err(|err| Error::Forge(format!("could not bind {bind}: {err}")))?;
 
     tracing::info!(%bind, "tinysweeper is listening");
-    let review_dispatcher = tokio::spawn(drain_review_queue(state.clone(), review_receiver));
+    let review_dispatcher = tokio::spawn(drain_review_queue(
+        review_receiver,
+        state.permits.clone(),
+        move |job, permit| {
+            tokio::spawn(dispatch(
+                state.clone(),
+                job.action,
+                job.delivery,
+                job.event,
+                Some(permit),
+                job.mode,
+            ));
+        },
+    ));
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown(shutdown_state))
         .await
@@ -603,10 +616,10 @@ async fn receive(
             event,
             mode: Mode::Incremental,
         };
-        return match state.review_queue.try_send(queued) {
+        return match try_enqueue_review(&state.review_queue, queued) {
             Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
             Err(mpsc::error::TrySendError::Full(job)) => {
-                let subject = match job.action {
+                let subject = match &job.action {
                     Action::Review { repo, number, .. } => format!("{repo}#{number}"),
                     _ => "unknown subject".to_owned(),
                 };
@@ -656,26 +669,32 @@ async fn receive(
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
+fn try_enqueue_review(
+    sender: &mpsc::Sender<QueuedReview>,
+    job: QueuedReview,
+) -> std::result::Result<(), mpsc::error::TrySendError<QueuedReview>> {
+    sender.try_send(job)
+}
+
 /// Drain the bounded review queue, acquiring capacity before each worker is
 /// spawned. At most one queue-drainer waits on the semaphore; pending requests
 /// remain bounded channel entries.
-async fn drain_review_queue(state: AppState, mut receiver: mpsc::Receiver<QueuedReview>) {
+async fn drain_review_queue<F>(
+    mut receiver: mpsc::Receiver<QueuedReview>,
+    permits: Arc<Semaphore>,
+    mut start: F,
+) where
+    F: FnMut(QueuedReview, tokio::sync::OwnedSemaphorePermit),
+{
     while let Some(job) = receiver.recv().await {
-        let permit = match state.permits.clone().acquire_owned().await {
+        let permit = match permits.clone().acquire_owned().await {
             Ok(permit) => permit,
             Err(err) => {
                 tracing::error!(%err, "review permit pool closed; queued delivery was not started");
                 continue;
             }
         };
-        tokio::spawn(dispatch(
-            state.clone(),
-            job.action,
-            job.delivery,
-            job.event,
-            Some(permit),
-            job.mode,
-        ));
+        start(job, permit);
     }
 }
 
@@ -1356,9 +1375,7 @@ impl FullReviews for ManualDispatch {
                 installation,
                 head_sha: Some(pull_request.head_sha),
             };
-            self.state
-                .review_queue
-                .try_send(QueuedReview {
+            try_enqueue_review(&self.state.review_queue, QueuedReview {
                     action,
                     delivery: None,
                     event: "manual-review".into(),

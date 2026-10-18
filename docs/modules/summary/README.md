@@ -21,10 +21,22 @@ checklist, usage, and bounded pass history are deterministic. Inline findings,
 lane checks, approvals, and changes-requested reviews remain the enforcement
 surfaces; the hub only explains their combined result.
 
+Generated text is escaped as prose, paths and symbols use backtick spans sized
+to their contents, and table cells receive table-specific escaping. A validated
+`path:line` citation links to that path and line at the exact reviewed head;
+symbol-only citations stay in code spans. These contexts share the helpers in
+`src/markdown.rs`, so a title, path, and table cell do not accidentally inherit
+one another's escaping rules.
+
 The server migrates a bot-authored `tinysweeper:change-map` comment in place.
 Markers copied into contributor comments are ignored. During a new pass the
 comment shows the new head as in progress and retains the previous completed
-report. A failed pass keeps that trustworthy report under a prominent warning.
+report. Stable comment markers delimit the preserved report, so repeated
+in-progress and failure updates unwrap the previous status wrapper instead of
+nesting it. A failed pass uses a short, human-readable cause and keeps the
+completed report under a prominent warning, naming the report's reviewed head.
+Provider error text and pull request references are not copied into that
+failure notice.
 
 Summary conversations are stored as exact evidence/assistant pairs so previous
 messages remain a byte-stable provider-cache prefix. The chain has a fixed

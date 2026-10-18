@@ -41,6 +41,22 @@ impl ReviewFailure {
         ledger: Option<&Budget>,
         estimate: Usage,
     ) -> Self {
+        if let CoreError::BudgetExceeded { source, .. } = &error {
+            let committed = source
+                .snapshot
+                .spent
+                .cost_micros
+                .saturating_add(source.snapshot.reserved.cost_micros);
+            return Self::unknown(
+                Error::Budget {
+                    spent: committed as f64 / 1_000_000.0,
+                    limit: source.limits.cost_micros.unwrap_or_default() as f64 / 1_000_000.0,
+                    usage: None,
+                },
+                ledger,
+                estimate,
+            );
+        }
         let mut failure = Self::unknown(
             Error::Model("agentic reviewer failed".into()),
             ledger,

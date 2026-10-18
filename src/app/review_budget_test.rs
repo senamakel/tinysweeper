@@ -169,8 +169,8 @@ async fn thirty_findings_over_three_passes_post_the_budget_and_list_the_rest() {
     let hub = crate::summary::render(&config, &proposal);
     for finding in &overflow {
         let line = finding.line.expect("placed");
-        // Rendered through the hub's Markdown escaping, hence `\.`.
-        let entry = format!("{} (`src/large\\.rs:{line}`)", finding.title);
+        // Paths are rendered as code spans, preserving their ordinary dots.
+        let entry = format!("{} (`src/large.rs:{line}`)", finding.title);
         assert!(hub.contains(&entry), "missing {entry}:\n{hub}");
     }
 
@@ -303,6 +303,7 @@ fn lane_of(findings: Vec<Finding>) -> LaneProposal {
         usage: Default::default(),
         models: vec![],
         unanswered: vec![],
+        coverage: None,
         overflow: vec![],
     }
 }

@@ -475,7 +475,8 @@ impl GatewayModel {
                     input_tokens: totals.input_tokens,
                     output_tokens: totals.output_tokens,
                     reasoning_tokens,
-                    calls_attempted: error.attempts.len() as u64,
+                    calls_attempted: (error.attempts.len() as u64)
+                        .max(u64::from(is_refusal && error.attempts.is_empty())),
                     calls_succeeded: error.attempts.iter().filter(|attempt| !attempt.failed).count() as u64,
                     calls_refused: u64::from(is_refusal && error.attempts.is_empty()),
                     calls_errored: error.attempts.iter().filter(|attempt| attempt.failed).count() as u64,

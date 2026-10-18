@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 use crate::config::types::{Config, LaneId, Severity};
 use crate::error::{Error, Result};
@@ -964,7 +965,10 @@ pub(crate) async fn review_with_tree_observed(
     // Never fatal — a forge that will not list the tree costs that lane its
     // harness, and the lane says so, rather than costing the review.
     let lanes_phase = timing.as_ref().map(|timing| timing.phase("lanes"));
-    let _lanes_entered = lanes_phase.as_ref().map(|phase| phase.span.enter());
+    let lanes_span = lanes_phase
+        .as_ref()
+        .map(|phase| phase.span.clone())
+        .unwrap_or_else(tracing::Span::current);
     let e2e_evidence = if config.enabled_lanes().contains(&LaneId::E2e) {
         Some(
             crate::lanes::e2e::evidence::gather(
@@ -974,6 +978,7 @@ pub(crate) async fn review_with_tree_observed(
                 &context.pull_request.head_sha,
                 &diffs,
             )
+            .instrument(lanes_span.clone())
             .await,
         )
     } else {
@@ -990,9 +995,10 @@ pub(crate) async fn review_with_tree_observed(
             LaneId::E2e => Box::new(crate::lanes::e2e::E2e::new(model.clone())),
         };
 
-        let outcome = crate::review_timing::measure_lane(
+        let outcome = crate::review_timing::measure_lane_under(
             timing.as_ref(),
             lane_id.as_str(),
+            Some(&lanes_span),
             lane.run(LaneInput {
                 config,
                 pull_request: &context.pull_request,
@@ -1041,7 +1047,6 @@ pub(crate) async fn review_with_tree_observed(
             record_file_coverage(timing, &context, &uninspected, &lanes);
         }
     }
-    drop(_lanes_entered);
     drop(lanes_phase);
 
     // Scanner findings that no lane actually adjudicated still have to reach a

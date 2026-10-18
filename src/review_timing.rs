@@ -125,13 +125,19 @@ impl ReviewTiming {
 
     /// Measure one lane without adding overlapping lane time to phase totals.
     pub(crate) fn lane(&self, name: &'static str) -> PhaseGuard {
+        self.lane_under(name, &Span::current())
+    }
+
+    /// Measure a lane beneath the enclosing `lanes` span without entering it
+    /// in thread-local state across an await.
+    pub(crate) fn lane_under(&self, name: &'static str, parent: &Span) -> PhaseGuard {
         let record = self.snapshot();
         PhaseGuard {
             timing: self.clone(),
             name: "lanes",
             lane: Some(name),
             started: Instant::now(),
-            span: tracing::info_span!(
+            span: tracing::info_span!(parent: parent, 
                 "review.phase",
                 repo = %record.repo,
                 pr = record.pr,
@@ -191,6 +197,26 @@ pub(crate) async fn measure_lane<F: Future>(
 ) -> F::Output {
     if let Some(timing) = timing {
         let guard = timing.lane(name);
+        let output = future.instrument(guard.span.clone()).await;
+        drop(guard);
+        output
+    } else {
+        future.await
+    }
+}
+
+/// Run one lane as a child of the enclosing lanes span.
+pub(crate) async fn measure_lane_under<F: Future>(
+    timing: Option<&ReviewTiming>,
+    name: &'static str,
+    parent: Option<&Span>,
+    future: F,
+) -> F::Output {
+    if let Some(timing) = timing {
+        let guard = match parent {
+            Some(parent) => timing.lane_under(name, parent),
+            None => timing.lane(name),
+        };
         let output = future.instrument(guard.span.clone()).await;
         drop(guard);
         output

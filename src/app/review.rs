@@ -877,11 +877,16 @@ pub async fn review_with_tree(
     // work: those are rendered directly from the proposal below.
     let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
         if summary_generation_needed(config, &diffs) {
-            let (summary, spend, transcript) = crate::summary::generate(
+            let (summary, spend, transcript) = crate::summary::generate_with_diffstat(
                 model.as_ref(),
                 config,
                 &context.pull_request,
                 &diffs,
+                crate::summary::SummaryDiffstat {
+                    files: context.files.len(),
+                    additions: context.files.iter().map(|file| file.additions).sum(),
+                    deletions: context.files.iter().map(|file| file.deletions).sum(),
+                },
                 &lanes,
                 stored.as_ref().and_then(|state| state.summary.as_ref()),
                 stored

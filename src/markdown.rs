@@ -29,8 +29,43 @@ pub(crate) fn code_block(text: &str) -> String {
 
 /// Escape untrusted inline prose so it cannot create HTML, links, or mentions.
 pub(crate) fn prose(text: &str) -> String {
+    let characters: Vec<char> = text.chars().collect();
+    let first = characters
+        .iter()
+        .position(|character| !character.is_whitespace());
+    let starts_with = |markers: &[char]| {
+        first.is_some_and(|index| {
+            index <= 3
+                && markers.contains(&characters[index])
+                && characters
+                    .get(index + 1)
+                    .is_some_and(|character| character.is_whitespace())
+        })
+    };
+    let list_marker = starts_with(&['-', '+', '*']);
+    let heading_marker = first.is_some_and(|index| {
+        index <= 3
+            && characters[index] == '#'
+            && characters
+                .get(index + 1)
+                .is_some_and(|character| character.is_whitespace() || *character == '#')
+    });
+    let ordered_separator = first.and_then(|index| {
+        let end = index
+            + characters[index..]
+                .iter()
+                .take_while(|character| character.is_ascii_digit())
+                .count();
+        (end > index
+            && end < characters.len()
+            && matches!(characters[end], '.' | ')')
+            && characters
+                .get(end + 1)
+                .is_some_and(|character| character.is_whitespace()))
+        .then_some(end)
+    });
     let mut out = String::with_capacity(text.len());
-    for character in text.chars() {
+    for (index, character) in characters.iter().copied().enumerate() {
         if character.is_control() {
             if character == '\n' || character == '\r' {
                 out.push(' ');
@@ -43,7 +78,23 @@ pub(crate) fn prose(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '@' => out.push_str("&#64;"),
             '`' => out.push_str("&#96;"),
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '#' | '~' => {
+            '\\' | '[' | ']' | '*' => {
+                out.push('\\');
+                out.push(character);
+            }
+            '_' if emphasis_boundary(&characters, index) => {
+                out.push('\\');
+                out.push(character);
+            }
+            '#' if heading_marker => {
+                out.push('\\');
+                out.push(character);
+            }
+            '-' | '+' if list_marker => {
+                out.push('\\');
+                out.push(character);
+            }
+            '.' | ')' if ordered_separator == Some(index) => {
                 out.push('\\');
                 out.push(character);
             }
@@ -56,6 +107,20 @@ pub(crate) fn prose(text: &str) -> String {
 /// Escape prose for a Markdown table cell.
 pub(crate) fn table_cell(text: &str) -> String {
     prose(text).replace('|', "\\|")
+}
+
+/// Render a code span for a table cell, where a raw pipe separates columns
+/// even when it appears inside backticks.
+pub(crate) fn table_code_span(text: &str) -> String {
+    code_span(text).replace('|', "\\|")
+}
+
+fn emphasis_boundary(characters: &[char], index: usize) -> bool {
+    let word = |character: char| character.is_alphanumeric();
+    let left = index.checked_sub(1).and_then(|left| characters.get(left));
+    let right = characters.get(index + 1);
+    !left.is_some_and(|character| word(*character))
+        || !right.is_some_and(|character| word(*character))
 }
 
 /// Render a citation as a pinned GitHub link, or as code spans for symbols.
@@ -154,11 +219,20 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_punctuation_and_intra_word_underscores_remain_readable() {
+        assert_eq!(
+            prose("tiny-module savings_store.rs v1.2.3"),
+            "tiny-module savings_store.rs v1.2.3"
+        );
+    }
+
+    #[test]
     fn table_cells_escape_the_column_separator() {
         assert_eq!(
             table_cell("left | <b>right</b>"),
             "left \\| &lt;b&gt;right&lt;/b&gt;"
         );
+        assert_eq!(table_code_span("src/a|b.rs"), "`src/a\\|b.rs`");
     }
 
     #[test]
@@ -175,5 +249,7 @@ mod tests {
             ),
             "`src/savings/ledger.rs` `impl SavingsLedger`"
         );
+        assert!(citation("src/arr[0].rs:7", "acme/widget", "abc123")
+            .contains("src/arr%5B0%5D.rs#L7"));
     }
 }

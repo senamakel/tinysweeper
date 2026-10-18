@@ -236,6 +236,11 @@ async fn review_group(
 ) -> Result<FileReview> {
     let config: &Config = input.config;
     let evidence = replay::render(group_diffs);
+    // Findings are confined to this group's paths, but contradictions can
+    // live in another PR file (for example, a module added beside its
+    // declaration). The reject-only pass needs the complete PR diff to test
+    // those cross-file claims without widening what reviewers may report.
+    let falsifier_evidence = replay::render(input.diffs);
     let reviewers = council::reviewers(config, LaneId::Critique);
     let redaction_note = redaction_note(&evidence);
 
@@ -342,7 +347,12 @@ async fn review_group(
     // filter can only reject, so more inputs in one pass is identical semantics
     // at a fraction of the calls.
     let filtered = Falsifier::new(llm.model().as_ref(), config)
-        .filter_with(LaneId::Critique, findings, &evidence, &looked_up)
+        .filter_with(
+            LaneId::Critique,
+            findings,
+            &falsifier_evidence,
+            &looked_up,
+        )
         .await;
     spend.merge(filtered.spend);
 

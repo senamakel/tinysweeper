@@ -143,9 +143,10 @@ impl ReviewSchedulerState {
         }
         self.terminal.retain(|record| record.expires_at_ms > now_ms);
         let mut incoming = std::collections::HashSet::new();
-        if requests.iter().any(|request| {
-            !incoming.insert(request.id.clone()) || !metadata_is_bounded(request)
-        }) {
+        if requests
+            .iter()
+            .any(|request| !incoming.insert(request.id.clone()) || !metadata_is_bounded(request))
+        {
             return Admission::Full;
         }
         let already = requests
@@ -167,14 +168,15 @@ impl ReviewSchedulerState {
         {
             return Admission::Full;
         }
-        self.unfinished.extend(requests.into_iter().map(|request| ScheduledReview {
-            request,
-            owner: None,
-            generation: 0,
-            owner_until_ms: 0,
-            not_before_ms: 0,
-            attempts: 0,
-        }));
+        self.unfinished
+            .extend(requests.into_iter().map(|request| ScheduledReview {
+                request,
+                owner: None,
+                generation: 0,
+                owner_until_ms: 0,
+                not_before_ms: 0,
+                attempts: 0,
+            }));
         Admission::Admitted
     }
 
@@ -205,7 +207,11 @@ impl ReviewSchedulerState {
 
     /// Extend the current unexpired owner's lease.
     pub fn renew(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
-        let Some(record) = self.unfinished.iter_mut().find(|record| owns(record, owned)) else {
+        let Some(record) = self
+            .unfinished
+            .iter_mut()
+            .find(|record| owns(record, owned))
+        else {
             return false;
         };
         if record.owner_until_ms <= now_ms {
@@ -225,7 +231,11 @@ impl ReviewSchedulerState {
 
     /// Return the current owner's request to pending with bounded backoff.
     pub fn defer(&mut self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> bool {
-        let Some(record) = self.unfinished.iter_mut().find(|record| owns(record, owned)) else {
+        let Some(record) = self
+            .unfinished
+            .iter_mut()
+            .find(|record| owns(record, owned))
+        else {
             return false;
         };
         if record.owner_until_ms <= now_ms {
@@ -266,8 +276,14 @@ fn metadata_is_bounded(request: &ReviewRequest) -> bool {
     request.id.0.len() <= REVIEW_JOB_FIELD_LIMIT
         && request.repo.len() <= REVIEW_JOB_FIELD_LIMIT
         && request.author.len() <= REVIEW_JOB_FIELD_LIMIT
-        && request.head_sha.as_ref().is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
-        && request.delivery.as_ref().is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
+        && request
+            .head_sha
+            .as_ref()
+            .is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
+        && request
+            .delivery
+            .as_ref()
+            .is_none_or(|value| value.len() <= REVIEW_JOB_FIELD_LIMIT)
         && request.event.len() <= REVIEW_JOB_FIELD_LIMIT
 }
 

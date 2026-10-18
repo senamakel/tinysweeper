@@ -12,8 +12,8 @@ pub mod knowledge;
 pub mod manifest;
 pub mod model;
 pub mod model_factory;
-pub mod review_state;
 pub mod review_job;
+pub mod review_state;
 pub mod sentry;
 pub mod tree;
 

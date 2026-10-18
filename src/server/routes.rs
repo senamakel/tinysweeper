@@ -14,8 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::FutureExt;
 use serde_json::json;
-use tokio::sync::{Semaphore, watch};
 use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, watch};
 
 use crate::automerge::types::Outcome;
 use crate::config::Config;
@@ -730,25 +730,26 @@ async fn admit_webhook_review(
         head_sha,
     } = action
     else {
-        return Err(Error::Forge("only review actions use the durable scheduler".into()));
+        return Err(Error::Forge(
+            "only review actions use the durable scheduler".into(),
+        ));
     };
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
-    jobs
-        .admit_batch(vec![ReviewRequest {
-            id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
-            repo: repo.clone(),
-            number: *number,
-            author: author.clone(),
-            installation: *installation,
-            head_sha: head_sha.clone(),
-            delivery: Some(delivery.to_owned()),
-            event: event.to_owned(),
-            mode: ReviewJobMode::Incremental,
-            accepted_at_ms: unix_time_ms(),
-        }])
-        .await
+    jobs.admit_batch(vec![ReviewRequest {
+        id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
+        repo: repo.clone(),
+        number: *number,
+        author: author.clone(),
+        installation: *installation,
+        head_sha: head_sha.clone(),
+        delivery: Some(delivery.to_owned()),
+        event: event.to_owned(),
+        mode: ReviewJobMode::Incremental,
+        accepted_at_ms: unix_time_ms(),
+    }])
+    .await
 }
 
 fn unix_time_ms() -> i64 {
@@ -852,14 +853,18 @@ async fn run_owned_review(
         owned: Some(owned.clone()),
         owner_until: Some(owner_until_rx),
     };
-    let disposition =
-        handle_review(state, job, Some(permit), Some(lost_rx), Some(owner_until_rx)).await;
+    let disposition = handle_review(
+        state,
+        job,
+        Some(permit),
+        Some(lost_rx),
+        Some(owner_until_rx),
+    )
+    .await;
 
     let now_ms = unix_time_ms();
     let result = match disposition {
-        WorkerDisposition::Terminal(outcome) => {
-            store.finish(&owned, outcome, now_ms, now_ms).await
-        }
+        WorkerDisposition::Terminal(outcome) => store.finish(&owned, outcome, now_ms, now_ms).await,
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(&owned, now_ms, not_before_ms).await
         }
@@ -867,8 +872,12 @@ async fn run_owned_review(
     };
     match result {
         Ok(true) => {}
-        Ok(false) => tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome"),
-        Err(err) => tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome"),
+        Ok(false) => {
+            tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome")
+        }
+        Err(err) => {
+            tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome")
+        }
     }
 }
 
@@ -1880,10 +1889,7 @@ struct OwnedModel {
 
 impl OwnedModel {
     async fn check_owner(&self) -> Result<()> {
-        if self
-            .owner_lost
-            .as_ref()
-            .is_some_and(|lost| *lost.borrow())
+        if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
             || !self.jobs.owns(&self.owned, unix_time_ms()).await?
             || self
                 .owner_until
@@ -1924,7 +1930,9 @@ impl Model for OwnedModel {
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
-        self.inner.scoped_budget(budget_usd).map(|inner| self.wrap(inner))
+        self.inner
+            .scoped_budget(budget_usd)
+            .map(|inner| self.wrap(inner))
     }
 }
 
@@ -1947,11 +1955,7 @@ impl Run {
     }
 
     async fn check_owner(&self, state: &AppState) -> Result<()> {
-        if self
-            .owner_lost
-            .as_ref()
-            .is_some_and(|lost| *lost.borrow())
-        {
+        if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow()) {
             return Err(Error::ReviewOwnershipLost);
         }
         if self
@@ -2653,7 +2657,7 @@ async fn review_inner(
         .await
     })
     .await;
-        if !claimed {
+    if !claimed {
         tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(InnerReview::Busy);
     }
@@ -2663,7 +2667,10 @@ async fn review_inner(
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
     let reviewed = reviewed?.flatten().flatten();
-    if run.lease_busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
+    if run
+        .lease_busy
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
         Ok(InnerReview::Busy)
     } else {
         Ok(InnerReview::Complete(reviewed))
@@ -3559,9 +3566,8 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let (lost, _lost_receiver) = watch::channel(false);
-        let (_until_sender, until) = watch::channel(
-            tokio::time::Instant::now() - std::time::Duration::from_millis(1),
-        );
+        let (_until_sender, until) =
+            watch::channel(tokio::time::Instant::now() - std::time::Duration::from_millis(1));
         let paid_step = Arc::new(AtomicBool::new(false));
         let observed = paid_step.clone();
         tokio::select! {
@@ -3590,7 +3596,10 @@ mod tests {
             mode: ReviewJobMode::Incremental,
             accepted_at_ms: unix_time_ms(),
         };
-        assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
+        assert_eq!(
+            store.admit_batch(vec![request]).await.unwrap(),
+            Admission::Admitted
+        );
         let now = unix_time_ms();
         let owned = store
             .claim_next("first", now)
@@ -3609,7 +3618,10 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let recovered = store
-            .claim_next("replacement", now + crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1)
+            .claim_next(
+                "replacement",
+                now + crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1,
+            )
             .await
             .unwrap()
             .expect("cancelled worker's lease expires and is recoverable");
@@ -3782,20 +3794,13 @@ mod tests {
         let store = crate::ports::review_job::tests::MockReviewJobStore::default();
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = reads.clone();
-        let result = enqueue_manual_jobs(
-            &sender,
-            &store,
-            "owner/repo",
-            1,
-            vec![7, 8],
-            move |_| {
-                let observed = observed.clone();
-                Box::pin(async move {
-                    observed.fetch_add(1, Ordering::SeqCst);
-                    Ok(crate::forge::types::PullRequest::default())
-                })
-            },
-        )
+        let result = enqueue_manual_jobs(&sender, &store, "owner/repo", 1, vec![7, 8], move |_| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::forge::types::PullRequest::default())
+            })
+        })
         .await;
 
         assert!(matches!(result, Err(Error::ReviewCapacityFull)));
@@ -3940,10 +3945,12 @@ mod tests {
                 let finished = observed.clone();
                 tokio::spawn(async move {
                     let now = unix_time_ms();
-                    assert!(store
-                        .finish(&owned, TerminalOutcome::Published, now, now)
-                        .await
-                        .expect("owned job finishes"));
+                    assert!(
+                        store
+                            .finish(&owned, TerminalOutcome::Published, now, now)
+                            .await
+                            .expect("owned job finishes")
+                    );
                     finished.fetch_add(1, Ordering::SeqCst);
                     drop(permit);
                 });

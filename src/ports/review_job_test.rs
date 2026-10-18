@@ -3,10 +3,9 @@
 use std::sync::Mutex;
 
 use super::{
-    Admission, OwnedReview, ReviewJobId, ReviewJobMode, ReviewJobStore, ReviewRequest,
-    ReviewSchedulerState, ReviewTombstone, TerminalOutcome, MAX_RUNNING_REVIEWS,
-    MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS, REVIEW_OWNER_TTL_MS,
-    REVIEW_TOMBSTONE_TTL_MS,
+    Admission, MAX_RUNNING_REVIEWS, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS,
+    OwnedReview, REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode,
+    ReviewJobStore, ReviewRequest, ReviewSchedulerState, ReviewTombstone, TerminalOutcome,
 };
 use crate::error::{Error, Result};
 
@@ -22,11 +21,7 @@ impl MockReviewJobStore {
     }
 
     pub(crate) fn unfinished(&self) -> usize {
-        self.state
-            .lock()
-            .expect("state")
-            .unfinished
-            .len()
+        self.state.lock().expect("state").unfinished.len()
     }
 }
 
@@ -102,7 +97,10 @@ fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
 async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() {
     let store = MockReviewJobStore::default();
     assert_eq!(
-        store.admit_batch(vec![request("delivery-a", 10)]).await.unwrap(),
+        store
+            .admit_batch(vec![request("delivery-a", 10)])
+            .await
+            .unwrap(),
         Admission::Admitted
     );
     // A fresh worker has no channel state; it claims directly from the durable
@@ -112,10 +110,12 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
         .await
         .unwrap()
         .expect("accepted work survives a lost wakeup");
-    assert!(store
-        .finish(&recovered, TerminalOutcome::Published, 12, 12)
-        .await
-        .unwrap());
+    assert!(
+        store
+            .finish(&recovered, TerminalOutcome::Published, 12, 12)
+            .await
+            .unwrap()
+    );
     assert!(store.claim_next("process-b", 13).await.unwrap().is_none());
     assert_eq!(
         store
@@ -132,10 +132,7 @@ async fn whole_manual_batch_is_rejected_without_partial_admission() {
     let full = (0..MAX_UNFINISHED_REVIEWS)
         .map(|index| request(&format!("job-{index}"), 1))
         .collect::<Vec<_>>();
-    assert_eq!(
-        store.admit_batch(full).await.unwrap(),
-        Admission::Admitted
-    );
+    assert_eq!(store.admit_batch(full).await.unwrap(), Admission::Admitted);
     assert_eq!(
         store
             .admit_batch(vec![request("manual-a", 2), request("manual-b", 2)])
@@ -149,12 +146,11 @@ async fn whole_manual_batch_is_rejected_without_partial_admission() {
 #[tokio::test]
 async fn expired_owner_is_recovered_but_live_owner_and_stale_generation_are_fenced() {
     let store = MockReviewJobStore::default();
-    store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
-    let first = store
-        .claim_next("process-a", 2)
+    store
+        .admit_batch(vec![request("delivery-a", 1)])
         .await
-        .unwrap()
         .unwrap();
+    let first = store.claim_next("process-a", 2).await.unwrap().unwrap();
     assert!(store.claim_next("process-b", 3).await.unwrap().is_none());
     let second = store
         .claim_next("process-b", 2 + REVIEW_OWNER_TTL_MS)
@@ -162,33 +158,44 @@ async fn expired_owner_is_recovered_but_live_owner_and_stale_generation_are_fenc
         .unwrap()
         .unwrap();
     assert!(second.generation > first.generation);
-    assert!(!store
-        .finish(&first, TerminalOutcome::Published, 40_000, 40_000)
-        .await
-        .unwrap());
-    assert!(store
-        .defer(&second, 40_001, 50_000)
-        .await
-        .expect("the current generation may defer"));
+    assert!(
+        !store
+            .finish(&first, TerminalOutcome::Published, 40_000, 40_000)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .defer(&second, 40_001, 50_000)
+            .await
+            .expect("the current generation may defer")
+    );
     assert_eq!(store.unfinished(), 1);
 }
 
 #[tokio::test]
 async fn live_lease_contention_defers_without_converting_it_to_a_success() {
     let store = MockReviewJobStore::default();
-    store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
+    store
+        .admit_batch(vec![request("delivery-a", 1)])
+        .await
+        .unwrap();
     let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
     assert!(store.defer(&claimed, 3, 10_000).await.unwrap());
-    assert!(store
-        .claim_next("process-b", 9_999)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(store
-        .claim_next("process-b", 10_000)
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .claim_next("process-b", 9_999)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .claim_next("process-b", 10_000)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -199,55 +206,76 @@ async fn running_claims_are_bounded_across_process_owners() {
         .collect();
     assert_eq!(store.admit_batch(jobs).await.unwrap(), Admission::Admitted);
     for index in 0..MAX_RUNNING_REVIEWS {
-        assert!(store
-            .claim_next(&format!("process-{index}"), 2)
+        assert!(
+            store
+                .claim_next(&format!("process-{index}"), 2)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert!(
+        store
+            .claim_next("process-overflow", 3)
             .await
             .unwrap()
-            .is_some());
-    }
-    assert!(store
-        .claim_next("process-overflow", 3)
-        .await
-        .unwrap()
-        .is_none());
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn only_a_live_generation_can_renew_or_finish() {
     let store = MockReviewJobStore::default();
-    store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
+    store
+        .admit_batch(vec![request("delivery-a", 1)])
+        .await
+        .unwrap();
     let first = store.claim_next("process-a", 2).await.unwrap().unwrap();
     assert!(store.renew(&first, 10_000).await.unwrap());
     assert!(store.owns(&first, 10_001).await.unwrap());
-    assert!(!store
-        .owns(&first, 10_000 + REVIEW_OWNER_TTL_MS)
-        .await
-        .unwrap());
-    assert!(!store.renew(&first, 10_000 + REVIEW_OWNER_TTL_MS).await.unwrap());
+    assert!(
+        !store
+            .owns(&first, 10_000 + REVIEW_OWNER_TTL_MS)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .renew(&first, 10_000 + REVIEW_OWNER_TTL_MS)
+            .await
+            .unwrap()
+    );
     let recovered = store
         .claim_next("process-b", 10_000 + REVIEW_OWNER_TTL_MS)
         .await
         .unwrap()
         .unwrap();
-    assert!(!store
-        .finish(
-            &first,
-            TerminalOutcome::Published,
-            10_000 + REVIEW_OWNER_TTL_MS,
-            50_000,
-        )
-        .await
-        .unwrap());
-    assert!(store
-        .owns(&recovered, 10_001 + REVIEW_OWNER_TTL_MS)
-        .await
-        .unwrap());
+    assert!(
+        !store
+            .finish(
+                &first,
+                TerminalOutcome::Published,
+                10_000 + REVIEW_OWNER_TTL_MS,
+                50_000,
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .owns(&recovered, 10_001 + REVIEW_OWNER_TTL_MS)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
 async fn terminal_deadlines_remain_deduped_for_seven_days() {
     let store = MockReviewJobStore::default();
-    store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
+    store
+        .admit_batch(vec![request("delivery-a", 1)])
+        .await
+        .unwrap();
     let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
     store
         .finish(&claimed, TerminalOutcome::Exhausted, 3, 3)
@@ -262,10 +290,7 @@ async fn terminal_deadlines_remain_deduped_for_seven_days() {
     );
     assert_eq!(
         store
-            .admit_batch(vec![request(
-                "delivery-a",
-                3 + REVIEW_TOMBSTONE_TTL_MS + 1
-            )])
+            .admit_batch(vec![request("delivery-a", 3 + REVIEW_TOMBSTONE_TTL_MS + 1)])
             .await
             .unwrap(),
         Admission::Admitted
@@ -276,13 +301,18 @@ async fn terminal_deadlines_remain_deduped_for_seven_days() {
 async fn failed_batch_persistence_admits_no_jobs() {
     let store = MockReviewJobStore::default();
     store.fail_next_admission();
-    assert!(store
-        .admit_batch(vec![request("manual-a", 1), request("manual-b", 1)])
-        .await
-        .is_err());
+    assert!(
+        store
+            .admit_batch(vec![request("manual-a", 1), request("manual-b", 1)])
+            .await
+            .is_err()
+    );
     assert_eq!(store.unfinished(), 0);
     assert_eq!(
-        store.admit_batch(vec![request("manual-a", 2), request("manual-b", 2)]).await.unwrap(),
+        store
+            .admit_batch(vec![request("manual-a", 2), request("manual-b", 2)])
+            .await
+            .unwrap(),
         Admission::Admitted
     );
 }

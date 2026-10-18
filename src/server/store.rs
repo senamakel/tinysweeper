@@ -25,10 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::lanes::e2e::runs::Watch;
-use crate::preview::session::Session as PreviewSession;
 use crate::ports::review_job::{
     Admission, OwnedReview, ReviewJobStore, ReviewSchedulerState, TerminalOutcome,
 };
+use crate::preview::session::Session as PreviewSession;
 use crate::state::types::ReviewedState;
 
 /// How long a lease survives without being released.
@@ -167,12 +167,7 @@ impl ReviewJobStore for Store {
         Ok(state.owns(owned, self.server_now_ms().await?))
     }
 
-    async fn defer(
-        &self,
-        owned: &OwnedReview,
-        _now_ms: i64,
-        not_before_ms: i64,
-    ) -> Result<bool> {
+    async fn defer(&self, owned: &OwnedReview, _now_ms: i64, not_before_ms: i64) -> Result<bool> {
         let owned = owned.clone();
         self.change_review_scheduler(move |state, now_ms| {
             state.defer(&owned, now_ms, not_before_ms)

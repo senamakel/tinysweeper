@@ -143,10 +143,11 @@ impl ReviewJobStore for Store {
     async fn has_capacity_for(&self, count: usize) -> Result<bool> {
         let mut state = self.review_scheduler_state().await?;
         let now_ms = self.server_now_ms().await?;
-        state.terminal.retain(|record| record.expires_at_ms > now_ms);
+        state
+            .terminal
+            .retain(|record| record.expires_at_ms > now_ms);
         Ok(count > 0
-            && state.unfinished.len() + count
-                <= crate::ports::review_job::MAX_UNFINISHED_REVIEWS
+            && state.unfinished.len() + count <= crate::ports::review_job::MAX_UNFINISHED_REVIEWS
             && state.terminal.len() + state.unfinished.len() + count
                 <= crate::ports::review_job::MAX_TERMINAL_REVIEW_RESERVATIONS)
     }

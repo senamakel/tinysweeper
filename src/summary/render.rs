@@ -384,7 +384,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                     out,
                     "- [ ] Address **{}** (`{}`).",
                     prose(&finding.title),
-                    prose(&finding.path)
+                    code_span(&finding.path)
                 );
             }
         }
@@ -461,7 +461,7 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             let _ = writeln!(
                 out,
                 "- **Evidence:** `{}` — {}",
-                prose(&finding.path),
+                code_span(&finding.path),
                 prose(&finding.title)
             );
         }

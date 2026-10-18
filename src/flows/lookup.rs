@@ -1671,6 +1671,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_module_brace_on_the_next_line_does_not_seed_at_the_root() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,3 @@\n+mod outer\n+{\n+    pub mod foo;\n+}\n",
+        );
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("Declared module `foo`"), "{seeded}");
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(!seeded.contains("src/foo.rs"), "{seeded}");
+    }
+
+    #[tokio::test]
+    async fn multiline_cfg_attr_does_not_fall_back_to_default_module_paths() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,6 @@\n+#[cfg_attr(\n+    feature = \"custom\",\n+    path = \"custom.rs\"\n+)]\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(!seeded.contains("src/foo.rs"), "{seeded}");
+        assert!(!seeded.contains("src/foo/mod.rs"), "{seeded}");
+    }
+
+    #[tokio::test]
+    async fn path_like_text_inside_a_block_comment_is_not_a_module_attribute() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,3 @@\n+/*\n+#[path = \"bogus.rs\"]\n+*/ pub mod foo;\n",
+        );
+        let tree = MockTree::from_files([("src/foo.rs", "pub fn actual_module() {}\n")]);
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("src/foo.rs"), "{seeded}");
+        assert!(seeded.contains("actual_module"), "{seeded}");
+        assert!(!seeded.contains("src/bogus.rs"), "{seeded}");
+    }
+
+    #[tokio::test]
     async fn partial_hunks_do_not_turn_unresolved_module_paths_into_missing_evidence() {
         let diff = crate::evidence::diff::parse_file_patch(
             "src/lib.rs",

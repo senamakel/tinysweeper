@@ -3735,6 +3735,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ownership_expiring_during_mongo_check_blocks_publication_continuation() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let valid = Arc::new(AtomicBool::new(true));
+        let delayed_valid = valid.clone();
+        let publications = AtomicUsize::new(0);
+        let result = check_owner_after_await(
+            || valid.load(Ordering::SeqCst),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                delayed_valid.store(false, Ordering::SeqCst);
+                Ok(true)
+            },
+        )
+        .await;
+        if result.is_ok() {
+            publications.fetch_add(1, Ordering::SeqCst);
+        }
+        assert!(matches!(result, Err(Error::ReviewOwnershipLost)));
+        assert_eq!(publications.load(Ordering::SeqCst), 0);
+
+        let positive = check_owner_after_await(|| true, async { Ok(true) }).await;
+        assert!(positive.is_ok(), "a live owner passes the post-await fence");
+        if positive.is_ok() {
+            publications.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(publications.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_after_status_open_defers_job_for_replacement_owner() {
+        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
+        let request = queued_test_review(71);
+        assert_eq!(
+            store.admit_batch(vec![request]).await.unwrap(),
+            Admission::Admitted
+        );
+        let first = store
+            .claim_next("first-owner", unix_time_ms())
+            .await
+            .unwrap()
+            .expect("first process owns accepted review");
+        let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
+        let run = Run {
+            mode: Mode::Incremental,
+            slot,
+            deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+            expected_head: Some("sha-71".into()),
+            owned: Some(first.clone()),
+            owner_lost: None,
+            owner_until: None,
+            lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        // This is the signal `ReviewRun::run` sets when open_status discovers
+        // shutdown after the check POST completed. Follow the same classification
+        // and durable-disposition path used by review_inner/run_owned_review.
+        mark_shutdown_status_result(&run);
+        assert!(matches!(take_shutdown_status_result(&run), Some(InnerReview::Shutdown)));
+        let disposition = defer_interrupted_review();
+        assert!(matches!(disposition, WorkerDisposition::Deferred(_)));
+        assert!(record_owned_disposition(&store, &first, disposition, unix_time_ms())
+            .await
+            .unwrap()
+            .expect("shutdown disposition must be persisted"));
+
+        let replacement = store
+            .claim_next("replacement-owner", unix_time_ms() + 1)
+            .await
+            .unwrap()
+            .expect("shutdown-interrupted work remains recoverable");
+        assert!(matches!(
+            store.begin_paid(&replacement, unix_time_ms()).await.unwrap(),
+            crate::ports::review_job::PaidStart::Started
+        ));
+        assert!(store
+            .finish(
+                &replacement,
+                TerminalOutcome::Published,
+                unix_time_ms(),
+                unix_time_ms()
+            )
+            .await
+            .unwrap());
+        assert_eq!(store.unfinished(), 0);
+    }
+
+    #[tokio::test]
     async fn recovered_paid_attempts_are_bounded_before_worker_work_starts() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4558,6 +4649,7 @@ mod tests {
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let err = spent
             .check("o/r", 7)

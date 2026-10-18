@@ -356,6 +356,7 @@ impl GatewayModel {
                 true,
             )?);
         }
+        let call_started = std::time::Instant::now();
         let result = ladder.complete(completion).await.map_err(|error| {
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
@@ -434,7 +435,7 @@ impl GatewayModel {
                     usage.output_tokens,
                 )
             });
-            tracing::info!(model, cap = attempt.max_tokens, input_tokens = usage.input_tokens,
+            tracing::info!(model, cap = attempt.max_tokens, latency_ms = call_started.elapsed().as_millis() as u64, input_tokens = usage.input_tokens,
                 cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
                 reasoning_tokens = usage.reasoning_tokens, finish_reason = ?attempt.finish_reason,
                 reported_cost_usd = reported, "model call");

@@ -2852,14 +2852,6 @@ where
     Review: FnOnce() -> ReviewFuture,
     ReviewFuture: std::future::Future<Output = Result<InnerReview>>,
 {
-    // Open or resume the check before exhausting the paid-attempt budget. A
-    // recovered job at the limit still needs a check to conclude, and shutdown
-    // must defer without consuming a paid attempt.
-    let go_on = open_status().await?;
-    if !go_on {
-        return continue_after_open_status(false, review).await;
-    }
-
     if let Some(owned) = owned {
         match with_paid_review_attempt(store, owned, now_ms, start).await? {
             PaidWork::Started(result) => result?,
@@ -2869,7 +2861,8 @@ where
     } else {
         start().await?;
     }
-    continue_after_open_status(true, review).await
+    let go_on = open_status().await?;
+    continue_after_open_status(go_on, review).await
 }
 
 fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {

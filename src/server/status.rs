@@ -95,6 +95,7 @@ pub fn completed(
     findings: usize,
     changes_requested: bool,
     coverage: Option<(usize, usize)>,
+    incomplete: bool,
 ) -> CheckRun {
     let counted = match findings {
         0 => "nothing to report".to_string(),
@@ -112,6 +113,11 @@ pub fn completed(
                 "Reviewed {reviewed} of {total} files — {} not reviewed",
                 total.saturating_sub(reviewed)
             ),
+        )
+    } else if incomplete {
+        (
+            CheckConclusion::Neutral,
+            "Review incomplete — a lane did not respond".to_string(),
         )
     } else if changes_requested {
         (

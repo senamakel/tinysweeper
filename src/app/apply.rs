@@ -995,11 +995,7 @@ mod tests {
     #[test]
     fn a_partial_lane_title_reports_file_coverage() {
         assert_eq!(
-            title_for(
-                0,
-                "Reviewed 8 of 10 files — 2 not reviewed. Partial result.",
-                2
-            ),
+            title_for(0, Some((8, 10))),
             "Reviewed 8 of 10 files — 2 not reviewed"
         );
     }
@@ -1470,6 +1466,7 @@ mod tests {
         let mut proposal = proposal("abc123", vec![]);
         proposal.lanes[0].summary = "Reviewed 8 of 10 files — 2 not reviewed.".into();
         proposal.lanes[0].unanswered = vec!["a.rs".into(), "b.rs".into()];
+        proposal.lanes[0].coverage = Some((8, 10));
         apply(&forge, &forge, &config(), &proposal, None)
             .await
             .expect("applies");

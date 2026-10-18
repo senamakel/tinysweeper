@@ -1,11 +1,11 @@
 //! Offline contract tests for admission, recovery ownership, and terminal dedupe.
 
+use super::super::review_job_mock::MockReviewJobStore;
 use super::{
     Admission, MAX_RUNNING_REVIEWS, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS,
     REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode, ReviewRequest,
     ReviewSchedulerState, ReviewTombstone, TerminalOutcome,
 };
-use super::super::review_job_mock::MockReviewJobStore;
 
 fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
     ReviewRequest {

@@ -11,6 +11,8 @@ use crate::summary::types::ReviewSummary;
 pub const MARKER: &str = "<!-- tinysweeper:review-hub -->";
 /// Marker used by the former standalone change-map comment.
 pub const LEGACY_MARKER: &str = "<!-- tinysweeper:change-map -->";
+const LAST_REPORT_START: &str = "<!-- tinysweeper:last-report:start -->";
+const LAST_REPORT_END: &str = "<!-- tinysweeper:last-report:end -->";
 
 /// Render the initial state while model work is running, retaining the last report.
 pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
@@ -20,7 +22,11 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
         body.push_str("\n<details>\n<summary>Previous completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -28,14 +34,22 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
 
 /// Render a prominent failure without destroying the prior trustworthy report.
 pub fn failed(head_sha: &str, message: &str, previous: Option<&str>) -> String {
+    let reason = safe_failure_reason(message);
     let mut body = format!(
-        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review failed for `{}`.** {}\n",
+        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review of `{}` {}.**\n",
         short(head_sha),
-        md(&crate::scan::scrub(message))
+        reason,
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
+        if let Some(sha) = reviewed_sha(previous) {
+            let _ = writeln!(body, " The last completed review (`{sha}`) is shown below.");
+        }
         body.push_str("\n<details open>\n<summary>Last completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -624,15 +638,85 @@ pub(crate) fn md(text: &str) -> String {
     escaped
 }
 fn trustworthy_report(body: &str) -> Option<&str> {
-    if body.contains(MARKER)
+    if let Some(start) = body.find(LAST_REPORT_START) {
+        let content_start = start + LAST_REPORT_START.len();
+        let end = body[content_start..].find(LAST_REPORT_END)? + content_start;
+        return trustworthy_report(body[content_start..end].trim_matches('\n'));
+    }
+
+    if is_completed_report(body) {
+        return Some(body);
+    }
+
+    // Older hubs nested the report in a details block before stable delimiters
+    // were introduced. Extract that block so an upgrade during a review keeps
+    // the report instead of replacing it with another status wrapper.
+    let opening = body.find("<details")?;
+    let content_start = body[opening..].find("</summary>")? + opening + "</summary>".len();
+    let mut cursor = opening;
+    let mut depth = 0usize;
+    let closing = loop {
+        let next_open = body[cursor..]
+            .find("<details")
+            .map(|offset| cursor + offset);
+        let next_close = body[cursor..]
+            .find("</details>")
+            .map(|offset| cursor + offset);
+        match (next_open, next_close) {
+            (Some(open), Some(close)) if open < close => {
+                depth += 1;
+                cursor = open + "<details".len();
+            }
+            (_, Some(close)) => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    break close;
+                }
+                cursor = close + "</details>".len();
+            }
+            _ => return None,
+        }
+    };
+    trustworthy_report(body[content_start..closing].trim())
+}
+
+fn is_completed_report(body: &str) -> bool {
+    body.contains(MARKER)
         && body.contains("**Reviewed head:**")
         && !body.contains("**Reviewing `")
         && !body.contains("**Review failed for `")
-    {
-        Some(body)
-    } else {
-        None
+}
+
+fn reviewed_sha(report: &str) -> Option<&str> {
+    let line = report
+        .lines()
+        .find(|line| line.contains("**Reviewed head:**"))?;
+    let value = line.split("**Reviewed head:**").nth(1)?.trim();
+    value.strip_prefix('`')?.split('`').next()
+}
+
+fn safe_failure_reason(message: &str) -> String {
+    let message = message.to_ascii_lowercase();
+    if message.contains("timeout") || message.contains("timed out") || message.contains("within ") {
+        let seconds = message
+            .split_once("within ")
+            .and_then(|(_, rest)| rest.split_once('s'))
+            .and_then(|(seconds, _)| seconds.trim().parse::<u64>().ok());
+        return match seconds {
+            Some(seconds) if seconds >= 60 => {
+                format!("timed out after {} min", seconds.saturating_add(59) / 60)
+            }
+            Some(seconds) => format!("timed out after {seconds} sec"),
+            None => "timed out".to_string(),
+        };
     }
+    if message.contains("budget") {
+        return "ran out of budget".to_string();
+    }
+    if message.contains("model") || message.contains("gateway") || message.contains("provider") {
+        return "could not reach a model".to_string();
+    }
+    "could not complete".to_string()
 }
 
 #[cfg(test)]
@@ -667,10 +751,81 @@ mod tests {
     #[test]
     fn progress_does_not_recursively_retain_a_failure_wrapper() {
         let completed = format!("{MARKER}\n\n**Reviewed head:** `abc`");
-        let failure = failed("def", "network error", Some(&completed));
+        let first_progress = in_progress("def", Some(&completed));
+        let failure = failed("def", "network error", Some(&first_progress));
+        let second_progress = in_progress("ghi", Some(&failure));
+        let second_failure = failed("ghi", "network error", Some(&second_progress));
 
-        assert!(failure.contains("Last completed report"));
-        assert!(!in_progress("ghi", Some(&failure)).contains("Previous completed report"));
+        assert_eq!(
+            second_failure.matches("**Reviewed head:** `abc`").count(),
+            1
+        );
+        assert!(second_failure.contains("Last completed report"));
+    }
+
+    #[test]
+    fn legacy_progress_wrapper_keeps_its_completed_report() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_progress = format!(
+            "{MARKER}\n\n**Reviewing `def` now.**\n<details>\n<summary>Previous completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let failure = failed("def", "network error", Some(&legacy_progress));
+        let next_progress = in_progress("ghi", Some(&failure));
+
+        assert_eq!(next_progress.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(!next_progress.contains("**Reviewing `def`"));
+        assert!(next_progress.contains("<summary>Report detail</summary>"));
+    }
+
+    #[test]
+    fn legacy_failure_wrapper_extracts_a_report_with_nested_details() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_failure = format!(
+            "{MARKER}\n\n**Review failed for `def`.** timed out\n<details open>\n<summary>Last completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let progress = in_progress("ghi", Some(&legacy_failure));
+        let failure = failed("ghi", "timeout", Some(&progress));
+
+        assert_eq!(failure.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(failure.contains("<summary>Report detail</summary>"));
+        assert!(!failure.contains("**Review failed for `def`"));
+    }
+
+    #[test]
+    fn failed_copy_is_safe_and_names_the_preserved_head() {
+        let completed = format!("{MARKER}\n\n**Reviewed head:** `def5678`");
+        let failure = failed(
+            "abc1234",
+            "#49 Error::Timeout: raw details",
+            Some(&completed),
+        );
+
+        assert!(failure.contains("`def5678`"));
+        assert!(!failure.contains("\\#"));
+        assert!(!failure.contains("Error::"));
+    }
+
+    #[test]
+    fn failure_wrappers_remain_bounded_across_ten_cycles() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n{}",
+            "report ".repeat(1_000)
+        );
+        let mut body = completed.clone();
+
+        for cycle in 0..10 {
+            body = in_progress(&format!("progress-{cycle}"), Some(&body));
+            body = failed(&format!("failed-{cycle}"), "timeout", Some(&body));
+        }
+
+        assert_eq!(body.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(body.len() < completed.len() + 2_000);
     }
 
     #[test]

@@ -72,6 +72,7 @@ pub(crate) fn citation(citation: &str, repo: &str, sha: &str) -> String {
 fn safe_path(path: &str) -> bool {
     !path.starts_with('/')
         && !path.contains('\\')
+        && !path.chars().any(char::is_control)
         && path
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
@@ -113,6 +114,11 @@ mod tests {
         assert!(!rendered.contains("<script>"));
         assert!(!rendered.contains("[click]("));
         assert!(!rendered.contains('\n'));
+    }
+
+    #[test]
+    fn table_cells_escape_the_column_separator() {
+        assert_eq!(table_cell("left | <b>right</b>"), "left \\| &lt;b&gt;right&lt;/b&gt;");
     }
 
     #[test]

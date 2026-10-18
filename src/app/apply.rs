@@ -1395,7 +1395,7 @@ mod tests {
 
         assert!(body.contains("### Over the comment budget"), "{body}");
         assert!(body.contains("Over budget finding"), "{body}");
-        assert!(body.contains("src/main\\.rs:2"), "{body}");
+        assert!(body.contains("`src/main.rs:2`"), "{body}");
     }
 
     fn finding() -> Finding {
@@ -1632,6 +1632,32 @@ mod tests {
             "{:#?}",
             forge.writes()
         );
+    }
+
+    #[tokio::test]
+    async fn mock_forge_review_body_keeps_adversarial_text_inert() {
+        let forge = forge("abc123");
+        let mut hostile = finding();
+        hostile.line = None;
+        hostile.title = "@maintainer <img src=x> [click](https://evil.example)".into();
+        hostile.body = "<script>alert(1)</script> @user [link](https://evil.example)".into();
+
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", vec![hostile]),
+            None,
+        )
+        .await
+        .expect("applies");
+
+        let (body, _) = review_of(&forge).expect("review published to the mock forge");
+        assert!(!body.contains("@maintainer"), "{body}");
+        assert!(!body.contains("<img src=x>"), "{body}");
+        assert!(!body.contains("[click](https://evil.example)"), "{body}");
+        assert!(!body.contains("<script>"), "{body}");
+        assert!(!body.contains("[link](https://evil.example)"), "{body}");
     }
 
     #[tokio::test]

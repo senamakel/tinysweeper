@@ -54,21 +54,26 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").owns(owned, now_ms))
     }
 
-    async fn defer(&self, owned: &OwnedReview, not_before_ms: i64) -> Result<bool> {
-        Ok(self.state.lock().expect("state").defer(owned, not_before_ms))
+    async fn defer(&self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .defer(owned, now_ms, not_before_ms))
     }
 
     async fn finish(
         &self,
         owned: &OwnedReview,
         outcome: TerminalOutcome,
+        now_ms: i64,
         completed_at_ms: i64,
     ) -> Result<bool> {
         Ok(self
             .state
             .lock()
             .expect("state")
-            .finish(owned, outcome, completed_at_ms))
+            .finish(owned, outcome, now_ms, completed_at_ms))
     }
 }
 
@@ -102,7 +107,7 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
         .unwrap()
         .expect("accepted work survives a lost wakeup");
     assert!(store
-        .finish(&recovered, TerminalOutcome::Published, 12)
+        .finish(&recovered, TerminalOutcome::Published, 12, 12)
         .await
         .unwrap());
     assert!(store.claim_next("process-b", 13).await.unwrap().is_none());
@@ -152,11 +157,11 @@ async fn expired_owner_is_recovered_but_live_owner_and_stale_generation_are_fenc
         .unwrap();
     assert!(second.generation > first.generation);
     assert!(!store
-        .finish(&first, TerminalOutcome::Published, 40_000)
+        .finish(&first, TerminalOutcome::Published, 40_000, 40_000)
         .await
         .unwrap());
     assert!(store
-        .defer(&second, 50_000)
+        .defer(&second, 40_001, 50_000)
         .await
         .expect("the current generation may defer"));
     assert_eq!(store.unfinished(), 1);
@@ -167,7 +172,7 @@ async fn live_lease_contention_defers_without_converting_it_to_a_success() {
     let store = MockReviewJobStore::default();
     store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
     let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
-    assert!(store.defer(&claimed, 10_000).await.unwrap());
+    assert!(store.defer(&claimed, 3, 10_000).await.unwrap());
     assert!(store
         .claim_next("process-b", 9_999)
         .await
@@ -219,7 +224,12 @@ async fn only_a_live_generation_can_renew_or_finish() {
         .unwrap()
         .unwrap();
     assert!(!store
-        .finish(&first, TerminalOutcome::Published, 50_000)
+        .finish(
+            &first,
+            TerminalOutcome::Published,
+            10_000 + REVIEW_OWNER_TTL_MS,
+            50_000,
+        )
         .await
         .unwrap());
     assert!(store
@@ -234,7 +244,7 @@ async fn terminal_deadlines_remain_deduped_for_seven_days() {
     store.admit_batch(vec![request("delivery-a", 1)]).await.unwrap();
     let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
     store
-        .finish(&claimed, TerminalOutcome::Exhausted, 3)
+        .finish(&claimed, TerminalOutcome::Exhausted, 3, 3)
         .await
         .unwrap();
     assert_eq!(

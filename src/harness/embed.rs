@@ -449,6 +449,7 @@ impl GatewayModel {
                 Error::Budget {
                     spent: committed as f64 / 1_000_000.0,
                     limit: source.limits.cost_micros.unwrap_or_default() as f64 / 1_000_000.0,
+                    usage: None,
                 }
             } else if let Some(attempt) = error.attempts.last()
                 && matches!(attempt.finish_reason.as_deref(), Some("length" | "max_tokens" | "MAX_TOKENS"))

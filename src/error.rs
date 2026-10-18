@@ -134,7 +134,7 @@ impl Error {
 
     /// Keep safe paid accounting when a model cannot return an answer.
     pub fn with_usage(self, usage: crate::ports::model::Usage) -> Self {
-        let self = match self {
+        let error = match self {
             Self::Budget { spent, limit, .. } => {
                 return Self::Budget {
                     spent,
@@ -144,7 +144,7 @@ impl Error {
             }
             other => other,
         };
-        let message = match self {
+        let message = match error {
             Self::Model(message) | Self::ModelUsage { message, .. } => message,
             other => other.to_string(),
         };

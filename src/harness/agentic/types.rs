@@ -51,6 +51,7 @@ impl ReviewFailure {
                 Error::Budget {
                     spent: committed as f64 / 1_000_000.0,
                     limit: source.limits.cost_micros.unwrap_or_default() as f64 / 1_000_000.0,
+                    usage: None,
                 },
                 ledger,
                 estimate,

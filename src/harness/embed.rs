@@ -767,7 +767,7 @@ mod tests {
         )])
         .await;
         model.base_url = gateway.base_url.clone();
-        let model = model.scoped_budget(0.003).unwrap();
+        let model = model.scoped_budget(0.01).unwrap();
         let first_model = model.clone();
         let first_request = request.clone();
         let first = tokio::spawn(async move { first_model.complete(first_request).await });

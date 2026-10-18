@@ -244,6 +244,9 @@ pub struct LaneProposal {
     /// consulted. See [`LaneOutcome::unanswered`](crate::lanes::LaneOutcome).
     #[serde(default)]
     pub unanswered: Vec<String>,
+    /// Per-file review coverage, when this lane fans out over changed files.
+    #[serde(default)]
+    pub coverage: Option<(usize, usize)>,
     /// Findings that passed every gate but did not fit the pull request's
     /// inline-comment budget (`review.max_comments`).
     ///
@@ -556,6 +559,7 @@ pub async fn review_with_tree(
                     usage: Usage::default(),
                     models: vec![],
                     unanswered: vec![],
+                    coverage: None,
                     overflow: vec![],
                 })
                 .collect(),
@@ -1587,6 +1591,7 @@ fn lane_proposal(
         usage: spend.usage,
         models: spend.models,
         unanswered: outcome.unanswered,
+        coverage: outcome.coverage,
         overflow: vec![],
     }
 }

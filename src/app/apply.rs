@@ -1678,6 +1678,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_finding_rows_keep_backslash_pipe_paths_in_one_cell() {
+        let forge = forge("abc123");
+        let findings = (1..=3)
+            .map(|backslashes| {
+                let mut item = finding();
+                item.path = format!(
+                    "src/a{}|b.rs [click](https://evil.example)",
+                    "\\".repeat(backslashes)
+                );
+                item.title = format!("Path {backslashes}");
+                item.line = None;
+                item
+            })
+            .collect();
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", findings),
+            None,
+        )
+        .await
+        .expect("applies");
+
+        let summary = forge
+            .checks()
+            .remove("tinysweeper/critique")
+            .expect("critique check")
+            .summary;
+        std::fs::write("target/mockforge-path-pipes.md", &summary).unwrap();
+        for count in 1..=3 {
+            let row = summary
+                .lines()
+                .find(|line| line.contains(&format!("Path {count}")))
+                .expect("finding row");
+            assert_eq!(row.matches(" | ").count(), 2, "{row}");
+            assert!(row.contains("[click](https://evil.example)"), "{row}");
+        }
+    }
+
+    #[tokio::test]
     async fn mock_forge_review_body_keeps_adversarial_text_inert() {
         let forge = forge("abc123");
         let mut hostile = finding();

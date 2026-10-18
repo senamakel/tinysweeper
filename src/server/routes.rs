@@ -2059,9 +2059,9 @@ async fn review_inner(
     let read_token = state.auth.review_read_token(installation).await?;
     let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
-    let pull_request = {
-        use crate::ports::forge::ForgeRead;
-        forge.pull_request(&repo_id, number).await?
+    let Some(pull_request) = pull_request_for_review(&forge, &repo_id, number).await? else {
+        tracing::info!(%repo, number, "pull request is closed; not reviewing");
+        return Ok(None);
     };
 
     // Comment and review-comment deliveries do not carry the draft flag, so
@@ -2290,6 +2290,23 @@ async fn review_inner(
     ));
 
     Ok(Some((findings, changes_requested)))
+}
+
+/// Read the live pull request and allow work only while it is still reviewable.
+///
+/// Webhook payloads can be stale by the time the queued worker starts, and
+/// manual reviews are keyed by a head SHA rather than a delivery. This is the
+/// shared gate before indexing, lease/check writes, and model calls.
+async fn pull_request_for_review(
+    forge: &dyn crate::ports::forge::ForgeRead,
+    repo: &RepoId,
+    number: u64,
+) -> Result<Option<PullRequest>> {
+    let pull_request = forge.pull_request(repo, number).await?;
+    if !pull_request.open || pull_request.merged {
+        return Ok(None);
+    }
+    Ok(Some(pull_request))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {
@@ -2766,6 +2783,48 @@ impl Previews for PreviewDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_queued_review_that_is_merged_before_start_does_no_review_work() {
+        use crate::forge::types::PullRequest as PullRequestData;
+        use crate::harness::MockModel;
+        use crate::ports::forge::ForgeRead;
+
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let queued = PullRequestData {
+            number: 7,
+            open: true,
+            ..PullRequestData::default()
+        };
+        let forge = crate::forge::MockForge::new().with_pull_request(
+            queued.clone(),
+            vec![],
+            vec![],
+        );
+
+        // The webhook queued the number while it was open. GitHub reports it
+        // merged before the worker's live read, so the lane path must not run.
+        forge.replace_pull_request(PullRequestData {
+            open: false,
+            merged: true,
+            ..queued
+        });
+        let model = MockModel::silent();
+
+        let pull_request = pull_request_for_review(&forge, &repo, 7).await.expect("fetch");
+
+        assert!(pull_request.is_none(), "a merged PR must decline before review work");
+        assert!(model.requests().is_empty(), "the model must not be called");
+        assert!(forge.writes().is_empty(), "no review or check may be published");
+        assert_eq!(
+            ForgeRead::pull_request(&forge, &repo, 7)
+                .await
+                .expect("live PR")
+                .merged,
+            true,
+            "fixture must prove the queued action became stale"
+        );
+    }
 
     #[tokio::test]
     async fn the_permit_pool_actually_bounds_concurrency() {

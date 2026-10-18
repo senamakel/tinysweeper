@@ -86,6 +86,14 @@ pub async fn apply(
     // Re-validate against live state. The review ran minutes ago in another
     // job, and the world moves.
     let live = read.pull_request(&repo, proposal.number).await?;
+    if !live.open || live.merged {
+        tracing::info!(
+            number = proposal.number,
+            merged = live.merged,
+            "pull request is closed; not publishing the review"
+        );
+        return Ok(());
+    }
     if live.head_sha != proposal.head_sha {
         tracing::info!(
             reviewed = %proposal.head_sha,

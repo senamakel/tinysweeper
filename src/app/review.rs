@@ -2186,6 +2186,33 @@ mod tests {
     }
 
     #[test]
+    fn an_unanswered_per_file_lane_cannot_become_successful() {
+        let prior = PriorReview::default();
+        let suppressed = BTreeSet::new();
+        let severities = BTreeMap::new();
+        let titles = Vec::new();
+        let lane = lane_proposal(
+            &config(),
+            LaneId::Critique,
+            LaneOutcome {
+                summary: "Reviewed 0 of 1 files — 1 not reviewed.".into(),
+                unanswered: vec!["src/unread.rs".into()],
+                coverage: Some((0, 1)),
+                ..LaneOutcome::default()
+            },
+            &[],
+            &Continuity {
+                prior: &prior,
+                suppressed: &suppressed,
+                severities: &severities,
+                titles: &titles,
+            },
+        );
+        assert_eq!(lane.conclusion, CheckConclusion::Neutral);
+        assert_eq!(lane.coverage, Some((0, 1)));
+    }
+
+    #[test]
     fn max_comments_caps_findings_across_lanes_not_per_lane() {
         fn finding(title: &str, severity: Severity) -> Finding {
             Finding {

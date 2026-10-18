@@ -728,9 +728,8 @@ fn sanitize_prior_narrative(
         {
             return false;
         }
-        observations.retain(|observation| {
-            validated_model_narrative(observation, statuses).is_some()
-        });
+        observations
+            .retain(|observation| validated_model_narrative(observation, statuses).is_some());
         !observations.is_empty()
     });
 }
@@ -813,7 +812,35 @@ fn claims_unsupported_lane_sentence(
         statuses
             .get(lane.as_str())
             .is_some_and(|status| !matches!(status.status, LaneStatusKind::Answered))
-            && words.contains(lane.as_str())
+            && lane_subject_is_mentioned(*lane, &lower)
+    })
+}
+
+fn lane_subject_is_mentioned(lane: LaneId, text: &str) -> bool {
+    let words = text
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
+    let aliases: &[&[&str]] = match lane {
+        LaneId::Critique => &[&["critique"], &["correctness"]],
+        LaneId::Security => &[&["security"]],
+        LaneId::Tests => &[&["tests"], &["test"]],
+        LaneId::Commits => &[&["commits"], &["commit"]],
+        LaneId::Description => &[&["description"]],
+        LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
+    };
+    aliases.iter().any(|alias| {
+        has_phrase(alias)
+            && ["lane", "lanes", "reviewer", "reviewers"]
+                .iter()
+                .any(|subject| {
+                    let mut after = alias.to_vec();
+                    after.push(*subject);
+                    let mut before = vec![*subject];
+                    before.extend_from_slice(alias);
+                    has_phrase(&after) || has_phrase(&before)
+                })
     })
 }
 

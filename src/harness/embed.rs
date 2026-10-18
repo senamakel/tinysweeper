@@ -1049,11 +1049,7 @@ mod tests {
         let response = crate::ports::model::with_model_call_observer(
             calls.clone(),
             model
-                .review(
-                    request,
-                    &tree,
-                    &policy,
-                )
+                .review(request, &tree, &policy)
                 .with_subscriber(dispatch),
         )
         .await
@@ -1140,11 +1136,7 @@ mod tests {
         let running = crate::ports::model::with_model_call_observer(
             calls.clone(),
             model
-                .review(
-                    request,
-                    &tree,
-                    &policy,
-                )
+                .review(request, &tree, &policy)
                 .with_subscriber(tracing::Dispatch::new(subscriber)),
         );
         let mut running = Box::pin(running);

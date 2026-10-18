@@ -521,7 +521,7 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
             let _ = writeln!(
                 out,
                 "| {} | {} | {}{} |",
-                crate::markdown::table_code_span(&short(&pass.head_sha)),
+                crate::markdown::table_code_span(short(&pass.head_sha)),
                 crate::markdown::table_cell(&pass.state),
                 crate::markdown::table_cell(&pass.summary),
                 if pass.reviewed_at_epoch > 0 {

@@ -799,6 +799,86 @@ async fn drain_review_queue<F>(
     }
 }
 
+async fn run_owned_review(
+    state: AppState,
+    owned: OwnedReview,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let store = state.review_jobs.clone();
+    let now_ms = unix_time_ms();
+    if !state
+        .accepting_reviews
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        if let Err(err) = store.defer(&owned, now_ms, now_ms).await {
+            tracing::error!(%err, "could not defer a review during shutdown");
+        }
+        return;
+    }
+
+    let (lost_tx, lost_rx) = watch::channel(false);
+    let heartbeat_store = store.clone();
+    let heartbeat_job = owned.clone();
+    let heartbeat = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            match heartbeat_store
+                .renew(&heartbeat_job, unix_time_ms())
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = lost_tx.send(true);
+                    return;
+                }
+                Err(err) => {
+                    tracing::error!(%err, "could not renew durable review ownership");
+                    let _ = lost_tx.send(true);
+                    return;
+                }
+            }
+        }
+    });
+
+    let request = &owned.request;
+    let elapsed_ms = unix_time_ms().saturating_sub(request.accepted_at_ms).max(0) as u64;
+    let queued_at = tokio::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(elapsed_ms))
+        .unwrap_or_else(tokio::time::Instant::now);
+    let job = ReviewJob {
+        repo: request.repo.clone(),
+        number: request.number,
+        author: request.author.clone(),
+        installation: request.installation,
+        mode: match request.mode {
+            ReviewJobMode::Incremental => Mode::Incremental,
+            ReviewJobMode::Full => Mode::Full,
+        },
+        delivery: request.delivery.clone(),
+        expected_head: request.head_sha.clone(),
+        queued_at,
+        owned: Some(owned.clone()),
+    };
+    let disposition = handle_review(state, job, Some(permit), Some(lost_rx)).await;
+    heartbeat.abort();
+
+    let now_ms = unix_time_ms();
+    let result = match disposition {
+        WorkerDisposition::Terminal(outcome) => {
+            store.finish(&owned, outcome, now_ms, now_ms).await
+        }
+        WorkerDisposition::Deferred(not_before_ms) => {
+            store.defer(&owned, now_ms, not_before_ms).await
+        }
+        WorkerDisposition::OwnershipLost => return,
+    };
+    match result {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome"),
+        Err(err) => tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome"),
+    }
+}
+
 /// Claim the delivery, then run whatever it asked for.
 ///
 /// Runs off the request path so nothing here is racing GitHub's clock.

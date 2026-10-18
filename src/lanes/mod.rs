@@ -244,6 +244,20 @@ impl LaneOutcome {
         }
     }
 
+    /// Add paths this lane can prove it reviewed without a model call.
+    ///
+    /// Used for unchanged replayed files and deterministic mechanical
+    /// verification. A path with a current unanswered result stays uncovered;
+    /// an earlier proof cannot hide a failed attempt on this run.
+    pub fn include_reviewed_paths(&mut self, paths: impl IntoIterator<Item = String>) {
+        for path in paths {
+            let coverage = self.coverage.get_or_insert_with(FileCoverage::default);
+            if !coverage.unanswered.contains(&path) && !coverage.reviewed.contains(&path) {
+                coverage.reviewed.push(path);
+            }
+        }
+    }
+
     /// A whole-pull-request lane whose reviewer could not be consulted.
     ///
     /// Neutral like a skip — no verdict is the truth — but it names itself

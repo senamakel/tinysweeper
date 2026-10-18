@@ -13,8 +13,11 @@ use std::sync::{Arc, Mutex};
 
 /// Bounded successful and billed output observations, partitioned by lane
 /// schema and resolved route. Clones share observations for one model adapter.
+type OutputKey = (String, String);
+type OutputSamples = HashMap<OutputKey, VecDeque<u32>>;
+
 #[derive(Debug, Clone, Default)]
-pub(crate) struct OutputHistory(Arc<Mutex<HashMap<(String, String), VecDeque<u32>>>>);
+pub(crate) struct OutputHistory(Arc<Mutex<OutputSamples>>);
 
 impl OutputHistory {
     const WINDOW: usize = 32;

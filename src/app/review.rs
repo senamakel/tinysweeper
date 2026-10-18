@@ -884,6 +884,11 @@ pub async fn review_with_tree(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
+    let full_pr_paths: Vec<String> = context
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
     let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
         if summary_generation_needed(config, &diffs) {
             let (summary, spend, transcript) = crate::summary::generate_with_input(
@@ -892,6 +897,7 @@ pub async fn review_with_tree(
                 &context.pull_request,
                 crate::summary::SummaryGenerationInput {
                     diffs: &diffs,
+                    full_pr_paths: &full_pr_paths,
                     full_pr_diffstat: crate::summary::SummaryDiffstat {
                         files: context.files.len(),
                         additions: context.files.iter().map(|file| file.additions).sum(),
@@ -909,10 +915,11 @@ pub async fn review_with_tree(
             (Some(summary), spend, transcript)
         } else {
             (
-                Some(crate::summary::deterministic(
+                Some(crate::summary::deterministic_with_paths(
                     config,
                     &context.pull_request,
                     &diffs,
+                    &full_pr_paths,
                     &lanes,
                     stored.as_ref().and_then(|state| state.summary.as_ref()),
                 )),

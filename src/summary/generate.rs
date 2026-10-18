@@ -206,7 +206,14 @@ pub async fn generate_with_input(
         max_tokens: config.models.max_tokens.min(4_000),
     };
 
-    let mut summary = deterministic_with_paths(config, pull_request, diffs, &full_pr_paths, lanes, prior);
+    let mut summary = deterministic_with_paths(
+        config,
+        pull_request,
+        diffs,
+        &full_pr_paths.iter().cloned().collect::<Vec<_>>(),
+        lanes,
+        prior,
+    );
     summary.cache_chain_restarted = restarted;
     let mut spend = Spend::default();
     let first = match model.complete(request.clone()).await {
@@ -374,7 +381,7 @@ pub fn deterministic(
     deterministic_with_paths(config, pull_request, diffs, &full_pr_paths, lanes, prior)
 }
 
-fn deterministic_with_paths(
+pub fn deterministic_with_paths(
     config: &Config,
     pull_request: &PullRequest,
     diffs: &[FileDiff],
@@ -589,7 +596,7 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
     }
     if let Some(coverage) = &lane.coverage {
         if full_pr_paths.is_empty() {
-            let status = if !lane_has_response(lane) {
+            let status = if !lane.unanswered.is_empty() || !lane.completed {
                 LaneStatusKind::NoResponse
             } else if !lane.pending.is_empty() {
                 LaneStatusKind::Partial
@@ -651,9 +658,9 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
         }
     } else if !lane.unanswered.is_empty() {
         lane_status_value(LaneStatusKind::NoResponse, None, lane.pending.len())
-    } else if !lane.pending.is_empty() && lane_has_response(lane) {
+    } else if !lane.pending.is_empty() && lane.completed {
         lane_status_value(LaneStatusKind::Partial, None, lane.pending.len())
-    } else if lane_has_response(lane) {
+    } else if lane.completed {
         lane_status_value(LaneStatusKind::Answered, None, 0)
     } else {
         // Older proposal shapes and deterministic placeholders do not prove
@@ -672,13 +679,6 @@ fn lane_status_value(
         file_coverage,
         pending_checks,
     }
-}
-
-fn lane_has_response(lane: &LaneProposal) -> bool {
-    !lane.models.is_empty()
-        || lane.usage.input_tokens > 0
-        || lane.usage.output_tokens > 0
-        || lane.usage.cost_usd > 0.0
 }
 
 fn lane_statuses(
@@ -1078,7 +1078,7 @@ mod tests {
     #[tokio::test]
     async fn summary_input_separates_full_pr_purpose_delta_and_explicit_lane_status() {
         let model = MockModel::new().then(json!({
-            "executive_summary": "The pull request protects speech privacy.",
+            "executive_summary": "This revision adds CI container home-ownership repair.",
             "changes": "The privacy guard covers the new output path.",
             "features": [],
             "tests": [],
@@ -1100,10 +1100,6 @@ mod tests {
                 path: "src/privacy.rs".into(),
                 ..FileDiff::default()
             },
-            FileDiff {
-                path: "tests/privacy.rs".into(),
-                ..FileDiff::default()
-            },
         ];
         let mut pending_e2e = lane(
             LaneId::E2e,
@@ -1114,27 +1110,47 @@ mod tests {
             None,
         );
         pending_e2e.pending = vec!["ci/linux".into()];
+        let mut no_response = lane(
+            LaneId::Tests,
+            crate::forge::types::CheckConclusion::Neutral,
+            "No reviewer produced a usable response.",
+            &[],
+            &["tests"],
+            None,
+        );
+        let mut coverage_outcome = crate::lanes::LaneOutcome::default();
+        coverage_outcome.include_reviewed_paths(["src/privacy.rs".into()]);
+        coverage_outcome.unanswered = vec!["tests/privacy.rs".into()];
+        coverage_outcome
+            .coverage
+            .as_mut()
+            .expect("reviewed path creates coverage")
+            .unanswered = coverage_outcome.unanswered.clone();
+        let mut tests_lane = lane(
+            LaneId::Tests,
+            crate::forge::types::CheckConclusion::Neutral,
+            "No reviewer produced a usable response.",
+            &[],
+            &[],
+            None,
+        );
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Tests, Spend::default());
+        tests_lane.skipped = outcome.skipped;
+        tests_lane.unanswered = outcome.unanswered;
+        let mut critique_lane = lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Neutral,
+            "Partially reviewed",
+            &["model"],
+            &[],
+            coverage_outcome.coverage.clone(),
+        );
+        critique_lane.unanswered = coverage_outcome.unanswered;
         let lanes = vec![
-            lane(
-                LaneId::Tests,
-                crate::forge::types::CheckConclusion::Neutral,
-                "No reviewer produced a usable response.",
-                &[],
-                &["tests"],
-                None,
-            ),
+            no_response,
+            tests_lane,
             pending_e2e,
-            lane(
-                LaneId::Critique,
-                crate::forge::types::CheckConclusion::Success,
-                "Reviewed",
-                &["model"],
-                &[],
-                Some(crate::lanes::FileCoverage {
-                    reviewed: vec!["src/privacy.rs".into()],
-                    unanswered: vec!["tests/privacy.rs".into()],
-                }),
-            ),
+            critique_lane,
             lane(
                 LaneId::Security,
                 crate::forge::types::CheckConclusion::Success,
@@ -1153,7 +1169,7 @@ mod tests {
             ),
         ];
         let full_stat = SummaryDiffstat {
-            files: 9,
+            files: 2,
             additions: 83,
             deletions: 12,
         };
@@ -1163,6 +1179,10 @@ mod tests {
             &pull_request,
             SummaryGenerationInput {
                 diffs: &diffs,
+                full_pr_paths: &[
+                    "src/privacy.rs".into(),
+                    "tests/privacy.rs".into(),
+                ],
                 full_pr_diffstat: full_stat,
                 lanes: &lanes,
                 prior: None,
@@ -1186,30 +1206,26 @@ mod tests {
             request["whole_pull_request"]["description"],
             pull_request.body
         );
-        assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 9);
+        assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 2);
         assert_eq!(request["latest_push_delta"]["available"], false);
         assert_eq!(
             request["latest_push_delta"]["from_reviewed_head"],
             "old-head"
         );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
-        assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
-        assert_eq!(request["lanes"][0]["status"]["status"], "partial");
+        assert_eq!(request["lanes"][2]["status"]["status"], "partial");
         assert_eq!(
-            request["lanes"][0]["status"]["file_coverage"]["reviewed"],
+            request["lanes"][2]["status"]["file_coverage"]["reviewed"],
             1
         );
-        assert_eq!(request["lanes"][0]["status"]["file_coverage"]["total"], 2);
-        assert_eq!(request["lanes"][1]["status"]["status"], "answered");
-        assert_eq!(request["lanes"][3]["status"]["status"], "skipped");
+        assert_eq!(request["lanes"][2]["status"]["file_coverage"]["total"], 2);
+        assert_eq!(request["lanes"][0]["status"]["status"], "no_response");
+        assert_eq!(request["lanes"][1]["status"]["status"], "skipped");
         assert_eq!(request["lanes"][5]["status"]["status"], "partial");
         assert_eq!(request["lanes"][5]["status"]["pending_checks"], 1);
         assert!(request["lanes"][5]["status"].get("file_coverage").is_none());
-        assert!(
-            summary
-                .executive_summary
-                .starts_with("The pull request protects speech privacy.")
-        );
+        assert!(summary.executive_summary.starts_with("Enforce speech privacy."));
+        assert!(!summary.executive_summary.starts_with("This revision adds CI"));
     }
 
     #[tokio::test]

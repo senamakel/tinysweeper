@@ -421,6 +421,7 @@ pub async fn serve_with_model_factory(
                 job.event,
                 Some(permit),
                 job.mode,
+                Some(job.queued_at),
             ));
         },
     ));
@@ -625,6 +626,7 @@ async fn receive(
             delivery: Some(delivery),
             event,
             mode: Mode::Incremental,
+            queued_at: tokio::time::Instant::now(),
         };
         return match try_enqueue_review(&state.review_queue, queued) {
             Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
@@ -675,6 +677,7 @@ async fn receive(
         event,
         None,
         Mode::Incremental,
+        None,
     ));
     (StatusCode::ACCEPTED, "queued").into_response()
 }
@@ -718,6 +721,7 @@ async fn dispatch(
     event: String,
     review_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     mode: Mode,
+    queued_at: Option<tokio::time::Instant>,
 ) {
     if let Some(delivery_id) = &delivery {
         match state.store.claim_delivery(delivery_id, &event).await {
@@ -754,6 +758,7 @@ async fn dispatch(
                     mode,
                     delivery,
                     expected_head: head_sha,
+                    queued_at: queued_at.unwrap_or_else(tokio::time::Instant::now),
                 },
                 review_permit,
             )
@@ -1394,6 +1399,7 @@ impl FullReviews for ManualDispatch {
                     delivery: None,
                     event: "manual-review".into(),
                     mode: Mode::Full,
+                    queued_at: tokio::time::Instant::now(),
                 },
             )
             .map_err(|err| Error::Forge(format!("review queue is full or closed: {err}")))?;
@@ -1577,7 +1583,8 @@ type StatusSlot = Arc<std::sync::Mutex<Option<ReviewStatus>>>;
 struct Run {
     mode: Mode,
     slot: StatusSlot,
-    /// Fixed when the review is accepted, not per attempt. See `handle_review`.
+    /// Fixed when the worker starts, not per attempt. Queue wait is measured
+    /// separately and does not consume the execution deadline.
     deadline: tokio::time::Instant,
     /// Revision admitted by the queue, retained across retries and all phases.
     expected_head: Option<String>,
@@ -2003,7 +2010,9 @@ async fn handle_review(
         mode,
         delivery,
         expected_head,
+        queued_at,
     } = job;
+    tracing::debug!(%repo, number, queue_wait_ms = queued_at.elapsed().as_millis(), "starting admitted review worker");
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
@@ -3055,6 +3064,7 @@ mod tests {
             delivery: Some(format!("delivery-{number}")),
             event: "pull_request".into(),
             mode: Mode::Incremental,
+            queued_at: tokio::time::Instant::now(),
         }
     }
 

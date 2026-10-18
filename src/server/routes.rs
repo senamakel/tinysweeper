@@ -2794,7 +2794,7 @@ async fn review_inner(
     {
         Ok(InnerReview::Busy)
     } else {
-        Ok(InnerReview::Shutdown)
+        Ok(InnerReview::Complete(None))
     }
 }
 
@@ -2817,7 +2817,7 @@ where
     if go_on {
         review().await
     } else {
-        Ok(InnerReview::Complete(None))
+        Ok(InnerReview::Shutdown)
     }
 }
 

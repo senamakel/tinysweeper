@@ -2736,7 +2736,7 @@ mod tests {
         let forge = forge("abc123");
         let config = config();
         let model = MockModel::new().then(serde_json::json!({
-            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. The end-to-end lane confirms all checks are complete. The transaction commits each event once. The test fixture maps the empty-state case. The commit reviewer found no issues. The parser now rejects unknown paths.",
+            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. Security is clean. The end-to-end lane confirms all checks are complete. The transaction commits each event once. The transaction commit no longer loses events. This adds a test fixture with no new dependencies. The test fixture maps the empty-state case. The commit reviewer found no issues. The parser now rejects unknown paths.",
             "changes": "All checks report no issues. The parser handles unknown paths safely.",
             "features": [{
                 "kind": "addition",
@@ -2832,6 +2832,9 @@ mod tests {
         );
         assert!(!body.contains("Security found no issues"));
         assert!(!body.contains("All checks report no issues"));
+        assert!(body.contains("Security is clean"));
+        assert!(body.contains("The transaction commit no longer loses events"));
+        assert!(body.contains("This adds a test fixture with no new dependencies"));
         assert!(body.contains("The test fixture maps transaction rollback"));
         assert!(body.contains("unit test fixture"));
         assert!(body.contains("parser now rejects unknown paths"));

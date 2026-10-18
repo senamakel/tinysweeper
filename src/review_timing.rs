@@ -33,8 +33,12 @@ pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReviewTiming(Arc<Mutex<Record>>);
+pub struct ReviewTiming(Arc<Inner>);
 
+#[derive(Debug)]
+struct Inner(Mutex<Record>);
+
+/// Snapshot of the server's structured telemetry for one review run.
 #[derive(Debug, Clone, Default)]
 pub struct Record {
     pub repo: String,
@@ -69,10 +73,11 @@ impl ReviewTiming {
         for phase in PHASES {
             record.phases_ms.insert((*phase).into(), 0);
         }
-        Self(Arc::new(Mutex::new(record)))
+        Self(Arc::new(Inner(Mutex::new(record))))
     }
 
     pub fn phase(&self, name: &'static str) -> PhaseGuard {
+        let record = self.snapshot();
         PhaseGuard {
             timing: self.clone(),
             name,
@@ -80,6 +85,10 @@ impl ReviewTiming {
             started: Instant::now(),
             span: tracing::info_span!(
                 "review.phase",
+                repo = %record.repo,
+                pr = record.pr,
+                head_sha = %record.head_sha,
+                mode = %record.mode,
                 phase = name,
                 duration_ms = tracing::field::Empty
             ),
@@ -87,6 +96,7 @@ impl ReviewTiming {
     }
 
     pub fn lane(&self, name: &'static str) -> PhaseGuard {
+        let record = self.snapshot();
         PhaseGuard {
             timing: self.clone(),
             name: "lanes",
@@ -94,6 +104,10 @@ impl ReviewTiming {
             started: Instant::now(),
             span: tracing::info_span!(
                 "review.phase",
+                repo = %record.repo,
+                pr = record.pr,
+                head_sha = %record.head_sha,
+                mode = %record.mode,
                 phase = "lane",
                 lane = name,
                 duration_ms = tracing::field::Empty
@@ -102,11 +116,11 @@ impl ReviewTiming {
     }
 
     pub fn record(&self, update: impl FnOnce(&mut Record)) {
-        update(&mut self.0.lock().expect("review timing lock"));
+        update(&mut self.0.0.lock().expect("review timing lock"));
     }
 
     pub fn snapshot(&self) -> Record {
-        self.0.lock().expect("review timing lock").clone()
+        self.0.0.lock().expect("review timing lock").clone()
     }
 
     pub fn finish(&self, outcome: &str) {
@@ -114,7 +128,7 @@ impl ReviewTiming {
     }
 
     pub fn emit(&self) {
-        let r = self.0.lock().expect("review timing lock");
+        let r = self.0.0.lock().expect("review timing lock");
         let total_ms = r
             .started
             .map(|s| s.elapsed().as_millis() as u64)
@@ -163,11 +177,24 @@ pub async fn measure_lane<F: Future>(
     }
 }
 
-impl Drop for ReviewTiming {
+impl Drop for Inner {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.0) == 1 {
-            self.emit();
-        }
+        let r = self.0.get_mut().expect("review timing lock");
+        let total_ms = r
+            .started
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or_default();
+        tracing::info!(target: "tinysweeper::review_timing", repo = %r.repo, pr = r.pr,
+            head_sha = %r.head_sha, mode = %r.mode, outcome = %r.outcome, total_ms,
+            queue_wait_ms = r.queue_wait_ms,
+            phases_ms = %serde_json::to_string(&r.phases_ms).unwrap_or_default(),
+            lanes_ms = %serde_json::to_string(&r.lanes_ms).unwrap_or_default(),
+            calls_attempted = r.calls_attempted, calls_succeeded = r.calls_succeeded,
+            calls_refused = r.calls_refused, calls_errored = r.calls_errored,
+            input_tokens = r.usage.input_tokens, output_tokens = r.usage.output_tokens,
+            reasoning_tokens = r.usage.reasoning_tokens, cached_tokens = r.usage.cached_tokens,
+            files_total = r.files_total, files_answered = r.files_answered,
+            files_unanswered = r.files_unanswered, "review timing");
     }
 }
 

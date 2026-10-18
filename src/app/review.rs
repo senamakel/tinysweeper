@@ -556,6 +556,10 @@ pub async fn review_with_tree_observed(
         )
         .await?;
     drop(context_phase);
+    if let Some(timing) = &timing {
+        let head_sha = context.pull_request.head_sha.clone();
+        timing.record(|r| r.head_sha = head_sha);
+    }
     // Scrubbed once, here, rather than at each of its several consumers: the
     // description lane's own prompt and `Retriever::retrieve`'s query both
     // read the pull request's title and body. A credential pasted into those

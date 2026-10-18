@@ -387,8 +387,7 @@ impl GatewayModel {
             let is_refusal = error.to_string().to_lowercase().contains("refus")
                 || error.attempts.is_empty();
             let totals = error.total_usage.unwrap_or_default();
-            {
-                let cost_usd = error.attempts.iter().filter_map(|attempt| {
+            let cost_usd = error.attempts.iter().filter_map(|attempt| {
                     let usage = attempt.usage.as_ref()?;
                     let model = attempt.answered_model.as_deref()
                         .unwrap_or(&attempt.requested_model);
@@ -400,7 +399,7 @@ impl GatewayModel {
                     .filter_map(|attempt| attempt.usage.as_ref())
                     .map(|usage| usage.reasoning_tokens)
                     .sum();
-                refusal.with_usage(Usage {
+            refusal.with_usage(Usage {
                     input_tokens: totals.input_tokens,
                     output_tokens: totals.output_tokens,
                     reasoning_tokens,
@@ -417,10 +416,7 @@ impl GatewayModel {
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,
-                })
-            } else {
-                refusal
-            }
+            })
         })?;
         let response = result.response;
         let answered = response

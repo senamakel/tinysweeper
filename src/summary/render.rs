@@ -42,7 +42,10 @@ pub fn failed(head_sha: &str, message: &str, previous: Option<&str>) -> String {
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
         if let Some(sha) = reviewed_sha(previous) {
-            let _ = write!(body, " The last completed review (`{sha}`) is shown below.\n");
+            let _ = write!(
+                body,
+                " The last completed review (`{sha}`) is shown below.\n"
+            );
         }
         body.push_str("\n<details open>\n<summary>Last completed report</summary>\n\n");
         body.push_str(LAST_REPORT_START);
@@ -656,7 +659,9 @@ fn trustworthy_report(body: &str) -> Option<&str> {
     let mut cursor = opening;
     let mut depth = 0usize;
     let closing = loop {
-        let next_open = body[cursor..].find("<details").map(|offset| cursor + offset);
+        let next_open = body[cursor..]
+            .find("<details")
+            .map(|offset| cursor + offset);
         let next_close = body[cursor..]
             .find("</details>")
             .map(|offset| cursor + offset);
@@ -686,7 +691,9 @@ fn is_completed_report(body: &str) -> bool {
 }
 
 fn reviewed_sha(report: &str) -> Option<&str> {
-    let line = report.lines().find(|line| line.contains("**Reviewed head:**"))?;
+    let line = report
+        .lines()
+        .find(|line| line.contains("**Reviewed head:**"))?;
     let value = line.split("**Reviewed head:**").nth(1)?.trim();
     value.strip_prefix('`')?.split('`').next()
 }
@@ -752,14 +759,21 @@ mod tests {
         let second_progress = in_progress("ghi", Some(&failure));
         let second_failure = failed("ghi", "network error", Some(&second_progress));
 
-        assert_eq!(second_failure.matches("**Reviewed head:** `abc`").count(), 1);
+        assert_eq!(
+            second_failure.matches("**Reviewed head:** `abc`").count(),
+            1
+        );
         assert!(second_failure.contains("Last completed report"));
     }
 
     #[test]
     fn failed_copy_is_safe_and_names_the_preserved_head() {
         let completed = format!("{MARKER}\n\n**Reviewed head:** `def5678`");
-        let failure = failed("abc1234", "#49 Error::Timeout: raw details", Some(&completed));
+        let failure = failed(
+            "abc1234",
+            "#49 Error::Timeout: raw details",
+            Some(&completed),
+        );
 
         assert!(failure.contains("`def5678`"));
         assert!(!failure.contains("\\#"));
@@ -768,7 +782,10 @@ mod tests {
 
     #[test]
     fn failure_wrappers_remain_bounded_across_ten_cycles() {
-        let completed = format!("{MARKER}\n\n**Reviewed head:** `abc`\n{}", "report ".repeat(1_000));
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n{}",
+            "report ".repeat(1_000)
+        );
         let mut body = completed.clone();
 
         for cycle in 0..10 {

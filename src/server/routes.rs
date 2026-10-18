@@ -2063,38 +2063,52 @@ async fn review_inner(
     let read_token = state.auth.review_read_token(installation).await?;
     let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
-    let reviewed = with_open_pull_request(&forge, &repo_id, number, |pull_request| async {
-        review_open_pull_request(
+    let worker = ReviewRun {
+        state,
+        repo,
+        number,
+        author,
+        installation,
+        run,
+        repo_id: &repo_id,
+        read_token: &read_token,
+        forge: &forge,
+    };
+    let reviewed = with_open_pull_request(&forge, &repo_id, number, |pull_request| {
+        worker.run(pull_request)
+    })
+    .await?;
+    Ok(reviewed.flatten())
+}
+
+/// The server dependencies for the work after the pull request passes its gate.
+#[derive(Clone, Copy)]
+struct ReviewRun<'a> {
+    state: &'a AppState,
+    repo: &'a str,
+    number: u64,
+    author: &'a str,
+    installation: u64,
+    run: &'a Run,
+    repo_id: &'a RepoId,
+    read_token: &'a String,
+    forge: &'a crate::forge::github::GitHubRead,
+}
+
+impl ReviewRun<'_> {
+    /// Run the remainder of one review after its live pull request passes the gate.
+    async fn run(self, pull_request: PullRequest) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
+        let Self {
             state,
             repo,
             number,
             author,
             installation,
             run,
-            &repo_id,
-            &read_token,
-            &forge,
-            pull_request,
-        )
-        .await
-    })
-    .await?;
-    Ok(reviewed.flatten())
-}
-
-/// Run the remainder of one review after its live pull request passes the gate.
-async fn review_open_pull_request(
-    state: &AppState,
-    repo: &str,
-    number: u64,
-    author: &str,
-    installation: u64,
-    run: &Run,
-    repo_id: &RepoId,
-    read_token: &String,
-    forge: &crate::forge::github::GitHubRead,
-    pull_request: PullRequest,
-) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
+            repo_id,
+            read_token,
+            forge,
+        } = self;
     // Comment and review-comment deliveries do not carry the draft flag, so
     // routing alone cannot prevent a manual-looking request from waking the
     // workflow. Read the live state before claiming a lease, indexing, calling

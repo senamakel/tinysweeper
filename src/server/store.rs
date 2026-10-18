@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::lanes::e2e::runs::Watch;
 use crate::ports::review_job::{
-    Admission, OwnedReview, ReviewJobStore, ReviewSchedulerState, TerminalOutcome,
+    Admission, OwnedReview, PaidStart, ReviewJobStore, ReviewSchedulerState, TerminalOutcome,
 };
 use crate::preview::session::Session as PreviewSession;
 use crate::state::types::ReviewedState;
@@ -153,6 +153,12 @@ impl ReviewJobStore for Store {
     async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
         self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))
+            .await
+    }
+
+    async fn begin_paid(&self, owned: &OwnedReview, _now_ms: i64) -> Result<PaidStart> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state, now_ms| state.begin_paid(&owned, now_ms))
             .await
     }
 

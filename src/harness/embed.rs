@@ -1035,7 +1035,7 @@ mod tests {
             schema_name: "review".into(),
             max_tokens: 100,
         };
-        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}".into())]);
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
         let calls = Arc::new(RecordedModelCalls::default());
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_log = log.clone();

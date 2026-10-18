@@ -122,6 +122,12 @@ pub struct Repository {
 pub struct PullRequestRef {
     /// Its number.
     pub number: u64,
+    /// Current state, when included by GitHub.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Whether GitHub has merged it.
+    #[serde(default)]
+    pub merged: bool,
     /// Whether it is a draft.
     #[serde(default)]
     pub draft: bool,
@@ -143,6 +149,9 @@ pub struct HeadRef {
 pub struct IssueRef {
     /// Its number.
     pub number: u64,
+    /// Current state, including for pull requests on comment events.
+    #[serde(default)]
+    pub state: Option<String>,
     /// Present when the issue is really a pull request.
     #[serde(default)]
     pub pull_request: Option<serde_json::Value>,
@@ -251,6 +260,22 @@ pub fn route(event: &str, payload: &Payload) -> Action {
     let Some(installation) = &payload.installation else {
         return Action::Ignore("no installation");
     };
+
+    // GitHub supplies state on pull request events and the issue-shaped object
+    // in comment events. Refuse known-closed subjects before queueing; comment
+    // payloads without state are checked against the live forge state by the
+    // worker before any review work begins.
+    if let Some(pr) = &payload.pull_request
+        && (pr.state.as_deref().is_some_and(|state| state != "open") || pr.merged)
+    {
+        return Action::Ignore("pull request is closed");
+    }
+    if let Some(issue) = &payload.issue
+        && issue.pull_request.is_some()
+        && issue.state.as_deref().is_some_and(|state| state != "open")
+    {
+        return Action::Ignore("pull request is closed");
+    }
 
 
     // Auto-merge is decided before the bot guard below, and deliberately.

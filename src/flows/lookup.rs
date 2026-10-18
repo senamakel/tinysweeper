@@ -1564,7 +1564,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_raw_path_attributes_do_not_probe_default_module_paths() {
-        let diff = parse_file_patch(
+        let diff = crate::evidence::diff::parse_file_patch(
             "src/lib.rs",
             "@@ -1 +1 @@\n+#[path = r\"custom.rs\"]\n+pub mod foo;\n",
         );
@@ -1583,7 +1583,7 @@ mod tests {
 
     #[tokio::test]
     async fn braces_in_comments_and_character_literals_do_not_change_module_scope() {
-        let diff = parse_file_patch(
+        let diff = crate::evidence::diff::parse_file_patch(
             "src/lib.rs",
             "@@ -1 +1,4 @@\n+/* } */\n+let brace = '}';\n+pub mod foo;\n",
         );

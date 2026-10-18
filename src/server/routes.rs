@@ -829,9 +829,8 @@ async fn run_owned_review(
         }
     }
     let (lost_tx, lost_rx) = watch::channel(false);
-    let (owner_until_tx, owner_until_rx) = watch::channel(conservative_owner_deadline(
-        initial_renewal_started,
-    ));
+    let (owner_until_tx, owner_until_rx) =
+        watch::channel(conservative_owner_deadline(initial_renewal_started));
     let _heartbeat_guard = spawn_review_heartbeat(
         store.clone(),
         owned.clone(),
@@ -3653,6 +3652,16 @@ mod tests {
         assert!(!paid_step.load(Ordering::SeqCst));
     }
 
+    #[test]
+    fn a_slow_renewal_cannot_extend_the_local_deadline_from_its_response_time() {
+        let response_time = tokio::time::Instant::now();
+        let renewal_started = response_time - std::time::Duration::from_secs(40);
+        assert!(
+            conservative_owner_deadline(renewal_started) <= response_time,
+            "a renewal response after the safety margin must not permit more model work"
+        );
+    }
+
     #[tokio::test]
     async fn recovered_paid_attempts_are_bounded_before_worker_work_starts() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3670,7 +3679,10 @@ mod tests {
             mode: ReviewJobMode::Incremental,
             accepted_at_ms: 1,
         };
-        assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
+        assert_eq!(
+            store.admit_batch(vec![request]).await.unwrap(),
+            Admission::Admitted
+        );
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -3711,20 +3723,21 @@ mod tests {
         );
         assert_eq!(store.unfinished(), 0);
         assert_eq!(
-            store.admit_batch(vec![ReviewRequest {
-                id: crate::ports::review_job::ReviewJobId("webhook:recovery-budget".into()),
-                repo: "owner/repo".into(),
-                number: 7,
-                author: "contributor".into(),
-                installation: 1,
-                head_sha: Some("head".into()),
-                delivery: Some("recovery-budget".into()),
-                event: "pull_request".into(),
-                mode: ReviewJobMode::Incremental,
-                accepted_at_ms: now_ms,
-            }])
-            .await
-            .unwrap(),
+            store
+                .admit_batch(vec![ReviewRequest {
+                    id: crate::ports::review_job::ReviewJobId("webhook:recovery-budget".into()),
+                    repo: "owner/repo".into(),
+                    number: 7,
+                    author: "contributor".into(),
+                    installation: 1,
+                    head_sha: Some("head".into()),
+                    delivery: Some("recovery-budget".into()),
+                    event: "pull_request".into(),
+                    mode: ReviewJobMode::Incremental,
+                    accepted_at_ms: now_ms,
+                }])
+                .await
+                .unwrap(),
             Admission::Duplicate,
             "exhaustion remains terminal and deduped"
         );

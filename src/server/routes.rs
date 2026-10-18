@@ -1914,7 +1914,8 @@ async fn handle_review(
     let permit = match queued_permit {
         Some(permit) => Ok(permit),
         None => state.permits.clone().acquire_owned().await,
-    } {
+    };
+    let permit = match permit {
         Ok(permit) => permit,
         Err(err) => {
             // Unreachable in practice — nothing closes the pool — but a

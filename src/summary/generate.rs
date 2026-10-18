@@ -595,10 +595,8 @@ fn validated_model_narrative(
     text: &str,
     statuses: &BTreeMap<String, LaneReviewStatus>,
 ) -> Option<String> {
-    if claims_unsupported_lane_success(text, statuses) {
-        return None;
-    }
-    validated_narrative(text)
+    let narrative = remove_unsupported_lane_sentences(text, statuses);
+    validated_narrative(&narrative)
 }
 
 fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneReviewStatus {
@@ -767,7 +765,38 @@ fn sanitize_prior_narrative(
     });
 }
 
-fn claims_unsupported_lane_success(
+fn remove_unsupported_lane_sentences(
+    text: &str,
+    statuses: &BTreeMap<String, LaneReviewStatus>,
+) -> String {
+    let mut kept = String::new();
+    let mut start = 0;
+    for (index, character) in text.char_indices() {
+        let end = index + character.len_utf8();
+        let is_sentence_end = matches!(character, '.' | '!' | '?')
+            && text[end..].chars().next().is_none_or(char::is_whitespace);
+        if is_sentence_end {
+            let sentence = &text[start..end];
+            if !claims_unsupported_lane_sentence(sentence, statuses) {
+                if !kept.is_empty() {
+                    kept.push(' ');
+                }
+                kept.push_str(sentence.trim());
+            }
+            start = end;
+        }
+    }
+    let remainder = &text[start..];
+    if !remainder.trim().is_empty() && !claims_unsupported_lane_sentence(remainder, statuses) {
+        if !kept.is_empty() {
+            kept.push(' ');
+        }
+        kept.push_str(remainder.trim());
+    }
+    kept
+}
+
+fn claims_unsupported_lane_sentence(
     text: &str,
     statuses: &BTreeMap<String, LaneReviewStatus>,
 ) -> bool {
@@ -796,6 +825,12 @@ fn claims_unsupported_lane_success(
 
 fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
     let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
+    let has_lane_subject = ["lane", "lanes", "reviewer", "reviewers"]
+        .iter()
+        .any(|subject| words.contains(subject));
+    if !has_lane_subject {
+        return false;
+    }
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -804,18 +839,7 @@ fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
         LaneId::Description => &[&["description"]],
         LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
     };
-    aliases.iter().any(|alias| {
-        has_phrase(alias)
-            && (["lane", "lanes", "reviewer", "reviewers"]
-                .iter()
-                .any(|subject| {
-                    let mut after = alias.to_vec();
-                    after.push(subject);
-                    let mut before = vec![subject];
-                    before.extend_from_slice(alias);
-                    has_phrase(&after) || has_phrase(&before)
-                }))
-    })
+    aliases.iter().any(|alias| has_phrase(alias))
 }
 
 fn now_epoch() -> u64 {
@@ -1384,6 +1408,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mixed_lane_claims_are_removed_without_losing_unrelated_sentences() {
+        for (security_answered, tests_answered) in [(true, false), (false, true)] {
+            let model = MockModel::new().then(json!({
+                "executive_summary": "The security and tests lanes confirm the change is safe. The parser now rejects unknown paths.",
+                "changes": "The pull request tightens input validation.",
+                "features": [],
+                "tests": [],
+                "positive_observations": {}
+            }));
+            let answered_models = ["model"];
+            let security = lane(
+                LaneId::Security,
+                crate::forge::types::CheckConclusion::Success,
+                "Security response.",
+                if security_answered {
+                    &answered_models
+                } else {
+                    &[]
+                },
+                if security_answered {
+                    &[]
+                } else {
+                    &["security"]
+                },
+                None,
+            );
+            let tests = lane(
+                LaneId::Tests,
+                crate::forge::types::CheckConclusion::Success,
+                "Test response.",
+                if tests_answered {
+                    &answered_models
+                } else {
+                    &[]
+                },
+                if tests_answered { &[] } else { &["tests"] },
+                None,
+            );
+            let pull_request = PullRequest {
+                title: "Preserve parser behavior".into(),
+                ..PullRequest::default()
+            };
+            let (summary, _, _) = generate(
+                &model,
+                &Config::default(),
+                &pull_request,
+                &[],
+                &[security, tests],
+                None,
+                &[],
+            )
+            .await;
+
+            assert!(security_answered ^ tests_answered);
+            assert!(
+                summary
+                    .executive_summary
+                    .contains("Preserve parser behavior.")
+            );
+            assert!(
+                summary
+                    .executive_summary
+                    .contains("parser now rejects unknown paths")
+            );
+            assert!(
+                !summary
+                    .executive_summary
+                    .contains("security and tests lanes")
+            );
+            assert!(
+                !summary
+                    .executive_summary
+                    .contains("confirm the change is safe")
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn unanswered_whole_pr_lane_is_not_reported_as_a_policy_skip() {
         let model = MockModel::new().then(json!({
             "executive_summary": "The tests lane confirms the change is safe.",
@@ -1658,7 +1760,7 @@ mod tests {
         let secret = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
         let prior_observation = format!("The old note quoted {secret}.");
         let prior = ReviewSummary {
-            executive_summary: "The end-to-end lane confirms all checks are green.".into(),
+            executive_summary: "The end-to-end lane confirms all checks are green. The parser retains strict lane keys.".into(),
             changes: "The security lane gives this change a greenlight.".into(),
             positive_observations: BTreeMap::from([(
                 LaneId::Critique,
@@ -1686,6 +1788,11 @@ mod tests {
         .await;
 
         assert!(!summary.executive_summary.contains("end-to-end lane"));
+        assert!(
+            summary
+                .executive_summary
+                .contains("parser retains strict lane keys")
+        );
         assert!(!summary.changes.contains("security lane"));
         let retained = &summary.positive_observations[&LaneId::Critique][0];
         assert_eq!(retained, &crate::scan::scrub(&prior_observation));

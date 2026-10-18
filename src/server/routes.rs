@@ -1637,7 +1637,14 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             findings,
             changes_requested,
             coverage,
-        } => status::completed(&open.head_sha, findings, changes_requested, coverage),
+            incomplete,
+        } => status::completed(
+            &open.head_sha,
+            findings,
+            changes_requested,
+            coverage,
+            incomplete,
+        ),
         Conclusion::NotReviewed => status::not_reviewed(&open.head_sha),
         Conclusion::Failed(err) => failure::check_run(&open.head_sha, err),
     };
@@ -1828,6 +1835,8 @@ enum Conclusion<'a> {
         changes_requested: bool,
         /// File coverage from a per-file lane, when that lane had failures.
         coverage: Option<(usize, usize)>,
+        /// At least one configured lane had unanswered work.
+        incomplete: bool,
     },
     /// The run stopped deliberately, without reviewing anything.
     ///
@@ -1920,10 +1929,11 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
+                    Some((findings, changes_requested, coverage, incomplete)) => Conclusion::Reviewed {
                         findings,
                         changes_requested,
                         coverage,
+                        incomplete,
                     },
                     None => Conclusion::NotReviewed,
                 };
@@ -2050,7 +2060,7 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-) -> Result<Option<(usize, bool, Option<(usize, usize)>)>> {
+) -> Result<Option<(usize, bool, Option<(usize, usize)>, bool)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");
@@ -2296,17 +2306,9 @@ async fn review_inner(
     let coverage = proposal
         .lanes
         .iter()
-        .find(|lane| !lane.unanswered.is_empty())
-        .and_then(|lane| {
-            lane.summary
-                .strip_prefix("Reviewed ")
-                .and_then(|text| text.split_once(" of "))
-                .and_then(|(reviewed, rest)| {
-                    let total = rest.split_once(" files").map(|(total, _)| total)?;
-                    Some((reviewed.parse().ok()?, total.parse().ok()?))
-                })
-        });
-    Ok(Some((findings, changes_requested, coverage)))
+        .find_map(|lane| lane.coverage);
+    let incomplete = proposal.lanes.iter().any(|lane| !lane.unanswered.is_empty());
+    Ok(Some((findings, changes_requested, coverage, incomplete)))
 }
 
 fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool {

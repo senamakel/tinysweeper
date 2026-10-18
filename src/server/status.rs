@@ -106,18 +106,18 @@ pub fn completed(
         let not_reviewed = total.saturating_sub(reviewed);
         if changes_requested {
             (
-                if incomplete {
-                    CheckConclusion::Neutral
-                } else {
-                    CheckConclusion::Success
-                },
+                CheckConclusion::Neutral,
                 format!(
                     "Changes requested — {reviewed} of {total} files; {not_reviewed} not reviewed"
                 ),
             )
         } else {
             (
-                CheckConclusion::Neutral,
+                if incomplete {
+                    CheckConclusion::Neutral
+                } else {
+                    CheckConclusion::Success
+                },
                 format!("Reviewed {reviewed} of {total} files — {not_reviewed} not reviewed"),
             )
         }

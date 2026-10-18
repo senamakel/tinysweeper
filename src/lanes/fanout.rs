@@ -179,6 +179,14 @@ impl FanOut {
             .flat_map(|(_, paths, _)| paths.iter().cloned())
             .collect();
 
+        if !unanswered.is_empty() {
+            let total = reviewed + unanswered.len();
+            summary = format!(
+                "Reviewed {reviewed} of {total} files — {} not reviewed. {summary}",
+                unanswered.len()
+            );
+        }
+
         if !self.failures.is_empty() {
             summary.push_str(&format!(
                 " {} file{} could not be reviewed: {}.",

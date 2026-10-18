@@ -113,7 +113,11 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), &lane.summary),
+                    title: title_for(
+                        lane.findings.len(),
+                        &lane.summary,
+                        lane.unanswered.len(),
+                    ),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -647,7 +651,19 @@ fn code_span(text: &str) -> String {
     }
 }
 
-fn title_for(findings: usize, summary: &str) -> String {
+fn title_for(findings: usize, summary: &str, unanswered: usize) -> String {
+    if unanswered > 0 {
+        if let Some(reviewed) = summary
+            .strip_prefix("Reviewed ")
+            .and_then(|text| text.split_once(" file").map(|(count, _)| count))
+            .and_then(|count| count.parse::<usize>().ok())
+        {
+            let total = reviewed + unanswered;
+            return format!(
+                "Reviewed {reviewed} of {total} files — {unanswered} not reviewed"
+            );
+        }
+    }
     match findings {
         0 => summary.chars().take(80).collect(),
         1 => "1 finding".into(),

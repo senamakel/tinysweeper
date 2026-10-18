@@ -55,7 +55,7 @@ use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 
 /// Confidence ceiling for critique model findings when retrieval is degraded.
-const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.5;
+const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.7;
 
 /// The correctness lane.
 pub struct Critique {
@@ -204,6 +204,7 @@ impl Lane for Critique {
         // rather than per file: `llm` is shared across the fan-out, so adding
         // it per file would multiply the bill by the file count.
         let mut outcome = outcome.into_outcome();
+        outcome.context_degraded = input.retrieval_status.is_degraded();
         if let Some(sub) = &mechanical {
             covered_without_model.extend(
                 sub.verified
@@ -529,13 +530,11 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
-    // A degraded index cannot support model claims about repository context.
-    // Retain every critique finding in the lane outcome, but conservatively
-    // limit its confidence regardless of anchor or lookup output: a changed
-    // anchor does not prove claims about callers or other files, and
-    // availability alone does not prove a claim true. Normal proposal
-    // visibility thresholds still apply. Scanners have their own evidence
-    // and are outside this model-finding gate.
+    // The application's typed context-degraded path keeps these findings as
+    // non-blocking structured notes. A Likely cap makes that caveat visible
+    // in their confidence badge without allowing unsupported repository-wide
+    // claims to drive a check verdict or inline comment. Scanners have their
+    // own evidence and are outside this model-finding gate.
     if input.retrieval_status.is_degraded() {
         capped_for_degraded_context = findings.len();
         for finding in &mut findings {
@@ -1096,10 +1095,7 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert_eq!(outcome.findings[0].severity, Severity::Critical);
-        assert_eq!(
-            outcome.findings[0].confidence,
-            DEGRADED_CONTEXT_CONFIDENCE_CAP
-        );
+    assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
         assert!(outcome.summary.contains("capped at Likely confidence"));
         assert!(!outcome.summary.contains("old branch is broken"));
     }

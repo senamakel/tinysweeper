@@ -231,6 +231,7 @@ enum InnerReview {
     Complete(Option<(usize, bool, status::ReviewCoverage)>),
     Busy,
     Exhausted,
+    Shutdown,
 }
 
 /// Run the server until the process is stopped.
@@ -1907,6 +1908,7 @@ struct Run {
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
     paid_exhausted: Arc<std::sync::atomic::AtomicBool>,
+    shutdown_deferred: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Refuse an individual paid model dispatch after durable ownership expires.
@@ -1989,23 +1991,42 @@ impl Run {
     }
 
     async fn check_owner(&self, state: &AppState) -> Result<()> {
-        if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow()) {
+        if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
         }
-        if self
-            .owner_until
-            .as_ref()
-            .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
-        {
-            return Err(Error::ReviewOwnershipLost);
-        }
-        if let Some(owned) = &self.owned
-            && !state.review_jobs.owns(owned, unix_time_ms()).await?
-        {
-            return Err(Error::ReviewOwnershipLost);
+        if let Some(owned) = &self.owned {
+            check_owner_after_await(
+                || self.local_owner_valid(),
+                state.review_jobs.owns(owned, unix_time_ms()),
+            )
+            .await?;
         }
         Ok(())
     }
+
+    fn local_owner_valid(&self) -> bool {
+        !self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
+            && !self
+                .owner_until
+                .as_ref()
+                .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
+    }
+}
+
+async fn check_owner_after_await<F, Fut>(locally_valid: F, ownership_check: Fut) -> Result<()>
+where
+    F: Fn() -> bool,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    if !locally_valid() {
+        return Err(Error::ReviewOwnershipLost);
+    }
+    // Mongo can answer after the conservative local deadline. Ownership must
+    // still be locally valid when the awaited check returns.
+    if !ownership_check.await? || !locally_valid() {
+        return Err(Error::ReviewOwnershipLost);
+    }
+    Ok(())
 }
 
 /// The registry behind `AppState::in_flight`.
@@ -2478,6 +2499,7 @@ async fn handle_review(
         owner_until: owner_until.clone(),
         lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        shutdown_deferred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let mut attempt = 1;
@@ -2527,6 +2549,11 @@ async fn handle_review(
                 drop(permit);
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                 return WorkerDisposition::Terminal(TerminalOutcome::Exhausted);
+            }
+            Ok(InnerReview::Shutdown) => {
+                drop(permit);
+                close_status(&state, &slot, Conclusion::NotReviewed).await;
+                return WorkerDisposition::Deferred(unix_time_ms());
             }
             Err(err) => {
                 if matches!(err, Error::ReviewOwnershipLost) {
@@ -2711,6 +2738,12 @@ async fn review_inner(
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
     let reviewed = reviewed?.flatten().flatten();
+    if run
+        .shutdown_deferred
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(InnerReview::Shutdown);
+    }
     if run
         .paid_exhausted
         .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -2903,6 +2936,8 @@ impl ReviewRun<'_> {
                 // next push, or the manual review the check points at, reviews
                 // this commit properly.
                 tracing::info!(%repo, number, "shutting down; not starting this review");
+                run.shutdown_deferred
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return Ok(None);
             }
             run.check_owner(state).await?;

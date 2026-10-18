@@ -2418,15 +2418,15 @@ async fn run_lanes(
                     {
                         tracing::warn!(%repo, %err, "submodules not fetched for the review's tree");
                     }
-                    Ok(Some(checkout))
+                    Ok::<Option<crate::indexer::fetch::Checkout>, Error>(Some(checkout))
                 }
                 Err(err) => {
                     tracing::warn!(%repo, %err, "no checkout for the review; lookups read through the forge");
-                    Ok(None)
+                    Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
                 }
             }
         } else {
-            Ok(None)
+            Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
         }}).await?;
         // The review chains the forge reader behind whatever it is given, so a
         // path the shallow checkout lacks — a submodule that was not fetched —

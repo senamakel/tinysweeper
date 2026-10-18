@@ -1150,9 +1150,9 @@ pub async fn review_with_tree_observed(
                     model.as_ref(),
                 )
                 .await?;
-                Ok((Some(outcome.set), outcome.spend))
+                Ok::<_, Error>((Some(outcome.set), outcome.spend))
             } else {
-                Ok((None, Spend::default()))
+                Ok::<_, Error>((None, Spend::default()))
             }
         })
         .await?;

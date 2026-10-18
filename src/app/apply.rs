@@ -1578,10 +1578,11 @@ mod tests {
         // The review ran against a commit that has since been replaced.
         // Publishing would report on code nobody is looking at.
         let forge = forge("newer456");
-        apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+        let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
             .await
             .expect("returns cleanly");
 
+        assert_eq!(disposition, ApplyDisposition::Superseded);
         assert!(forge.wrote_nothing(), "{:#?}", forge.writes());
     }
 

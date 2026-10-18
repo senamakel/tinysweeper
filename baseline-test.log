@@ -1,0 +1,5 @@
+error: no matching package named `tinycomputer-accessibility` found
+location searched: /home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/vendor/tinycomputer/crates/tinycomputer-accessibility
+required by package `openhuman v0.64.15 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/crates/openhuman-core)`
+    ... which satisfies path dependency `openhuman-core` (locked to 0.64.15) of package `openhuman-embed v0.64.15 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest/vendor/openhuman/crates/openhuman-embed)`
+    ... which satisfies path dependency `openhuman-embed` (locked to 0.64.15) of package `tinysweeper v0.1.2 (/home/enamakel/work/libraries/tinysweeper/worktrees/openhuman-latest)`

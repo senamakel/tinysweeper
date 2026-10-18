@@ -51,7 +51,11 @@ impl ReviewTiming {
     }
 
     pub fn phase(&self, name: &'static str) -> PhaseGuard {
-        PhaseGuard { timing: self.clone(), name, started: Instant::now() }
+        PhaseGuard { timing: self.clone(), name, lane: None, started: Instant::now() }
+    }
+
+    pub fn lane(&self, name: &'static str) -> PhaseGuard {
+        PhaseGuard { timing: self.clone(), name: "lanes", lane: Some(name), started: Instant::now() }
     }
 
     pub fn record(&self, update: impl FnOnce(&mut Record)) {
@@ -83,13 +87,14 @@ impl Drop for ReviewTiming {
     }
 }
 
-pub struct PhaseGuard { timing: ReviewTiming, name: &'static str, started: Instant }
+pub struct PhaseGuard { timing: ReviewTiming, name: &'static str, lane: Option<&'static str>, started: Instant }
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed().as_millis() as u64;
         self.timing.record(|r| {
             if self.name == "permit" { r.queue_wait_ms += elapsed; }
             *r.phases_ms.entry(self.name.into()).or_default() += elapsed;
+            if let Some(lane) = self.lane { *r.lanes_ms.entry(lane.into()).or_default() += elapsed; }
         });
     }
 }

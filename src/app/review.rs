@@ -37,6 +37,49 @@ use crate::scan;
 use crate::scan::types::ScanKind;
 use crate::state::types::ReviewedState;
 
+struct ObservedModel {
+    inner: Arc<dyn Model>,
+    timing: crate::review_timing::ReviewTiming,
+}
+
+impl ObservedModel {
+    async fn observe(&self, request: crate::ports::model::ModelRequest, tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>) -> Result<crate::ports::model::ModelResponse> {
+        use crate::ports::forge::ForgeRead;
+        self.timing.record(|r| r.calls_attempted += 1);
+        let started = std::time::Instant::now();
+        let result = match tree {
+            Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
+            None => self.inner.complete(request.clone()).await,
+        };
+        let latency_ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(response) => self.timing.record(|r| { r.calls_succeeded += 1; r.usage.add(response.usage); }),
+            Err(error) => self.timing.record(|r| {
+                if error.to_string().to_lowercase().contains("refus") || matches!(error, Error::Budget { .. }) { r.calls_refused += 1; }
+                else { r.calls_errored += 1; }
+                if let Some(usage) = error.usage() { r.usage.add(usage); }
+            }),
+        }
+        tracing::info!(model = %request.model, latency_ms, "observed model call");
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for ObservedModel {
+    async fn complete(&self, request: crate::ports::model::ModelRequest) -> Result<crate::ports::model::ModelResponse> {
+        self.observe(request, None).await
+    }
+
+    async fn review(&self, request: crate::ports::model::ModelRequest, tree: &dyn TreeReader, policy: &crate::config::types::LookupPolicy) -> Result<crate::ports::model::ModelResponse> {
+        self.observe(request, Some((tree, policy))).await
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner.scoped_budget(budget_usd).map(|inner| Arc::new(Self { inner, timing: self.timing.clone() }) as Arc<dyn Model>)
+    }
+}
+
 /// The schema version `review` writes.
 ///
 /// Version 2 added `unanswered` on every lane and `skipped` on the proposal.
@@ -449,6 +492,26 @@ pub async fn review_with_tree(
     retrieval: Option<&Retriever<'_>>,
     tree: Option<&dyn TreeReader>,
 ) -> Result<Proposal> {
+    review_with_tree_observed(forge, model, config, repo, number, store, knowledge, retrieval, tree, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn review_with_tree_observed(
+    forge: &dyn ForgeRead,
+    model: Arc<dyn Model>,
+    config: &Config,
+    repo: &RepoId,
+    number: u64,
+    store: Option<&dyn ReviewStateStore>,
+    knowledge: Option<&dyn KnowledgeStore>,
+    retrieval: Option<&Retriever<'_>>,
+    tree: Option<&dyn TreeReader>,
+    timing: Option<crate::review_timing::ReviewTiming>,
+) -> Result<Proposal> {
+    let model: Arc<dyn Model> = if let Some(timing) = &timing {
+        Arc::new(ObservedModel { inner: model, timing: timing.clone() })
+    } else { model };
+    let context_phase = timing.as_ref().map(|t| t.phase("context"));
     let mut context = forge
         .pull_request_context_bounded(
             repo,
@@ -457,6 +520,7 @@ pub async fn review_with_tree(
             config.review.max_changed_lines,
         )
         .await?;
+    drop(context_phase);
     // Scrubbed once, here, rather than at each of its several consumers: the
     // description lane's own prompt and `Retriever::retrieve`'s query both
     // read the pull request's title and body. A credential pasted into those
@@ -653,6 +717,7 @@ pub async fn review_with_tree(
     // instruction files at *this* head commit. The extraction is sandboxed and
     // its output is untrusted — see `crate::knowledge` — so the two halves go
     // to different halves of the prompt.
+    let knowledge_phase = timing.as_ref().map(|t| t.phase("knowledge"));
     let (knowledge, knowledge_usage) = crate::knowledge::gather(
         forge,
         &model,
@@ -666,6 +731,7 @@ pub async fn review_with_tree(
         knowledge,
     )
     .await;
+    drop(knowledge_phase);
     // `gather` has no response model to report when the instruction files are
     // absent. Do not turn that zero-cost no-op into a fictitious scan-model
     // entry in the review's model list.
@@ -678,6 +744,7 @@ pub async fn review_with_tree(
     // Related code, retrieved once for the whole review rather than per lane:
     // the query is composed from the diff, so every lane would compose the same
     // one and pay for the same embedding.
+    let retrieval_phase = timing.as_ref().map(|t| t.phase("retrieval"));
     let (retrieved, retrieval_spend) = match retrieval {
         Some(retriever) => {
             retriever
@@ -692,6 +759,7 @@ pub async fn review_with_tree(
         }
         None => (crate::retrieve::RetrievedContext::off(), Spend::default()),
     };
+    drop(retrieval_phase);
     spend.merge(retrieval_spend);
     // Retrieval is separate from the diff pipeline, but its rendered chunks
     // become model input too. Apply the same path-independent stream scrub
@@ -729,11 +797,13 @@ pub async fn review_with_tree(
     // `changed_neighbourhood_is_needed` — so a deployment with both off, or a
     // tests-only review with neither `critique` nor `security` enabled, costs
     // no query it never needed.
+    let graph_phase = timing.as_ref().map(|t| t.phase("graph"));
     let changed_neighbourhood = if changed_neighbourhood_is_needed(config) {
         walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
     } else {
         None
     };
+    drop(graph_phase);
     let graph_for_lanes = changed_neighbourhood.as_ref().and_then(|w| w.as_ref().ok());
 
     // What the `e2e` lane needs beyond the diff, read at the head commit and
@@ -756,6 +826,7 @@ pub async fn review_with_tree(
     };
 
     for lane_id in config.enabled_lanes() {
+        let lane_phase = timing.as_ref().map(|t| t.lane(lane_id.as_str()));
         let lane: Box<dyn Lane> = match lane_id {
             LaneId::Critique => Box::new(Critique::new(model.clone())),
             LaneId::Security => Box::new(Security::new(model.clone())),
@@ -784,6 +855,7 @@ pub async fn review_with_tree(
                 graph: graph_for_lanes,
             })
             .await?;
+        drop(lane_phase);
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a
@@ -870,6 +942,7 @@ pub async fn review_with_tree(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
+    let summary_phase = timing.as_ref().map(|t| t.phase("summary"));
     let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
         if summary_generation_needed(config, &diffs) {
             let (summary, spend, transcript) = crate::summary::generate(
@@ -912,6 +985,7 @@ pub async fn review_with_tree(
                 .unwrap_or_default(),
         )
     };
+    drop(summary_phase);
     spend.merge(summary_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
@@ -984,6 +1058,7 @@ pub async fn review_with_tree(
         .iter()
         .flat_map(|lane| lane.resolved.iter().cloned())
         .collect();
+    let threads_phase = timing.as_ref().map(|t| t.phase("threads"));
     let threads =
         match crate::threads::plan(forge, Some(model.as_ref()), config, repo, number, &resolved)
             .await
@@ -998,6 +1073,7 @@ pub async fn review_with_tree(
                 Default::default()
             }
         };
+    drop(threads_phase);
 
     // The change map. Built last, from the findings that survived, so the
     // diagram marks the behaviours the review will actually comment on. It
@@ -1010,6 +1086,7 @@ pub async fn review_with_tree(
     // request adds, removes or changes, read from the diff alone. One cheap
     // model call, independent of `src/preview` end to end — see
     // `docs/modules/wireframe/README.md`.
+    let wireframe_phase = timing.as_ref().map(|t| t.phase("wireframe"));
     let (wireframe, wireframe_spend) = if config.wireframe.enabled {
         let outcome = crate::wireframe::build(
             &crate::wireframe::WireframeInputs {
@@ -1027,6 +1104,7 @@ pub async fn review_with_tree(
     } else {
         (None, Spend::default())
     };
+    drop(wireframe_phase);
     spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
@@ -1040,6 +1118,13 @@ pub async fn review_with_tree(
         .filter(|title| !lanes.iter().any(|lane| lane.resolved.contains(title)))
         .collect();
 
+    if let Some(timing) = &timing {
+        timing.record(|r| {
+            r.files_total = context.files.len();
+            r.files_unanswered = unreviewed.len();
+            r.files_answered = r.files_total.saturating_sub(r.files_unanswered);
+        });
+    }
     Ok(Proposal {
         version: PROPOSAL_VERSION,
         repo: repo.to_string(),

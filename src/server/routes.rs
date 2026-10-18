@@ -2923,6 +2923,7 @@ impl ReviewRun<'_> {
                     let publish = std::panic::AssertUnwindSafe(async {
                         run.check_owner(state).await?;
                         let write_token = state.auth.installation_token(installation).await?;
+                        run.check_owner(state).await?;
                         // The review reader has already been held across all the
                         // model calls. Rebuild the publisher's reader with the
                         // credential acquired now so live-head validation and

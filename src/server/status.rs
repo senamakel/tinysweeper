@@ -72,23 +72,16 @@ pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewC
     use std::collections::BTreeSet;
 
     let mut paths = BTreeSet::new();
-    let mut fully_reviewed_paths: Option<BTreeSet<String>> = None;
+    let mut unanswered_paths = BTreeSet::new();
     for lane in lanes {
         if let Some(coverage) = &lane.coverage {
             paths.extend(coverage.reviewed.iter().cloned());
             paths.extend(coverage.unanswered.iter().cloned());
-            let lane_reviewed: BTreeSet<_> = coverage.reviewed.iter().cloned().collect();
-            fully_reviewed_paths = Some(match fully_reviewed_paths {
-                Some(reviewed) => reviewed.intersection(&lane_reviewed).cloned().collect(),
-                None => lane_reviewed,
-            });
+            unanswered_paths.extend(coverage.unanswered.iter().cloned());
         }
     }
     let files = (!paths.is_empty()).then(|| {
-        (
-            fully_reviewed_paths.map_or(0, |reviewed| reviewed.len()),
-            paths.len(),
-        )
+        (paths.len().saturating_sub(unanswered_paths.len()), paths.len())
     });
     let unanswered_lane = lanes
         .iter()

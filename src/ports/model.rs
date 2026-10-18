@@ -48,6 +48,11 @@ pub(crate) fn observe_model_call(
         .is_ok()
 }
 
+/// Clone the active observer for model work moved into a spawned agent task.
+pub(crate) fn current_model_call_observer() -> Option<Arc<dyn ModelCallObserver>> {
+    MODEL_CALL_OBSERVER.try_with(Arc::clone).ok()
+}
+
 /// One message in a model conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {

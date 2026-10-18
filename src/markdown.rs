@@ -275,7 +275,7 @@ mod tests {
             "https://a.b/[click](https://evil.example) @maintainer `code` **bold** |\\path",
         );
         assert!(!table_rendered.contains(" | "), "{table_rendered}");
-        assert!(!rendered.contains("\\path"), "{rendered}");
+        assert!(rendered.contains("|\\\\path"), "{rendered}");
     }
 
     #[test]

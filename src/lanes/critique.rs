@@ -517,11 +517,12 @@ async fn review_group(
     }
 
     // A degraded index cannot support model claims about repository context.
-    // Keep every critique finding visible, but conservatively limit its
-    // confidence regardless of anchor or lookup output: a changed anchor does
-    // not prove claims about callers or other files, and availability alone
-    // does not prove a claim true. Scanners have their own evidence and are
-    // outside this model-finding gate.
+    // Retain every critique finding in the lane outcome, but conservatively
+    // limit its confidence regardless of anchor or lookup output: a changed
+    // anchor does not prove claims about callers or other files, and
+    // availability alone does not prove a claim true. Normal proposal
+    // visibility thresholds still apply. Scanners have their own evidence
+    // and are outside this model-finding gate.
     if input.retrieval_status.is_degraded() {
         capped_for_degraded_context = findings.len();
         for finding in &mut findings {

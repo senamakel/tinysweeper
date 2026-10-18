@@ -4020,7 +4020,7 @@ mod tests {
                                 .expect("open the in-flight check"),
                         );
                     }
-                    true
+                    Ok(true)
                 },
                 || async { Err(Error::Forge("transient test failure".into())) },
             )
@@ -4148,7 +4148,7 @@ mod tests {
                         .await
                         .expect("cold recovery opens a fresh check"),
                 );
-                true
+                Ok(true)
             },
             || async { panic!("spent recovery must not enter review work") },
         )

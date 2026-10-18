@@ -713,6 +713,7 @@ mod cost_table_tests {
         );
         assert!(table.starts_with("````\n"), "{table}");
         assert!(table.ends_with("````"), "{table}");
+        std::fs::write("target/cost-table.md", &table).unwrap();
         assert!(
             table.contains("```\n@maintainer [click](https://evil.example)"),
             "{table}"

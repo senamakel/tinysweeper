@@ -886,6 +886,9 @@ mod tests {
         );
         let row = rendered
             .lines()
+        std::fs::write("target/history.md", &rendered).unwrap();
+        let row = rendered
+            .lines()
             .find(|line| line.starts_with("| `sha"))
             .expect("history row");
         assert_eq!(row.matches(" | ").count(), 2, "{row}");

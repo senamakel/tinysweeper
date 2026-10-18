@@ -1696,6 +1696,7 @@ mod tests {
         .expect("applies");
 
         let (body, _) = review_of(&forge).expect("review published to the mock forge");
+        std::fs::write("target/mockforge-review.md", &body).unwrap();
         assert!(!body.contains("@maintainer"), "{body}");
         assert!(!body.contains("<img src=x>"), "{body}");
         assert!(!body.contains("[click](https://evil.example)"), "{body}");

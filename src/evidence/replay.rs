@@ -120,7 +120,7 @@ impl<'a> CrossFileEvidenceIndex<'a> {
         }
         let mut rendered = String::new();
         let mut incomplete = paths.len() > MAX_FILES;
-        for (index, path) in paths.iter().take(MAX_FILES).enumerate() {
+        for path in paths.iter().take(MAX_FILES) {
             let Some(diff) = self.by_path.get(path) else {
                 continue;
             };

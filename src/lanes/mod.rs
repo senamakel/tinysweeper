@@ -339,6 +339,7 @@ impl LaneOutcome {
 
         Self {
             summary,
+            context_degraded: false,
             findings,
             resolved: parsed.resolved,
             spend,

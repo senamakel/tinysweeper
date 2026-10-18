@@ -1449,6 +1449,7 @@ type StatusSlot = Arc<std::sync::Mutex<Option<ReviewStatus>>>;
 struct Run {
     mode: Mode,
     slot: StatusSlot,
+    timing: crate::review_timing::ReviewTiming,
     /// Fixed when the review is accepted, not per attempt. See `handle_review`.
     deadline: tokio::time::Instant,
 }
@@ -1853,7 +1854,7 @@ async fn handle_review(
     mode: Mode,
     delivery: Option<String>,
 ) {
-    let timing = ReviewTiming::new(repo.clone(), number, mode);
+    let timing = crate::review_timing::ReviewTiming::new(repo.clone(), number, format!("{mode:?}"));
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
@@ -1896,7 +1897,7 @@ async fn handle_review(
             return;
         }
     };
-    timing.permit_acquired();
+    drop(timing.phase("permit"));
 
     // One deadline for the whole review, retries included. A per-attempt
     // deadline would let three transient failures late in the run stretch a
@@ -1906,6 +1907,7 @@ async fn handle_review(
         mode,
         slot: slot.clone(),
         deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+        timing: timing.clone(),
     };
 
     let mut attempt = 1;
@@ -1969,7 +1971,7 @@ async fn handle_review(
     drop(permit);
 
     tracing::error!(%err, %repo, number, attempts = attempt, "review failed");
-    timing.finish(ReviewTiming::outcome_for_error(&err));
+    timing.finish(crate::review_timing::outcome_for_error(&err));
 
     // Two ways to report the same thing, and which one applies depends on how
     // far the review got. If a check is already open, concluding it in place is
@@ -2000,62 +2002,6 @@ async fn handle_review(
         && let Err(release) = state.store.release_delivery(&delivery).await
     {
         tracing::error!(%release, %delivery, "could not release the failed delivery claim");
-    }
-}
-
-/// Emits one machine-readable summary even when a worker future is cancelled.
-struct ReviewTiming {
-    repo: String,
-    pr: u64,
-    mode: Mode,
-    started: std::time::Instant,
-    queue_wait_ms: std::sync::atomic::AtomicU64,
-    outcome: std::sync::Mutex<Option<&'static str>>,
-}
-
-impl ReviewTiming {
-    fn new(repo: String, pr: u64, mode: Mode) -> Self {
-        Self {
-            repo,
-            pr,
-            mode,
-            started: std::time::Instant::now(),
-            queue_wait_ms: std::sync::atomic::AtomicU64::new(0),
-            outcome: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn permit_acquired(&self) {
-        self.queue_wait_ms.store(
-            self.started.elapsed().as_millis() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    fn finish(&self, outcome: &'static str) {
-        *self.outcome.lock().expect("review timing outcome") = Some(outcome);
-    }
-
-    fn outcome_for_error(error: &Error) -> &'static str {
-        if matches!(error, Error::Timeout { .. }) {
-            "deadline"
-        } else {
-            "failure"
-        }
-    }
-}
-
-impl Drop for ReviewTiming {
-    fn drop(&mut self) {
-        let outcome = self
-            .outcome
-            .get_mut()
-            .expect("review timing outcome")
-            .unwrap_or("cancelled");
-        tracing::info!(target: "tinysweeper::review_timing", repo = %self.repo, pr = self.pr,
-            mode = ?self.mode, outcome, total_ms = self.started.elapsed().as_millis() as u64,
-            queue_wait_ms = self.queue_wait_ms.load(std::sync::atomic::Ordering::Relaxed),
-            "review timing");
     }
 }
 
@@ -2186,6 +2132,7 @@ async fn review_inner(
     // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
     // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
     let outcome = {
+        let status_phase = run.timing.phase("open_status");
         let go_on = open_status(
             state,
             &run.slot,
@@ -2194,6 +2141,7 @@ async fn review_inner(
             installation,
         )
         .await;
+        drop(status_phase);
         if !go_on {
             // Declined, not failed: the check is already concluded as
             // failed, and an `Err` here would have `handle_review` post a
@@ -2218,6 +2166,7 @@ async fn review_inner(
         // head: a config is acted on deterministically, so reading it from
         // the branch under review would let a pull request grade its own
         // exam. See `crate::config::remote`.
+        let setup_phase = run.timing.phase("knowledge");
         let overlay = crate::config::remote::overlay(
             &forge,
             &repo_id,
@@ -2225,6 +2174,7 @@ async fn review_inner(
             &state.config.config,
         )
         .await;
+        drop(setup_phase);
         if let Some(source) = &overlay.source {
             tracing::info!(%repo, source, "reviewing under the repository's own configuration");
         }

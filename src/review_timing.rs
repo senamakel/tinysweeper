@@ -11,6 +11,10 @@ pub const PHASES: &[&str] = &[
     "graph", "lanes", "summary", "threads", "wireframe", "publish",
 ];
 
+pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
+    if matches!(error, crate::error::Error::Timeout { .. }) { "deadline" } else { "failure" }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewTiming(Arc<Mutex<Record>>);
 

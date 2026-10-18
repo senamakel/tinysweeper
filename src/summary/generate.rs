@@ -864,35 +864,6 @@ fn claims_unsupported_lane_sentence(
 
 fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
     let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
-    let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
-    let has_lane_subject = has_any(&["lane", "lanes", "reviewer", "reviewers"]);
-    let has_verdict_context = has_any(&[
-        "approved",
-        "clear",
-        "complete",
-        "completed",
-        "confirm",
-        "confirmed",
-        "confirms",
-        "find",
-        "found",
-        "finding",
-        "findings",
-        "green",
-        "issue",
-        "issues",
-        "no",
-        "none",
-        "pass",
-        "passed",
-        "passing",
-        "report",
-        "reports",
-        "safe",
-        "success",
-        "successful",
-        "succeeded",
-    ]);
     let aliases: &[&[&str]] = match lane {
         LaneId::Critique => &[&["critique"], &["correctness"]],
         LaneId::Security => &[&["security"]],
@@ -901,7 +872,68 @@ fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
         LaneId::Description => &[&["description"]],
         LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
     };
-    (has_lane_subject || has_verdict_context) && aliases.iter().any(|alias| has_phrase(alias))
+    aliases.iter().any(|alias| {
+        if !has_phrase(alias) {
+            return false;
+        }
+        if !matches!(lane, LaneId::Tests | LaneId::Commits) {
+            return true;
+        }
+
+        // “test fixture” and “transaction commit” describe code. Treat these
+        // ambiguous words as lane claims only when their nearby words make
+        // them reviewers or attach a verdict to them.
+        let alias_positions = words
+            .windows(alias.len())
+            .enumerate()
+            .filter_map(|(index, window)| (window == *alias).then_some(index));
+        alias_positions.into_iter().any(|index| {
+            let start = index.saturating_sub(2);
+            let end = (index + alias.len() + 3).min(words.len());
+            let nearby = &words[start..end];
+            let has_reviewer_subject = nearby
+                .iter()
+                .any(|word| matches!(*word, "lane" | "lanes" | "reviewer" | "reviewers"));
+            let after_alias = &words[index + alias.len()..end];
+            let has_verdict = after_alias.iter().any(|word| {
+                matches!(
+                    *word,
+                    "approved"
+                        | "approves"
+                        | "clear"
+                        | "complete"
+                        | "completed"
+                        | "confirm"
+                        | "confirmed"
+                        | "confirms"
+                        | "failed"
+                        | "find"
+                        | "found"
+                        | "finding"
+                        | "findings"
+                        | "green"
+                        | "pass"
+                        | "passed"
+                        | "passing"
+                        | "report"
+                        | "reports"
+                        | "safe"
+                        | "success"
+                        | "successful"
+                        | "succeeded"
+                )
+            });
+            let has_no_findings_verdict = after_alias
+                .first()
+                .is_some_and(|word| *word == "no")
+                && after_alias
+                    .iter()
+                    .skip(1)
+                    .take(2)
+                    .any(|word| matches!(*word, "finding" | "findings" | "issue" | "issues"));
+            has_reviewer_subject || has_verdict || has_no_findings_verdict
+        })
+    })
 }
 
 fn now_epoch() -> u64 {

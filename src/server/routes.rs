@@ -270,7 +270,9 @@ pub async fn serve_with_model_factory(
     };
 
     let admin_auth = config.admin_auth.clone();
-    let (review_queue, review_receiver) = mpsc::channel(MAX_QUEUED_REVIEWS);
+    // One record may be held by the single dispatcher while it waits for a
+    // permit, so leave that slot out of the channel's capacity.
+    let (review_queue, review_receiver) = mpsc::channel(MAX_QUEUED_REVIEWS - 1);
     let state = AppState {
         config: Arc::new(config),
         store: store.clone(),

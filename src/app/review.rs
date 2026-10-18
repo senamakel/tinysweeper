@@ -75,8 +75,6 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
             record.calls_errored += usage.calls_errored;
             record.usage.add(usage);
         });
-        tracing::info!(target: "tinysweeper::model", latency_ms = _latency.as_millis() as u64,
-            succeeded, refused, "model call");
     }
 }
 

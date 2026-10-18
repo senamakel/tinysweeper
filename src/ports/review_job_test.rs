@@ -177,6 +177,37 @@ async fn a_deadline_is_terminal_for_the_confirmed_head_across_delivery_ids() {
 }
 
 #[tokio::test]
+async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolution() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 1);
+    first.repo = "org/repo".into();
+    first.number = 7;
+    first.head_sha = Some("head-a".into());
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let timed_out = store.claim_next("worker", 2).await.unwrap().unwrap();
+    assert!(store.confirm_head(&timed_out, "head-a", 3).await.unwrap());
+
+    first.id = ReviewJobId("push-b".into());
+    first.delivery = Some("push-b".into());
+    first.head_sha = Some("head-b-hint".into());
+    first.accepted_at_ms = 4;
+    store.admit_batch(vec![first]).await.unwrap();
+
+    assert!(store.finish_deadline(&timed_out, 5).await.unwrap());
+    assert_eq!(store.unfinished(), 1, "both delivery IDs stay attached to recoverable work");
+    let resumed = store.claim_next("worker-2", 6).await.unwrap().unwrap();
+    assert!(store.confirm_head(&resumed, "head-a", 7).await.unwrap());
+    assert!(store.head_is_terminal(&resumed, 8).await.unwrap());
+    assert_eq!(store.begin_paid(&resumed, 9).await.unwrap(), super::PaidStart::Exhausted);
+
+    // The webhook hint is not proof of advancement. Only resolving a different
+    // Forge head clears the prior head's marker and makes new paid work eligible.
+    assert!(store.confirm_head(&resumed, "head-b", 10).await.unwrap());
+    assert!(!store.head_is_terminal(&resumed, 11).await.unwrap());
+    assert_eq!(store.begin_paid(&resumed, 12).await.unwrap(), super::PaidStart::Started);
+}
+
+#[tokio::test]
 async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() {
     let store = MockReviewJobStore::default();
     assert_eq!(

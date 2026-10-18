@@ -424,6 +424,26 @@ mod tests {
     use crate::harness::mock::MockModel;
 
     #[test]
+    fn synthetic_schema_valid_lane_key_contract_witness_parses() {
+        // Synthetic source-contract witness: the provider's schema currently
+        // permits any string key, while the typed parser only accepts LaneId.
+        // This is not a captured production reply.
+        let witness = json!({
+            "executive_summary": "Purpose retained.",
+            "changes": "Behavior changed.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {
+                "correctness": [{
+                    "observation": "Local behavior described.",
+                    "citations": ["src/lib.rs"]
+                }]
+            }
+        });
+        assert!(serde_json::from_value::<Generated>(witness).is_ok());
+    }
+
+    #[test]
     fn citations_require_exact_paths_symbols_and_observed_head_lines() {
         let diffs = [
             crate::evidence::diff::parse_file_patch(

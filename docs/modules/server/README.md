@@ -49,12 +49,19 @@ operator must redeliver that overflowed event. Manual batches are admitted
 atomically, or refused as a whole. Other webhook actions keep their existing
 dispatch path.
 
+The manual endpoint checks durable capacity before resolving installations or
+pull requests. Its final whole-batch admission is still authoritative, so a
+concurrent admission can fill the scheduler after the preflight and cause the
+manual batch to be refused without partial jobs.
+
 At most four jobs may hold a durable 45-second owner lease across the server
 fleet. A heartbeat extends the lease every 15 seconds. Generation checks fence
 claims, renewals, and completion; local expiry checks stop a paused process
 before it resumes model work, and model dispatches also verify ownership. A
 shutdown stops new claims and leaves unfinished jobs in Mongo for the next
-process. Terminal outcomes remain deduped for seven days. GitHub publication
+process. If shutdown lands while the initial status check is being opened, that
+accepted job is deferred and remains available to the next owner. Terminal
+outcomes remain deduped for seven days. GitHub publication
 still uses the app's live-head and idempotency checks because a process can
 crash between a GitHub write and recording its outcome. A job has five durable
 paid-work starts across restarts; recovery after the fifth terminalizes it

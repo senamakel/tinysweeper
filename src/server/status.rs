@@ -248,6 +248,7 @@ mod tests {
             summary: String::new(),
             findings: vec![],
             noted: vec![],
+            context_degraded: false,
             resolved: vec![],
             pending: vec![],
             deduped: 0,

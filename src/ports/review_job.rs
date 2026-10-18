@@ -330,6 +330,10 @@ fn owns(record: &ScheduledReview, owned: &OwnedReview) -> bool {
 /// Atomic journal for accepted server reviews.
 #[async_trait::async_trait]
 pub trait ReviewJobStore: Send + Sync {
+    /// Cheaply reject manual work when the durable scheduler has no room.
+    /// This is only a preflight; `admit_batch` remains authoritative and atomic.
+    async fn has_capacity_for(&self, count: usize) -> Result<bool>;
+
     /// Atomically admit all requests or none, deduping against unfinished and
     /// unexpired terminal IDs in the same scheduler document.
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission>;

@@ -28,6 +28,14 @@ impl MockReviewJobStore {
 
 #[async_trait::async_trait]
 impl ReviewJobStore for MockReviewJobStore {
+    async fn has_capacity_for(&self, count: usize) -> Result<bool> {
+        let state = self.state.lock().expect("state");
+        Ok(count > 0
+            && state.unfinished.len() + count <= MAX_UNFINISHED_REVIEWS
+            && state.terminal.len() + state.unfinished.len() + count
+                <= MAX_TERMINAL_REVIEW_RESERVATIONS)
+    }
+
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission> {
         if std::mem::take(&mut *self.fail_admission.lock().expect("admission failure")) {
             return Err(Error::Forge("simulated scheduler write failure".into()));

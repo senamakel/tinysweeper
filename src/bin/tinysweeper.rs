@@ -1543,6 +1543,24 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn apply_confirmation_matches_the_publication_disposition() {
+        use tinysweeper::app::apply::ApplyDisposition;
+
+        assert_eq!(
+            apply_confirmation(ApplyDisposition::Published, 3),
+            "published 3 check run(s)"
+        );
+        assert_eq!(
+            apply_confirmation(ApplyDisposition::Superseded, 3),
+            "skipped publishing: the pull request head changed before publication"
+        );
+        assert_eq!(
+            apply_confirmation(ApplyDisposition::Closed, 3),
+            "skipped publishing: the pull request is closed or merged"
+        );
+    }
+
+    #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
     }

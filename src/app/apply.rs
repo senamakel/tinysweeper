@@ -2832,7 +2832,7 @@ mod tests {
         );
         assert!(!body.contains("Security found no issues"));
         assert!(!body.contains("All checks report no issues"));
-        assert!(body.contains("Security is clean"));
+        assert!(!body.contains("Security is clean"));
         assert!(body.contains("The transaction commit no longer loses events"));
         assert!(body.contains("This adds a test fixture with no new dependencies"));
         assert!(body.contains("The test fixture maps transaction rollback"));

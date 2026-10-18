@@ -881,8 +881,8 @@ fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
         }
 
         // “test fixture” and “transaction commit” describe code. Treat these
-        // ambiguous words as lane claims only when their nearby words make
-        // them reviewers or attach a verdict to them.
+        // ambiguous words as lane claims only when nearby words identify a
+        // reviewer or attach a verdict to that alias.
         let alias_positions = words
             .windows(alias.len())
             .enumerate()

@@ -62,9 +62,10 @@ impl Lane for Commits {
         let scanner = input.scanner_findings_of(&ADJUDICATES);
 
         if scanner.is_empty() {
-            return Ok(LaneOutcome::skipped(
-                "Nothing sensitive found in what this pull request commits.",
-            ));
+            return Ok(LaneOutcome {
+                summary: "No sensitive content in committed files.".into(),
+                ..LaneOutcome::default()
+            });
         }
 
         // Deliberately *not* skipped for a draft. Every other lane defers on a
@@ -111,6 +112,7 @@ fn merge_scanner_findings(outcome: &mut LaneOutcome, scanner: &[&crate::scan::ty
 mod tests {
     use super::*;
     use crate::config::types::{Config, Severity};
+    use crate::forge::types::CheckConclusion;
     use crate::evidence::diff::{FileDiff, parse_file_patch};
     use crate::forge::types::{Commit, PullRequest};
     use crate::ports::model::Spend;

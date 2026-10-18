@@ -324,6 +324,9 @@ impl LaneOutcome {
         if self.findings.iter().any(|f| f.severity >= fail_on) {
             return CheckConclusion::Failure;
         }
+        if !self.unanswered.is_empty() {
+            return CheckConclusion::Neutral;
+        }
         if !self.pending.is_empty() {
             return CheckConclusion::Neutral;
         }

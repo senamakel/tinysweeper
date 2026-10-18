@@ -2261,7 +2261,7 @@ async fn review_inner(
     }
     let outcome = outcome?;
 
-    let Some((proposal, changes_requested)) = outcome? else {
+    let Some((proposal, changes_requested)) = outcome else {
         return Ok(None);
     };
     let findings = proposal.findings().count();

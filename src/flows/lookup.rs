@@ -466,6 +466,13 @@ const SEED_STOPWORDS: &[&str] = &[
 pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     use crate::evidence::diff::LineKind;
     let mut out: Vec<String> = Vec::new();
+    let removed_functions: BTreeSet<String> = diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind == LineKind::Removed)
+        .filter_map(|line| added_function_name(line.text.trim_start()).map(str::to_owned))
+        .collect();
     for line in diff.hunks.iter().flat_map(|h| h.lines.iter()) {
         if line.kind != LineKind::Added {
             continue;
@@ -474,7 +481,9 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
         if text.starts_with("//") || text.starts_with('*') || text.starts_with("///") {
             continue;
         }
-        if let Some(name) = added_function_name(text) {
+        if let Some(name) = added_function_name(text)
+            && removed_functions.contains(name)
+        {
             let candidate = format!("@caller:{name}");
             if !out.contains(&candidate) {
                 out.push(candidate);

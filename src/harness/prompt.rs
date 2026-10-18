@@ -428,8 +428,9 @@ pub fn build(inputs: &PromptInputs<'_>) -> Prompt {
         suffix.push_str(
             "\n## Limited repository context\n\n\
              The repository index is degraded. Its silence does not prove that a file, module, or caller is missing.\
-             Do not make an unchanged-code claim actionable unless a current-head lookup or the diff itself\
-             provides direct evidence; lower confidence when the relevant code could not be checked.\n",
+             Do not make an unchanged-line claim actionable unless a current-head lookup for that file\
+             supports it; lower confidence when the relevant code could not be checked. Changed-line\
+             findings remain grounded in the diff.\n",
         );
     }
 

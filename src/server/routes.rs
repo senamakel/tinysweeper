@@ -14,8 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::FutureExt;
 use serde_json::json;
-use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
 use crate::automerge::types::Outcome;
 use crate::config::Config;
@@ -48,6 +48,9 @@ use crate::server::webhook::{self, Action, Payload};
 /// delivers a burst, and an unbounded worker pool turns that into an unbounded
 /// bill.
 const MAX_CONCURRENT_REVIEWS: usize = 4;
+/// Backlog accepted while the four review slots are occupied. Queue entries
+/// are data, not Tokio tasks, so this is also the cap on pending review work.
+const MAX_QUEUED_REVIEWS: usize = 16;
 /// Keep a small bounded backlog so ordinary webhook bursts are acknowledged
 /// promptly while work waits as data rather than as spawned futures.
 const MAX_QUEUED_REVIEWS: usize = 16;
@@ -590,24 +593,28 @@ async fn receive(
         _ => {}
     }
 
-    // Do not create a waiting worker for each incoming review. Admit only work
-    // that has a slot now; the 503 makes an unaccepted delivery visible rather
-    // than acknowledging work that has nowhere bounded to wait.
-    let review_permit = if matches!(&action, Action::Review { .. }) {
-        match state.permits.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(err) => {
-                tracing::warn!(%err, "review capacity is full; refusing delivery before acknowledgement");
-                return (
+    if matches!(&action, Action::Review { .. }) {
+        let queued = QueuedReview {
+            action,
+            delivery,
+            event,
+        };
+        return match state.review_queue.try_send(queued) {
+            Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("review queue is full; refusing delivery before acknowledgement");
+                (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "review capacity is full; retry the delivery",
+                    "review queue is full; operator redelivery required",
                 )
-                    .into_response();
+                    .into_response()
             }
-        }
-    } else {
-        None
-    };
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!("review queue is closed");
+                (StatusCode::SERVICE_UNAVAILABLE, "review queue unavailable").into_response()
+            }
+        };
+    }
 
     // Everything past here is work, and none of it happens on this task.
     //
@@ -630,8 +637,30 @@ async fn receive(
     // only guard: `review_inner` takes a lease keyed on `repo#number@sha`, so
     // even a claim that is lost outright cannot produce two reviews of one
     // commit.
-    tokio::spawn(dispatch(state, action, delivery, event, review_permit));
+    tokio::spawn(dispatch(state, action, delivery, event, None));
     (StatusCode::ACCEPTED, "queued").into_response()
+}
+
+/// Drain the bounded review queue, acquiring capacity before each worker is
+/// spawned. At most one queue-drainer waits on the semaphore; pending requests
+/// remain bounded channel entries.
+async fn drain_review_queue(state: AppState, mut receiver: mpsc::Receiver<QueuedReview>) {
+    while let Some(job) = receiver.recv().await {
+        let permit = match state.permits.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                tracing::error!(%err, "review permit pool closed; queued delivery was not started");
+                continue;
+            }
+        };
+        tokio::spawn(dispatch(
+            state.clone(),
+            job.action,
+            job.delivery,
+            job.event,
+            Some(permit),
+        ));
+    }
 }
 
 /// Claim the delivery, then run whatever it asked for.

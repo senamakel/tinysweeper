@@ -2328,13 +2328,14 @@ mod tests {
         }
         let forge = forge_with(vec![rust_file()], vec![]);
         let config = critique_config();
+        let repo = repo();
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let future = review_with_tree_observed(
             &forge,
             Arc::new(SlowModel),
             &config,
-            &repo(),
+            &repo,
             7,
             None,
             None,

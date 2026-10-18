@@ -884,6 +884,11 @@ mod tests {
             !rendered.contains("| [click](https://evil.example) |"),
             "{rendered}"
         );
+        let row = rendered
+            .lines()
+            .find(|line| line.starts_with("| `sha"))
+            .expect("history row");
+        assert_eq!(row.matches(" | ").count(), 2, "{row}");
     }
 
     #[test]

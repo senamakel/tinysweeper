@@ -717,6 +717,10 @@ mod cost_table_tests {
             table.contains("```\n@maintainer [click](https://evil.example)"),
             "{table}"
         );
+
+        let single = cost_table(&usage(0.01, 50, 5, 0), &[hostile.into()], &[]);
+        assert!(single.starts_with("````\n"), "{single}");
+        assert!(single.ends_with("````"), "{single}");
     }
 
     #[test]

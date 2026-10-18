@@ -50,7 +50,7 @@ use crate::server::webhook::{self, Action, Payload};
 const MAX_CONCURRENT_REVIEWS: usize = 4;
 /// Backlog accepted while the four review slots are occupied. Queue entries
 /// are data, not Tokio tasks, so this is also the cap on pending review work.
-const MAX_QUEUED_REVIEWS: usize = 16;
+const MAX_QUEUED_REVIEWS: usize = 256;
 /// Keep a small bounded backlog so ordinary webhook bursts are acknowledged
 /// promptly while work waits as data rather than as spawned futures.
 const MAX_QUEUED_REVIEWS: usize = 16;
@@ -208,8 +208,9 @@ struct AppState {
 #[derive(Debug)]
 struct QueuedReview {
     action: Action,
-    delivery: String,
+    delivery: Option<String>,
     event: String,
+    mode: Mode,
 }
 
 /// Run the server until the process is stopped.
@@ -288,7 +289,6 @@ pub async fn serve_with_model_factory(
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
 
-    tokio::spawn(drain_review_queue(state.clone(), review_receiver));
 
     let shutdown_state = state.clone();
     let manual_state = state.clone();
@@ -400,10 +400,13 @@ pub async fn serve_with_model_factory(
         .map_err(|err| Error::Forge(format!("could not bind {bind}: {err}")))?;
 
     tracing::info!(%bind, "tinysweeper is listening");
-    axum::serve(listener, app)
+    let review_dispatcher = tokio::spawn(drain_review_queue(state.clone(), review_receiver));
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown(shutdown_state))
         .await
-        .map_err(|err| Error::Forge(format!("server stopped: {err}")))
+        .map_err(|err| Error::Forge(format!("server stopped: {err}")));
+    review_dispatcher.abort();
+    served
 }
 
 /// Resolve when the process has been asked to stop and is ready to.
@@ -596,13 +599,18 @@ async fn receive(
     if matches!(&action, Action::Review { .. }) {
         let queued = QueuedReview {
             action,
-            delivery,
+            delivery: Some(delivery),
             event,
+            mode: Mode::Incremental,
         };
         return match state.review_queue.try_send(queued) {
             Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("review queue is full; refusing delivery before acknowledgement");
+            Err(mpsc::error::TrySendError::Full(job)) => {
+                let subject = match job.action {
+                    Action::Review { repo, number, .. } => format!("{repo}#{number}"),
+                    _ => "unknown subject".to_owned(),
+                };
+                tracing::error!(%subject, delivery = %job.delivery.as_deref().unwrap_or("manual"), "review queue is full; operator redelivery required");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "review queue is full; operator redelivery required",
@@ -637,7 +645,14 @@ async fn receive(
     // only guard: `review_inner` takes a lease keyed on `repo#number@sha`, so
     // even a claim that is lost outright cannot produce two reviews of one
     // commit.
-    tokio::spawn(dispatch(state, action, delivery, event, None));
+    tokio::spawn(dispatch(
+        state,
+        action,
+        Some(delivery),
+        event,
+        None,
+        Mode::Incremental,
+    ));
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
@@ -659,6 +674,7 @@ async fn drain_review_queue(state: AppState, mut receiver: mpsc::Receiver<Queued
             job.delivery,
             job.event,
             Some(permit),
+            job.mode,
         ));
     }
 }
@@ -669,23 +685,23 @@ async fn drain_review_queue(state: AppState, mut receiver: mpsc::Receiver<Queued
 async fn dispatch(
     state: AppState,
     action: Action,
-    delivery: String,
+    delivery: Option<String>,
     event: String,
     review_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    mode: Mode,
 ) {
-    match state.store.claim_delivery(&delivery, &event).await {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::debug!(%delivery, "already handled");
-            return;
-        }
-        Err(err) => {
-            // The delivery is already acknowledged, so there is no retry to
-            // ask for and dropping the work would be silent. Proceeding risks
-            // duplicating a review that a redelivery also runs; the lease in
-            // `review_inner` is what makes that risk affordable, and doing the
-            // work twice is a better failure than never doing it.
-            tracing::error!(%err, %delivery, "could not claim the delivery; proceeding unclaimed");
+    if let Some(delivery_id) = &delivery {
+        match state.store.claim_delivery(delivery_id, &event).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(delivery = %delivery_id, "already handled");
+                return;
+            }
+            Err(err) => {
+                // The delivery is already acknowledged, so dropping work
+                // would be silent. The revision lease prevents duplicate work.
+                tracing::error!(%err, delivery = %delivery_id, "could not claim the delivery; proceeding unclaimed");
+            }
         }
     }
 
@@ -706,9 +722,10 @@ async fn dispatch(
                 author,
                 installation,
                 Mode::Incremental,
-                Some(delivery),
+                delivery,
                 head_sha,
                 review_permit,
+                mode,
             )
             .await;
         }

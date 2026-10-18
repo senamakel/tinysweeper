@@ -825,16 +825,15 @@ fn review_body(
             "\n\n### Over the comment budget\n\nNot posted inline; listed here so none is lost.\n",
         );
         for finding in over {
-            let line = finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default();
             body.push_str(&format!(
-                "\n- **{}** {} (`{}{}`)",
+                "\n- **{}** {} ({})",
                 finding.severity,
                 crate::markdown::prose(&finding.title),
-                crate::markdown::code_span(&finding.path),
-                line
+                crate::markdown::code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding.line.map(|line| format!(":{line}")).unwrap_or_default()
+                ))
             ));
         }
         body.push('\n');

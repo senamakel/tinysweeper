@@ -764,6 +764,40 @@ mod tests {
     }
 
     #[test]
+    fn legacy_progress_wrapper_keeps_its_completed_report() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_progress = format!(
+            "{MARKER}\n\n**Reviewing `def` now.**\n<details>\n<summary>Previous completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let failure = failed("def", "network error", Some(&legacy_progress));
+        let next_progress = in_progress("ghi", Some(&failure));
+
+        assert_eq!(next_progress.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(!next_progress.contains("**Reviewing `def`"));
+        assert!(next_progress.contains("<summary>Report detail</summary>"));
+    }
+
+    #[test]
+    fn legacy_failure_wrapper_extracts_a_report_with_nested_details() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_failure = format!(
+            "{MARKER}\n\n**Review failed for `def`.** timed out\n<details open>\n<summary>Last completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let progress = in_progress("ghi", Some(&legacy_failure));
+        let failure = failed("ghi", "timeout", Some(&progress));
+
+        assert_eq!(failure.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(failure.contains("<summary>Report detail</summary>"));
+        assert!(!failure.contains("**Review failed for `def`"));
+    }
+
+    #[test]
     fn failed_copy_is_safe_and_names_the_preserved_head() {
         let completed = format!("{MARKER}\n\n**Reviewed head:** `def5678`");
         let failure = failed(

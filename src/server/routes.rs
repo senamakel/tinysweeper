@@ -573,6 +573,21 @@ async fn receive(
         _ => {}
     }
 
+    // Do not create a waiting worker for each incoming review. A review
+    // acquires its bounded slot before dispatch is spawned.
+    let review_permit = if matches!(&action, Action::Review { .. }) {
+        match state.permits.clone().acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(err) => {
+                tracing::error!(%err, "review permit pool is closed");
+                return (StatusCode::SERVICE_UNAVAILABLE, "review capacity unavailable")
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     // Everything past here is work, and none of it happens on this task.
     //
     // The delivery claim used to run *here*, inline, and that is what made a
@@ -594,14 +609,20 @@ async fn receive(
     // only guard: `review_inner` takes a lease keyed on `repo#number@sha`, so
     // even a claim that is lost outright cannot produce two reviews of one
     // commit.
-    tokio::spawn(dispatch(state, action, delivery, event));
+    tokio::spawn(dispatch(state, action, delivery, event, review_permit));
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
 /// Claim the delivery, then run whatever it asked for.
 ///
 /// Runs off the request path so nothing here is racing GitHub's clock.
-async fn dispatch(state: AppState, action: Action, delivery: String, event: String) {
+async fn dispatch(
+    state: AppState,
+    action: Action,
+    delivery: String,
+    event: String,
+    review_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
     match state.store.claim_delivery(&delivery, &event).await {
         Ok(true) => {}
         Ok(false) => {
@@ -626,6 +647,7 @@ async fn dispatch(state: AppState, action: Action, delivery: String, event: Stri
             number,
             author,
             installation,
+            head_sha,
         } => {
             handle_review(
                 state,
@@ -635,6 +657,8 @@ async fn dispatch(state: AppState, action: Action, delivery: String, event: Stri
                 installation,
                 Mode::Incremental,
                 Some(delivery),
+                head_sha,
+                review_permit,
             )
             .await;
         }
@@ -1268,6 +1292,8 @@ impl FullReviews for ManualDispatch {
                 installation,
                 Mode::Full,
                 None,
+                None,
+                None,
             ));
             queued.push(number);
         }
@@ -1855,6 +1881,8 @@ async fn handle_review(
     installation: u64,
     mode: Mode,
     delivery: Option<String>,
+    expected_head: Option<String>,
+    queued_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
@@ -1883,7 +1911,10 @@ async fn handle_review(
     // its own, report that failure against whatever head is live by then.
     // Holding it across retries also keeps a retry from going to the back of
     // the queue behind reviews that arrived while it was failing.
-    let permit = match state.permits.clone().acquire_owned().await {
+    let permit = match queued_permit {
+        Some(permit) => Ok(permit),
+        None => state.permits.clone().acquire_owned().await,
+    } {
         Ok(permit) => permit,
         Err(err) => {
             // Unreachable in practice — nothing closes the pool — but a
@@ -1911,7 +1942,17 @@ async fn handle_review(
 
     let mut attempt = 1;
     let err = loop {
-        match review_inner(&state, &repo, number, &author, installation, &run).await {
+        match review_inner(
+            &state,
+            &repo,
+            number,
+            &author,
+            installation,
+            &run,
+            expected_head.as_deref(),
+        )
+        .await
+        {
             Ok(findings) => {
                 // Usually there is nothing to close: a run that declines — a
                 // blocked contributor, a draft, a lease another worker holds —

@@ -63,6 +63,8 @@ struct LaneFileCoverage {
 pub struct SummaryGenerationInput<'a> {
     /// Current parsed reviewable changes.
     pub diffs: &'a [FileDiff],
+    /// Every changed path from the forge's complete pull-request file list.
+    pub full_pr_paths: &'a [String],
     /// Complete pull-request file and line counts from the forge.
     pub full_pr_diffstat: SummaryDiffstat,
     /// Deterministic lane proposals.
@@ -85,12 +87,14 @@ pub async fn generate(
     prior: Option<&ReviewSummary>,
     prior_transcript: &[SummaryTranscriptTurn],
 ) -> (ReviewSummary, Spend, Vec<SummaryTranscriptTurn>) {
+    let full_pr_paths: Vec<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
     generate_with_input(
         model,
         config,
         pull_request,
         SummaryGenerationInput {
             diffs,
+            full_pr_paths: &full_pr_paths,
             full_pr_diffstat: SummaryDiffstat::from_diffs(diffs),
             lanes,
             prior,
@@ -110,12 +114,14 @@ pub async fn generate_with_input(
 ) -> (ReviewSummary, Spend, Vec<SummaryTranscriptTurn>) {
     let SummaryGenerationInput {
         diffs,
+        full_pr_paths,
         full_pr_diffstat,
         lanes,
         prior,
         prior_transcript,
     } = input;
     let paths: BTreeSet<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
+    let full_pr_paths: BTreeSet<String> = full_pr_paths.iter().cloned().collect();
     let symbols_by_path: BTreeMap<String, BTreeSet<String>> = diffs
         .iter()
         .map(|diff| {
@@ -137,7 +143,7 @@ pub async fn generate_with_input(
                 .collect::<Vec<_>>()
         })
         .collect();
-    let lane_statuses = lane_statuses(lanes, &paths);
+    let lane_statuses = lane_statuses(lanes, &full_pr_paths);
     let previous_head = prior_transcript.last().map(|turn| turn.head_sha.as_str());
     let evidence = json!({
         "whole_pull_request": {
@@ -200,7 +206,7 @@ pub async fn generate_with_input(
         max_tokens: config.models.max_tokens.min(4_000),
     };
 
-    let mut summary = deterministic(config, pull_request, diffs, lanes, prior);
+    let mut summary = deterministic_with_paths(config, pull_request, diffs, &full_pr_paths, lanes, prior);
     summary.cache_chain_restarted = restarted;
     let mut spend = Spend::default();
     let first = match model.complete(request.clone()).await {
@@ -302,10 +308,9 @@ pub async fn generate_with_input(
         .saturating_sub(config.summary.max_tests);
     generated.features.truncate(config.summary.max_features);
     generated.tests.truncate(config.summary.max_tests);
-    summary.executive_summary =
-        validated_model_narrative(&generated.executive_summary, &lane_statuses).unwrap_or_else(
-            || "Tiny Sweeper completed its review; deterministic results follow.".into(),
-        );
+    let narrative = validated_model_narrative(&generated.executive_summary, &lane_statuses)
+        .unwrap_or_else(|| "Tiny Sweeper completed its review; deterministic results follow.".into());
+    summary.executive_summary = purpose_opening(pull_request, &narrative);
     // Empty, not an apology: the hub omits an empty "What changed" section,
     // and failure prose there was printed on most pull requests.
     summary.changes =
@@ -365,6 +370,18 @@ pub fn deterministic(
     lanes: &[LaneProposal],
     prior: Option<&ReviewSummary>,
 ) -> ReviewSummary {
+    let full_pr_paths: Vec<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
+    deterministic_with_paths(config, pull_request, diffs, &full_pr_paths, lanes, prior)
+}
+
+fn deterministic_with_paths(
+    config: &Config,
+    pull_request: &PullRequest,
+    diffs: &[FileDiff],
+    full_pr_paths: &[String],
+    lanes: &[LaneProposal],
+    prior: Option<&ReviewSummary>,
+) -> ReviewSummary {
     let mut summary = prior.cloned().unwrap_or_else(|| ReviewSummary {
         executive_summary: fallback_executive(lanes),
         ..ReviewSummary::default()
@@ -382,10 +399,26 @@ pub fn deterministic(
         let drain = summary.history.len() - config.summary.history_entries;
         summary.history.drain(..drain);
     }
-    let paths: BTreeSet<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
+    let paths: BTreeSet<String> = full_pr_paths.iter().cloned().collect();
     let statuses = lane_statuses(lanes, &paths);
     sanitize_prior_narrative(&mut summary, lanes, &statuses);
+    summary.executive_summary = purpose_opening(pull_request, &summary.executive_summary);
     summary
+}
+
+fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
+    let title = validated_narrative(&pull_request.title).unwrap_or_default();
+    let narrative = narrative.trim();
+    if title.is_empty() {
+        return narrative.to_string();
+    }
+    if narrative
+        .get(..title.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&title))
+    {
+        return narrative.to_string();
+    }
+    format!("{title}. {narrative}")
 }
 
 fn classify(diffs: &[FileDiff]) -> ChangeSurface {

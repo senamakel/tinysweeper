@@ -1013,7 +1013,9 @@ mod tests {
             .collect(),
         );
         let mut ledger = Ledger::default();
-        let unavailable = ledger.seed(&unavailable, &[diff.clone()], &policy()).await;
+        let unavailable = ledger
+            .seed(&unavailable, std::slice::from_ref(&diff), &policy())
+            .await;
         assert!(
             unavailable
                 .rendered

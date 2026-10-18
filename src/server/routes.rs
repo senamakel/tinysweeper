@@ -4223,6 +4223,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_while_opening_status_does_not_spend_a_paid_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let request = queued_test_review(10);
+        assert_eq!(
+            store.admit_batch(vec![request.clone()]).await.unwrap(),
+            Admission::Admitted
+        );
+        let now_ms = request.accepted_at_ms + 1;
+        let owned = store
+            .claim_next("shutdown-owner", now_ms)
+            .await
+            .unwrap()
+            .expect("accepted review is claimable");
+        let starts = Arc::new(AtomicUsize::new(0));
+        let reviews = Arc::new(AtomicUsize::new(0));
+        let observed_starts = starts.clone();
+        let observed_reviews = reviews.clone();
+        let result = review_with_paid_budget_and_status(
+            &store,
+            Some(&owned),
+            now_ms,
+            || async move {
+                observed_starts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || async { Ok(false) },
+            || async move {
+                observed_reviews.fetch_add(1, Ordering::SeqCst);
+                Ok(InnerReview::Complete(None))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, InnerReview::Shutdown));
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert_eq!(reviews.load(Ordering::SeqCst), 0);
+
+        let disposition = shutdown_disposition(&result, now_ms)
+            .expect("shutdown leaves the accepted job recoverable");
+        assert!(matches!(
+            record_owned_disposition(&store, &owned, disposition, now_ms).await,
+            Some(Ok(true))
+        ));
+        let replacement = store
+            .claim_next("replacement-owner", now_ms + 5_000)
+            .await
+            .unwrap()
+            .expect("shutdown-deferred work remains queued");
+        assert!(matches!(
+            with_paid_review_attempt(&store, &replacement, now_ms + 5_000, || async {})
+                .await
+                .unwrap(),
+            PaidWork::Started(())
+        ));
+    }
+
+    #[tokio::test]
     async fn an_exhausted_stale_generation_cannot_conclude_the_replacement_check() {
         use crate::forge::{MockForge, RepoId, Write};
         use crate::ports::forge::ForgeWrite;

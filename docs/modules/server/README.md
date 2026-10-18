@@ -64,10 +64,9 @@ accepted job is deferred and remains available to the next owner. Terminal
 outcomes remain deduped for seven days. GitHub publication
 still uses the app's live-head and idempotency checks because a process can
 crash between a GitHub write and recording its outcome. A job has five durable
-paid-work starts across restarts; recovery after the fifth terminalizes it
-before another index, review-read credential, or model call. The exhausted
-owner first opens or resumes the status check so it can conclude that check
-as **Not reviewed** before recording the terminal tombstone.
+paid-work starts across restarts; recovery after the fifth opens or resumes
+the status check, then concludes it as **Not reviewed** before recording the
+terminal tombstone. No further index or model work runs for an exhausted job.
 
 When a pull-request event supplies its head SHA, the worker claims that SHA
 before minting a read token or fetching live PR state. A comment request has no

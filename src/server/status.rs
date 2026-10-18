@@ -246,6 +246,7 @@ mod tests {
             check_name: format!("tinysweeper/{id}"),
             conclusion: CheckConclusion::Neutral,
             summary: String::new(),
+            completed: !reviewed.is_empty(),
             findings: vec![],
             noted: vec![],
             resolved: vec![],

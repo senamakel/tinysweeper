@@ -86,6 +86,7 @@ fn proposal(findings: Vec<Finding>) -> Proposal {
             check_name: "tinysweeper/critique".into(),
             conclusion: CheckConclusion::Success,
             summary: "reviewed".into(),
+            completed: true,
             findings,
             noted: Vec::new(),
             resolved: vec![],

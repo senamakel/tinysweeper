@@ -921,6 +921,7 @@ fn short(sha: &str) -> &str {
 }
 
 /// Describe whether applying a proposal actually published its review.
+#[cfg(any(feature = "github", test))]
 fn apply_confirmation(
     disposition: tinysweeper::app::apply::ApplyDisposition,
     check_runs: usize,

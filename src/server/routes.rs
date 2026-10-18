@@ -2097,7 +2097,10 @@ struct ReviewRun<'a> {
 
 impl ReviewRun<'_> {
     /// Run the remainder of one review after its live pull request passes the gate.
-    async fn run(self, pull_request: PullRequest) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
+    async fn run(
+        self,
+        pull_request: PullRequest,
+    ) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
         let Self {
             state,
             repo,
@@ -2109,233 +2112,236 @@ impl ReviewRun<'_> {
             read_token,
             forge,
         } = self;
-    // Comment and review-comment deliveries do not carry the draft flag, so
-    // routing alone cannot prevent a manual-looking request from waking the
-    // workflow. Read the live state before claiming a lease, indexing, calling
-    // a model, or minting a write token; drafts are recorded through delivery
-    // claims and start their first workflow only once GitHub says they are
-    // ready for review.
-    if pull_request.draft {
-        tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
-        return Ok(None);
-    }
-
-    // Indexing is kicked off here and deliberately not awaited. A cold full
-    // index takes minutes; a review is expected in seconds. The review runs
-    // against whatever the index holds right now, and `crate::retrieve` says so
-    // in the check-run summary when that is nothing. See `server::indexing`.
-    //
-    if let Some(backend) = &state.index {
-        tokio::spawn(index_in_background(
-            backend.clone(),
-            Arc::new(state.config.config.clone()),
-            state.index_permits.clone(),
-            repo_id.clone(),
-            pull_request.head_sha.clone(),
-            read_token.to_owned(),
-        ));
-    }
-
-    // Nothing lease-held starts on a spent budget. Before this point the run
-    // has only read metadata and holds nothing another worker could want.
-    run.check(repo, number)?;
-
-    // A manual review deliberately takes a lease of its own: the operator asked
-    // for this run *because* the ordinary one already happened, so sharing the
-    // webhook path's key would make the button a silent no-op.
-    let lease = match run.mode {
-        Mode::Incremental => format!("{repo}#{number}@{}", pull_request.head_sha),
-        Mode::Full => format!("{repo}#{number}@{}!full", pull_request.head_sha),
-    };
-    if !state.store.claim_lease(&lease, "server").await? {
-        tracing::debug!(%lease, "another worker holds this review");
-        return Ok(None);
-    }
-
-    // The lease is held and the pull request is real, so this run is the one
-    // that will review this commit — which makes it the run that owns the
-    // status check. Opening it here rather than on the delivery path is what
-    // keeps a blocked contributor, a draft, or a duplicate delivery from
-    // announcing a review that is not going to happen.
-    //
-    // Still early: everything above is metadata reads, and every model call is
-    // below. A contributor sees the check appear seconds after pushing, not
-    // minutes.
-    //
-    // Deliberately *not* under `run.deadline`, and neither is anything else
-    // between here and `run_lanes`. The deadline is a cancellation, and
-    // cancelling a check-run POST after GitHub accepted it orphans the check
-    // this function exists to conclude. The forge calls here are bounded on
-    // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
-    // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
-    let outcome = {
-        let go_on = open_status(
-            state,
-            &run.slot,
-            &repo_id,
-            &pull_request.head_sha,
-            installation,
-        )
-        .await;
-        if !go_on {
-            // Declined, not failed: the check is already concluded as
-            // failed, and an `Err` here would have `handle_review` post a
-            // second one. The lease goes back like any other outcome; the
-            // next push, or the manual review the check points at, reviews
-            // this commit properly.
-            tracing::info!(%repo, number, "shutting down; not starting this review");
-            if let Err(err) = state.store.release_lease(&lease).await {
-                tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-            }
+        // Comment and review-comment deliveries do not carry the draft flag, so
+        // routing alone cannot prevent a manual-looking request from waking the
+        // workflow. Read the live state before claiming a lease, indexing, calling
+        // a model, or minting a write token; drafts are recorded through delivery
+        // claims and start their first workflow only once GitHub says they are
+        // ready for review.
+        if pull_request.draft {
+            tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
             return Ok(None);
         }
 
-        // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
-        // reaches the release below. Without it the `?` on the outcome is not
-        // the only way out — an unwind skips everything — and the lease
-        // survives the worker that took it.
-        // The reviewed repository's own policy, read through the forge
-        // because there is no checkout here. Without this every repository is
-        // reviewed under the *deployment's* `.tinysweeper.toml`, which is
-        // tinysweeper's own. Read at the base branch's tip rather than the
-        // head: a config is acted on deterministically, so reading it from
-        // the branch under review would let a pull request grade its own
-        // exam. See `crate::config::remote`.
-        let overlay = crate::config::remote::overlay(
-            forge,
-            &repo_id,
-            &pull_request.base_sha,
-            &state.config.config,
-        )
-        .await;
-        if let Some(source) = &overlay.source {
-            tracing::info!(%repo, source, "reviewing under the repository's own configuration");
+        // Indexing is kicked off here and deliberately not awaited. A cold full
+        // index takes minutes; a review is expected in seconds. The review runs
+        // against whatever the index holds right now, and `crate::retrieve` says so
+        // in the check-run summary when that is nothing. See `server::indexing`.
+        //
+        if let Some(backend) = &state.index {
+            tokio::spawn(index_in_background(
+                backend.clone(),
+                Arc::new(state.config.config.clone()),
+                state.index_permits.clone(),
+                repo_id.clone(),
+                pull_request.head_sha.clone(),
+                read_token.to_owned(),
+            ));
         }
 
-        // The lease is owned and repository policy is known. Publish the hub
-        // now, before any model call, so it stays an early timeline reference.
-        if !review_is_kill_switched(&overlay.config, &pull_request) {
-            open_review_hub(
+        // Nothing lease-held starts on a spent budget. Before this point the run
+        // has only read metadata and holds nothing another worker could want.
+        run.check(repo, number)?;
+
+        // A manual review deliberately takes a lease of its own: the operator asked
+        // for this run *because* the ordinary one already happened, so sharing the
+        // webhook path's key would make the button a silent no-op.
+        let lease = match run.mode {
+            Mode::Incremental => format!("{repo}#{number}@{}", pull_request.head_sha),
+            Mode::Full => format!("{repo}#{number}@{}!full", pull_request.head_sha),
+        };
+        if !state.store.claim_lease(&lease, "server").await? {
+            tracing::debug!(%lease, "another worker holds this review");
+            return Ok(None);
+        }
+
+        // The lease is held and the pull request is real, so this run is the one
+        // that will review this commit — which makes it the run that owns the
+        // status check. Opening it here rather than on the delivery path is what
+        // keeps a blocked contributor, a draft, or a duplicate delivery from
+        // announcing a review that is not going to happen.
+        //
+        // Still early: everything above is metadata reads, and every model call is
+        // below. A contributor sees the check appear seconds after pushing, not
+        // minutes.
+        //
+        // Deliberately *not* under `run.deadline`, and neither is anything else
+        // between here and `run_lanes`. The deadline is a cancellation, and
+        // cancelling a check-run POST after GitHub accepted it orphans the check
+        // this function exists to conclude. The forge calls here are bounded on
+        // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
+        // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
+        let outcome = {
+            let go_on = open_status(
                 state,
                 &run.slot,
-                forge,
-                &overlay.config,
                 &repo_id,
-                number,
                 &pull_request.head_sha,
                 installation,
             )
             .await;
-        }
-
-        // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
-        // reaches the release below. Without it the `?` on the outcome is not
-        // the only way out — an unwind skips everything — and the lease
-        // survives the worker that took it. The boundary check first: the
-        // metadata phase above was bounded per call, not by the deadline, so
-        // this is where a budget it exhausted is noticed.
-        let lanes = match run.check(repo, number) {
-            Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
-                state,
-                &overlay.config,
-                &repo_id,
-                number,
-                forge,
-                &read_token,
-                run,
-            ))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
-            Err(spent) => Err(spent),
-        };
-
-        // The publish runs under its own, separate budget rather than the
-        // remainder of `run.deadline`: a review that used all of its time in
-        // the lanes still gets a full window to publish, because cancelling
-        // `apply` between two of its non-idempotent writes leaves a
-        // permanently partial review, and that must only ever happen to a
-        // publish that is stuck. See `PUBLISH_DEADLINE`. The write token is
-        // minted only now, after every model call has returned — the
-        // boundary in `AGENTS.md`.
-        let outcome = match lanes {
-            Ok((config, proposal)) => {
-                // `AssertUnwindSafe` + `catch_unwind` here too, same reason as
-                // around `run_lanes`: without it a panic inside `apply` skips
-                // `release_lease` below and escapes
-                // `handle_review` entirely, deregistering the `InFlight` slot
-                // on the way out (`Drop` always runs) without ever concluding
-                // its check — a lease held until `LEASE_TTL` and a check stuck
-                // "in progress" forever, which is exactly what this whole
-                // umbrella-check mechanism exists to prevent.
-                let publish = std::panic::AssertUnwindSafe(async {
-                    let write_token = state.auth.installation_token(installation).await?;
-                    // The review reader has already been held across all the
-                    // model calls. Rebuild the publisher's reader with the
-                    // credential acquired now so live-head validation and
-                    // later dedupe reads have the same lifetime as writes.
-                    let read = crate::forge::github::GitHubRead::new(&write_token)?;
-                    let write = crate::forge::github::GitHubWrite::new(&write_token)?;
-                    crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
-                })
-                .catch_unwind();
-                tokio::time::timeout(PUBLISH_DEADLINE, publish)
-                    .await
-                    .map_err(|_elapsed| {
-                        Error::timeout(
-                            format!("publishing the review of {repo}#{number}"),
-                            PUBLISH_DEADLINE,
-                        )
-                    })
-                    .and_then(|published| {
-                        published
-                            .unwrap_or_else(|_| Err(Error::lane("review", "publishing panicked")))
-                    })
-                    .map(|()| {
-                        let changes_requested =
-                            crate::app::apply::requests_changes(&config, &proposal);
-                        (proposal, changes_requested)
-                    })
+            if !go_on {
+                // Declined, not failed: the check is already concluded as
+                // failed, and an `Err` here would have `handle_review` post a
+                // second one. The lease goes back like any other outcome; the
+                // next push, or the manual review the check points at, reviews
+                // this commit properly.
+                tracing::info!(%repo, number, "shutting down; not starting this review");
+                if let Err(err) = state.store.release_lease(&lease).await {
+                    tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
+                }
+                return Ok(None);
             }
-            Err(err) => Err(err),
+
+            // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
+            // reaches the release below. Without it the `?` on the outcome is not
+            // the only way out — an unwind skips everything — and the lease
+            // survives the worker that took it.
+            // The reviewed repository's own policy, read through the forge
+            // because there is no checkout here. Without this every repository is
+            // reviewed under the *deployment's* `.tinysweeper.toml`, which is
+            // tinysweeper's own. Read at the base branch's tip rather than the
+            // head: a config is acted on deterministically, so reading it from
+            // the branch under review would let a pull request grade its own
+            // exam. See `crate::config::remote`.
+            let overlay = crate::config::remote::overlay(
+                forge,
+                &repo_id,
+                &pull_request.base_sha,
+                &state.config.config,
+            )
+            .await;
+            if let Some(source) = &overlay.source {
+                tracing::info!(%repo, source, "reviewing under the repository's own configuration");
+            }
+
+            // The lease is owned and repository policy is known. Publish the hub
+            // now, before any model call, so it stays an early timeline reference.
+            if !review_is_kill_switched(&overlay.config, &pull_request) {
+                open_review_hub(
+                    state,
+                    &run.slot,
+                    forge,
+                    &overlay.config,
+                    &repo_id,
+                    number,
+                    &pull_request.head_sha,
+                    installation,
+                )
+                .await;
+            }
+
+            // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
+            // reaches the release below. Without it the `?` on the outcome is not
+            // the only way out — an unwind skips everything — and the lease
+            // survives the worker that took it. The boundary check first: the
+            // metadata phase above was bounded per call, not by the deadline, so
+            // this is where a budget it exhausted is noticed.
+            let lanes = match run.check(repo, number) {
+                Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
+                    state,
+                    &overlay.config,
+                    &repo_id,
+                    number,
+                    forge,
+                    &read_token,
+                    run,
+                ))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
+                Err(spent) => Err(spent),
+            };
+
+            // The publish runs under its own, separate budget rather than the
+            // remainder of `run.deadline`: a review that used all of its time in
+            // the lanes still gets a full window to publish, because cancelling
+            // `apply` between two of its non-idempotent writes leaves a
+            // permanently partial review, and that must only ever happen to a
+            // publish that is stuck. See `PUBLISH_DEADLINE`. The write token is
+            // minted only now, after every model call has returned — the
+            // boundary in `AGENTS.md`.
+            let outcome = match lanes {
+                Ok((config, proposal)) => {
+                    // `AssertUnwindSafe` + `catch_unwind` here too, same reason as
+                    // around `run_lanes`: without it a panic inside `apply` skips
+                    // `release_lease` below and escapes
+                    // `handle_review` entirely, deregistering the `InFlight` slot
+                    // on the way out (`Drop` always runs) without ever concluding
+                    // its check — a lease held until `LEASE_TTL` and a check stuck
+                    // "in progress" forever, which is exactly what this whole
+                    // umbrella-check mechanism exists to prevent.
+                    let publish = std::panic::AssertUnwindSafe(async {
+                        let write_token = state.auth.installation_token(installation).await?;
+                        // The review reader has already been held across all the
+                        // model calls. Rebuild the publisher's reader with the
+                        // credential acquired now so live-head validation and
+                        // later dedupe reads have the same lifetime as writes.
+                        let read = crate::forge::github::GitHubRead::new(&write_token)?;
+                        let write = crate::forge::github::GitHubWrite::new(&write_token)?;
+                        crate::app::apply(&read, &write, &config, &proposal, Some(&state.store))
+                            .await
+                    })
+                    .catch_unwind();
+                    tokio::time::timeout(PUBLISH_DEADLINE, publish)
+                        .await
+                        .map_err(|_elapsed| {
+                            Error::timeout(
+                                format!("publishing the review of {repo}#{number}"),
+                                PUBLISH_DEADLINE,
+                            )
+                        })
+                        .and_then(|published| {
+                            published.unwrap_or_else(|_| {
+                                Err(Error::lane("review", "publishing panicked"))
+                            })
+                        })
+                        .map(|()| {
+                            let changes_requested =
+                                crate::app::apply::requests_changes(&config, &proposal);
+                            (proposal, changes_requested)
+                        })
+                }
+                Err(err) => Err(err),
+            };
+
+            // Released regardless of how the review went. The TTL in the store is
+            // the backstop for the cases this cannot cover — a kill, or a lost
+            // machine.
+            if let Err(err) = state.store.release_lease(&lease).await {
+                tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
+            }
+
+            outcome
         };
 
-        // Released regardless of how the review went. The TTL in the store is
-        // the backstop for the cases this cannot cover — a kill, or a lost
-        // machine.
-        if let Err(err) = state.store.release_lease(&lease).await {
-            tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-        }
+        let (proposal, changes_requested) = outcome?;
+        let findings = proposal.findings().count();
+        state.store.record_review(author, findings as u64).await?;
 
-        outcome
-    };
+        // The review has just published its check runs and, when everything passed,
+        // its approving review — which is to say it has just changed the two things
+        // the auto-merge policy reads most often. Asking now closes the loop in
+        // process rather than waiting for GitHub to deliver our own writes back to
+        // us, which it only does for the events the App is subscribed to.
+        //
+        // Spawned rather than awaited: the review is finished, and a merge that
+        // fails must not turn a successful review into a logged error.
+        //
+        // Not a second write path. It goes through the same `merge_if_qualified` a
+        // delivery does, so the policy — and the live re-validation inside it —
+        // decides here exactly as it does there. The overlaid config is not used:
+        // `[automerge]` is not a key a reviewed repository may set about itself.
+        tokio::spawn(handle_automerge(
+            state.clone(),
+            repo.to_string(),
+            number,
+            installation,
+        ));
 
-    let (proposal, changes_requested) = outcome?;
-    let findings = proposal.findings().count();
-    state.store.record_review(author, findings as u64).await?;
-
-    // The review has just published its check runs and, when everything passed,
-    // its approving review — which is to say it has just changed the two things
-    // the auto-merge policy reads most often. Asking now closes the loop in
-    // process rather than waiting for GitHub to deliver our own writes back to
-    // us, which it only does for the events the App is subscribed to.
-    //
-    // Spawned rather than awaited: the review is finished, and a merge that
-    // fails must not turn a successful review into a logged error.
-    //
-    // Not a second write path. It goes through the same `merge_if_qualified` a
-    // delivery does, so the policy — and the live re-validation inside it —
-    // decides here exactly as it does there. The overlaid config is not used:
-    // `[automerge]` is not a key a reviewed repository may set about itself.
-    tokio::spawn(handle_automerge(
-        state.clone(),
-        repo.to_string(),
-        number,
-        installation,
-    ));
-
-    let coverage = status::aggregate_coverage(&proposal);
-    Ok(Some((findings, changes_requested, coverage)))
+        let coverage = status::aggregate_coverage(&proposal);
+        Ok(Some((findings, changes_requested, coverage)))
+    }
 }
 
 /// Read the live pull request and allow work only while it is still reviewable.

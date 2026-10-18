@@ -210,6 +210,7 @@ pub(crate) async fn review_accounted(
     let estimate = Usage {
         input_tokens: input_bound.saturating_mul(calls),
         output_tokens: u64::from(request.max_tokens).saturating_mul(calls),
+        reasoning_tokens: 0,
         cached_tokens: 0,
         embed_tokens: 0,
         cost_usd: crate::harness::pricing::completion_cost(
@@ -267,6 +268,7 @@ pub(crate) async fn review_accounted(
     let usage = outcome.usage.map(|usage| Usage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
         cached_tokens: usage.cached_input_tokens,
         embed_tokens: 0,
         cost_usd: usage

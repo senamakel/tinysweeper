@@ -189,6 +189,7 @@ impl Proposal {
         Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
+            reasoning_tokens: 0,
             cached_tokens: self.cached_tokens,
             embed_tokens: self.embed_tokens,
             cost_usd: self.cost_usd,

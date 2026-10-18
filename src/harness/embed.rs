@@ -401,6 +401,7 @@ impl GatewayModel {
                     input_tokens: totals.input_tokens,
                     output_tokens: totals.output_tokens,
                     reasoning_tokens,
+                    reasoning_tokens,
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,
@@ -460,6 +461,7 @@ impl GatewayModel {
             usage: Usage {
                 input_tokens: totals.input_tokens,
                 output_tokens: totals.output_tokens,
+                reasoning_tokens: totals.reasoning_tokens,
                 cached_tokens: totals.cached_tokens,
                 embed_tokens: 0,
                 cost_usd: cost,

@@ -1860,6 +1860,7 @@ struct Run {
     expected_head: Option<String>,
     owned: Option<OwnedReview>,
     owner_lost: Option<watch::Receiver<bool>>,
+    owner_until: Option<watch::Receiver<tokio::time::Instant>>,
     lease_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -1872,6 +1873,7 @@ struct OwnedModel {
     jobs: Arc<dyn ReviewJobStore>,
     owned: OwnedReview,
     owner_lost: Option<watch::Receiver<bool>>,
+    owner_until: Option<watch::Receiver<tokio::time::Instant>>,
 }
 
 impl OwnedModel {
@@ -1881,6 +1883,10 @@ impl OwnedModel {
             .as_ref()
             .is_some_and(|lost| *lost.borrow())
             || !self.jobs.owns(&self.owned, unix_time_ms()).await?
+            || self
+                .owner_until
+                .as_ref()
+                .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
         {
             return Err(Error::ReviewOwnershipLost);
         }
@@ -1893,6 +1899,7 @@ impl OwnedModel {
             jobs: self.jobs.clone(),
             owned: self.owned.clone(),
             owner_lost: self.owner_lost.clone(),
+            owner_until: self.owner_until.clone(),
         })
     }
 }
@@ -1942,6 +1949,13 @@ impl Run {
             .owner_lost
             .as_ref()
             .is_some_and(|lost| *lost.borrow())
+        {
+            return Err(Error::ReviewOwnershipLost);
+        }
+        if self
+            .owner_until
+            .as_ref()
+            .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
         {
             return Err(Error::ReviewOwnershipLost);
         }

@@ -50,6 +50,9 @@ order:
    needs a human.
 4. **Comment** — everything else.
 
+Lane check titles use deterministic finding counts. They never quote or cut
+off model-authored summary prose; that explanation belongs in the check body.
+
 **Complete** means `Proposal::unreviewed` is empty — no file changed that the
 forge declined to show us. This is the job the aggregate `tinysweeper/gate`
 check run used to do by degrading itself to `Neutral`. That check is gone, and

@@ -667,10 +667,37 @@ mod tests {
     #[test]
     fn progress_does_not_recursively_retain_a_failure_wrapper() {
         let completed = format!("{MARKER}\n\n**Reviewed head:** `abc`");
-        let failure = failed("def", "network error", Some(&completed));
+        let first_progress = in_progress("def", Some(&completed));
+        let failure = failed("def", "network error", Some(&first_progress));
+        let second_progress = in_progress("ghi", Some(&failure));
+        let second_failure = failed("ghi", "network error", Some(&second_progress));
 
-        assert!(failure.contains("Last completed report"));
-        assert!(!in_progress("ghi", Some(&failure)).contains("Previous completed report"));
+        assert_eq!(second_failure.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(second_failure.contains("Last completed report"));
+    }
+
+    #[test]
+    fn failed_copy_is_safe_and_names_the_preserved_head() {
+        let completed = format!("{MARKER}\n\n**Reviewed head:** `def5678`");
+        let failure = failed("abc1234", "#49 Error::Timeout: raw details", Some(&completed));
+
+        assert!(failure.contains("`def5678`"));
+        assert!(!failure.contains("\\#"));
+        assert!(!failure.contains("Error::"));
+    }
+
+    #[test]
+    fn failure_wrappers_remain_bounded_across_ten_cycles() {
+        let completed = format!("{MARKER}\n\n**Reviewed head:** `abc`\n{}", "report ".repeat(1_000));
+        let mut body = completed.clone();
+
+        for cycle in 0..10 {
+            body = in_progress(&format!("progress-{cycle}"), Some(&body));
+            body = failed(&format!("failed-{cycle}"), "timeout", Some(&body));
+        }
+
+        assert_eq!(body.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(body.len() < completed.len() + 2_000);
     }
 
     #[test]

@@ -465,7 +465,7 @@ impl ReviewSchedulerState {
     /// SHA beyond the lifetime of its delivery tombstones.
     pub fn finish_deadline(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
         let Some(index) = self.unfinished.iter().position(|record| {
-            owns(record, owned) && record.owner_until_ms > now_ms
+            owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
         }) else {
             return false;
         };
@@ -579,7 +579,9 @@ impl ReviewSchedulerState {
         let Some(index) = self
             .unfinished
             .iter()
-            .position(|record| owns(record, owned) && record.owner_until_ms > now_ms)
+            .position(|record| {
+                owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
+            })
         else {
             return false;
         };

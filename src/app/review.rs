@@ -3028,7 +3028,7 @@ mod tests {
             7,
         )
         .await
-        .expect("reviews")
+        .expect("reviews");
 
         let titles: Vec<&str> = proposal.findings().map(|f| f.title.as_str()).collect();
         assert_eq!(titles, vec!["Rename this binding"]);
@@ -3099,7 +3099,7 @@ mod tests {
             Some(&store),
         )
         .await
-        .expect("reviews");
+        .expect("reviews")
     }
 
     #[cfg(feature = "serve")]

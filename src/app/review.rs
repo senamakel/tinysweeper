@@ -903,6 +903,9 @@ pub async fn review_with_tree(
                         additions: context.files.iter().map(|file| file.additions).sum(),
                         deletions: context.files.iter().map(|file| file.deletions).sum(),
                     },
+                previous_reviewed_head: stored
+                    .as_ref()
+                    .map(|state| state.head_sha.as_str()),
                     lanes: &lanes,
                     prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
                     prior_transcript: stored
@@ -2229,6 +2232,7 @@ mod tests {
                     files: 1,
                     ..crate::summary::SummaryDiffstat::default()
                 },
+                previous_reviewed_head: None,
                 lanes: &[proposal_lane],
                 prior: None,
                 prior_transcript: &[],

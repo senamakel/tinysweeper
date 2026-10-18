@@ -67,6 +67,8 @@ pub struct SummaryGenerationInput<'a> {
     pub full_pr_paths: &'a [String],
     /// Complete pull-request file and line counts from the forge.
     pub full_pr_diffstat: SummaryDiffstat,
+    /// Head SHA recorded by the previous incremental review, when available.
+    pub previous_reviewed_head: Option<&'a str>,
     /// Deterministic lane proposals.
     pub lanes: &'a [LaneProposal],
     /// Previous durable summary, if any.
@@ -96,6 +98,7 @@ pub async fn generate(
             diffs,
             full_pr_paths: &full_pr_paths,
             full_pr_diffstat: SummaryDiffstat::from_diffs(diffs),
+            previous_reviewed_head: None,
             lanes,
             prior,
             prior_transcript,
@@ -116,6 +119,7 @@ pub async fn generate_with_input(
         diffs,
         full_pr_paths,
         full_pr_diffstat,
+        previous_reviewed_head,
         lanes,
         prior,
         prior_transcript,
@@ -144,7 +148,6 @@ pub async fn generate_with_input(
         })
         .collect();
     let lane_statuses = lane_statuses(lanes, &full_pr_paths);
-    let previous_head = prior_transcript.last().map(|turn| turn.head_sha.as_str());
     let evidence = json!({
         "whole_pull_request": {
             "title": pull_request.title,
@@ -155,9 +158,9 @@ pub async fn generate_with_input(
         },
         "latest_push_delta": {
             "available": false,
-            "from_reviewed_head": previous_head,
+            "from_reviewed_head": previous_reviewed_head,
             "to_head": pull_request.head_sha,
-            "reason": "The review input contains the full pull-request diff, not a diff between the previously reviewed head and this head.",
+            "reason": "The review state has the prior reviewed head and rendered evidence, but no trusted base-to-head diff comparison; cached prompt differences are not a proven push delta.",
         },
         "changed_paths": paths,
         "changed_symbols": symbols,
@@ -1182,6 +1185,7 @@ mod tests {
                 diffs: &diffs,
                 full_pr_paths: &full_pr_paths,
                 full_pr_diffstat: full_stat,
+                previous_reviewed_head: Some("old-head"),
                 lanes: &lanes,
                 prior: None,
                 prior_transcript: &prior,
@@ -1216,6 +1220,10 @@ mod tests {
             "old-head"
         );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
+        assert!(request["latest_push_delta"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no trusted base-to-head diff comparison"));
         assert_eq!(request["lanes"][0]["status"]["status"], "partial");
         assert_eq!(
             request["lanes"][0]["status"]["file_coverage"]["reviewed"],

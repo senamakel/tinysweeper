@@ -30,7 +30,7 @@ use crate::lanes::{
 };
 use crate::ports::forge::ForgeRead;
 use crate::ports::knowledge::KnowledgeStore;
-use crate::ports::model::{Model, Spend, Usage};
+use crate::ports::model::{Model, ModelCallObserver, Spend, Usage};
 use crate::ports::review_state::ReviewStateStore;
 use crate::ports::tree::TreeReader;
 use crate::retrieve::Retriever;

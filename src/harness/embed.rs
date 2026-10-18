@@ -1037,6 +1037,7 @@ mod tests {
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
         let calls = Arc::new(RecordedModelCalls::default());
+        let policy = crate::config::types::LookupPolicy::default();
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_log = log.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -1051,7 +1052,7 @@ mod tests {
                 .review(
                     request,
                     &tree,
-                    &crate::config::types::LookupPolicy::default(),
+                    &policy,
                 )
                 .with_subscriber(dispatch),
         )

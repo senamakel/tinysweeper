@@ -1929,12 +1929,14 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested, coverage, incomplete)) => Conclusion::Reviewed {
-                        findings,
-                        changes_requested,
-                        coverage,
-                        incomplete,
-                    },
+                    Some((findings, changes_requested, coverage, incomplete)) => {
+                        Conclusion::Reviewed {
+                            findings,
+                            changes_requested,
+                            coverage,
+                            incomplete,
+                        }
+                    }
                     None => Conclusion::NotReviewed,
                 };
                 // The review is over; concluding the check is one GitHub
@@ -2303,11 +2305,11 @@ async fn review_inner(
         installation,
     ));
 
-    let coverage = proposal
+    let coverage = proposal.lanes.iter().find_map(|lane| lane.coverage);
+    let incomplete = proposal
         .lanes
         .iter()
-        .find_map(|lane| lane.coverage);
-    let incomplete = proposal.lanes.iter().any(|lane| !lane.unanswered.is_empty());
+        .any(|lane| !lane.unanswered.is_empty());
     Ok(Some((findings, changes_requested, coverage, incomplete)))
 }
 

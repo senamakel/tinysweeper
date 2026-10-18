@@ -113,7 +113,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), lane.coverage),
+                    title: title_for(lane.findings.len(), &lane.summary, lane.coverage),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -647,7 +647,7 @@ fn code_span(text: &str) -> String {
     }
 }
 
-fn title_for(findings: usize, coverage: Option<(usize, usize)>) -> String {
+fn title_for(findings: usize, summary: &str, coverage: Option<(usize, usize)>) -> String {
     if let Some((reviewed, total)) = coverage {
         return format!(
             "Reviewed {reviewed} of {total} files — {} not reviewed",
@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn a_partial_lane_title_reports_file_coverage() {
         assert_eq!(
-            title_for(0, Some((8, 10))),
+            title_for(0, "Reviewed.", Some((8, 10))),
             "Reviewed 8 of 10 files — 2 not reviewed"
         );
     }

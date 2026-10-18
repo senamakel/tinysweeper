@@ -295,7 +295,11 @@ mod tests {
                 .title
                 .contains("nothing to report")
         );
-        assert!(completed("abc", 1, false, None, false).title.contains("1 finding"));
+        assert!(
+            completed("abc", 1, false, None, false)
+                .title
+                .contains("1 finding")
+        );
         assert!(
             completed("abc", 4, false, None, false)
                 .title
@@ -340,8 +344,7 @@ mod tests {
             "Review incomplete — a lane did not respond"
         );
         assert_eq!(
-            checks[CHECK_NAME].head_sha,
-            "def",
+            checks[CHECK_NAME].head_sha, "def",
             "the latest run replaces the earlier one"
         );
     }

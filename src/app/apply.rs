@@ -2796,7 +2796,12 @@ mod tests {
                 _ => None,
             })
             .expect("hub comment");
-        assert!(body.contains("Enforce speech privacy."), "{body}");
+        let opening = body
+            .split("# Tiny Sweeper review\n\n")
+            .nth(1)
+            .and_then(|text| text.lines().next())
+            .expect("executive opening");
+        assert!(opening.starts_with("Enforce speech privacy."), "{opening}");
         assert!(!body.to_ascii_lowercase().contains("all five lanes report no findings"));
         assert!(!body.to_ascii_lowercase().contains("all lanes report no findings"));
         assert!(body.contains("No reviewer produced a usable response."));

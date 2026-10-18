@@ -174,7 +174,6 @@ impl ReviewJobStore for Store {
         not_before_ms: i64,
     ) -> Result<bool> {
         let owned = owned.clone();
-        let now_ms = self.server_now_ms().await?;
         self.change_review_scheduler(move |state, now_ms| {
             state.defer(&owned, now_ms, not_before_ms)
         })
@@ -189,7 +188,6 @@ impl ReviewJobStore for Store {
         _completed_at_ms: i64,
     ) -> Result<bool> {
         let owned = owned.clone();
-        let now_ms = self.server_now_ms().await?;
         self.change_review_scheduler(move |state, now_ms| {
             state.finish(&owned, outcome, now_ms, now_ms)
         })

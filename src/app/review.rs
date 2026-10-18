@@ -614,6 +614,11 @@ pub(crate) async fn review_with_tree_observed(
     if let Some(timing) = &timing {
         let head_sha = context.pull_request.head_sha.clone();
         timing.record(|r| r.head_sha = head_sha);
+        timing.record(|record| {
+            record.files_total = context.files.len();
+            record.files_answered = 0;
+            record.files_unanswered = record.files_total;
+        });
     }
     // Scrubbed once, here, rather than at each of its several consumers: the
     // description lane's own prompt and `Retriever::retrieve`'s query both

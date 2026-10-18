@@ -409,7 +409,21 @@ impl GatewayModel {
             // pricing omitted charges against the model that actually answered.
             let is_refusal = error.to_string().to_lowercase().contains("refus")
                 || error.attempts.is_empty();
-            let totals = error.total_usage.unwrap_or_default();
+            let totals = error.total_usage.unwrap_or_else(|| {
+                error.attempts.iter().fold(
+                    openhuman_embed::complete::CompletionUsage::default(),
+                    |mut total, attempt| {
+                        if let Some(usage) = &attempt.usage {
+                            total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+                            total.output_tokens =
+                                total.output_tokens.saturating_add(usage.output_tokens);
+                            total.cached_tokens =
+                                total.cached_tokens.saturating_add(usage.cached_tokens);
+                        }
+                        total
+                    },
+                )
+            });
             let cost_usd = error.attempts.iter().filter_map(|attempt| {
                     let usage = attempt.usage.as_ref()?;
                     let model = attempt.answered_model.as_deref()
@@ -509,7 +523,6 @@ impl GatewayModel {
             ))
             .with_usage(Usage {
                 calls_attempted: attempts,
-                calls_errored: attempts,
                 ..usage
             })
         })?;

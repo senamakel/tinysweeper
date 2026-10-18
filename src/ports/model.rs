@@ -121,7 +121,8 @@ pub struct Usage {
     /// Zero means the model adapter does not expose per-dispatch counts.
     #[serde(default)]
     pub calls_attempted: u64,
-    /// Dispatches that returned a usable response.
+    /// Dispatches that returned a provider response, even if later validation
+    /// rejected its contents.
     #[serde(default)]
     pub calls_succeeded: u64,
     /// Dispatches refused by admission or by the provider.

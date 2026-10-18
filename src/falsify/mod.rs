@@ -197,7 +197,9 @@ impl<'a> Falsifier<'a> {
 /// that produced it.
 fn user_message(findings: &[Finding], rendered_diff: &str, looked_up: &str) -> String {
     let mut out = String::with_capacity(rendered_diff.len() + looked_up.len() + 1024);
-    out.push_str("## The diff\n\n");
+    out.push_str(
+        "## The diff\n\nFor grouped reviews this may include files outside the finding's review group. Use another file only when its code directly disproves the finding; unrelated code is not evidence.\n\n",
+    );
     push_fenced(&mut out, "diff", rendered_diff);
 
     if !looked_up.trim().is_empty() {

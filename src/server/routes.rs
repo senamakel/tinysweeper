@@ -1365,19 +1365,21 @@ struct ManualDispatch {
 
 async fn with_manual_review_admission<T, F, Fut>(permits: Arc<Semaphore>, work: F) -> Result<T>
 where
-    F: FnOnce(tokio::sync::OwnedSemaphorePermit) -> Fut,
+    F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
     let permit = permits
         .try_acquire_owned()
         .map_err(|_| Error::ReviewCapacityFull)?;
-    work(permit).await
+    let result = work().await;
+    drop(permit);
+    result
 }
 
 #[async_trait::async_trait]
 impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
-        with_manual_review_admission(self.state.permits.clone(), |_| async {
+        with_manual_review_admission(self.state.permits.clone(), || async {
             // Manual expansion needs live GitHub reads to resolve the queued PRs.
             // Refuse immediately when every worker slot is busy, before minting a
             // token or making those reads. The permit is held until all bounded
@@ -3106,7 +3108,7 @@ mod tests {
         let permits = Arc::new(Semaphore::new(0));
         let expensive_reads = Arc::new(AtomicUsize::new(0));
         let reads = expensive_reads.clone();
-        let result = with_manual_review_admission(permits, move |_permit| async move {
+        let result = with_manual_review_admission(permits, move || async move {
             reads.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -3122,7 +3124,7 @@ mod tests {
         let available = Arc::new(Semaphore::new(1));
         let started = Arc::new(AtomicUsize::new(0));
         let observed = started.clone();
-        with_manual_review_admission(available, move |_permit| async move {
+        with_manual_review_admission(available, move || async move {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -3131,7 +3133,7 @@ mod tests {
         assert_eq!(started.load(Ordering::SeqCst), 1);
 
         let permits = Arc::new(Semaphore::new(1));
-        let result: Result<()> = with_manual_review_admission(permits.clone(), |_permit| async {
+        let result: Result<()> = with_manual_review_admission(permits.clone(), || async {
             Err(Error::Forge("simulated GitHub read failure".into()))
         })
         .await;
@@ -3154,7 +3156,7 @@ mod tests {
         let first_reads = expensive_reads.clone();
         let first_permits = permits.clone();
         let first = tokio::spawn(async move {
-            with_manual_review_admission(first_permits, |_permit| async move {
+            with_manual_review_admission(first_permits, || async move {
                 first_reads.fetch_add(1, Ordering::SeqCst);
                 let _ = started_tx.send(());
                 finish_rx
@@ -3167,7 +3169,7 @@ mod tests {
         started_rx.await.expect("first expansion began");
 
         let second_reads = expensive_reads.clone();
-        let second = with_manual_review_admission(permits.clone(), move |_permit| async move {
+        let second = with_manual_review_admission(permits.clone(), move || async move {
             second_reads.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -3176,8 +3178,38 @@ mod tests {
         assert_eq!(expensive_reads.load(Ordering::SeqCst), 1);
 
         finish_tx.send(()).expect("first expansion is waiting");
-        first.await.expect("first task joins").expect("first succeeds");
+        first
+            .await
+            .expect("first task joins")
+            .expect("first succeeds");
         assert_eq!(permits.available_permits(), 1);
+
+        let permits = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let pending_permits = permits.clone();
+        let pending = tokio::spawn(async move {
+            with_manual_review_admission(pending_permits, || async move {
+                let _ = started_tx.send(());
+                std::future::pending::<Result<()>>().await
+            })
+            .await
+        });
+        started_rx.await.expect("cancelled expansion began");
+        pending.abort();
+        assert!(
+            pending
+                .await
+                .expect_err("task was cancelled")
+                .is_cancelled()
+        );
+        assert_eq!(
+            permits.available_permits(),
+            1,
+            "cancellation releases admission"
+        );
+        with_manual_review_admission(permits.clone(), || async { Ok(()) })
+            .await
+            .expect("a cancelled expansion does not strand capacity");
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

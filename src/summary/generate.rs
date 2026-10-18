@@ -881,7 +881,14 @@ mod tests {
                 path: "src/lib.rs".into(),
                 ..FileDiff::default()
             }],
-            &[],
+            &[lane(
+                LaneId::Critique,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed",
+                &["model"],
+                &[],
+                None,
+            )],
             None,
             &[],
         )

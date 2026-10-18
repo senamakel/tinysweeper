@@ -868,23 +868,43 @@ async fn run_owned_review(
     )
     .await;
 
-    let now_ms = unix_time_ms();
-    let result = match disposition {
+    let result = record_owned_disposition(store.as_ref(), &owned, disposition, unix_time_ms()).await;
+    match result {
+        Some(Ok(true)) => {}
+        Some(Ok(false)) => {
+            tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome")
+        }
+        Some(Err(err)) => {
+            tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome")
+        }
+        None => {}
+    }
+}
+
+async fn record_owned_disposition(
+    store: &dyn ReviewJobStore,
+    owned: &OwnedReview,
+    disposition: WorkerDisposition,
+    now_ms: i64,
+) -> Option<Result<bool>> {
+    match disposition {
         WorkerDisposition::Terminal(outcome) => store.finish(&owned, outcome, now_ms, now_ms).await,
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(&owned, now_ms, not_before_ms).await
         }
-        WorkerDisposition::OwnershipLost => return,
-    };
-    match result {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::warn!(job_id = %owned.request.id.0, "durable review ownership changed before recording its outcome")
-        }
-        Err(err) => {
-            tracing::error!(%err, job_id = %owned.request.id.0, "could not record durable review outcome")
-        }
+        WorkerDisposition::OwnershipLost => return None,
     }
+    .into()
+}
+
+fn defer_interrupted_review() -> WorkerDisposition {
+    WorkerDisposition::Deferred(unix_time_ms())
+}
+
+fn take_shutdown_status_result(run: &Run) -> Option<InnerReview> {
+    run.shutdown_deferred
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+        .then_some(InnerReview::Shutdown)
 }
 
 enum PaidWork<T> {
@@ -1615,6 +1635,21 @@ where
     result
 }
 
+async fn with_durable_manual_capacity<T, F, Fut>(
+    store: &dyn ReviewJobStore,
+    count: usize,
+    work: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    if !store.has_capacity_for(count).await? {
+        return Err(Error::ReviewCapacityFull);
+    }
+    work().await
+}
+
 async fn enqueue_manual_jobs<'a, F>(
     sender: &mpsc::Sender<()>,
     store: &dyn ReviewJobStore,
@@ -1682,6 +1717,7 @@ where
 impl FullReviews for ManualDispatch {
     async fn enqueue(&self, repo: &RepoId, number: Option<u64>) -> Result<Vec<u64>> {
         with_manual_review_admission(self.state.permits.clone(), || async {
+            with_durable_manual_capacity(self.state.review_jobs.as_ref(), 1, || async {
             // Manual expansion needs live GitHub reads to resolve the queued PRs.
             // Refuse immediately when every worker slot is busy, before minting a
             // token or making those reads. The permit is held until all bounded
@@ -1718,6 +1754,8 @@ impl FullReviews for ManualDispatch {
                 numbers,
                 |number| Box::pin(forge.pull_request(repo, number)),
             )
+            .await
+            })
             .await
         })
         .await
@@ -2553,7 +2591,7 @@ async fn handle_review(
             Ok(InnerReview::Shutdown) => {
                 drop(permit);
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
-                return WorkerDisposition::Deferred(unix_time_ms());
+                return defer_interrupted_review();
             }
             Err(err) => {
                 if matches!(err, Error::ReviewOwnershipLost) {
@@ -2738,11 +2776,8 @@ async fn review_inner(
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
     let reviewed = reviewed?.flatten().flatten();
-    if run
-        .shutdown_deferred
-        .swap(false, std::sync::atomic::Ordering::SeqCst)
-    {
-        return Ok(InnerReview::Shutdown);
+    if let Some(interrupted) = take_shutdown_status_result(run) {
+        return Ok(interrupted);
     }
     if run
         .paid_exhausted

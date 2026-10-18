@@ -24,7 +24,12 @@ surfaces; the hub only explains their combined result.
 The server migrates a bot-authored `tinysweeper:change-map` comment in place.
 Markers copied into contributor comments are ignored. During a new pass the
 comment shows the new head as in progress and retains the previous completed
-report. A failed pass keeps that trustworthy report under a prominent warning.
+report. Stable comment markers delimit the preserved report, so repeated
+in-progress and failure updates unwrap the previous status wrapper instead of
+nesting it. A failed pass uses a short, human-readable cause and keeps the
+completed report under a prominent warning, naming the report's reviewed head.
+Provider error text and pull request references are not copied into that
+failure notice.
 
 Summary conversations are stored as exact evidence/assistant pairs so previous
 messages remain a byte-stable provider-cache prefix. The chain has a fixed

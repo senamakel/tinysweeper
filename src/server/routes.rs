@@ -1636,7 +1636,8 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         Conclusion::Reviewed {
             findings,
             changes_requested,
-        } => status::completed(&open.head_sha, findings, changes_requested),
+            coverage,
+        } => status::completed(&open.head_sha, findings, changes_requested, coverage),
         Conclusion::NotReviewed => status::not_reviewed(&open.head_sha),
         Conclusion::Failed(err) => failure::check_run(&open.head_sha, err),
     };
@@ -1825,6 +1826,8 @@ enum Conclusion<'a> {
         /// Whether the published review requested changes, so the check
         /// cannot show a pass beside that verdict.
         changes_requested: bool,
+        /// File and whole-lane coverage aggregated across the proposal.
+        coverage: status::ReviewCoverage,
     },
     /// The run stopped deliberately, without reviewing anything.
     ///
@@ -1917,9 +1920,10 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 let conclusion = match findings {
-                    Some((findings, changes_requested)) => Conclusion::Reviewed {
+                    Some((findings, changes_requested, coverage)) => Conclusion::Reviewed {
                         findings,
                         changes_requested,
+                        coverage,
                     },
                     None => Conclusion::NotReviewed,
                 };
@@ -2046,7 +2050,7 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-) -> Result<Option<(usize, bool)>> {
+) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");
@@ -2289,7 +2293,8 @@ async fn review_inner(
         installation,
     ));
 
-    Ok(Some((findings, changes_requested)))
+    let coverage = status::aggregate_coverage(&proposal);
+    Ok(Some((findings, changes_requested, coverage)))
 }
 
 /// Read the live pull request and allow work only while it is still reviewable.
@@ -2920,6 +2925,69 @@ mod tests {
                 .contains("the review of o/r#1 did not finish within 900s"),
             "summary was: {}",
             check.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mock_forge_keeps_one_completed_report_through_failed_review_cycles() {
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::ports::forge::ForgeWrite;
+
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").expect("repository id");
+        let completed = format!(
+            "{}\n\n**Reviewed head:** `def5678`\n\n## Findings\n\nNone.",
+            crate::summary::MARKER
+        );
+        let comment_id = forge
+            .create_comment(&repo, 7, &completed)
+            .await
+            .expect("create review hub");
+        let mut prior = completed;
+
+        for cycle in 0..10 {
+            let head = format!("failed-{cycle}");
+            let progress = crate::summary::in_progress(&head, Some(&prior));
+            let failed = crate::summary::failed(
+                &head,
+                "the review of owner/repo#7 did not finish within 900s",
+                Some(&progress),
+            );
+            forge
+                .update_comment(&repo, comment_id, &failed)
+                .await
+                .expect("update review hub");
+            prior = failed;
+        }
+
+        let final_body = forge
+            .writes()
+            .into_iter()
+            .rev()
+            .find_map(|write| match write {
+                Write::CommentUpdate { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("final hub update");
+        assert_eq!(
+            final_body.matches("**Reviewed head:** `def5678`").count(),
+            1,
+            "the MockForge output should preserve the original report once"
+        );
+        assert!(
+            final_body.contains("timed out after 15 min"),
+            "{final_body}"
+        );
+        assert!(
+            final_body.contains("last completed review (`def5678`) is shown below"),
+            "{final_body}"
+        );
+        assert!(!final_body.contains("\\#"), "{final_body}");
+        assert!(!final_body.contains("Error::"), "{final_body}");
+        assert!(
+            final_body.len() < 2_000,
+            "failure wrappers grew: {}",
+            final_body.len()
         );
     }
 

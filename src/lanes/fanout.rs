@@ -144,12 +144,14 @@ impl FanOut {
         // synthetic entry per conversation.
         let reviewed: usize = self.reviews.iter().map(|(paths, _)| paths.len()).sum();
         let one_conversation = self.reviews.len() == 1;
+        let mut reviewed_paths = Vec::with_capacity(reviewed);
         let mut findings = Vec::new();
         let mut resolved = Vec::new();
         let mut spend = Spend::default();
         let mut only_summary = None;
 
-        for (_paths, review) in self.reviews {
+        for (paths, review) in self.reviews {
+            reviewed_paths.extend(paths);
             spend.merge(review.spend);
             findings.extend(review.findings);
             resolved.extend(review.resolved);
@@ -179,6 +181,14 @@ impl FanOut {
             .flat_map(|(_, paths, _)| paths.iter().cloned())
             .collect();
 
+        if !unanswered.is_empty() {
+            let total = reviewed + unanswered.len();
+            summary = format!(
+                "Reviewed {reviewed} of {total} files — {} not reviewed. {summary}",
+                unanswered.len()
+            );
+        }
+
         if !self.failures.is_empty() {
             summary.push_str(&format!(
                 " {} file{} could not be reviewed: {}.",
@@ -190,6 +200,12 @@ impl FanOut {
 
         let skipped = (reviewed == 0 && !self.failures.is_empty())
             .then(|| "No files could be reviewed; see the listed provider failures.".to_string());
+        let coverage = (!reviewed_paths.is_empty() || !unanswered.is_empty()).then_some(
+            crate::lanes::FileCoverage {
+                reviewed: reviewed_paths,
+                unanswered: unanswered.clone(),
+            },
+        );
         LaneOutcome {
             summary,
             findings,
@@ -198,6 +214,7 @@ impl FanOut {
             skipped,
             pending: Vec::new(),
             unanswered,
+            coverage,
         }
     }
 }

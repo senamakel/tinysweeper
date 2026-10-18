@@ -1257,7 +1257,7 @@ mod tests {
             seeded.rendered
         );
         assert!(
-            !seeded.rendered.contains("No such file at this commit: `src/foo.rs`"),
+            !seeded.rendered.contains("No such file at this commit"),
             "a default-path miss must not contradict the resolved nested module: {}",
             seeded.rendered
         );
@@ -1283,7 +1283,7 @@ mod tests {
             seeded.rendered
         );
         assert!(
-            !seeded.rendered.contains("No such file at this commit: `src/foo.rs`"),
+            !seeded.rendered.contains("No such file at this commit"),
             "the ignored default path must not be presented as missing: {}",
             seeded.rendered
         );

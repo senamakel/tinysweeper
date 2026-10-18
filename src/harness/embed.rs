@@ -401,6 +401,20 @@ impl GatewayModel {
                     input_tokens: totals.input_tokens,
                     output_tokens: totals.output_tokens,
                     reasoning_tokens,
+                    calls_attempted: error.attempts.len() as u64,
+                    calls_succeeded: 0,
+                    calls_refused: if error.attempts.is_empty()
+                        || error.to_string().to_lowercase().contains("refus")
+                    {
+                        1
+                    } else {
+                        0
+                    },
+                    calls_errored: (error.attempts.iter().filter(|attempt| attempt.failed).count()
+                        as u64)
+                        .saturating_sub(u64::from(
+                            error.to_string().to_lowercase().contains("refus"),
+                        )),
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,
@@ -465,6 +479,14 @@ impl GatewayModel {
                 input_tokens: totals.input_tokens,
                 output_tokens: totals.output_tokens,
                 reasoning_tokens: totals.reasoning_tokens,
+                calls_attempted: result.attempts.len() as u64,
+                calls_succeeded: 1,
+                calls_refused: 0,
+                calls_errored: result
+                    .attempts
+                    .iter()
+                    .filter(|attempt| attempt.failed)
+                    .count() as u64,
                 cached_tokens: totals.cached_tokens,
                 embed_tokens: 0,
                 cost_usd: cost,

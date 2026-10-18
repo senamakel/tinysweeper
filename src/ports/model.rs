@@ -117,6 +117,19 @@ pub struct Usage {
     pub output_tokens: u64,
     /// Tokens spent reasoning, as reported by the provider.
     pub reasoning_tokens: u64,
+    /// Physical provider dispatches represented by this accounting record.
+    /// Zero means the model adapter does not expose per-dispatch counts.
+    #[serde(default)]
+    pub calls_attempted: u64,
+    /// Dispatches that returned a usable response.
+    #[serde(default)]
+    pub calls_succeeded: u64,
+    /// Dispatches refused by admission or by the provider.
+    #[serde(default)]
+    pub calls_refused: u64,
+    /// Dispatches that failed without a refusal.
+    #[serde(default)]
+    pub calls_errored: u64,
     /// Prompt tokens served from the provider's cache. The difference between
     /// a cheap re-review and a ruinous one.
     pub cached_tokens: u64,
@@ -138,6 +151,10 @@ impl Usage {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_tokens += other.reasoning_tokens;
+        self.calls_attempted += other.calls_attempted;
+        self.calls_succeeded += other.calls_succeeded;
+        self.calls_refused += other.calls_refused;
+        self.calls_errored += other.calls_errored;
         self.cached_tokens += other.cached_tokens;
         self.embed_tokens += other.embed_tokens;
         self.cost_usd += other.cost_usd;

@@ -48,7 +48,6 @@ impl ObservedModel {
         request: crate::ports::model::ModelRequest,
         tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>,
     ) -> Result<crate::ports::model::ModelResponse> {
-        self.timing.record(|r| r.calls_attempted += 1);
         let started = std::time::Instant::now();
         let result = match tree {
             Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
@@ -57,15 +56,36 @@ impl ObservedModel {
         let latency_ms = started.elapsed().as_millis() as u64;
         match &result {
             Ok(response) => self.timing.record(|r| {
-                r.calls_succeeded += 1;
+                let usage = response.usage;
+                if usage.calls_attempted > 0 {
+                    r.calls_attempted += usage.calls_attempted;
+                    r.calls_succeeded += usage.calls_succeeded;
+                    r.calls_refused += usage.calls_refused;
+                    r.calls_errored += usage.calls_errored;
+                } else {
+                    r.calls_attempted += 1;
+                    r.calls_succeeded += 1;
+                }
                 r.usage.add(response.usage);
             }),
             Err(error) => self.timing.record(|r| {
-                if error.to_string().to_lowercase().contains("refus")
+                if let Some(usage) = error.usage()
+                    && (usage.calls_attempted > 0
+                        || usage.calls_succeeded > 0
+                        || usage.calls_refused > 0
+                        || usage.calls_errored > 0)
+                {
+                    r.calls_attempted += usage.calls_attempted;
+                    r.calls_succeeded += usage.calls_succeeded;
+                    r.calls_refused += usage.calls_refused;
+                    r.calls_errored += usage.calls_errored;
+                } else if error.to_string().to_lowercase().contains("refus")
                     || matches!(error, Error::Budget { .. })
                 {
+                    r.calls_attempted += 1;
                     r.calls_refused += 1;
                 } else {
+                    r.calls_attempted += 1;
                     r.calls_errored += 1;
                 }
                 if let Some(usage) = error.usage() {

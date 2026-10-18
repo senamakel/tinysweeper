@@ -852,7 +852,8 @@ async fn run_owned_review(
         owned: Some(owned.clone()),
         owner_until: Some(owner_until_rx),
     };
-    let disposition = handle_review(state, job, Some(permit), Some(lost_rx)).await;
+    let disposition =
+        handle_review(state, job, Some(permit), Some(lost_rx), Some(owner_until_rx)).await;
 
     let now_ms = unix_time_ms();
     let result = match disposition {
@@ -963,6 +964,7 @@ async fn dispatch(
                     owned: None,
                 },
                 review_permit,
+                None,
                 None,
             )
             .await;
@@ -1890,6 +1892,13 @@ impl OwnedModel {
         {
             return Err(Error::ReviewOwnershipLost);
         }
+        if self
+            .owner_until
+            .as_ref()
+            .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
+        {
+            return Err(Error::ReviewOwnershipLost);
+        }
         Ok(())
     }
 
@@ -2361,6 +2370,7 @@ async fn handle_review(
     job: ReviewJob,
     queued_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     owner_lost: Option<watch::Receiver<bool>>,
+    owner_until: Option<watch::Receiver<tokio::time::Instant>>,
 ) -> WorkerDisposition {
     let ReviewJob {
         repo,
@@ -2434,6 +2444,7 @@ async fn handle_review(
         expected_head,
         owned: owned.clone(),
         owner_lost: owner_lost.clone(),
+        owner_until: owner_until.clone(),
         lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
@@ -3052,6 +3063,7 @@ async fn run_lanes(
             jobs: state.review_jobs.clone(),
             owned: owned.clone(),
             owner_lost: run.owner_lost.clone(),
+            owner_until: run.owner_until.clone(),
         }) as Arc<dyn Model>,
         None => state.models.text(),
     };
@@ -3151,30 +3163,57 @@ async fn run_lanes(
         .await
     };
     let review = tokio::time::timeout_at(run.deadline, review);
-    let proposal = if let Some(owner_lost) = run.owner_lost.clone() {
-        tokio::select! {
-            result = review => result
-                .map_err(|_elapsed| Error::timeout(
-                    format!("the review of {repo}#{number}"),
-                    REVIEW_DEADLINE,
-                ))??,
-            _ = wait_for_owner_loss(owner_lost) => return Err(Error::ReviewOwnershipLost),
+    let proposal = tokio::select! {
+        biased;
+        _ = wait_for_owner_fence(run.owner_lost.clone(), run.owner_until.clone()) => {
+            return Err(Error::ReviewOwnershipLost);
         }
-    } else {
-        review
-            .await
-            .map_err(|_elapsed| {
-                Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
-            })??
+        result = review => result
+            .map_err(|_elapsed| Error::timeout(
+                format!("the review of {repo}#{number}"),
+                REVIEW_DEADLINE,
+            ))??,
     };
 
     Ok((config.into_owned(), proposal))
 }
 
-async fn wait_for_owner_loss(mut receiver: watch::Receiver<bool>) {
+async fn wait_for_owner_fence(
+    mut lost: Option<watch::Receiver<bool>>,
+    mut until: Option<watch::Receiver<tokio::time::Instant>>,
+) {
     loop {
-        if *receiver.borrow() || receiver.changed().await.is_err() {
+        if lost.as_ref().is_some_and(|receiver| *receiver.borrow()) {
             return;
+        }
+        if until
+            .as_ref()
+            .is_some_and(|receiver| tokio::time::Instant::now() >= *receiver.borrow())
+        {
+            return;
+        }
+
+        match (&mut lost, &mut until) {
+            (Some(lost), Some(until)) => {
+                let deadline = *until.borrow();
+                tokio::select! {
+                    changed = lost.changed() => if changed.is_err() { return; },
+                    _ = tokio::time::sleep_until(deadline) => return,
+                }
+            }
+            (Some(lost), None) => {
+                if lost.changed().await.is_err() {
+                    return;
+                }
+            }
+            (None, Some(until)) => {
+                let deadline = *until.borrow();
+                tokio::select! {
+                    changed = until.changed() => if changed.is_err() { return; },
+                    _ = tokio::time::sleep_until(deadline) => return,
+                }
+            }
+            (None, None) => std::future::pending::<()>().await,
         }
     }
 }
@@ -4259,6 +4298,7 @@ mod tests {
             expected_head: None,
             owned: None,
             owner_lost: None,
+            owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let err = spent
@@ -4274,6 +4314,7 @@ mod tests {
             expected_head: None,
             owned: None,
             owner_lost: None,
+            owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert!(

@@ -2424,6 +2424,10 @@ async fn handle_review(
                 // one declined.
                 let published = findings.is_some();
                 let conclusion = review_conclusion(findings);
+                if run.check_owner(&state).await.is_err() {
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
                 // The review is over; concluding the check is one GitHub
                 // write that should not hold a review slot against other
                 // pull requests.
@@ -2436,6 +2440,10 @@ async fn handle_review(
                 });
             }
             Ok(InnerReview::Busy) => {
+                if run.check_owner(&state).await.is_err() {
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
                 drop(permit);
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                 return WorkerDisposition::Deferred(unix_time_ms() + 5_000);
@@ -2493,6 +2501,9 @@ async fn handle_review(
     // and refuse auto-merge forever. If the review died before it had a SHA,
     // there is nothing to conclude and the failure has to open its own check.
     let opened = slot.lock().expect("status slot").is_some();
+    if run.check_owner(&state).await.is_err() {
+        return WorkerDisposition::OwnershipLost;
+    }
     // An empty slot after shutdown's snapshot means shutdown concluded this
     // review's check already; a fresh failure check on top of it would be a
     // duplicate, not a report.
@@ -3512,6 +3523,7 @@ mod tests {
             lost,
             std::time::Duration::from_millis(5),
         );
+        tokio::task::yield_now().await;
         drop(guard);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 

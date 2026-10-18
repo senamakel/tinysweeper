@@ -217,7 +217,7 @@ impl ReviewSchedulerState {
         })
     }
 
-    /// Consume one paid attempt, removing and tombstoning work whose budget is spent.
+    /// Consume one paid attempt, leaving exhausted work owned for status cleanup.
     pub fn begin_paid(&mut self, owned: &OwnedReview, now_ms: i64) -> PaidStart {
         let Some(index) = self
             .unfinished
@@ -227,12 +227,6 @@ impl ReviewSchedulerState {
             return PaidStart::OwnershipLost;
         };
         if self.unfinished[index].paid_attempts >= MAX_REVIEW_PAID_ATTEMPTS {
-            let record = self.unfinished.remove(index);
-            self.terminal.push(ReviewTombstone {
-                id: record.request.id,
-                outcome: TerminalOutcome::Exhausted,
-                expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
-            });
             return PaidStart::Exhausted;
         }
         self.unfinished[index].paid_attempts += 1;
@@ -342,7 +336,7 @@ pub trait ReviewJobStore: Send + Sync {
     /// The implementation must never take an unexpired foreign owner.
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>>;
 
-    /// Consume a paid attempt or terminalize an exhausted recovered job.
+    /// Consume a paid attempt, retaining exhausted work until its owner concludes status.
     async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart>;
 
     /// Extend a live claim. A stale generation can never renew another

@@ -586,6 +586,7 @@ fn prompt_inputs<'a>(
         focus_paths: group_paths,
         persona: reviewer.persona,
         retrieved_context: input.retrieved_context,
+        retrieval_status: Some(&input.retrieval_status),
         redaction_note,
         ..PromptInputs::new(LaneId::Critique, config)
     }

@@ -2459,7 +2459,7 @@ impl ReviewRun<'_> {
                     number,
                     forge,
                     read_token,
-                    run,
+                    &run,
                 ))
                 .catch_unwind()
                 .await

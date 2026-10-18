@@ -40,7 +40,10 @@ struct GeneratedObservation {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum LaneReviewStatus {
     Answered,
-    Partial { reviewed_files: usize, total_files: usize },
+    Partial {
+        reviewed_files: usize,
+        total_files: usize,
+    },
     NoResponse,
     Skipped,
 }
@@ -170,7 +173,10 @@ pub async fn generate_with_diffstat(
     let first = match model.complete(request.clone()).await {
         Ok(response) => response,
         Err(err) => {
-            tracing::warn!(category = "model_failure", "could not generate the review summary; using deterministic fallback");
+            tracing::warn!(
+                category = "model_failure",
+                "could not generate the review summary; using deterministic fallback"
+            );
             if let Some(usage) = err.usage() {
                 spend.usage.add(usage);
             }
@@ -178,10 +184,16 @@ pub async fn generate_with_diffstat(
         }
     };
     spend.merge(Spend::of(&first));
-    let (mut generated, assistant) = match serde_json::from_value::<Generated>(first.value.clone()) {
+    let (mut generated, assistant) = match serde_json::from_value::<Generated>(first.value.clone())
+    {
         Ok(generated) => (generated, first.value.to_string()),
         Err(_) => {
-            tracing::warn!(category = "typed_shape_mismatch", schema = "review_summary", attempt = 1, "summary response did not match its typed shape");
+            tracing::warn!(
+                category = "typed_shape_mismatch",
+                schema = "review_summary",
+                attempt = 1,
+                "summary response did not match its typed shape"
+            );
             let rejected = crate::evidence::redact::scrub_rendered(&first.value.to_string());
             let rejected: String = rejected.chars().take(20_000).collect();
             let mut repair = request;
@@ -192,7 +204,12 @@ pub async fn generate_with_diffstat(
             let second = match model.complete(repair).await {
                 Ok(response) => response,
                 Err(err) => {
-                    tracing::warn!(category = "semantic_repair_failure", schema = "review_summary", attempt = 2, "summary schema repair failed; using deterministic fallback");
+                    tracing::warn!(
+                        category = "semantic_repair_failure",
+                        schema = "review_summary",
+                        attempt = 2,
+                        "summary schema repair failed; using deterministic fallback"
+                    );
                     if let Some(usage) = err.usage() {
                         spend.usage.add(usage);
                     }
@@ -203,7 +220,12 @@ pub async fn generate_with_diffstat(
             match serde_json::from_value::<Generated>(second.value.clone()) {
                 Ok(generated) => (generated, second.value.to_string()),
                 Err(_) => {
-                    tracing::warn!(category = "typed_shape_mismatch", schema = "review_summary", attempt = 2, "summary repair did not match its typed shape; using deterministic fallback");
+                    tracing::warn!(
+                        category = "typed_shape_mismatch",
+                        schema = "review_summary",
+                        attempt = 2,
+                        "summary repair did not match its typed shape; using deterministic fallback"
+                    );
                     return (summary, spend, transcript);
                 }
             }
@@ -248,12 +270,13 @@ pub async fn generate_with_diffstat(
     generated.features.truncate(config.summary.max_features);
     generated.tests.truncate(config.summary.max_tests);
     summary.executive_summary =
-        validated_model_narrative(&generated.executive_summary, &lane_statuses).unwrap_or_else(|| {
-            "Tiny Sweeper completed its review; deterministic results follow.".into()
-        });
+        validated_model_narrative(&generated.executive_summary, &lane_statuses).unwrap_or_else(
+            || "Tiny Sweeper completed its review; deterministic results follow.".into(),
+        );
     // Empty, not an apology: the hub omits an empty "What changed" section,
     // and failure prose there was printed on most pull requests.
-    summary.changes = validated_model_narrative(&generated.changes, &lane_statuses).unwrap_or_default();
+    summary.changes =
+        validated_model_narrative(&generated.changes, &lane_statuses).unwrap_or_default();
     summary.features = generated.features;
     summary.tests = generated.tests;
     summary.positive_observations = generated
@@ -263,7 +286,9 @@ pub async fn generate_with_diffstat(
             let observations: Vec<_> = observations
                 .into_iter()
                 .filter(|observation| supported(&observation.citations))
-                .filter_map(|observation| validated_model_narrative(&observation.observation, &lane_statuses))
+                .filter_map(|observation| {
+                    validated_model_narrative(&observation.observation, &lane_statuses)
+                })
                 .collect();
             (!observations.is_empty()).then_some((lane, observations))
         })
@@ -533,8 +558,19 @@ fn claims_unsupported_lane_success(
         .filter(|word| !word.is_empty())
         .collect();
     let positive = [
-        "confirm", "confirms", "confirmed", "pass", "passed", "passing", "clear", "clean",
-        "successful", "succeeded", "sound", "approve", "approved",
+        "confirm",
+        "confirms",
+        "confirmed",
+        "pass",
+        "passed",
+        "passing",
+        "clear",
+        "clean",
+        "successful",
+        "succeeded",
+        "sound",
+        "approve",
+        "approved",
     ];
     let broad_all_lane_claim = (lower.contains("all lane") || lower.contains("every lane"))
         && positive.iter().any(|word| words.contains(word))
@@ -554,8 +590,7 @@ fn claims_unsupported_lane_success(
         return false;
     }
     statuses.iter().any(|(lane, status)| {
-        !matches!(status, LaneReviewStatus::Answered)
-            && words.contains(lane.as_str())
+        !matches!(status, LaneReviewStatus::Answered) && words.contains(lane.as_str())
     })
 }
 
@@ -670,8 +705,14 @@ mod tests {
         let (summary, spend, transcript) = generate(
             &model,
             &Config::default(),
-            &PullRequest { body: "Purpose retained".into(), ..PullRequest::default() },
-            &[FileDiff { path: "src/lib.rs".into(), ..FileDiff::default() }],
+            &PullRequest {
+                body: "Purpose retained".into(),
+                ..PullRequest::default()
+            },
+            &[FileDiff {
+                path: "src/lib.rs".into(),
+                ..FileDiff::default()
+            }],
             &[],
             None,
             &[],
@@ -679,15 +720,35 @@ mod tests {
         .await;
 
         assert_eq!(model.calls(), 2);
-        assert_eq!(summary.executive_summary, "The pull request preserves its stated purpose.");
+        assert_eq!(
+            summary.executive_summary,
+            "The pull request preserves its stated purpose."
+        );
         assert_eq!(spend.usage.input_tokens, 20);
         assert_eq!(spend.usage.output_tokens, 4);
         assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
         assert_eq!(transcript.len(), 1);
         let request = model.requests();
-        assert!(request[0].schema["properties"]["positive_observations"]["additionalProperties"] == false);
-        assert!(request[1].messages.last().unwrap().content.contains("<rejected_reply_untrusted_json>"));
-        assert!(request[1].messages.last().unwrap().content.contains("correctness"));
+        assert!(
+            request[0].schema["properties"]["positive_observations"]["additionalProperties"]
+                == false
+        );
+        assert!(
+            request[1]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("<rejected_reply_untrusted_json>")
+        );
+        assert!(
+            request[1]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("correctness")
+        );
     }
 
     #[tokio::test]
@@ -702,8 +763,15 @@ mod tests {
                 ..Default::default()
             });
         let (summary, spend, transcript) = generate(
-            &model, &Config::default(), &PullRequest::default(), &[], &[], None, &[],
-        ).await;
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[],
+            None,
+            &[],
+        )
+        .await;
 
         assert_eq!(model.calls(), 2);
         assert_eq!(summary.executive_summary, fallback_executive(&[]));
@@ -733,8 +801,15 @@ mod tests {
                 ..Default::default()
             });
         let (_, spend, _) = generate(
-            &model, &Config::default(), &PullRequest::default(), &[], &[], None, &[],
-        ).await;
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[],
+            None,
+            &[],
+        )
+        .await;
 
         assert_eq!(model.calls(), 2);
         assert_eq!(spend.usage.input_tokens, 10);
@@ -754,8 +829,15 @@ mod tests {
             },
         );
         let (_, spend, _) = generate(
-            &model, &Config::default(), &PullRequest::default(), &[], &[], None, &[],
-        ).await;
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[],
+            None,
+            &[],
+        )
+        .await;
 
         assert_eq!(model.calls(), 1);
         assert_eq!(spend.usage.input_tokens, 7);
@@ -784,30 +866,90 @@ mod tests {
             assistant: "previous answer".into(),
         }];
         let diffs = [
-            FileDiff { path: "src/privacy.rs".into(), ..FileDiff::default() },
-            FileDiff { path: "tests/privacy.rs".into(), ..FileDiff::default() },
+            FileDiff {
+                path: "src/privacy.rs".into(),
+                ..FileDiff::default()
+            },
+            FileDiff {
+                path: "tests/privacy.rs".into(),
+                ..FileDiff::default()
+            },
         ];
         let lanes = vec![
-            lane(LaneId::Tests, crate::forge::types::CheckConclusion::Neutral, "No reviewer produced a usable response.", &[], &["tests"], None),
-            lane(LaneId::Critique, crate::forge::types::CheckConclusion::Success, "Reviewed", &["model"], &[], Some(crate::lanes::FileCoverage {
-                reviewed: vec!["src/privacy.rs".into()], unanswered: vec!["tests/privacy.rs".into()],
-            })),
-            lane(LaneId::Security, crate::forge::types::CheckConclusion::Success, "Reviewed", &["model"], &[], None),
-            lane(LaneId::Commits, crate::forge::types::CheckConclusion::Neutral, "Skipped: not applicable", &[], &[], None),
+            lane(
+                LaneId::Tests,
+                crate::forge::types::CheckConclusion::Neutral,
+                "No reviewer produced a usable response.",
+                &[],
+                &["tests"],
+                None,
+            ),
+            lane(
+                LaneId::Critique,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed",
+                &["model"],
+                &[],
+                Some(crate::lanes::FileCoverage {
+                    reviewed: vec!["src/privacy.rs".into()],
+                    unanswered: vec!["tests/privacy.rs".into()],
+                }),
+            ),
+            lane(
+                LaneId::Security,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed",
+                &["model"],
+                &[],
+                None,
+            ),
+            lane(
+                LaneId::Commits,
+                crate::forge::types::CheckConclusion::Neutral,
+                "Skipped: not applicable",
+                &[],
+                &[],
+                None,
+            ),
         ];
-        let full_stat = SummaryDiffstat { files: 9, additions: 83, deletions: 12 };
+        let full_stat = SummaryDiffstat {
+            files: 9,
+            additions: 83,
+            deletions: 12,
+        };
         let _ = generate_with_diffstat(
-            &model, &Config::default(), &pull_request, &diffs, full_stat, &lanes, None, &prior,
-        ).await;
+            &model,
+            &Config::default(),
+            &pull_request,
+            &diffs,
+            full_stat,
+            &lanes,
+            None,
+            &prior,
+        )
+        .await;
 
         let prompt = model.last_prompt().expect("summary request");
         let request: serde_json::Value = serde_json::from_str(
-            prompt.split("<review_evidence>\n").nth(1).unwrap().split("\n</review_evidence>").next().unwrap(),
-        ).unwrap();
-        assert_eq!(request["whole_pull_request"]["description"], pull_request.body);
+            prompt
+                .split("<review_evidence>\n")
+                .nth(1)
+                .unwrap()
+                .split("\n</review_evidence>")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            request["whole_pull_request"]["description"],
+            pull_request.body
+        );
         assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 9);
         assert_eq!(request["latest_push_delta"]["available"], false);
-        assert_eq!(request["latest_push_delta"]["from_reviewed_head"], "old-head");
+        assert_eq!(
+            request["latest_push_delta"]["from_reviewed_head"],
+            "old-head"
+        );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
         assert_eq!(request["lanes"][0]["status"]["status"], "no_response");
         assert_eq!(request["lanes"][1]["status"]["status"], "partial");
@@ -841,10 +983,21 @@ mod tests {
             &[tests_lane],
             None,
             &[],
-        ).await;
+        )
+        .await;
 
-        assert!(!summary.executive_summary.to_ascii_lowercase().contains("confirm"));
-        assert!(!summary.executive_summary.to_ascii_lowercase().contains("tests"));
+        assert!(
+            !summary
+                .executive_summary
+                .to_ascii_lowercase()
+                .contains("confirm")
+        );
+        assert!(
+            !summary
+                .executive_summary
+                .to_ascii_lowercase()
+                .contains("tests")
+        );
         assert!(!summary.changes.to_ascii_lowercase().contains("all lanes"));
         assert_eq!(summary.executive_summary, fallback_executive(&[]));
     }

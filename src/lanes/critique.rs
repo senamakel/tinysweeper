@@ -1174,18 +1174,20 @@ fn helper() {
             glob: None,
         };
         let tree = crate::ports::tree::MockTree::from_recorded(
-            [(
-                lookup.key(),
-                Found::Unavailable {
-                    reason: "cold index".into(),
-                },
-            ),
-            (
-                caller_search.key(),
-                Found::Unavailable {
-                    reason: "cold index cannot search callers".into(),
-                },
-            )]
+            [
+                (
+                    lookup.key(),
+                    Found::Unavailable {
+                        reason: "cold index".into(),
+                    },
+                ),
+                (
+                    caller_search.key(),
+                    Found::Unavailable {
+                        reason: "cold index cannot search callers".into(),
+                    },
+                ),
+            ]
             .into_iter()
             .collect(),
         );
@@ -1291,7 +1293,10 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert!(outcome.findings[0].late);
-        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
         assert_eq!(outcome.findings[0].severity, Severity::High);
         let request = model_handle
             .requests()
@@ -1304,7 +1309,10 @@ fn helper() {
             .map(|message| message.content.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(prompt.contains("cold index cannot search callers"), "{prompt}");
+        assert!(
+            prompt.contains("cold index cannot search callers"),
+            "{prompt}"
+        );
     }
 
     #[tokio::test]
@@ -1314,10 +1322,8 @@ fn helper() {
             "src/lib.rs",
             "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
         )];
-        let tree = crate::ports::tree::MockTree::from_files([(
-            "src/foo/mod.rs",
-            "pub fn foo() {}\n",
-        )]);
+        let tree =
+            crate::ports::tree::MockTree::from_files([("src/foo/mod.rs", "pub fn foo() {}\n")]);
         let model = MockModel::new()
             .then(json!({
                 "summary": "The declared module is missing.",
@@ -1345,7 +1351,10 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert_eq!(outcome.findings[0].severity, Severity::Critical);
-        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
     }
 
     #[tokio::test]
@@ -1389,7 +1398,10 @@ fn helper() {
         .await;
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
-        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
         assert!(tree.lookups.lock().expect("lookup calls").is_empty());
     }
 

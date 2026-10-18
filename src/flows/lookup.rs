@@ -549,9 +549,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     diff.hunks
         .iter()
         .flat_map(|hunk| &hunk.lines)
-        .filter(|line| {
-            line.kind == LineKind::Added
-        })
+        .filter(|line| line.kind == LineKind::Added)
         .filter_map(|line| {
             let text = line.text.trim();
             let declaration = ["pub ", "pub(crate) ", "pub(super) ", ""]

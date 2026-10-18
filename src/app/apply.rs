@@ -983,6 +983,16 @@ mod tests {
     use crate::forge::types::{ChangedFile, CheckConclusion, IssueComment, PullRequest};
     use crate::forge::{MockForge, MockState, Write};
 
+    #[test]
+    fn check_titles_are_count_based_and_never_truncate_model_prose() {
+        assert_eq!(title_for(2), "2 findings");
+        assert_eq!(title_for(1), "1 finding");
+        assert_eq!(title_for(0), "0 findings");
+        let title = title_for(usize::MAX);
+        assert!(title.len() <= 80, "{} chars: {title}", title.len());
+        assert!(!title.contains("summary"));
+    }
+
     #[cfg(feature = "serve")]
     #[tokio::test]
     async fn applying_an_mcp_issue_plan_performs_exactly_its_write() {

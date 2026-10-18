@@ -96,8 +96,14 @@ mod tests {
 
     #[test]
     fn code_spans_preserve_path_punctuation_and_choose_a_safe_fence() {
-        assert_eq!(code_span("crates/tinyjuice-module/src/savings_store.rs"), "`crates/tinyjuice-module/src/savings_store.rs`");
-        assert_eq!(code_span("path`with``ticks.rs"), "``` path`with``ticks.rs ```");
+        assert_eq!(
+            code_span("crates/tinyjuice-module/src/savings_store.rs"),
+            "`crates/tinyjuice-module/src/savings_store.rs`"
+        );
+        assert_eq!(
+            code_span("path`with``ticks.rs"),
+            "``` path`with``ticks.rs ```"
+        );
     }
 
     #[test]
@@ -116,7 +122,11 @@ mod tests {
             "[`src/savings/ledger.rs:42`](https://github.com/acme/widget/blob/abc123/src/savings/ledger.rs#L42)"
         );
         assert_eq!(
-            citation("src/savings/ledger.rs#impl SavingsLedger", "acme/widget", "abc123"),
+            citation(
+                "src/savings/ledger.rs#impl SavingsLedger",
+                "acme/widget",
+                "abc123"
+            ),
             "`src/savings/ledger.rs` `impl SavingsLedger`"
         );
     }

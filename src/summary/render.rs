@@ -225,7 +225,11 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
     }
     for lane in &proposal.lanes {
         if lane.lane == crate::config::types::LaneId::Tests && !lane.unanswered.is_empty() {
-            let _ = writeln!(out, "- **Unreviewed:** {}", prose(&lane.unanswered.join(", ")));
+            let _ = writeln!(
+                out,
+                "- **Unreviewed:** {}",
+                prose(&lane.unanswered.join(", "))
+            );
         }
     }
 }
@@ -266,11 +270,18 @@ fn over_budget(out: &mut String, proposal: &Proposal) {
     for finding in over {
         let _ = writeln!(
             out,
-            "- {} · {} — {} (`{}{}`)",
+            "- {} · {} — {} ({})",
             severity(finding.severity),
             finding.lane,
             prose(&finding.title),
-            code_span(&format!("{}{}", finding.path, finding.line.map(|line| format!(":{line}")).unwrap_or_default()))
+            code_span(&format!(
+                "{}{}",
+                finding.path,
+                finding
+                    .line
+                    .map(|line| format!(":{line}"))
+                    .unwrap_or_default()
+            ))
         );
     }
 }
@@ -296,12 +307,19 @@ fn findings(out: &mut String, proposal: &Proposal) {
         for finding in &lane.findings {
             let _ = writeln!(
                 out,
-                "- **{} · {} · {}** — {} (`{}`{})",
+                "- **{} · {} · {}** — {} ({})",
                 severity(finding.severity),
                 lane.lane,
                 prose(&finding.title),
                 prose(&concise(&finding.body)),
-                code_span(&format!("{}{}", finding.path, finding.line.map(|line| format!(":{line}")).unwrap_or_default()))
+                code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                ))
             );
         }
     }

@@ -118,7 +118,11 @@ pub fn lane_summary(
             "| {} | {} | {} |\n",
             badge(finding.severity),
             escape_cell(&finding.title),
-            table_cell(&format!("{}{}", finding.path, finding.line.map(|l| format!(":{l}")).unwrap_or_default()))
+            table_cell(&format!(
+                "{}{}",
+                finding.path,
+                finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+            ))
         ));
     }
 
@@ -136,7 +140,10 @@ fn detail(finding: &Finding) -> String {
     let location = code_span(&format!(
         "{}{}",
         finding.path,
-        finding.line.map(|line| format!(":{line}")).unwrap_or_default()
+        finding
+            .line
+            .map(|line| format!(":{line}"))
+            .unwrap_or_default()
     ));
 
     // Three lines rather than one run-on: where it is, why it was raised, and

@@ -2200,7 +2200,7 @@ async fn review_inner(
     // the live head is known, then take its revision lease before any indexing.
     let initial_lease = review_lease(repo, number, run.mode, expected_head);
     let mut lease = Some(initial_lease.clone());
-    if !state.store.claim_lease(initial_lease, "server").await? {
+    if !state.store.claim_lease(&initial_lease, "server").await? {
         tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(None);
     }

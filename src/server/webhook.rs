@@ -800,6 +800,7 @@ mod tests {
                 number: 7,
                 author: "someone".into(),
                 installation: 152184043,
+                head_sha: Some("abc123".into()),
             }
         );
     }

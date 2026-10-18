@@ -515,8 +515,7 @@ async fn review_group(
     // findings retain their direct diff evidence and are unaffected.
     if input.retrieval_status.is_degraded() {
         findings.retain(|finding| {
-            let supported =
-                !finding.late || looked_up.lines().any(|line| line.contains(&finding.path));
+            let supported = !finding.late || lookup_has_head_evidence(&looked_up, &finding.path);
             if !supported {
                 withheld_for_degraded_context += 1;
             }
@@ -537,6 +536,17 @@ async fn review_group(
         findings,
         resolved,
         spend,
+    })
+}
+
+/// Whether the current-head lookup block contains evidence from `path` rather
+/// than only an unavailable response for it.
+fn lookup_has_head_evidence(looked_up: &str, path: &str) -> bool {
+    let path_line = format!("{path}:");
+    let quoted_path = format!("`{path}`");
+    looked_up.split("\n### ").any(|section| {
+        (section.contains(&path_line) || section.contains(&quoted_path))
+            && !section.contains("Not available:")
     })
 }
 

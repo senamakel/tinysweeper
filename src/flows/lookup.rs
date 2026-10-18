@@ -755,7 +755,12 @@ The definitions of what the changed lines call into,                  read from 
                 .unwrap_or_else(|err| Found::Unavailable {
                     reason: err.to_string(),
                 });
-            let Found::Hits { hits, .. } = &found else {
+            let Found::Hits {
+                hits,
+                truncated,
+                skipped,
+            } = &found
+            else {
                 self.seen.insert(lookup.key());
                 let body = format!(
                     "\n### {} at the reviewed head\n\n{}\n",
@@ -803,13 +808,21 @@ The definitions of what the changed lines call into,                  read from 
                     }) && !already_in_this_conversations_diff(h)
                 })
                 .collect();
-            if definitions.is_empty() || definitions.len() > AUTO_FOLLOW {
+            if definitions.is_empty() || (caller.is_none() && definitions.len() > AUTO_FOLLOW) {
                 continue;
             }
+            let omitted = caller.is_some() && (definitions.len() > AUTO_FOLLOW || *truncated);
+            let definitions: Vec<&crate::ports::tree::Hit> =
+                definitions.into_iter().take(AUTO_FOLLOW).collect();
             self.seen.insert(lookup.key());
             let mut hits_text = String::new();
             for hit in &definitions {
                 hits_text.push_str(&format!("{}:{}: {}\n", hit.path, hit.line, hit.text));
+            }
+            if omitted || !skipped.is_empty() {
+                hits_text.push_str(&format!(
+                    "\nCaller search incomplete: showing at most {AUTO_FOLLOW} sites; additional matches or unsearched submodules may be omitted.\n"
+                ));
             }
             // The fence has to outrun any backtick run in a hit line — a
             // contributor-controlled source line containing ```` would

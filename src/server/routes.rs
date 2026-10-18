@@ -1368,7 +1368,7 @@ where
     F: FnOnce(tokio::sync::OwnedSemaphorePermit) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let permit = Arc::new(Semaphore::new(1))
+    let permit = permits
         .try_acquire_owned()
         .map_err(|_| Error::ReviewCapacityFull)?;
     work(permit).await
@@ -3118,6 +3118,17 @@ mod tests {
             0,
             "a saturated manual request must be refused before token or PR reads"
         );
+
+        let available = Arc::new(Semaphore::new(1));
+        let started = Arc::new(AtomicUsize::new(0));
+        let observed = started.clone();
+        with_manual_review_admission(available, move |_permit| async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("an available permit admits the work");
+        assert_eq!(started.load(Ordering::SeqCst), 1);
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

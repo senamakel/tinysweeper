@@ -1969,7 +1969,13 @@ async fn handle_review(
     drop(permit);
 
     tracing::error!(%err, %repo, number, attempts = attempt, "review failed");
-    timing.finish(if err.to_string().contains("deadline") || err.to_string().contains("timed out") { "deadline" } else { "failure" });
+    timing.finish(
+        if err.to_string().contains("deadline") || err.to_string().contains("timed out") {
+            "deadline"
+        } else {
+            "failure"
+        },
+    );
 
     // Two ways to report the same thing, and which one applies depends on how
     // far the review got. If a check is already open, concluding it in place is
@@ -2026,7 +2032,10 @@ impl ReviewTiming {
     }
 
     fn permit_acquired(&self) {
-        self.queue_wait_ms.store(self.started.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.queue_wait_ms.store(
+            self.started.elapsed().as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     fn finish(&self, outcome: &'static str) {
@@ -2036,7 +2045,11 @@ impl ReviewTiming {
 
 impl Drop for ReviewTiming {
     fn drop(&mut self) {
-        let outcome = self.outcome.get_mut().expect("review timing outcome").unwrap_or("cancelled");
+        let outcome = self
+            .outcome
+            .get_mut()
+            .expect("review timing outcome")
+            .unwrap_or("cancelled");
         tracing::info!(target: "tinysweeper::review_timing", repo = %self.repo, pr = self.pr,
             mode = ?self.mode, outcome, total_ms = self.started.elapsed().as_millis() as u64,
             queue_wait_ms = self.queue_wait_ms.load(std::sync::atomic::Ordering::Relaxed),

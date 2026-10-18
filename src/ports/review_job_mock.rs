@@ -29,6 +29,18 @@ impl MockReviewJobStore {
     pub fn unfinished(&self) -> usize {
         self.state.lock().expect("state").unfinished.len()
     }
+
+    /// Replace scheduler state in a contract-test fixture.
+    #[cfg(test)]
+    pub(crate) fn replace_state_for_test(&self, state: ReviewSchedulerState) {
+        *self.state.lock().expect("state") = state;
+    }
+
+    /// Snapshot scheduler state for a contract-test assertion.
+    #[cfg(test)]
+    pub(crate) fn snapshot_for_test(&self) -> ReviewSchedulerState {
+        self.state.lock().expect("state").clone()
+    }
 }
 
 #[async_trait::async_trait]

@@ -3,8 +3,8 @@
 use super::super::review_job_mock::MockReviewJobStore;
 use super::{
     Admission, MAX_RUNNING_REVIEWS, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS,
-    REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode, ReviewRequest,
-    ReviewSchedulerState, ReviewTombstone, TerminalOutcome,
+    REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS, ReviewJobId, ReviewJobMode, ReviewJobStore,
+    ReviewRequest, ReviewSchedulerState, ReviewTombstone, TerminalOutcome,
 };
 
 fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
@@ -249,16 +249,15 @@ async fn failed_batch_persistence_admits_no_jobs() {
 #[tokio::test]
 async fn tombstone_reservations_backpressure_without_evicting_live_dedupe_ids() {
     let store = MockReviewJobStore::default();
-    {
-        let mut state = store.state.lock().expect("state");
-        state.terminal = (0..MAX_TERMINAL_REVIEW_RESERVATIONS)
-            .map(|index| ReviewTombstone {
-                id: ReviewJobId(format!("done-{index:05}-{}", "x".repeat(260))),
-                outcome: TerminalOutcome::Exhausted,
-                expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
-            })
-            .collect();
-    }
+    let mut state = ReviewSchedulerState::default();
+    state.terminal = (0..MAX_TERMINAL_REVIEW_RESERVATIONS)
+        .map(|index| ReviewTombstone {
+            id: ReviewJobId(format!("done-{index:05}-{}", "x".repeat(260))),
+            outcome: TerminalOutcome::Exhausted,
+            expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
+        })
+        .collect();
+    store.replace_state_for_test(state);
     assert_eq!(
         store
             .admit_batch(vec![request("new-work", 10)])
@@ -267,7 +266,7 @@ async fn tombstone_reservations_backpressure_without_evicting_live_dedupe_ids() 
         Admission::Full
     );
     assert_eq!(store.unfinished(), 0);
-    let state = store.state.lock().expect("state");
+    let state = store.snapshot_for_test();
     assert_eq!(state.terminal.len(), MAX_TERMINAL_REVIEW_RESERVATIONS);
     assert!(state.unfinished.is_empty());
 }

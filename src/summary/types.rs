@@ -6,6 +6,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::types::LaneId;
 
+/// File and line counts for the pull-request diff supplied by the forge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryDiffstat {
+    /// Changed files in the complete pull-request diff.
+    pub files: usize,
+    /// Added lines in the complete pull-request diff.
+    pub additions: u64,
+    /// Removed lines in the complete pull-request diff.
+    pub deletions: u64,
+}
+
+impl SummaryDiffstat {
+    /// Count a parsed reviewable diff when the forge's complete file list is
+    /// unavailable (primarily for offline callers and tests).
+    pub fn from_diffs(diffs: &[crate::evidence::diff::FileDiff]) -> Self {
+        Self {
+            files: diffs.len(),
+            additions: diffs.iter().map(|diff| diff.additions() as u64).sum(),
+            deletions: diffs.iter().map(|diff| diff.deletions() as u64).sum(),
+        }
+    }
+}
+
 /// Generated and deterministic material carried from review to apply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

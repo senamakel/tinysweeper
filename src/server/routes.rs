@@ -3475,6 +3475,47 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelling_an_owned_worker_drops_heartbeat_and_allows_expiry_recovery() {
+        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        let request = ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId("webhook:cancelled".into()),
+            repo: "owner/repo".into(),
+            number: 7,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("head".into()),
+            delivery: Some("cancelled".into()),
+            event: "pull_request".into(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: unix_time_ms(),
+        };
+        assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
+        let now = unix_time_ms();
+        let owned = store
+            .claim_next("first", now)
+            .await
+            .unwrap()
+            .expect("first process owns the job");
+        let (lost, _receiver) = watch::channel(false);
+        let guard = spawn_review_heartbeat(
+            store.clone(),
+            owned.clone(),
+            lost,
+            std::time::Duration::from_millis(5),
+        );
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let recovered = store
+            .claim_next("replacement", now + crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1)
+            .await
+            .unwrap()
+            .expect("cancelled worker's lease expires and is recoverable");
+        assert_eq!(recovered.request.id, owned.request.id);
+        assert!(recovered.generation > owned.generation);
+    }
+
+    #[tokio::test]
     async fn saturated_manual_admission_runs_no_expensive_resolution() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 

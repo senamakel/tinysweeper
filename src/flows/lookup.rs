@@ -1604,7 +1604,7 @@ mod tests {
     async fn a_path_attribute_on_an_inline_module_makes_child_paths_unavailable() {
         let diff = crate::evidence::diff::parse_file_patch(
             "src/lib.rs",
-            "@@ -1 +1,3 @@\n+#[path = \"custom.rs\"]\n+mod outer {\n+    pub mod foo;\n+}\n",
+            "@@ -1 +1,4 @@\n+#[path = \"custom.rs\"]\n+mod outer {\n+    pub mod first;\n+    pub mod foo;\n+}\n",
         );
         let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
         let mut ledger = Ledger::default();

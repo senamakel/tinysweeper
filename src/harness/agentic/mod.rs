@@ -211,6 +211,10 @@ pub(crate) async fn review_accounted(
         input_tokens: input_bound.saturating_mul(calls),
         output_tokens: u64::from(request.max_tokens).saturating_mul(calls),
         reasoning_tokens: 0,
+        calls_attempted: calls,
+        calls_succeeded: 0,
+        calls_refused: 0,
+        calls_errored: 0,
         cached_tokens: 0,
         embed_tokens: 0,
         cost_usd: crate::harness::pricing::completion_cost(
@@ -269,6 +273,10 @@ pub(crate) async fn review_accounted(
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         reasoning_tokens: usage.reasoning_tokens,
+        calls_attempted: 1,
+        calls_succeeded: 1,
+        calls_refused: 0,
+        calls_errored: 0,
         cached_tokens: usage.cached_input_tokens,
         embed_tokens: 0,
         cost_usd: usage

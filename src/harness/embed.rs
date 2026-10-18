@@ -384,7 +384,10 @@ impl GatewayModel {
             // Structured refusals can arrive after several billed dispatches.
             // Preserve their safe owner metadata for lane and budget accounting,
             // pricing omitted charges against the model that actually answered.
-            if let Some(totals) = error.total_usage {
+            let is_refusal = error.to_string().to_lowercase().contains("refus")
+                || error.attempts.is_empty();
+            let totals = error.total_usage.unwrap_or_default();
+            {
                 let cost_usd = error.attempts.iter().filter_map(|attempt| {
                     let usage = attempt.usage.as_ref()?;
                     let model = attempt.answered_model.as_deref()
@@ -403,18 +406,14 @@ impl GatewayModel {
                     reasoning_tokens,
                     calls_attempted: error.attempts.len() as u64,
                     calls_succeeded: 0,
-                    calls_refused: if error.attempts.is_empty()
-                        || error.to_string().to_lowercase().contains("refus")
-                    {
+                    calls_refused: if is_refusal {
                         1
                     } else {
                         0
                     },
                     calls_errored: (error.attempts.iter().filter(|attempt| attempt.failed).count()
                         as u64)
-                        .saturating_sub(u64::from(
-                            error.to_string().to_lowercase().contains("refus"),
-                        )),
+                        .saturating_sub(u64::from(is_refusal)),
                     cached_tokens: totals.cached_tokens,
                     embed_tokens: 0,
                     cost_usd,

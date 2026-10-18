@@ -467,7 +467,8 @@ impl GatewayModel {
                 )
             });
             cost += settled;
-            tracing::info!(model, cap = attempt.max_tokens, input_tokens = usage.input_tokens,
+            tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                input_tokens = usage.input_tokens,
                 cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
                 reasoning_tokens = usage.reasoning_tokens, finish_reason = ?attempt.finish_reason,
                 reported_cost_usd = reported, settled_cost_usd = settled,

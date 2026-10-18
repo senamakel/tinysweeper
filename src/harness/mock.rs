@@ -149,6 +149,15 @@ impl MockModel {
         self
     }
 
+    /// Queue a failure after a provider reports paid usage.
+    pub fn then_error_with_usage(self, message: &str, usage: Usage) -> Self {
+        self.responses
+            .lock()
+            .expect("mock model lock")
+            .push(Err(Error::Model(message.to_string()).with_usage(usage)));
+        self
+    }
+
     /// Answer as `model` whatever model was asked for.
     ///
     /// This is what a provider fallback looks like from the port: the request

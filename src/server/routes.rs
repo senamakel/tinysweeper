@@ -51,7 +51,7 @@ const MAX_CONCURRENT_REVIEWS: usize = 4;
 /// Backlog accepted while the four review slots are occupied. Queue entries
 /// are data, not Tokio tasks, so this is also the cap on pending review work.
 const MAX_QUEUED_REVIEWS: usize = 256;
-/// How long one review may take, wall clock, from delivery to verdict.
+/// How long one admitted worker may take, from permit acquisition to verdict.
 ///
 /// Every model call is bounded on its own — the gateway client caps a unary
 /// request at ten minutes — but a review is dozens of them in sequence, across
@@ -1589,6 +1589,7 @@ type StatusSlot = Arc<std::sync::Mutex<Option<ReviewStatus>>>;
 /// The three things every attempt shares: the mode it runs in, the check it
 /// owns, and the wall-clock deadline it must beat. Bundled so a retry cannot
 /// re-derive any of them differently from the first attempt.
+#[derive(Clone)]
 struct Run {
     mode: Mode,
     slot: StatusSlot,
@@ -2339,6 +2340,14 @@ impl ReviewRun<'_> {
                 tracing::error!(%err, %previous, "could not release the previous review lease");
             }
         }
+
+        // The live head whose exact lease is now held is the revision passed
+        // into context construction, even for a stateless request that had no
+        // webhook SHA. This lets the app recheck for a move during that fetch.
+        let run = Run {
+            expected_head: Some(pull_request.head_sha.clone()),
+            ..run.clone()
+        };
 
         // Indexing is kicked off here and deliberately not awaited. A cold full
         // index takes minutes; a review is expected in seconds. The review runs

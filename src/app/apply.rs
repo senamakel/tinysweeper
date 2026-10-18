@@ -298,7 +298,7 @@ pub async fn apply(
     // not be undone is reported as the failure it is.
     match withdrawal_failed {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => Ok(ApplyDisposition::Published),
     }
 }
 
@@ -372,7 +372,7 @@ async fn publish_review_hub(
             tracing::warn!(%err, "could not persist the review-hub comment id");
         }
     }
-    Ok(ApplyDisposition::Published)
+    Ok(())
 }
 
 async fn discover_review_hub(

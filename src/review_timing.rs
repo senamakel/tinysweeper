@@ -173,7 +173,7 @@ pub async fn measure_lane<F: Future>(
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let r = self.0.record.get_mut().expect("review timing lock");
+        let r = self.record.get_mut().expect("review timing lock");
         let total_ms = r
             .started
             .map(|s| s.elapsed().as_millis() as u64)

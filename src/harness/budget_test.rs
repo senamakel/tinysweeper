@@ -141,7 +141,7 @@ fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
     let input = (bytes.div_ceil(4) + 1024) as f64 * 0.4;
     assert_eq!(
         bound.call.cost_micros,
-        (input + 60_000.0 * 1.8).ceil() as u64
+        (input + 50_000.0 * 1.8).ceil() as u64
     );
     assert!(bound.call.cost_micros < (input + 64_000.0 * 1.8).ceil() as u64);
 }

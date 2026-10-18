@@ -3052,15 +3052,17 @@ mod tests {
 
         let permits = Arc::new(Semaphore::new(1));
         let mut held = Some(permits.clone().acquire_owned().await.unwrap());
-        let waiting = crate::review_timing::measure(
-            Some(&timing),
-            "permit",
-            permits.clone().acquire_owned(),
-        );
-        tokio::pin!(waiting);
-        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
-        drop(held.take());
-        let permit = waiting.await.unwrap();
+        let permit = {
+            let waiting = crate::review_timing::measure(
+                Some(&timing),
+                "permit",
+                permits.clone().acquire_owned(),
+            );
+            tokio::pin!(waiting);
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+            drop(held.take());
+            waiting.await.unwrap()
+        };
         drop(permit);
         let published = server_review_lifecycle(
             &timing,

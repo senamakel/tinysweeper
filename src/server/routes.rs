@@ -782,7 +782,7 @@ async fn drain_review_queue<F>(
                     return;
                 }
             }
-            _ = poll.tick() => {}
+            _ = poll.tick() => continue,
         }
         if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
             return;

@@ -76,8 +76,10 @@ impl Lane for Commits {
 
         // `LaneOutcome::default()` rather than a model response: this lane no
         // longer has one, so there is no spend to record and nothing to anchor.
-        let mut outcome = LaneOutcome::default();
-        outcome.completed = true;
+        let mut outcome = LaneOutcome {
+            completed: true,
+            ..LaneOutcome::default()
+        };
         merge_scanner_findings(&mut outcome, &scanner);
 
         outcome.summary = match outcome.findings.len() {

@@ -205,6 +205,9 @@ pub enum Action {
         author: String,
         /// The installation that can act on it.
         installation: u64,
+        /// The revision carried by a pull-request event, when available.
+        /// Comment requests have no revision and take a per-pull-request claim.
+        head_sha: Option<String>,
     },
     /// Triage this issue: label it, and consider closing it.
     ///
@@ -321,6 +324,7 @@ pub fn route(event: &str, payload: &Payload) -> Action {
                             number: pr.number,
                             author: pr.user.login.clone(),
                             installation: installation.id,
+                            head_sha: Some(pr.head.sha.clone()),
                         }
                     }
                 }
@@ -363,6 +367,7 @@ pub fn route(event: &str, payload: &Payload) -> Action {
                 number: issue.number,
                 author: asker,
                 installation: installation.id,
+                head_sha: None,
             }
         }
         "issues" => {

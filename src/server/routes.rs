@@ -3606,10 +3606,12 @@ mod tests {
             .unwrap()
             .expect("first process owns the job");
         let (lost, _receiver) = watch::channel(false);
+        let (owner_until, _expiry_receiver) = watch::channel(tokio::time::Instant::now());
         let guard = spawn_review_heartbeat(
             store.clone(),
             owned.clone(),
             lost,
+            owner_until,
             std::time::Duration::from_millis(5),
         );
         tokio::task::yield_now().await;

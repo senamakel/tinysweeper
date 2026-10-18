@@ -794,11 +794,11 @@ fn summarise(
             .collect::<Vec<_>>()
             .join("; ");
         if titles.is_empty() {
-            "No findings were reported. Retrieval was degraded, so model confidence was limited to Likely or lower."
+            "No findings were reported. Retrieval was degraded, so model confidence was capped at Likely."
                 .to_string()
         } else {
             format!(
-                "Critique findings were limited to Likely or lower confidence because retrieval was degraded: {titles}."
+                "Critique findings were capped at Likely confidence because retrieval was degraded: {titles}."
             )
         }
     } else if kept.is_empty() && !rejected.is_empty() {
@@ -877,7 +877,7 @@ mod tests {
     use crate::forge::types::CheckConclusion;
     use crate::forge::types::PullRequest;
     use crate::harness::mock::MockModel;
-    use crate::ports::tree::{Found, Lookup};
+    use crate::ports::tree::{Found, Lookup, TreeReader};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -1161,18 +1161,28 @@ fn helper() {
         let config = config();
         let diffs = vec![parse_file_patch(
             "src/parser.rs",
-            "@@ -1,1 +1,2 @@\n fn helper() {}\n+pub fn parse(input: i32) -> i32 { input }\n",
+            "@@ -1,1 +1,1 @@\n-pub fn parse() -> i32 { 1 }\n+pub fn parse(input: i32) -> i32 { input }\n",
         )];
         let lookup = Lookup::Read {
             path: "src/parser.rs".into(),
-            start: Some(2),
-            end: Some(2),
+            start: Some(1),
+            end: Some(1),
+        };
+        let caller_search = Lookup::Search {
+            pattern: "parse(".into(),
+            glob: None,
         };
         let tree = crate::ports::tree::MockTree::from_recorded(
             [(
                 lookup.key(),
                 Found::Unavailable {
                     reason: "cold index".into(),
+                },
+            ),
+            (
+                caller_search.key(),
+                Found::Unavailable {
+                    reason: "cold index cannot search callers".into(),
                 },
             )]
             .into_iter()

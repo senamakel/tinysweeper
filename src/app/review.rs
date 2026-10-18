@@ -87,13 +87,14 @@ impl Drop for PendingModelCall {
             // adapter observer. Only synthesize one logical failure when no
             // adapter exposed physical call telemetry (or the first dispatch
             // itself was cancelled before it could report).
-            if self.observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                self.observer.completed(
-                    Usage::default(),
-                    false,
-                    false,
-                    std::time::Duration::ZERO,
-                );
+            if self
+                .observer
+                .observed
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 0
+            {
+                self.observer
+                    .completed(Usage::default(), false, false, std::time::Duration::ZERO);
             }
         }
     }
@@ -139,29 +140,29 @@ impl ObservedModel {
                     r.usage.add(response.usage);
                 }),
                 Err(error) => self.timing.record(|r| {
-                if let Some(usage) = error.usage()
-                    && (usage.calls_attempted > 0
-                        || usage.calls_succeeded > 0
-                        || usage.calls_refused > 0
-                        || usage.calls_errored > 0)
-                {
-                    r.calls_attempted += usage.calls_attempted;
-                    r.calls_succeeded += usage.calls_succeeded;
-                    r.calls_refused += usage.calls_refused;
-                    r.calls_errored += usage.calls_errored;
-                } else if error.to_string().to_lowercase().contains("refus")
-                    || error.to_string().to_lowercase().contains("budget")
-                    || matches!(error, Error::Budget { .. })
-                {
-                    r.calls_attempted += 1;
-                    r.calls_refused += 1;
-                } else {
-                    r.calls_attempted += 1;
-                    r.calls_errored += 1;
-                }
-                if let Some(usage) = error.usage() {
-                    r.usage.add(usage);
-                }
+                    if let Some(usage) = error.usage()
+                        && (usage.calls_attempted > 0
+                            || usage.calls_succeeded > 0
+                            || usage.calls_refused > 0
+                            || usage.calls_errored > 0)
+                    {
+                        r.calls_attempted += usage.calls_attempted;
+                        r.calls_succeeded += usage.calls_succeeded;
+                        r.calls_refused += usage.calls_refused;
+                        r.calls_errored += usage.calls_errored;
+                    } else if error.to_string().to_lowercase().contains("refus")
+                        || error.to_string().to_lowercase().contains("budget")
+                        || matches!(error, Error::Budget { .. })
+                    {
+                        r.calls_attempted += 1;
+                        r.calls_refused += 1;
+                    } else {
+                        r.calls_attempted += 1;
+                        r.calls_errored += 1;
+                    }
+                    if let Some(usage) = error.usage() {
+                        r.usage.add(usage);
+                    }
                 }),
             }
         }

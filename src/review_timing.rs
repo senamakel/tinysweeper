@@ -137,7 +137,7 @@ impl ReviewTiming {
             name: "lanes",
             lane: Some(name),
             started: Instant::now(),
-            span: tracing::info_span!(parent: parent, 
+            span: tracing::info_span!(parent: parent,
                 "review.phase",
                 repo = %record.repo,
                 pr = record.pr,

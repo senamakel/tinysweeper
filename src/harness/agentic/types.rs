@@ -9,7 +9,9 @@ use openhuman_embed::budget::Budget;
 pub(crate) fn accumulate_usage(total: &mut Usage, usage: Usage) {
     total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
-    total.reasoning_tokens = total.reasoning_tokens.saturating_add(usage.reasoning_tokens);
+    total.reasoning_tokens = total
+        .reasoning_tokens
+        .saturating_add(usage.reasoning_tokens);
     total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
     total.calls_attempted = total.calls_attempted.saturating_add(usage.calls_attempted);
     total.calls_succeeded = total.calls_succeeded.saturating_add(usage.calls_succeeded);

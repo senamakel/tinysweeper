@@ -2277,11 +2277,9 @@ async fn review_inner(
                         PUBLISH_DEADLINE,
                     )
                 });
-                let publish_result = published
-                    .and_then(|published| {
-                        published
-                            .unwrap_or_else(|_| Err(Error::lane("review", "publishing panicked")))
-                    });
+                let publish_result = published.and_then(|published| {
+                    published.unwrap_or_else(|_| Err(Error::lane("review", "publishing panicked")))
+                });
                 match publish_result {
                     Ok(crate::app::apply::ApplyDisposition::Published) => {
                         let changes_requested =
@@ -2462,14 +2460,7 @@ async fn run_lanes(
         )
         .await
     };
-    let proposal = review_before_deadline(
-        &run.timing,
-        run.deadline,
-        repo,
-        number,
-        review,
-    )
-    .await?;
+    let proposal = review_before_deadline(&run.timing, run.deadline, repo, number, review).await?;
 
     Ok((config.into_owned(), proposal))
 }
@@ -2841,6 +2832,32 @@ impl Previews for PreviewDispatch {
 mod tests {
     use super::*;
 
+    struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TimingLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct SlowMockModel(crate::harness::MockModel);
+
+    #[async_trait::async_trait]
+    impl crate::ports::model::Model for SlowMockModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            self.0.complete(request).await
+        }
+    }
+
     #[test]
     fn review_timing_classifies_deadline_errors_without_parsing_display_text() {
         let timeout = Error::Timeout {
@@ -2853,6 +2870,93 @@ mod tests {
             "deadline"
         );
         assert_eq!(crate::review_timing::outcome_for_error(&model), "failure");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_server_deadline_records_the_cancelled_mock_review_lifecycle() {
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::model::Model;
+
+        let mut config: crate::config::Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = false;
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                title: "review lifecycle fixture".into(),
+                body: "A fixture with a real changed file.".into(),
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(
+            7,
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                status: FileStatus::Modified,
+                patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                additions: 1,
+                ..ChangedFile::default()
+            }],
+        );
+        let forge = MockForge::with_state(state);
+        let repo = RepoId::parse("tinyhumansai/tinysweeper").unwrap();
+        let model = SlowMockModel(MockModel::always(serde_json::json!({
+            "summary": "Reviewed.", "findings": [], "resolved": []
+        })));
+        let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
+        let future = crate::app::review::review_with_tree_observed(
+            &forge,
+            Arc::new(model),
+            &config,
+            &repo,
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        );
+        let error = review_before_deadline(
+            &timing,
+            tokio::time::Instant::now() + std::time::Duration::from_millis(80),
+            &repo,
+            7,
+            future,
+        )
+        .await
+        .expect_err("the server deadline cancels the delayed model call");
+        assert!(matches!(error, Error::Timeout { .. }));
+        let record = timing.snapshot();
+        assert_eq!(record.outcome, "deadline");
+        assert_eq!(record.head_sha, "abc123");
+        assert_eq!(record.files_total, 1);
+        assert_eq!(record.files_answered, 0);
+        assert_eq!(record.files_unanswered, 1);
+        assert!(record.phases_ms["context"] > 0);
+        assert!(record.phases_ms["lanes"] > 0);
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_errored, 1);
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("review timing"), "{line}");
+        assert!(line.contains("outcome=deadline"), "{line}");
     }
 
     #[tokio::test]

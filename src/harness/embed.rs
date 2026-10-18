@@ -65,7 +65,10 @@ impl CompletionObserver for ModelCallObserver {
         let latency_ms = trace.latency.as_millis() as u64;
         let succeeded = trace.outcome.is_ok();
         let provider_response = succeeded
-            || matches!(trace.outcome, Err(openhuman_embed::CoreError::StructuredOutput { .. }));
+            || matches!(
+                trace.outcome,
+                Err(openhuman_embed::CoreError::StructuredOutput { .. })
+            );
         let failed_usage = match trace.outcome {
             Err(openhuman_embed::CoreError::StructuredOutput { failure, .. }) => {
                 failure.usage.as_ref()
@@ -91,7 +94,12 @@ impl CompletionObserver for ModelCallObserver {
             reasoning_tokens = accounting.reasoning_tokens,
             cached_tokens = accounting.cached_tokens,
             "model call");
-        crate::ports::model::observe_model_call(accounting, provider_response, false, trace.latency);
+        crate::ports::model::observe_model_call(
+            accounting,
+            provider_response,
+            false,
+            trace.latency,
+        );
     }
 }
 
@@ -526,7 +534,11 @@ impl GatewayModel {
             output_tokens: totals.output_tokens,
             reasoning_tokens: totals.reasoning_tokens,
             calls_attempted: attempts,
-            calls_succeeded: result.attempts.iter().filter(|attempt| !attempt.failed).count() as u64,
+            calls_succeeded: result
+                .attempts
+                .iter()
+                .filter(|attempt| !attempt.failed)
+                .count() as u64,
             calls_refused: 0,
             calls_errored: failed_attempts,
             cached_tokens: totals.cached_tokens,

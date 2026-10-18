@@ -2713,6 +2713,12 @@ async fn review_inner(
     }
     let reviewed = reviewed?.flatten().flatten();
     if run
+        .paid_exhausted
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(InnerReview::Exhausted);
+    }
+    if run
         .lease_busy
         .swap(false, std::sync::atomic::Ordering::SeqCst)
     {
@@ -2824,6 +2830,25 @@ impl ReviewRun<'_> {
             ..run.clone()
         };
         run.check_owner(state).await?;
+
+        if let Some(owned) = &run.owned {
+            match with_paid_review_attempt(
+                state.review_jobs.as_ref(),
+                owned,
+                unix_time_ms(),
+                || async {},
+            )
+            .await?
+            {
+                PaidWork::Started(()) => {}
+                PaidWork::Exhausted => {
+                    run.paid_exhausted
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Ok(None);
+                }
+                PaidWork::OwnershipLost => return Err(Error::ReviewOwnershipLost),
+            }
+        }
 
         // Indexing is kicked off here and deliberately not awaited. A cold full
         // index takes minutes; a review is expected in seconds. The review runs

@@ -103,17 +103,24 @@ pub fn completed(
         many => format!("{many} findings"),
     };
     let (conclusion, title) = if let Some((reviewed, total)) = coverage {
-        (
-            if changes_requested {
-                CheckConclusion::Neutral
-            } else {
-                CheckConclusion::Success
-            },
-            format!(
-                "Reviewed {reviewed} of {total} files — {} not reviewed",
-                total.saturating_sub(reviewed)
-            ),
-        )
+        let not_reviewed = total.saturating_sub(reviewed);
+        if changes_requested {
+            (
+                if incomplete {
+                    CheckConclusion::Neutral
+                } else {
+                    CheckConclusion::Success
+                },
+                format!(
+                    "Changes requested — {reviewed} of {total} files; {not_reviewed} not reviewed"
+                ),
+            )
+        } else {
+            (
+                CheckConclusion::Neutral,
+                format!("Reviewed {reviewed} of {total} files — {not_reviewed} not reviewed"),
+            )
+        }
     } else if incomplete {
         (
             CheckConclusion::Neutral,
@@ -196,7 +203,7 @@ mod tests {
         // the others.
         let err = crate::error::Error::Model("gateway returned 403".into());
         assert_eq!(in_progress("abc123").name, CHECK_NAME);
-        assert_eq!(completed("abc123", 0, false, None).name, CHECK_NAME);
+        assert_eq!(completed("abc123", 0, false, None, false).name, CHECK_NAME);
         assert_eq!(
             crate::server::failure::check_run("abc123", &err).name,
             CHECK_NAME
@@ -205,7 +212,7 @@ mod tests {
 
     #[test]
     fn completing_is_terminal_and_does_not_block() {
-        let check = completed("abc123", 3, false, None);
+        let check = completed("abc123", 3, false, None, false);
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
         assert!(!check.is_in_progress());
         assert!(
@@ -219,7 +226,7 @@ mod tests {
         // The trap this check would otherwise set: a green `tinysweeper/review`
         // sitting next to a red `tinysweeper/security`, read as a pass.
         for findings in [0, 1, 7] {
-            let check = completed("abc123", findings, false, None);
+            let check = completed("abc123", findings, false, None, false);
             assert!(
                 check.summary.contains("does not mean the code passed"),
                 "a liveness pass must disclaim being a verdict"
@@ -251,7 +258,7 @@ mod tests {
         // pushed again.
         let err = crate::error::Error::Model("gateway returned 403".into());
         for check in [
-            completed("abc123", 0, false, None),
+            completed("abc123", 0, false, None, false),
             not_reviewed("abc123"),
             crate::server::failure::check_run("abc123", &err),
         ] {
@@ -265,7 +272,7 @@ mod tests {
 
     #[test]
     fn a_review_that_requested_changes_never_concludes_green() {
-        let check = completed("abc123", 2, true, None);
+        let check = completed("abc123", 2, true, None, false);
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
         assert!(check.title.contains("changes requested"), "{}", check.title);
         assert!(check.title.contains("2 findings"), "{}", check.title);
@@ -284,13 +291,13 @@ mod tests {
     #[test]
     fn the_title_counts_findings_and_gets_the_plural_right() {
         assert!(
-            completed("abc", 0, false, None)
+            completed("abc", 0, false, None, false)
                 .title
                 .contains("nothing to report")
         );
-        assert!(completed("abc", 1, false, None).title.contains("1 finding"));
+        assert!(completed("abc", 1, false, None, false).title.contains("1 finding"));
         assert!(
-            completed("abc", 4, false, None)
+            completed("abc", 4, false, None, false)
                 .title
                 .contains("4 findings")
         );
@@ -298,7 +305,14 @@ mod tests {
 
     #[test]
     fn partial_coverage_title_never_says_nothing_to_report() {
-        let check = completed("abc", 0, false, Some((8, 10)));
+        let check = completed("abc", 0, false, Some((8, 10)), true);
         assert_eq!(check.title, "Reviewed 8 of 10 files — 2 not reviewed");
+    }
+
+    #[test]
+    fn an_unanswered_whole_pr_lane_never_uses_the_empty_review_title() {
+        let check = completed("abc", 0, false, None, true);
+        assert_eq!(check.title, "Review incomplete — a lane did not respond");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
 }

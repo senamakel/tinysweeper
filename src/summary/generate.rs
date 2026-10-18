@@ -1050,10 +1050,10 @@ mod tests {
             "old-head"
         );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
-        assert_eq!(request["lanes"][0]["status"]["status"], "no_response");
-        assert_eq!(request["lanes"][1]["status"]["status"], "partial");
-        assert_eq!(request["lanes"][1]["status"]["reviewed_files"], 1);
-        assert_eq!(request["lanes"][2]["status"]["status"], "answered");
+        assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
+        assert_eq!(request["lanes"][0]["status"]["status"], "partial");
+        assert_eq!(request["lanes"][0]["status"]["reviewed_files"], 1);
+        assert_eq!(request["lanes"][1]["status"]["status"], "answered");
         assert_eq!(request["lanes"][3]["status"]["status"], "skipped");
     }
 
@@ -1227,7 +1227,14 @@ mod tests {
             &config,
             &pull_request,
             &diffs,
-            &[],
+            &[lane(
+                LaneId::Critique,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed.",
+                &["model"],
+                &[],
+                None,
+            )],
             Some(&prior),
             &[],
         )

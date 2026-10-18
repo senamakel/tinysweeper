@@ -2212,7 +2212,13 @@ mod tests {
             },
         );
         assert_eq!(lane.conclusion, CheckConclusion::Neutral);
-        assert_eq!(lane.coverage, Some((0, 1)));
+        assert_eq!(
+            lane.coverage,
+            Some(crate::lanes::FileCoverage {
+                reviewed: vec![],
+                unanswered: vec!["src/unread.rs".into()],
+            })
+        );
     }
 
     #[test]

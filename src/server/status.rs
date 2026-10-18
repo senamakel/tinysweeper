@@ -220,7 +220,12 @@ mod tests {
 
     fn file_lane(id: &str, reviewed: &[&str], unanswered: &[&str]) -> LaneProposal {
         LaneProposal {
-            lane: LaneId::new(id).expect("valid lane id"),
+            lane: match id {
+                "critique" => LaneId::Critique,
+                "security" => LaneId::Security,
+                "tests" => LaneId::Tests,
+                _ => panic!("unexpected lane id {id}"),
+            },
             check_name: format!("tinysweeper/{id}"),
             conclusion: CheckConclusion::Neutral,
             summary: String::new(),

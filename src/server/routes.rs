@@ -2198,11 +2198,10 @@ async fn review_inner(
     // so claim it before spending a credential or a forge read. Comment and
     // manual requests have no revision; serialize those per pull request until
     // the live head is known, then take its revision lease before any indexing.
-    let mut lease = expected_head.map(|head| review_lease(repo, number, run.mode, Some(head)));
-    if let Some(lease) = &lease
-        && !state.store.claim_lease(lease, "server").await?
-    {
-        tracing::debug!(%lease, "another worker holds this review");
+    let mut lease = Some(review_lease(repo, number, run.mode, expected_head));
+    let initial_lease = lease.as_deref().expect("just set");
+    if !state.store.claim_lease(initial_lease, "server").await? {
+        tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(None);
     }
 

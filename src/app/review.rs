@@ -558,7 +558,7 @@ pub async fn review_with_tree(
 
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "review"))]
-pub async fn review_with_tree_observed(
+pub(crate) async fn review_with_tree_observed(
     forge: &dyn ForgeRead,
     model: Arc<dyn Model>,
     config: &Config,

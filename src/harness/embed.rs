@@ -441,8 +441,12 @@ impl GatewayModel {
                 )
             });
             log_model_attempt(
-                model, attempt.max_tokens, call_started.elapsed().as_millis() as u64,
-                &usage, attempt.finish_reason.as_deref(), reported,
+                model,
+                attempt.max_tokens,
+                call_started.elapsed().as_millis() as u64,
+                &usage,
+                attempt.finish_reason.as_deref(),
+                reported,
             );
             if reasoning_crowds_the_answer(
                 attempt.max_tokens.unwrap_or_default(),
@@ -536,14 +540,22 @@ fn log_model_attempt(
     model: &str,
     cap: Option<u32>,
     latency_ms: u64,
-    usage: &openhuman_embed::structured::TokenUsage,
+    usage: &openhuman_embed::complete::CompletionUsage,
     finish_reason: Option<&str>,
     reported_cost_usd: Option<f64>,
 ) {
-    tracing::info!(model, cap, latency_ms, input_tokens = usage.input_tokens,
-        cached_tokens = usage.cached_tokens, output_tokens = usage.output_tokens,
-        reasoning_tokens = usage.reasoning_tokens, ?finish_reason,
-        reported_cost_usd, "model call");
+    tracing::info!(
+        model,
+        cap,
+        latency_ms,
+        input_tokens = usage.input_tokens,
+        cached_tokens = usage.cached_tokens,
+        output_tokens = usage.output_tokens,
+        reasoning_tokens = usage.reasoning_tokens,
+        ?finish_reason,
+        reported_cost_usd,
+        "model call"
+    );
 }
 
 /// How many times a truncated answer is retried with a doubled ceiling before
@@ -678,6 +690,43 @@ impl Model for GatewayModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct LogBytes(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn model_call_log_includes_latency_ms() {
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || LogBytes(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_model_attempt(
+                "test/model",
+                Some(128),
+                37,
+                &openhuman_embed::complete::CompletionUsage::default(),
+                Some("stop"),
+                None,
+            );
+        });
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("model call"));
+        assert!(line.contains("latency_ms=37"), "{line}");
+    }
 
     fn models() -> Models {
         Models {

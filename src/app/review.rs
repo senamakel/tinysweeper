@@ -43,7 +43,11 @@ struct ObservedModel {
 }
 
 impl ObservedModel {
-    async fn observe(&self, request: crate::ports::model::ModelRequest, tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>) -> Result<crate::ports::model::ModelResponse> {
+    async fn observe(
+        &self,
+        request: crate::ports::model::ModelRequest,
+        tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>,
+    ) -> Result<crate::ports::model::ModelResponse> {
         self.timing.record(|r| r.calls_attempted += 1);
         let started = std::time::Instant::now();
         let result = match tree {
@@ -52,11 +56,21 @@ impl ObservedModel {
         };
         let latency_ms = started.elapsed().as_millis() as u64;
         match &result {
-            Ok(response) => self.timing.record(|r| { r.calls_succeeded += 1; r.usage.add(response.usage); }),
+            Ok(response) => self.timing.record(|r| {
+                r.calls_succeeded += 1;
+                r.usage.add(response.usage);
+            }),
             Err(error) => self.timing.record(|r| {
-                if error.to_string().to_lowercase().contains("refus") || matches!(error, Error::Budget { .. }) { r.calls_refused += 1; }
-                else { r.calls_errored += 1; }
-                if let Some(usage) = error.usage() { r.usage.add(usage); }
+                if error.to_string().to_lowercase().contains("refus")
+                    || matches!(error, Error::Budget { .. })
+                {
+                    r.calls_refused += 1;
+                } else {
+                    r.calls_errored += 1;
+                }
+                if let Some(usage) = error.usage() {
+                    r.usage.add(usage);
+                }
             }),
         }
         tracing::info!(model = %request.model, latency_ms, "observed model call");
@@ -66,16 +80,29 @@ impl ObservedModel {
 
 #[async_trait::async_trait]
 impl Model for ObservedModel {
-    async fn complete(&self, request: crate::ports::model::ModelRequest) -> Result<crate::ports::model::ModelResponse> {
+    async fn complete(
+        &self,
+        request: crate::ports::model::ModelRequest,
+    ) -> Result<crate::ports::model::ModelResponse> {
         self.observe(request, None).await
     }
 
-    async fn review(&self, request: crate::ports::model::ModelRequest, tree: &dyn TreeReader, policy: &crate::config::types::LookupPolicy) -> Result<crate::ports::model::ModelResponse> {
+    async fn review(
+        &self,
+        request: crate::ports::model::ModelRequest,
+        tree: &dyn TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> Result<crate::ports::model::ModelResponse> {
         self.observe(request, Some((tree, policy))).await
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
-        self.inner.scoped_budget(budget_usd).map(|inner| Arc::new(Self { inner, timing: self.timing.clone() }) as Arc<dyn Model>)
+        self.inner.scoped_budget(budget_usd).map(|inner| {
+            Arc::new(Self {
+                inner,
+                timing: self.timing.clone(),
+            }) as Arc<dyn Model>
+        })
     }
 }
 
@@ -492,7 +519,10 @@ pub async fn review_with_tree(
     retrieval: Option<&Retriever<'_>>,
     tree: Option<&dyn TreeReader>,
 ) -> Result<Proposal> {
-    review_with_tree_observed(forge, model, config, repo, number, store, knowledge, retrieval, tree, None).await
+    review_with_tree_observed(
+        forge, model, config, repo, number, store, knowledge, retrieval, tree, None,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -509,8 +539,13 @@ pub async fn review_with_tree_observed(
     timing: Option<crate::review_timing::ReviewTiming>,
 ) -> Result<Proposal> {
     let model: Arc<dyn Model> = if let Some(timing) = &timing {
-        Arc::new(ObservedModel { inner: model, timing: timing.clone() })
-    } else { model };
+        Arc::new(ObservedModel {
+            inner: model,
+            timing: timing.clone(),
+        })
+    } else {
+        model
+    };
     let context_phase = timing.as_ref().map(|t| t.phase("context"));
     let mut context = forge
         .pull_request_context_bounded(
@@ -1121,9 +1156,19 @@ pub async fn review_with_tree_observed(
     if let Some(timing) = &timing {
         timing.record(|r| {
             r.files_total = context.files.len();
-            let paths: std::collections::BTreeSet<_> = context.files.iter().map(|file| file.path.as_str()).collect();
-            let unanswered: std::collections::BTreeSet<_> = uninspected.iter().map(String::as_str)
-                .chain(lanes.iter().flat_map(|lane| lane.unanswered.iter().map(String::as_str)))
+            let paths: std::collections::BTreeSet<_> = context
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect();
+            let unanswered: std::collections::BTreeSet<_> = uninspected
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    lanes
+                        .iter()
+                        .flat_map(|lane| lane.unanswered.iter().map(String::as_str)),
+                )
                 .filter(|path| paths.contains(path))
                 .collect();
             r.files_unanswered = unanswered.len();
@@ -2216,14 +2261,29 @@ mod tests {
         config.models.agentic_reviewers = false;
         config.overview.enabled = false;
         let model = MockModel::always(json!({"summary":"Fine.","findings":[]})).with_usage(Usage {
-            input_tokens: 17, output_tokens: 5, reasoning_tokens: 3, cached_tokens: 4,
-            embed_tokens: 0, cost_usd: 0.001,
+            input_tokens: 17,
+            output_tokens: 5,
+            reasoning_tokens: 3,
+            cached_tokens: 4,
+            embed_tokens: 0,
+            cost_usd: 0.001,
         });
-        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let proposal = review_with_tree_observed(
-            &forge, Arc::new(model), &config, &repo(), 7, None, None, None, None,
+            &forge,
+            Arc::new(model),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
             Some(timing.clone()),
-        ).await.expect("mock review completes");
+        )
+        .await
+        .expect("mock review completes");
         timing.finish("success");
 
         let record = timing.snapshot();
@@ -2231,15 +2291,25 @@ mod tests {
         assert_eq!(record.pr, 7);
         assert_eq!(record.head_sha, "abc123");
         assert_eq!(record.outcome, "success");
-        assert!(crate::review_timing::PHASES.iter().all(|phase| record.phases_ms.contains_key(*phase)));
-        assert!(record.phases_ms.values().sum::<u64>() <= record.started.unwrap().elapsed().as_millis() as u64);
+        assert!(
+            crate::review_timing::PHASES
+                .iter()
+                .all(|phase| record.phases_ms.contains_key(*phase))
+        );
+        assert!(
+            record.phases_ms.values().sum::<u64>()
+                <= record.started.unwrap().elapsed().as_millis() as u64
+        );
         assert!(record.lanes_ms.contains_key("critique"));
         assert!(record.calls_attempted > 0);
         assert!(record.calls_succeeded > 0);
         assert_eq!(record.usage.reasoning_tokens, record.calls_succeeded * 3);
         assert_eq!(record.usage.cached_tokens, record.calls_succeeded * 4);
         assert_eq!(record.files_total, 1);
-        assert_eq!(record.files_answered + record.files_unanswered, record.files_total);
+        assert_eq!(
+            record.files_answered + record.files_unanswered,
+            record.files_total
+        );
         assert_eq!(proposal.head_sha, "abc123");
     }
 
@@ -2248,25 +2318,44 @@ mod tests {
         struct SlowModel;
         #[async_trait::async_trait]
         impl Model for SlowModel {
-            async fn complete(&self, _request: crate::ports::model::ModelRequest) -> Result<crate::ports::model::ModelResponse> {
+            async fn complete(
+                &self,
+                _request: crate::ports::model::ModelRequest,
+            ) -> Result<crate::ports::model::ModelResponse> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 unreachable!("deadline cancels the slow model")
             }
         }
         let forge = forge_with(vec![rust_file()], vec![]);
         let config = critique_config();
-        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let future = review_with_tree_observed(
-            &forge, Arc::new(SlowModel), &config, &repo(), 7, None, None, None, None,
+            &forge,
+            Arc::new(SlowModel),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
             Some(timing.clone()),
         );
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), future).await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), future)
+                .await
+                .is_err()
+        );
         timing.finish("deadline");
         let record = timing.snapshot();
         assert_eq!(record.outcome, "deadline");
         assert!(record.calls_attempted > 0);
         assert_eq!(record.calls_succeeded, 0);
-        assert_eq!(record.phases_ms.get("lanes").copied().unwrap_or_default() > 0, true);
+        assert_eq!(
+            record.phases_ms.get("lanes").copied().unwrap_or_default() > 0,
+            true
+        );
     }
 
     fn config() -> Config {

@@ -2077,7 +2077,8 @@ async fn review_inner(
         forge.pull_request(&repo_id, number).await?
     };
     tracing::Span::current().record("head_sha", pull_request.head_sha.as_str());
-    run.timing.record(|r| r.head_sha = pull_request.head_sha.clone());
+    run.timing
+        .record(|r| r.head_sha = pull_request.head_sha.clone());
 
     // Comment and review-comment deliveries do not carry the draft flag, so
     // routing alone cannot prevent a manual-looking request from waking the
@@ -2802,7 +2803,10 @@ mod tests {
             seconds: 1,
         };
         let model = Error::Model("provider timed out".into());
-        assert_eq!(crate::review_timing::outcome_for_error(&timeout), "deadline");
+        assert_eq!(
+            crate::review_timing::outcome_for_error(&timeout),
+            "deadline"
+        );
         assert_eq!(crate::review_timing::outcome_for_error(&model), "failure");
     }
 

@@ -7,12 +7,26 @@ use std::time::Instant;
 use crate::ports::model::Usage;
 
 pub const PHASES: &[&str] = &[
-    "permit", "open_status", "checkout", "context", "knowledge", "retrieval",
-    "graph", "lanes", "summary", "threads", "wireframe", "publish",
+    "permit",
+    "open_status",
+    "checkout",
+    "context",
+    "knowledge",
+    "retrieval",
+    "graph",
+    "lanes",
+    "summary",
+    "threads",
+    "wireframe",
+    "publish",
 ];
 
 pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
-    if matches!(error, crate::error::Error::Timeout { .. }) { "deadline" } else { "failure" }
+    if matches!(error, crate::error::Error::Timeout { .. }) {
+        "deadline"
+    } else {
+        "failure"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -42,20 +56,35 @@ pub struct Record {
 impl ReviewTiming {
     pub fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
         let mut record = Record {
-            repo: repo.into(), pr, mode: mode.into(), outcome: "cancelled".into(),
+            repo: repo.into(),
+            pr,
+            mode: mode.into(),
+            outcome: "cancelled".into(),
             started: Some(Instant::now()),
             ..Record::default()
         };
-        for phase in PHASES { record.phases_ms.insert((*phase).into(), 0); }
+        for phase in PHASES {
+            record.phases_ms.insert((*phase).into(), 0);
+        }
         Self(Arc::new(Mutex::new(record)))
     }
 
     pub fn phase(&self, name: &'static str) -> PhaseGuard {
-        PhaseGuard { timing: self.clone(), name, lane: None, started: Instant::now() }
+        PhaseGuard {
+            timing: self.clone(),
+            name,
+            lane: None,
+            started: Instant::now(),
+        }
     }
 
     pub fn lane(&self, name: &'static str) -> PhaseGuard {
-        PhaseGuard { timing: self.clone(), name: "lanes", lane: Some(name), started: Instant::now() }
+        PhaseGuard {
+            timing: self.clone(),
+            name: "lanes",
+            lane: Some(name),
+            started: Instant::now(),
+        }
     }
 
     pub fn record(&self, update: impl FnOnce(&mut Record)) {
@@ -72,7 +101,10 @@ impl ReviewTiming {
 
     pub fn emit(&self) {
         let r = self.0.lock().expect("review timing lock");
-        let total_ms = r.started.map(|s| s.elapsed().as_millis() as u64).unwrap_or_default();
+        let total_ms = r
+            .started
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or_default();
         tracing::info!(target: "tinysweeper::review_timing", repo = %r.repo, pr = r.pr,
             head_sha = %r.head_sha, mode = %r.mode, outcome = %r.outcome, total_ms,
             queue_wait_ms = r.queue_wait_ms, phases_ms = ?r.phases_ms, lanes_ms = ?r.lanes_ms,
@@ -87,18 +119,29 @@ impl ReviewTiming {
 
 impl Drop for ReviewTiming {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.0) == 1 { self.emit(); }
+        if Arc::strong_count(&self.0) == 1 {
+            self.emit();
+        }
     }
 }
 
-pub struct PhaseGuard { timing: ReviewTiming, name: &'static str, lane: Option<&'static str>, started: Instant }
+pub struct PhaseGuard {
+    timing: ReviewTiming,
+    name: &'static str,
+    lane: Option<&'static str>,
+    started: Instant,
+}
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed().as_millis() as u64;
         self.timing.record(|r| {
-            if self.name == "permit" { r.queue_wait_ms += elapsed; }
+            if self.name == "permit" {
+                r.queue_wait_ms += elapsed;
+            }
             *r.phases_ms.entry(self.name.into()).or_default() += elapsed;
-            if let Some(lane) = self.lane { *r.lanes_ms.entry(lane.into()).or_default() += elapsed; }
+            if let Some(lane) = self.lane {
+                *r.lanes_ms.entry(lane.into()).or_default() += elapsed;
+            }
         });
     }
 }

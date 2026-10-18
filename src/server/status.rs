@@ -69,13 +69,22 @@ pub struct ReviewCoverage {
 
 /// Aggregate per-file gaps by path, then mark whether a whole-PR lane failed.
 pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewCoverage {
-    let files = lanes.iter().find_map(|lane| {
-        lane.coverage.as_ref().map(|coverage| {
-            (
-                coverage.reviewed.len(),
-                coverage.reviewed.len() + coverage.unanswered.len(),
-            )
-        })
+    use std::collections::BTreeSet;
+
+    let mut paths = BTreeSet::new();
+    let mut unanswered_paths = BTreeSet::new();
+    for lane in lanes {
+        if let Some(coverage) = &lane.coverage {
+            paths.extend(coverage.reviewed.iter().cloned());
+            paths.extend(coverage.unanswered.iter().cloned());
+            unanswered_paths.extend(coverage.unanswered.iter().cloned());
+        }
+    }
+    let files = (!paths.is_empty()).then(|| {
+        (
+            paths.len().saturating_sub(unanswered_paths.len()),
+            paths.len(),
+        )
     });
     let unanswered_lane = lanes
         .iter()
@@ -131,7 +140,14 @@ pub fn completed(
     };
     let (conclusion, title) = if let Some((reviewed, total)) = coverage.files {
         let not_reviewed = total.saturating_sub(reviewed);
-        if coverage.unanswered_lane {
+        if changes_requested && coverage.unanswered_lane {
+            (
+                CheckConclusion::Neutral,
+                format!(
+                    "Changes requested — review incomplete; {reviewed}/{total} files reviewed"
+                ),
+            )
+        } else if coverage.unanswered_lane {
             (
                 CheckConclusion::Neutral,
                 format!(
@@ -261,13 +277,11 @@ mod tests {
         forge
             .publish_check(
                 &repo,
-                completed("abc", 0, false, aggregate_coverage(lanes)),
+                completed(head, 0, false, aggregate_coverage(lanes)),
             )
             .await
             .expect("publishes aggregate check");
-        let mut check = forge.checks().remove(CHECK_NAME).unwrap();
-        check.head_sha = head.to_string();
-        check
+        forge.checks().remove(CHECK_NAME).unwrap()
     }
 
     #[tokio::test]
@@ -292,7 +306,7 @@ mod tests {
         let files: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
         let all: Vec<_> = files.iter().map(String::as_str).collect();
         let first_reviewed: Vec<_> = all[1..].to_vec();
-        let second_reviewed: Vec<_> = [&all[..9], &all[9..]].concat();
+        let second_reviewed: Vec<_> = all[..9].to_vec();
         let lanes = [
             file_lane("critique", &first_reviewed, &[all[0]]),
             file_lane("security", &second_reviewed, &[all[9]]),
@@ -319,6 +333,19 @@ mod tests {
             check.title,
             "Review incomplete — lane unanswered; 10 of 10 files reviewed"
         );
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+    }
+
+    #[test]
+    fn changes_requested_remains_visible_when_coverage_is_incomplete() {
+        let coverage = ReviewCoverage {
+            files: Some((8, 10)),
+            unanswered_lane: true,
+        };
+        let check = completed("abc", 1, true, coverage);
+
+        assert!(check.title.starts_with("Changes requested"), "{}", check.title);
+        assert!(check.title.len() <= 80, "{} chars: {}", check.title.len(), check.title);
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
     }
 

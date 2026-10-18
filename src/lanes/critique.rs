@@ -787,20 +787,18 @@ fn summarise(
     added_by_coverage: usize,
     withheld_for_degraded_context: usize,
 ) -> String {
-    if kept.is_empty() && !rejected.is_empty() {
+    let mut summary = if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
             .iter()
             .map(|item| format!("{} — {}", item.title.trim(), item.reason.trim()))
             .collect();
-        return format!(
+        format!(
             "Nothing to report. {} finding{} raised and dropped as disproved by the diff: {}.",
             rejected.len(),
             plural(rejected.len()),
             reasons.join("; ")
-        );
-    }
-
-    let summary = if rejected.is_empty() {
+        )
+    } else if rejected.is_empty() {
         summary.to_string()
     } else {
         format!(
@@ -835,6 +833,12 @@ fn summarise(
         notes.push(format!(
             "{added_by_coverage} finding{} added by a second pass",
             plural(added_by_coverage)
+        ));
+    }
+    if withheld_for_degraded_context > 0 {
+        notes.push(format!(
+            "{withheld_for_degraded_context} unchanged-code finding{} withheld from action because retrieval was degraded and no current-head lookup supported it",
+            plural(withheld_for_degraded_context)
         ));
     }
 
@@ -910,6 +914,23 @@ fn helper() {
         diffs: &[FileDiff],
         file_contents: &BTreeMap<String, String>,
     ) -> LaneOutcome {
+        run_with_context(
+            model,
+            config,
+            diffs,
+            file_contents,
+            crate::retrieve::RetrievalStatus::Off,
+        )
+        .await
+    }
+
+    async fn run_with_context(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        file_contents: &BTreeMap<String, String>,
+        retrieval_status: crate::retrieve::RetrievalStatus,
+    ) -> LaneOutcome {
         let pr = pull_request();
         Critique::new(Arc::new(model))
             .run(LaneInput {
@@ -923,7 +944,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
-                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieval_status,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -945,6 +966,77 @@ fn helper() {
             "severity": "high",
             "confidence": 0.9
         })
+    }
+
+    #[tokio::test]
+    async fn a_degraded_index_withholds_unsupported_unchanged_code_findings() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    let ready = true;\n }\n",
+        )];
+        let response = json!({
+            "summary": "The old branch is broken.",
+            "findings": [{
+                "path": "src/main.rs",
+                "existing_code": "fn main() {",
+                "rule": "bad-caller",
+                "title": "Handle the old caller",
+                "body": "The unchanged caller uses an incompatible contract.",
+                "severity": "critical",
+                "confidence": 0.99
+            }]
+        });
+        let model = MockModel::new()
+            .then(response)
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+        )
+        .await;
+
+        assert!(outcome.findings.is_empty(), "{outcome:?}");
+        assert!(outcome.summary.contains("withheld from action"));
+    }
+
+    #[tokio::test]
+    async fn degraded_retrieval_keeps_findings_grounded_on_changed_lines() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    let ready = true;\n }\n",
+        )];
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The new value is unused.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "    let ready = true;",
+                    "rule": "unused-value",
+                    "title": "Use the ready value",
+                    "body": "The changed value is never read.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(!outcome.findings[0].late);
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal

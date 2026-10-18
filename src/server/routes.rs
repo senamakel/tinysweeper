@@ -2972,7 +2972,6 @@ impl ReviewRun<'_> {
             unix_time_ms(),
             || async {
                 run.check_owner(state).await?;
-                run.check(repo, number)?;
                 if let Some(backend) = &state.index {
                     tokio::spawn(index_in_background(
                         backend.clone(),
@@ -2983,6 +2982,7 @@ impl ReviewRun<'_> {
                         read_token.to_owned(),
                     ));
                 }
+                run.check(repo, number)?;
                 Ok(())
             },
             || async {
@@ -4739,7 +4739,6 @@ mod tests {
             owner_lost: None,
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let err = spent
             .check("o/r", 7)
@@ -4756,7 +4755,6 @@ mod tests {
             owner_lost: None,
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            paid_exhausted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         assert!(
             live.check("o/r", 7).is_ok(),

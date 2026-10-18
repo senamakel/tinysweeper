@@ -2994,15 +2994,14 @@ impl ReviewRun<'_> {
             },
             || async {
                 run.check_owner(state).await?;
-                open_status(
+                Ok(open_status(
                     state,
                     &run.slot,
                     repo_id,
                     &pull_request.head_sha,
                     installation,
                 )
-                .await
-                .map_err(Error::from)
+                .await)
             },
             || async {
                 run.check_owner(state).await?;
@@ -4044,7 +4043,7 @@ mod tests {
                 #[allow(unreachable_code)]
                 Ok(())
             },
-            || async { true },
+            || async { Ok(true) },
             || async { panic!("exhaustion must not enter review work") },
         )
         .await

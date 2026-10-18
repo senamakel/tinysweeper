@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use futures::FutureExt;
 use serde_json::json;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 
 use crate::automerge::types::Outcome;
 use crate::config::Config;
@@ -47,6 +48,9 @@ use crate::server::webhook::{self, Action, Payload};
 /// delivers a burst, and an unbounded worker pool turns that into an unbounded
 /// bill.
 const MAX_CONCURRENT_REVIEWS: usize = 4;
+/// Keep a small bounded backlog so ordinary webhook bursts are acknowledged
+/// promptly while work waits as data rather than as spawned futures.
+const MAX_QUEUED_REVIEWS: usize = 16;
 
 /// How long one review may take, wall clock, from delivery to verdict.
 ///
@@ -168,6 +172,7 @@ struct AppState {
     knowledge: Option<Arc<dyn KnowledgeStore>>,
     auth: Arc<AppAuth>,
     permits: Arc<Semaphore>,
+    review_queue: mpsc::Sender<QueuedReview>,
     /// The embedder and the retrieval stores, when `[embeddings]` names a
     /// provider. `None` runs every review diff-only, which is what tinysweeper
     /// did before an index existed.
@@ -194,6 +199,14 @@ struct AppState {
     /// after the concluding snapshot and be orphaned exactly like the
     /// deploy this exists to guard against.
     in_flight: Arc<std::sync::Mutex<InFlightRegistry>>,
+}
+
+/// A webhook review waiting for one of the bounded worker slots.
+#[derive(Debug)]
+struct QueuedReview {
+    action: Action,
+    delivery: String,
+    event: String,
 }
 
 /// Run the server until the process is stopped.
@@ -257,6 +270,7 @@ pub async fn serve_with_model_factory(
     };
 
     let admin_auth = config.admin_auth.clone();
+    let (review_queue, review_receiver) = mpsc::channel(MAX_QUEUED_REVIEWS);
     let state = AppState {
         config: Arc::new(config),
         store: store.clone(),
@@ -264,11 +278,14 @@ pub async fn serve_with_model_factory(
         knowledge: knowledge.clone(),
         auth: Arc::new(auth),
         permits: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
+        review_queue,
         index: index.clone(),
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
+
+    tokio::spawn(drain_review_queue(state.clone(), review_receiver));
 
     let shutdown_state = state.clone();
     let manual_state = state.clone();

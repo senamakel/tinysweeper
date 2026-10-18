@@ -555,14 +555,13 @@ async fn review_group(
                 }
             }
 
-            let module_paths: Option<Vec<String>> = None; // RED: emulate the pre-gate behavior.
-            /* let module_paths = finding.line.and_then(|line| {
+            let module_paths = finding.line.and_then(|line| {
                 input
                     .diffs
                     .iter()
                     .find(|diff| diff.path == finding.path)
                     .map(|diff| crate::flows::lookup::module_paths_added_at(diff, line))
-            }); */
+            });
             if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
                 let supported = if let Some(tree) = input.tree {
                     let mut supported = false;

@@ -1618,7 +1618,8 @@ mod tests {
             )
             .await;
             assert!(summary.executive_summary.starts_with(&format!(
-                "Pull request purpose (title): {title}."
+                "Pull request purpose (title): {}.",
+                crate::scan::scrub(&title)
             )));
             assert!(!summary.executive_summary.contains(&secret));
         }

@@ -639,7 +639,7 @@ pub async fn review_with_tree(
     // Matching and severity lookup keep the original titles, but prior
     // reviews may have been recorded before entropy-assignment redaction
     // existed. Only the prompt-facing copies are scrubbed.
-    let prior_lines: Vec<String> = annotate(&prior_titles, &prior_severities)
+    let prior_lines: Vec<String> = annotate_prior(&prior_titles, &prior_severities, &prior)
         .into_iter()
         .map(|line| crate::scan::scrub(&line))
         .collect();
@@ -1282,6 +1282,33 @@ fn annotate(titles: &[String], severities: &BTreeMap<String, Severity>) -> Vec<S
         .map(|title| match severities.get(title) {
             Some(severity) => format!("{severity} — {title}"),
             None => title.clone(),
+        })
+        .collect()
+}
+
+/// Annotate prior findings whose thread was declined by a maintainer so the
+/// next reviewer re-evaluates them instead of treating the earlier claim as
+/// evidence that it remains actionable.
+fn annotate_prior(
+    titles: &[String],
+    severities: &BTreeMap<String, Severity>,
+    prior: &PriorReview,
+) -> Vec<String> {
+    let disputed: BTreeSet<&str> = prior
+        .anchors
+        .iter()
+        .filter(|anchor| anchor.source == crate::findings::prior::AnchorSource::Declined)
+        .filter_map(|anchor| anchor.title.as_deref())
+        .collect();
+    titles
+        .iter()
+        .zip(annotate(titles, severities))
+        .map(|(title, annotated)| {
+            if disputed.contains(title.as_str()) {
+                format!("[disputed by maintainer; verify against current-head evidence] {annotated}")
+            } else {
+                annotated
+            }
         })
         .collect()
 }

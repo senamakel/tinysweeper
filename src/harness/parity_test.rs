@@ -699,9 +699,13 @@ async fn paid_call_capacity_refuses_excess_work_without_waiting_for_settlement()
             .expect("admitted call completes after settlement");
     }
 
-    model
-        .complete(request("deep"))
-        .await
-        .expect("a fresh retry fits after the two charges settle");
+    replies.add_permits(1);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        model.complete(request("deep")),
+    )
+    .await
+    .expect("retry is answered after the test releases its gateway response")
+    .expect("a fresh retry fits after the two charges settle");
     assert_eq!(gateway.requests().len(), 3);
 }

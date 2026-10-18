@@ -10,12 +10,43 @@
 //! silently misbehaves when a model phrases something differently.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+
+/// Observe one settled model call without exposing its request or response.
+pub(crate) trait ModelCallObserver: Send + Sync {
+    /// Record safe accounting and elapsed time for one provider call.
+    fn completed(&self, usage: Usage, succeeded: bool, refused: bool, latency: Duration);
+}
+
+tokio::task_local! {
+    static MODEL_CALL_OBSERVER: Arc<dyn ModelCallObserver>;
+}
+
+/// Run model work with an observer visible to physical model adapters.
+pub(crate) async fn with_model_call_observer<F: std::future::Future>(
+    observer: Arc<dyn ModelCallObserver>,
+    future: F,
+) -> F::Output {
+    MODEL_CALL_OBSERVER.scope(observer, future).await
+}
+
+/// Notify the active model-call observer when one is installed.
+pub(crate) fn observe_model_call(
+    usage: Usage,
+    succeeded: bool,
+    refused: bool,
+    latency: Duration,
+) -> bool {
+    MODEL_CALL_OBSERVER
+        .try_with(|observer| observer.completed(usage, succeeded, refused, latency))
+        .is_ok()
+}
 
 /// One message in a model conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]

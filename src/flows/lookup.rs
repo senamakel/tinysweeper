@@ -534,6 +534,22 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
 /// Module files named by added out-of-line declarations, resolved relative to
 /// the declaring Rust source file (and therefore independent of index state).
 fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
+    added_module_paths_in(diff, None)
+}
+
+/// Paths Rust may resolve for an added out-of-line module declaration on the
+/// given head line. Both `foo.rs` and `foo/mod.rs` are valid module layouts.
+pub fn module_paths_added_at(
+    diff: &crate::evidence::diff::FileDiff,
+    head_line: u64,
+) -> Vec<String> {
+    added_module_paths_in(diff, Some(head_line))
+}
+
+fn added_module_paths_in(
+    diff: &crate::evidence::diff::FileDiff,
+    head_line: Option<u64>,
+) -> Vec<String> {
     use crate::evidence::diff::LineKind;
     let source = std::path::Path::new(&diff.path);
     let parent = source.parent().unwrap_or_else(|| std::path::Path::new(""));
@@ -549,7 +565,10 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     diff.hunks
         .iter()
         .flat_map(|hunk| &hunk.lines)
-        .filter(|line| line.kind == LineKind::Added)
+        .filter(|line| {
+            line.kind == LineKind::Added
+                && head_line.is_none_or(|head_line| line.new_line == Some(head_line))
+        })
         .filter_map(|line| {
             let text = line.text.trim();
             let declaration = ["pub ", "pub(crate) ", "pub(super) ", ""]

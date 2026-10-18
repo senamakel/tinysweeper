@@ -878,7 +878,7 @@ mod tests {
     use crate::forge::types::CheckConclusion;
     use crate::forge::types::PullRequest;
     use crate::harness::mock::MockModel;
-    use crate::ports::tree::{Found, Lookup, TreeReader};
+    use crate::ports::tree::{Found, Lookup};
     use serde_json::json;
     use std::collections::BTreeMap;
 

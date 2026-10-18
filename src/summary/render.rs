@@ -16,6 +16,10 @@ fn render_citations(citations: &[String], proposal: &Proposal) -> String {
         .join(", ")
 }
 
+fn code_list<'a>(paths: impl Iterator<Item = &'a str>) -> String {
+    paths.map(code_span).collect::<Vec<_>>().join(", ")
+}
+
 /// Marker for the durable review comment.
 pub const MARKER: &str = "<!-- tinysweeper:review-hub -->";
 /// Marker used by the former standalone change-map comment.
@@ -228,7 +232,7 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
             let _ = writeln!(
                 out,
                 "- **Unreviewed:** {}",
-                prose(&lane.unanswered.join(", "))
+                code_list(lane.unanswered.iter().map(String::as_str))
             );
         }
     }
@@ -335,7 +339,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
         for finding in noted {
             let _ = writeln!(
                 out,
-                "- {} · {} — {} (`{}`)",
+                "- {} · {} — {} ({})",
                 severity(finding.severity),
                 finding.lane,
                 prose(&finding.title),
@@ -370,7 +374,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
         let _ = writeln!(
             out,
             "\n**Could not review:** {}",
-            prose(&proposal.unanswered().join(", "))
+            code_list(proposal.unanswered().into_iter())
         );
     }
 }
@@ -400,7 +404,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                 any = true;
                 let _ = writeln!(
                     out,
-                    "- [ ] Address **{}** (`{}`).",
+                "- [ ] Address **{}** ({}).",
                     prose(&finding.title),
                     code_span(&finding.path)
                 );
@@ -416,7 +420,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                 out,
                 "- [ ] Complete the {} review for {}.",
                 lane.lane,
-                prose(&lane.unanswered.join(", "))
+                code_list(lane.unanswered.iter().map(String::as_str))
             );
         }
     }
@@ -425,7 +429,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         let _ = writeln!(
             out,
             "- [ ] Review unavailable diffs: {}.",
-            prose(&proposal.unreviewed.join(", "))
+            code_list(proposal.unreviewed.iter().map(String::as_str))
         );
     }
     if !any {
@@ -458,7 +462,7 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             } else {
                 format!(
                     "incomplete; unanswered: {}",
-                    prose(&lane.unanswered.join(", "))
+                    code_list(lane.unanswered.iter().map(String::as_str))
                 )
             }
         );
@@ -478,7 +482,7 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
         for finding in &lane.findings {
             let _ = writeln!(
                 out,
-                "- **Evidence:** `{}` — {}",
+                "- **Evidence:** {} — {}",
                 code_span(&finding.path),
                 prose(&finding.title)
             );

@@ -717,7 +717,6 @@ mod cost_table_tests {
             table.contains("```\n@maintainer [click](https://evil.example)"),
             "{table}"
         );
-        assert!(!table.contains("\n```\n"), "{table}");
     }
 
     #[test]

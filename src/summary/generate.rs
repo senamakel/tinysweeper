@@ -754,8 +754,12 @@ fn sanitize_prior_narrative(
         {
             return false;
         }
-        observations.retain(|observation| {
-            validated_model_narrative(observation, statuses).is_some()
+        observations.retain_mut(|observation| {
+            let Some(validated) = validated_model_narrative(observation, statuses) else {
+                return false;
+            };
+            *observation = validated;
+            true
         });
         !observations.is_empty()
     });

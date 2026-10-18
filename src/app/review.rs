@@ -54,7 +54,7 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
         mut usage: Usage,
         succeeded: bool,
         refused: bool,
-        latency: std::time::Duration,
+        _latency: std::time::Duration,
     ) {
         use std::sync::atomic::Ordering;
 
@@ -75,8 +75,6 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
             record.calls_errored += usage.calls_errored;
             record.usage.add(usage);
         });
-        tracing::info!(target: "tinysweeper::model", latency_ms = latency.as_millis() as u64,
-            succeeded, refused, "model call");
     }
 }
 
@@ -119,7 +117,6 @@ impl ObservedModel {
             observer: observer.clone(),
             completed: false,
         };
-        let started = std::time::Instant::now();
         let result = crate::ports::model::with_model_call_observer(observer.clone(), async {
             match tree {
                 Some((tree, policy)) => self.inner.review(request.clone(), tree, policy).await,
@@ -128,7 +125,6 @@ impl ObservedModel {
         })
         .await;
         pending.completed = true;
-        let latency_ms = started.elapsed().as_millis() as u64;
         if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             match &result {
                 Ok(response) => self.timing.record(|r| {
@@ -170,9 +166,6 @@ impl ObservedModel {
                     }
                 }),
             }
-        }
-        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-            tracing::info!(model = %request.model, latency_ms, succeeded = result.is_ok(), "model call");
         }
         result
     }

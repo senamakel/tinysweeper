@@ -912,6 +912,8 @@ pub(crate) async fn review_with_tree_observed(
     // only when the lane is on: the tree, the e2e workflows, the check runs.
     // Never fatal — a forge that will not list the tree costs that lane its
     // harness, and the lane says so, rather than costing the review.
+    let lanes_phase = timing.as_ref().map(|timing| timing.phase("lanes"));
+    let _lanes_entered = lanes_phase.as_ref().map(|phase| phase.span.enter());
     let e2e_evidence = if config.enabled_lanes().contains(&LaneId::E2e) {
         Some(
             crate::lanes::e2e::evidence::gather(
@@ -988,6 +990,8 @@ pub(crate) async fn review_with_tree_observed(
             record_file_coverage(timing, &context, &uninspected, &lanes);
         }
     }
+    drop(_lanes_entered);
+    drop(lanes_phase);
 
     // Scanner findings that no lane actually adjudicated still have to reach a
     // human. A committed private key must not vanish because the lane that
@@ -2369,10 +2373,6 @@ mod tests {
             calls_succeeded: 1,
             calls_refused: 0,
             calls_errored: 2,
-            calls_attempted: 0,
-            calls_succeeded: 0,
-            calls_refused: 0,
-            calls_errored: 0,
             cached_tokens: 4,
             embed_tokens: 0,
             cost_usd: 0.001,

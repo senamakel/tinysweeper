@@ -207,9 +207,10 @@ impl Drop for PhaseGuard {
             if self.name == "permit" {
                 r.queue_wait_ms += elapsed;
             }
-            *r.phases_ms.entry(self.name.into()).or_default() += elapsed;
             if let Some(lane) = self.lane {
                 *r.lanes_ms.entry(lane.into()).or_default() += elapsed;
+            } else {
+                *r.phases_ms.entry(self.name.into()).or_default() += elapsed;
             }
         });
     }

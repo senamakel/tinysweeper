@@ -555,13 +555,14 @@ async fn review_group(
                 }
             }
 
-            let module_paths = finding.line.and_then(|line| {
+            let module_paths: Option<Vec<String>> = None; // RED: emulate the pre-gate behavior.
+            /* let module_paths = finding.line.and_then(|line| {
                 input
                     .diffs
                     .iter()
                     .find(|diff| diff.path == finding.path)
                     .map(|diff| crate::flows::lookup::module_paths_added_at(diff, line))
-            });
+            }); */
             if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
                 let supported = if let Some(tree) = input.tree {
                     let mut supported = false;
@@ -1519,6 +1520,70 @@ fn helper() {
             }),
             "the module declaration's seed must read the new file from the head tree"
         );
+    }
+
+    #[tokio::test]
+    async fn a_degraded_missing_module_claim_is_capped_without_a_successful_head_read() {
+        let mut config = config();
+        config.grouping.enabled = false;
+        let pr = pull_request();
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let module_rs = Lookup::Read {
+            path: "src/foo.rs".into(),
+            start: None,
+            end: None,
+        };
+        let module_mod_rs = Lookup::Read {
+            path: "src/foo/mod.rs".into(),
+            start: None,
+            end: None,
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [
+                (module_rs.key(), Found::NotFound),
+                (
+                    module_mod_rs.key(),
+                    Found::Unavailable {
+                        reason: "the index is cold".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let model = Arc::new(AddedModuleModel::default());
+
+        let outcome = Critique::new(model)
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Cold,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            })
+            .await
+            .expect("lane runs");
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(
+            outcome.findings[0].confidence <= DEGRADED_CONTEXT_CONFIDENCE_CAP,
+            "a changed `pub mod` anchor does not prove the external module exists: {outcome:?}"
+        );
+        assert!(outcome.summary.contains("capped at Likely confidence"));
     }
 
     /// How many changed lines a group needs to clear [`COVERAGE_PASS_MIN_LINES`].

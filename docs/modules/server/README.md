@@ -36,6 +36,18 @@ receives GitHub credentials; write-token ordering remains independent of model
 construction. Credentials and provider policy are fixed for the server's
 lifetime; restart to pick up a rotated model key.
 
+## Review timing logs
+
+The server emits a structured `review timing` info event when a worker exits.
+Its `repo`, `pr`, and `mode` identify the run; `outcome` is `success`,
+`failure`, `deadline`, or `cancelled`. `total_ms` is worker wall time and
+`queue_wait_ms` is time waiting for a review permit. Filter for the event in
+the container logs, for example `docker compose logs tinysweeper | grep 'review timing'`.
+The `review_inner` tracing span also carries the repository, PR number, head
+SHA, and mode, so phase spans can be correlated to a specific push.
+
+Model-call events include `latency_ms` alongside token usage and model ID.
+
 ## The write-token boundary
 
 `AGENTS.md` says the model never holds a write token. The two-job Actions split

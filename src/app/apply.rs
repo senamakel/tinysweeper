@@ -113,7 +113,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), lane.coverage.as_ref()),
+                    title: title_for(lane.findings.len()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -634,17 +634,11 @@ pub async fn settle_e2e(
 /// fenced with one more backtick than the longest run inside, which is how
 /// CommonMark spells a literal backtick, and control characters — a newline
 /// ends a span — are dropped.
-fn title_for(findings: usize, coverage: Option<&crate::lanes::FileCoverage>) -> String {
-    let finding_count = match findings {
+fn title_for(findings: usize) -> String {
+    match findings {
         1 => "1 finding".to_string(),
         count => format!("{count} findings"),
-    };
-    let Some(coverage) = coverage else {
-        return finding_count;
-    };
-    let reviewed = coverage.reviewed.len();
-    let total = reviewed + coverage.unanswered.len();
-    format!("{finding_count} · {reviewed} of {total} files reviewed")
+    }
 }
 
 /// The rendered summary, for tests in sibling modules.
@@ -790,7 +784,7 @@ fn review_body(
                  is not an approval: {}{}.",
                 shown
                     .iter()
-                    .map(|name| code_span(name))
+                    .map(|name| crate::markdown::code_span(name))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if more > 0 {
@@ -808,8 +802,11 @@ fn review_body(
         body.push_str("\n\n### Findings not posted inline\n");
         for finding in unanchored {
             body.push_str(&format!(
-                "\n- **{}** (`{}`): {}\n\n  {}\n",
-                finding.title, finding.path, finding.rule, finding.body
+                "\n- **{}** ({}): {}\n\n  {}\n",
+                crate::markdown::prose(&finding.title),
+                crate::markdown::code_span(&finding.path),
+                crate::markdown::prose(&finding.rule),
+                crate::markdown::prose(&finding.body)
             ));
         }
     }
@@ -832,8 +829,8 @@ fn review_body(
             body.push_str(&format!(
                 "\n- **{}** {} (`{}{}`)",
                 finding.severity,
-                crate::summary::render::md(&finding.title),
-                crate::summary::render::md(&finding.path),
+                crate::markdown::prose(&finding.title),
+                crate::markdown::code_span(&finding.path),
                 line
             ));
         }
@@ -2216,9 +2213,9 @@ mod tests {
 
     #[test]
     fn a_contributor_path_cannot_break_out_of_its_code_span() {
-        assert_eq!(code_span("src/lib.rs"), "`src/lib.rs`");
+        assert_eq!(crate::markdown::code_span("src/lib.rs"), "`src/lib.rs`");
         let hostile = "x`.rs` **bold**\n# heading";
-        let rendered = code_span(hostile);
+        let rendered = crate::markdown::code_span(hostile);
         assert!(rendered.starts_with("`` "), "{rendered}");
         assert!(!rendered.contains('\n'), "{rendered}");
         assert!(rendered.ends_with(" ``"), "{rendered}");

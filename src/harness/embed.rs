@@ -324,7 +324,7 @@ impl GatewayModel {
             // route. Smaller attempts retain their original wire caps; the
             // shared ledger settles their reported spend after each response.
             bound.max_tokens = (base != 0).then(|| *truncation_ladder(base).last().unwrap());
-            completer = completer.budget(crate::harness::budget::call(
+            completer = completer.budget(crate::harness::budget::call_with_history(
                 ledger,
                 &bound,
                 0,
@@ -498,7 +498,7 @@ impl GatewayModel {
             .budget
             .as_ref()
             .map(|ledger| {
-                crate::harness::budget::call(
+                crate::harness::budget::call_with_history(
                     ledger,
                     &completion,
                     (policy.max_chars as u64)

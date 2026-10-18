@@ -77,6 +77,22 @@ pub(crate) fn call(
     request: &CompletionRequest,
     extra_input_bytes: u64,
     configured: &std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
+) -> Result<ModelBudget> {
+    call_with_history(
+        ledger,
+        request,
+        extra_input_bytes,
+        configured,
+        &OutputHistory::default(),
+    )
+}
+
+/// Reserve using output observations retained by this model adapter.
+pub(crate) fn call_with_history(
+    ledger: &Budget,
+    request: &CompletionRequest,
+    extra_input_bytes: u64,
+    configured: &std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
     output_history: &OutputHistory,
 ) -> Result<ModelBudget> {
     let price = configured

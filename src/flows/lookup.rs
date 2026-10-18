@@ -1277,6 +1277,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn caller_seeding_keeps_a_bounded_subset_when_many_callers_match() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/api.rs",
+            "@@ -1,1 +1,1 @@\n-fn parse(value: &str) {}\n+pub fn parse(value: &str, strict: bool) {}\n",
+        );
+        let caller_search = Lookup::Search {
+            pattern: "parse(".into(),
+            glob: None,
+        };
+        let hits = (1..=4)
+            .map(|line| crate::ports::tree::Hit {
+                path: format!("src/client_{line}.rs"),
+                line,
+                text: format!("parse(value, {line} > 1);"),
+            })
+            .collect();
+        let tree = MockTree::from_recorded(
+            [(
+                caller_search.key(),
+                Found::Hits {
+                    hits,
+                    truncated: false,
+                    skipped: Vec::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(seeded.rendered.contains("src/client_1.rs"), "{}", seeded.rendered);
+        assert!(seeded.rendered.contains("src/client_2.rs"), "{}", seeded.rendered);
+        assert!(seeded.rendered.contains("src/client_3.rs"), "{}", seeded.rendered);
+        assert!(!seeded.rendered.contains("src/client_4.rs"), "bounded subset: {}", seeded.rendered);
+        assert!(
+            seeded.rendered.contains("incomplete") || seeded.rendered.contains("omitted"),
+            "a bounded caller sample must disclose omitted hits: {}",
+            seeded.rendered
+        );
+    }
+
     /// Grouping's whole point for lookups: a reviewer given a group's files
     /// together must not lose the seeding that made #2313's finding possible
     /// just because the calling line sits in the *second* file of the group.

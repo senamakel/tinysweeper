@@ -923,14 +923,11 @@ fn lane_alias_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
                             | "succeeded"
                     )
                 });
-                let has_no_findings_verdict = after_alias
-                    .first()
-                    .is_some_and(|word| *word == "no")
-                    && after_alias
-                        .iter()
-                        .skip(1)
-                        .take(2)
-                        .any(|word| matches!(*word, "finding" | "findings" | "issue" | "issues"));
+                let has_no_findings_verdict =
+                    after_alias.first().is_some_and(|word| *word == "no")
+                        && after_alias.iter().skip(1).take(2).any(|word| {
+                            matches!(*word, "finding" | "findings" | "issue" | "issues")
+                        });
                 has_reviewer_subject || has_verdict || has_no_findings_verdict
             })
     })
@@ -1848,7 +1845,11 @@ mod tests {
         )
         .await;
 
-        assert!(summary.executive_summary.contains("The transaction commit no longer loses events"));
+        assert!(
+            summary
+                .executive_summary
+                .contains("The transaction commit no longer loses events")
+        );
     }
 
     #[tokio::test]
@@ -1880,7 +1881,11 @@ mod tests {
         )
         .await;
 
-        assert!(summary.executive_summary.contains("This adds a test fixture with no new dependencies"));
+        assert!(
+            summary
+                .executive_summary
+                .contains("This adds a test fixture with no new dependencies")
+        );
     }
 
     #[tokio::test]

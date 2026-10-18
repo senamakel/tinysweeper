@@ -2542,6 +2542,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_hub_links_a_citation_to_the_reviewed_sha() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(crate::summary::types::ReviewSummary {
+            features: vec![crate::summary::types::Feature {
+                kind: crate::summary::types::FeatureKind::Addition,
+                name: "Saved value".into(),
+                impact: "A persisted field.".into(),
+                citations: vec!["src/savings_store.rs:42".into()],
+            }],
+            ..Default::default()
+        });
+
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        assert_eq!(posted.len(), 1, "{posted:#?}");
+        assert!(matches!(
+            &posted[0],
+            Write::Comment { body, .. }
+                if body.contains("[`src/savings_store.rs:42`](https://github.com/tinyhumansai/tinysweeper/blob/abc123/src/savings_store.rs#L42)")
+        ), "{posted:#?}");
+    }
+
+    #[tokio::test]
     async fn a_second_push_edits_the_same_comment_rather_than_adding_one() {
         // The whole reason the map carries a marker. A fresh diagram per push
         // turns a pull request into a scroll bar, and the older diagrams are

@@ -1238,6 +1238,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_module_declarations_resolve_from_the_inline_module_directory() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+mod outer { pub mod foo; }\n",
+        );
+        let tree = MockTree::from_files([("src/outer/foo.rs", "pub fn foo() {}\n")]);
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(
+            seeded.rendered.contains("src/outer/foo.rs")
+                && seeded.rendered.contains("pub fn foo()"),
+            "nested module evidence must follow Rust's lexical module directory: {}",
+            seeded.rendered
+        );
+        assert!(
+            !seeded.rendered.contains("No such file at this commit: `src/foo.rs`"),
+            "a default-path miss must not contradict the resolved nested module: {}",
+            seeded.rendered
+        );
+    }
+
+    #[tokio::test]
+    async fn path_attribute_module_declarations_read_the_overridden_file() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,3 @@\n fn existing() {}\n+#[path = \"custom.rs\"]\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_files([("src/custom.rs", "pub fn foo() {}\n")]);
+        let mut ledger = Ledger::default();
+
+        let seeded = ledger
+            .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
+            .await;
+
+        assert!(
+            seeded.rendered.contains("src/custom.rs")
+                && seeded.rendered.contains("pub fn foo()"),
+            "a path attribute must resolve to its declared file: {}",
+            seeded.rendered
+        );
+        assert!(
+            !seeded.rendered.contains("No such file at this commit: `src/foo.rs`"),
+            "the ignored default path must not be presented as missing: {}",
+            seeded.rendered
+        );
+    }
+
+    #[tokio::test]
     async fn a_changed_function_signature_seeds_its_callers() {
         let diff = crate::evidence::diff::parse_file_patch(
             "src/api.rs",

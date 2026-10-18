@@ -53,6 +53,25 @@ use crate::lanes::mechanical;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
+use crate::ports::tree::{Found, Lookup, TreeReader};
+
+/// A successful, typed source read from the reviewed head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadReadEvidence {
+    path: String,
+    start: u32,
+    end: u32,
+}
+
+impl HeadReadEvidence {
+    fn proves_path(&self, path: &str) -> bool {
+        self.path == path && self.start > 0 && self.end >= self.start
+    }
+}
+
+/// Confidence retained for an external-context claim when its relevant source
+/// could not be read at the reviewed head.
+const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.5;
 
 /// The correctness lane.
 pub struct Critique {
@@ -513,19 +532,63 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
-    // Unchanged-line findings need repository context to be actionable. A
-    // cold/stale/unavailable index does not prove them wrong, but its silence
-    // cannot support them either. Keep findings with a current-head lookup in
-    // the same file; withhold only unsupported late claims. Changed-line
-    // findings retain their direct diff evidence and are unaffected.
+    // A degraded index cannot prove an outside-diff claim wrong, but its
+    // silence cannot support one either. Late findings need a successful read
+    // of their own file. A changed module declaration can also assert a fact
+    // about a different file, so keep that claim at low confidence until one
+    // of Rust's valid module paths is successfully read. These decisions use
+    // typed outcomes from the pinned tree, never model-controlled rendering.
     if input.retrieval_status.is_degraded() {
-        findings.retain(|finding| {
-            let supported = !finding.late || lookup_has_head_evidence(&looked_up, &finding.path);
-            if !supported {
-                withheld_for_degraded_context += 1;
+        let mut actionable = Vec::with_capacity(findings.len());
+        let mut capped_for_degraded_context = 0usize;
+        for mut finding in findings {
+            if finding.late {
+                let supported = match input.tree {
+                    Some(tree) => head_read(tree, &finding.path, finding.line)
+                        .await
+                        .is_some_and(|proof| proof.proves_path(&finding.path)),
+                    None => false,
+                };
+                if !supported {
+                    withheld_for_degraded_context += 1;
+                    continue;
+                }
             }
-            supported
-        });
+
+            let module_paths = finding.line.and_then(|line| {
+                input
+                    .diffs
+                    .iter()
+                    .find(|diff| diff.path == finding.path)
+                    .map(|diff| crate::flows::lookup::module_paths_added_at(diff, line))
+            });
+            if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
+                let supported = if let Some(tree) = input.tree {
+                    let mut supported = false;
+                    for path in module_paths {
+                        if head_read(tree, &path, None)
+                            .await
+                            .is_some_and(|proof| proof.proves_path(&path))
+                        {
+                            supported = true;
+                            break;
+                        }
+                    }
+                    supported
+                } else {
+                    false
+                };
+                if !supported {
+                    finding.confidence = finding
+                        .confidence
+                        .min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+                    capped_for_degraded_context += 1;
+                }
+            }
+            actionable.push(finding);
+        }
+        findings = actionable;
+        withheld_for_degraded_context += capped_for_degraded_context;
     }
 
     Ok(FileReview {
@@ -544,15 +607,28 @@ async fn review_group(
     })
 }
 
-/// Whether the current-head lookup block contains evidence from `path` rather
-/// than only an unavailable response for it.
-fn lookup_has_head_evidence(looked_up: &str, path: &str) -> bool {
-    let path_line = format!("{path}:");
-    let quoted_path = format!("`{path}`");
-    looked_up.split("\n### ").any(|section| {
-        (section.contains(&path_line) || section.contains(&quoted_path))
-            && !section.contains("Not available:")
-    })
+/// Read a path directly from the reviewed tree and retain only typed evidence
+/// that a source range was actually returned. `NotFound`, `Unavailable`, and
+/// arbitrary text that happens to mention the path are not proof.
+async fn head_read(
+    tree: &dyn TreeReader,
+    path: &str,
+    line: Option<u64>,
+) -> Option<HeadReadEvidence> {
+    let line = line.and_then(|line| u32::try_from(line).ok());
+    let lookup = Lookup::Read {
+        path: path.to_string(),
+        start: line,
+        end: line,
+    };
+    match tree.lookup(&lookup).await.ok()? {
+        Found::Text { start, end, .. } => Some(HeadReadEvidence {
+            path: path.to_string(),
+            start,
+            end,
+        }),
+        Found::Hits { .. } | Found::NotFound | Found::Unavailable { .. } => None,
+    }
 }
 
 /// Minimum changed lines a group needs before adaptive coverage passes

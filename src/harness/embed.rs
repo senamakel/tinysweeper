@@ -29,6 +29,41 @@ use crate::ports::model::{
     Message as CrateMessage, Model, ModelRequest, ModelResponse, Role, Usage,
 };
 
+/// Records usage for each physical agentic dispatch while forwarding optional
+/// turn telemetry without capturing request or response content.
+struct AgenticOutputObserver {
+    history: crate::harness::budget::OutputHistory,
+    lane: String,
+    model: String,
+    output_cap: u32,
+    downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
+}
+
+impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
+    fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
+        if let openhuman_embed::observe::TurnObservation::Model {
+            usage: Some(usage), ..
+        } = event
+        {
+            self.history.record(
+                &self.lane,
+                &self.model,
+                usage.output_tokens,
+                self.output_cap,
+            );
+        }
+        if let Some(downstream) = &self.downstream {
+            downstream.on_event(event);
+        }
+    }
+
+    fn on_turn(&self, trace: &openhuman_embed::observe::TurnTrace<'_>) {
+        if let Some(downstream) = &self.downstream {
+            downstream.on_turn(trace);
+        }
+    }
+}
+
 /// A model reached through an OpenAI-compatible gateway.
 ///
 /// `Debug` is written by hand rather than derived: deriving it would print the
@@ -336,9 +371,8 @@ impl GatewayModel {
             let mut bound = completion.clone();
             bound.model = model.to_owned();
             bound.provider_options = options.clone();
-            // Every dispatch reserves the largest possible output on this
-            // route. Smaller attempts retain their original wire caps; the
-            // shared ledger settles their reported spend after each response.
+            // Price expected output from recent observations, but preserve the
+            // largest retry rung as the physical Embed safety ceiling.
             bound.max_tokens = (base != 0).then(|| *truncation_ladder(base).last().unwrap());
             completer = completer.budget(crate::harness::budget::call_with_history(
                 ledger,
@@ -569,6 +603,17 @@ impl GatewayModel {
             .transpose()?;
         let provider = openhuman_embed::Provider::openai_compatible(&self.base_url, &self.api_key)
             .model(&request.model);
+        let downstream = self
+            .langfuse
+            .as_ref()
+            .map(|observer| observer.clone() as Arc<dyn openhuman_embed::observe::TurnObserver>);
+        let observer = Arc::new(AgenticOutputObserver {
+            history: self.output_history.clone(),
+            lane: request.schema_name.clone(),
+            model: model.to_owned(),
+            output_cap: request.max_tokens,
+            downstream,
+        });
         crate::harness::agentic::review_accounted(
             request,
             tree,
@@ -579,9 +624,7 @@ impl GatewayModel {
                 model_budget: budget,
                 lookup_budget: lookup_budget.clone(),
             },
-            self.langfuse.as_ref().map(|observer| {
-                observer.clone() as Arc<dyn openhuman_embed::observe::TurnObserver>
-            }),
+            Some(observer),
         )
         .await
     }
@@ -887,6 +930,16 @@ mod tests {
             model.output_history.p90("review", "b", 128),
             3,
             "the first turn contributes two individual physical output observations"
+        );
+        assert_eq!(
+            model.output_history.p90("another_lane", "b", 128),
+            16,
+            "output history is isolated by schema name"
+        );
+        assert_eq!(
+            model.output_history.p90("review", "another_model", 128),
+            16,
+            "output history is isolated by effective route"
         );
 
         model

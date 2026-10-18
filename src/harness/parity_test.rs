@@ -487,8 +487,8 @@ async fn concurrent_affordable_completions_wait_for_reservations_to_settle() {
 }
 
 #[tokio::test]
-async fn fail_fast_reservations_do_not_dispatch_past_the_hard_budget() {
-    let paid_usage = json!({"prompt_tokens":120,"completion_tokens":30,"cost":0.4});
+async fn reported_cost_over_budget_is_retained_and_blocks_later_admission() {
+    let paid_usage = json!({"prompt_tokens":120,"completion_tokens":4_000,"cost":0.6});
     let gateway = FakeGateway::start(vec![
         Reply::completion("deep", ANSWER, "stop", paid_usage.clone()),
         Reply::completion("deep", ANSWER, "stop", paid_usage),
@@ -504,24 +504,15 @@ async fn fail_fast_reservations_do_not_dispatch_past_the_hard_budget() {
         },
     );
     let model = adapter(&models).scoped_budget(1.0).unwrap();
-    let (first, second, third) = tokio::join!(
-        model.complete(request("deep")),
-        model.complete(request("deep")),
-        model.complete(request("deep")),
-    );
-    let outcomes = [first, second, third];
-    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 2);
-    let total: f64 = outcomes
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(|response| response.usage.cost_usd)
-        .sum();
-    assert!((total - 0.4).abs() < 1e-12);
+    let first = model.complete(request("deep")).await.unwrap();
+    let second = model.complete(request("deep")).await.unwrap();
+    assert!((first.usage.cost_usd + second.usage.cost_usd - 1.2).abs() < 1e-12);
+    let third = model.complete(request("deep")).await;
+    assert!(matches!(third, Err(crate::error::Error::Budget { .. })));
     assert_eq!(
         gateway.requests().len(),
-        1,
-        "the denied call never reaches the provider"
+        2,
+        "the post-overspend refusal never reaches the provider"
     );
 }
 

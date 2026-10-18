@@ -44,10 +44,10 @@ impl OutputHistory {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(observations) = history.get(&(lane.to_owned(), model.to_owned())) else {
-            // A cold-start allowance of one quarter of the physical cap keeps
-            // concurrent high-price routes from over-admitting while avoiding
-            // pricing the whole retry ladder as though every call consumes it.
-            return (cap / 4).max(1).min(cap);
+            // A cold-start allowance of one eighth of the physical cap leaves
+            // headroom for normal structured answers without pricing the whole
+            // retry ladder as though every call consumes it.
+            return (cap / 8).max(1).min(cap);
         };
         let mut ordered: Vec<u32> = observations.iter().copied().collect();
         ordered.sort_unstable();

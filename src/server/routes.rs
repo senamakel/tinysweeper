@@ -52,9 +52,9 @@ use crate::server::webhook::{self, Action, Payload};
 /// delivers a burst, and an unbounded worker pool turns that into an unbounded
 /// bill.
 const MAX_CONCURRENT_REVIEWS: usize = 4;
-/// Backlog accepted while the four review slots are occupied. Queue entries
-/// are data, not Tokio tasks, so this is also the cap on pending review work.
-const MAX_QUEUED_REVIEWS: usize = 256;
+/// Capacity of the bounded in-process channel of review wakeup hints. Durable
+/// accepted-job capacity lives in the review scheduler port.
+const MAX_REVIEW_WAKEUP_HINTS: usize = 256;
 /// How long one admitted worker may take, from permit acquisition to verdict.
 ///
 /// Every model call is bounded on its own — the gateway client caps a unary
@@ -293,10 +293,9 @@ pub async fn serve_with_model_factory(
     };
 
     let admin_auth = config.admin_auth.clone();
-    // One record may be held by the single dispatcher while it waits for a
-    // permit. The channel contains wakeup hints only; the durable scheduler is
+    // The channel contains wakeup hints only; the durable scheduler is
     // authoritative and its poll recovers a request if a hint is lost.
-    let (review_queue, review_receiver) = mpsc::channel(MAX_QUEUED_REVIEWS - 1);
+    let (review_queue, review_receiver) = mpsc::channel(MAX_REVIEW_WAKEUP_HINTS);
     let review_jobs: Arc<dyn ReviewJobStore> = Arc::new(store.clone());
     let state = AppState {
         config: Arc::new(config),
@@ -2835,11 +2834,25 @@ impl ReviewRun<'_> {
                 state.review_jobs.as_ref(),
                 owned,
                 unix_time_ms(),
-                || async {},
+                || async {
+                    run.check_owner(state).await?;
+                    if let Some(backend) = &state.index {
+                        tokio::spawn(index_in_background(
+                            backend.clone(),
+                            Arc::new(state.config.config.clone()),
+                            state.index_permits.clone(),
+                            repo_id.clone(),
+                            pull_request.head_sha.clone(),
+                            read_token.to_owned(),
+                        ));
+                    }
+                    Ok::<(), Error>(())
+                },
             )
             .await?
             {
-                PaidWork::Started(()) => {}
+                PaidWork::Started(Ok(())) => {}
+                PaidWork::Started(Err(err)) => return Err(err),
                 PaidWork::Exhausted => {
                     run.paid_exhausted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2847,22 +2860,6 @@ impl ReviewRun<'_> {
                 }
                 PaidWork::OwnershipLost => return Err(Error::ReviewOwnershipLost),
             }
-        }
-
-        // Indexing is kicked off here and deliberately not awaited. A cold full
-        // index takes minutes; a review is expected in seconds. The review runs
-        // against whatever the index holds right now, and `crate::retrieve` says so
-        // in the check-run summary when that is nothing. See `server::indexing`.
-        //
-        if let Some(backend) = &state.index {
-            tokio::spawn(index_in_background(
-                backend.clone(),
-                Arc::new(state.config.config.clone()),
-                state.index_permits.clone(),
-                repo_id.clone(),
-                pull_request.head_sha.clone(),
-                read_token.to_owned(),
-            ));
         }
 
         // Nothing lease-held starts on a spent budget. Before this point the run

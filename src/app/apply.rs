@@ -1500,6 +1500,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_closed_or_merged_pull_request_is_not_published_after_review() {
+        for (open, merged) in [(false, false), (false, true)] {
+            let forge = forge("abc123");
+            forge.replace_pull_request(PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                open,
+                merged,
+                ..PullRequest::default()
+            });
+
+            apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+                .await
+                .expect("closed pull requests are declined without publishing");
+
+            assert!(
+                forge.writes().is_empty(),
+                "closed state open={open} merged={merged} must not publish a review"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn publishing_also_triages_the_pull_request() {
         // Triage rides on `apply` rather than on a job of its own so it reaches
         // every trigger the review already has, and so a labelled severity can

@@ -1618,6 +1618,10 @@ fn helper() {
                 "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
             ),
             parse_file_patch("src/foo.rs", "@@ -0,0 +1,1 @@\n+pub fn foo() {}\n"),
+            parse_file_patch(
+                "docs/unrelated.md",
+                &format!("@@ -0,0 +1,1 @@\n+{}\n", "unrelated context ".repeat(4_000)),
+            ),
         ];
         let tree = crate::ports::tree::MockTree::from_files([("src/foo.rs", "pub fn foo() {}\n")]);
         let model = Arc::new(AddedModuleModel::default());
@@ -1659,6 +1663,10 @@ fn helper() {
         assert!(
             falsifier_prompt.contains("src/foo.rs") && falsifier_prompt.contains("pub fn foo()"),
             "falsification must see the added file even though another group owns it: {falsifier_prompt}"
+        );
+        assert!(
+            !falsifier_prompt.contains("unrelated context"),
+            "cross-file falsification must not replay unrelated PR files: {falsifier_prompt}"
         );
         assert!(
             requests.iter().any(|request| {

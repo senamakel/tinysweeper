@@ -2410,11 +2410,12 @@ async fn review_inner(
     author: &str,
     installation: u64,
     run: &Run,
-) -> Result<Option<(usize, bool, status::ReviewCoverage)>> {
+) -> Result<InnerReview> {
+    run.check_owner(state).await?;
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
         tracing::info!(%author, "blocked contributor; not reviewing");
-        return Ok(None);
+        return Ok(InnerReview::Complete(None));
     }
 
     let repo_id =
@@ -2428,6 +2429,7 @@ async fn review_inner(
     let mut lease = Some(initial_lease.clone());
     let claimed = state.store.claim_lease(&initial_lease, "server").await?;
     let reviewed = continue_if_lease_claimed(claimed, || async {
+        run.check_owner(state).await?;
         let read_token = state.auth.review_read_token(installation).await?;
         let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
@@ -2451,14 +2453,14 @@ async fn review_inner(
     .await;
     if !claimed {
         tracing::debug!(%initial_lease, "another worker holds this review");
-        return Ok(None);
+        return Ok(InnerReview::Busy);
     }
     if let Some(lease) = &lease
         && let Err(err) = state.store.release_lease(lease).await
     {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
-    Ok(reviewed?.flatten().flatten())
+    Ok(InnerReview::Complete(reviewed?.flatten().flatten()))
 }
 
 async fn continue_if_lease_claimed<T, F, Fut>(claimed: bool, work: F) -> Result<Option<T>>
@@ -2552,6 +2554,7 @@ impl ReviewRun<'_> {
             expected_head: Some(pull_request.head_sha.clone()),
             ..run.clone()
         };
+        run.check_owner(state).await?;
 
         // Indexing is kicked off here and deliberately not awaited. A cold full
         // index takes minutes; a review is expected in seconds. The review runs
@@ -2592,6 +2595,7 @@ impl ReviewRun<'_> {
         // this function exists to conclude. The forge calls here are bounded on
         // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
         // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
+        run.check_owner(state).await?;
         let outcome = {
             let go_on = open_status(
                 state,
@@ -2610,6 +2614,7 @@ impl ReviewRun<'_> {
                 tracing::info!(%repo, number, "shutting down; not starting this review");
                 return Ok(None);
             }
+            run.check_owner(state).await?;
 
             // `AssertUnwindSafe` + `catch_unwind` so a panic inside a lane still
             // reaches the release below. Without it the `?` on the outcome is not
@@ -2655,19 +2660,22 @@ impl ReviewRun<'_> {
             // survives the worker that took it. The boundary check first: the
             // metadata phase above was bounded per call, not by the deadline, so
             // this is where a budget it exhausted is noticed.
-            let lanes = match run.check(repo, number) {
-                Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
-                    state,
-                    &overlay.config,
-                    repo_id,
-                    number,
-                    forge,
-                    read_token,
-                    &run,
-                ))
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
+            let lanes = match run.check(repo, number).and_then(|_| Ok(())) {
+                Ok(()) => match run.check_owner(state).await {
+                    Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
+                        state,
+                        &overlay.config,
+                        repo_id,
+                        number,
+                        forge,
+                        read_token,
+                        &run,
+                    ))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
+                    Err(err) => Err(err),
+                },
                 Err(spent) => Err(spent),
             };
 
@@ -2690,6 +2698,7 @@ impl ReviewRun<'_> {
                     // "in progress" forever, which is exactly what this whole
                     // umbrella-check mechanism exists to prevent.
                     let publish = std::panic::AssertUnwindSafe(async {
+                        run.check_owner(state).await?;
                         let write_token = state.auth.installation_token(installation).await?;
                         // The review reader has already been held across all the
                         // model calls. Rebuild the publisher's reader with the
@@ -2920,13 +2929,33 @@ async fn run_lanes(
         )
         .await
     };
-    let proposal = tokio::time::timeout_at(run.deadline, review)
-        .await
-        .map_err(|_elapsed| {
-            Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
-        })??;
+    let review = tokio::time::timeout_at(run.deadline, review);
+    let proposal = if let Some(owner_lost) = run.owner_lost.clone() {
+        tokio::select! {
+            result = review => result
+                .map_err(|_elapsed| Error::timeout(
+                    format!("the review of {repo}#{number}"),
+                    REVIEW_DEADLINE,
+                ))??,
+            _ = wait_for_owner_loss(owner_lost) => return Err(Error::ReviewOwnershipLost),
+        }
+    } else {
+        review
+            .await
+            .map_err(|_elapsed| {
+                Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
+            })??
+    };
 
     Ok((config.into_owned(), proposal))
+}
+
+async fn wait_for_owner_loss(mut receiver: watch::Receiver<bool>) {
+    loop {
+        if *receiver.borrow() || receiver.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// The UI preview routes' way into the brain.

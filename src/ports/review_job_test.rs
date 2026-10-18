@@ -4,8 +4,9 @@ use std::sync::Mutex;
 
 use super::{
     Admission, OwnedReview, ReviewJobId, ReviewJobMode, ReviewJobStore, ReviewRequest,
-    ReviewSchedulerState, TerminalOutcome, MAX_RUNNING_REVIEWS, MAX_UNFINISHED_REVIEWS,
-    REVIEW_OWNER_TTL_MS, REVIEW_TOMBSTONE_TTL_MS,
+    ReviewSchedulerState, ReviewTombstone, TerminalOutcome, MAX_RUNNING_REVIEWS,
+    MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS, REVIEW_OWNER_TTL_MS,
+    REVIEW_TOMBSTONE_TTL_MS,
 };
 use crate::error::{Error, Result};
 
@@ -284,4 +285,30 @@ async fn failed_batch_persistence_admits_no_jobs() {
         store.admit_batch(vec![request("manual-a", 2), request("manual-b", 2)]).await.unwrap(),
         Admission::Admitted
     );
+}
+
+#[tokio::test]
+async fn tombstone_reservations_backpressure_without_evicting_live_dedupe_ids() {
+    let store = MockReviewJobStore::default();
+    {
+        let mut state = store.state.lock().expect("state");
+        state.terminal = (0..MAX_TERMINAL_REVIEW_RESERVATIONS)
+            .map(|index| ReviewTombstone {
+                id: ReviewJobId(format!("done-{index:05}-{}", "x".repeat(260))),
+                outcome: TerminalOutcome::Exhausted,
+                expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
+            })
+            .collect();
+    }
+    assert_eq!(
+        store
+            .admit_batch(vec![request("new-work", 10)])
+            .await
+            .unwrap(),
+        Admission::Full
+    );
+    assert_eq!(store.unfinished(), 0);
+    let state = store.state.lock().expect("state");
+    assert_eq!(state.terminal.len(), MAX_TERMINAL_REVIEW_RESERVATIONS);
+    assert!(state.unfinished.is_empty());
 }

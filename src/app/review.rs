@@ -481,7 +481,7 @@ pub(crate) async fn review_with_tree_at_head(
             config.review.max_changed_lines,
         )
         .await?;
-    if false && expected_head.is_some_and(|expected| context.pull_request.head_sha != expected) {
+    if expected_head.is_some_and(|expected| context.pull_request.head_sha != expected) {
         return Err(Error::ReviewSuperseded);
     }
     // Scrubbed once, here, rather than at each of its several consumers: the

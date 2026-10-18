@@ -1083,6 +1083,21 @@ mod tests {
     }
 
     #[test]
+    fn a_disputed_prior_finding_is_not_a_reason_to_raise_it_again() {
+        let config = config();
+        let prior = [
+            "[disputed by maintainer; verify against current-head evidence] high — Close the socket on the error path".to_string(),
+        ];
+        let mut i = inputs(&config, "", "@@ -1 +1 @@\n+a\n");
+        i.prior_findings = &prior;
+        let prompt = build(&i);
+
+        assert!(prompt.suffix().contains("[disputed by maintainer"));
+        assert!(prompt.suffix().contains("the earlier claim is not evidence"));
+        assert!(prompt.suffix().contains("independently supports the concern"));
+    }
+
+    #[test]
     fn degraded_retrieval_cannot_be_read_as_evidence_that_callers_are_missing() {
         let config = config();
         let status = crate::retrieve::RetrievalStatus::Cold;

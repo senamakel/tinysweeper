@@ -573,16 +573,17 @@ async fn receive(
         _ => {}
     }
 
-    // Do not create a waiting worker for each incoming review. A review
-    // acquires its bounded slot before dispatch is spawned.
+    // Do not create a waiting worker for each incoming review. Admit only work
+    // that has a slot now; the 503 makes an unaccepted delivery visible rather
+    // than acknowledging work that has nowhere bounded to wait.
     let review_permit = if matches!(&action, Action::Review { .. }) {
-        match state.permits.clone().acquire_owned().await {
+        match state.permits.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
             Err(err) => {
-                tracing::error!(%err, "review permit pool is closed");
+                tracing::warn!(%err, "review capacity is full; refusing delivery before acknowledgement");
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "review capacity unavailable",
+                    "review capacity is full; retry the delivery",
                 )
                     .into_response();
             }

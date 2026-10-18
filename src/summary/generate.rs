@@ -1206,6 +1206,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unanswered_whole_pr_lane_is_not_reported_as_a_policy_skip() {
+        let model = MockModel::new().then(json!({
+            "executive_summary": "The tests lane confirms the change is safe.",
+            "changes": "The tests lane passed without findings.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let outcome = crate::lanes::LaneOutcome::unanswered(LaneId::Tests, Spend::default());
+        let mut failed_lane = lane(
+            LaneId::Tests,
+            crate::forge::types::CheckConclusion::Neutral,
+            &outcome.summary,
+            &[],
+            &[],
+            outcome.coverage.clone(),
+        );
+        failed_lane.skipped = outcome.skipped;
+        failed_lane.unanswered = outcome.unanswered;
+
+        let (_, _, _) = generate(
+            &model,
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &[failed_lane],
+            None,
+            &[],
+        )
+        .await;
+
+        let prompt = model.last_prompt().expect("summary request");
+        let request: serde_json::Value = serde_json::from_str(
+            prompt
+                .split("<review_evidence>\n")
+                .nth(1)
+                .unwrap()
+                .split("\n</review_evidence>")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
+    }
+
     #[test]
     fn citations_require_exact_paths_symbols_and_observed_head_lines() {
         let diffs = [

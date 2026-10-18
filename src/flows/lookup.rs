@@ -612,14 +612,20 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                 }
                 if rest.starts_with('"') {
                     cursor += 1;
+                    let mut closed = false;
                     while cursor < text.len() {
                         let byte = text.as_bytes()[cursor];
                         cursor += 1;
                         if byte == b'\\' {
                             cursor = (cursor + 1).min(text.len());
                         } else if byte == b'"' {
+                            closed = true;
                             break;
                         }
+                    }
+                    if !closed {
+                        lexical_ambiguous = true;
+                        break;
                     }
                     continue;
                 }
@@ -714,6 +720,14 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                         continue;
                     }
                     if !name.is_empty() && suffix.starts_with('{') {
+                        if path_attribute.is_some() || unsupported_attribute {
+                            // A path attribute on an inline module changes the
+                            // base used by its descendants. This small resolver
+                            // cannot safely carry that base through the tree.
+                            lexical_ambiguous = true;
+                            path_attribute = None;
+                            unsupported_attribute = false;
+                        }
                         pending_inline = Some(name.to_owned());
                         cursor = name_end;
                         continue;
@@ -753,12 +767,15 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
 
 fn rust_path_attribute(line: &str) -> Option<String> {
     let text = line.trim();
-    if !text.starts_with("#[path") {
-        return None;
-    }
-    let equals = text.find('=')?;
-    let value = text[equals + 1..].trim().strip_prefix('"')?;
-    Some(value.split('"').next()?.to_owned())
+    let value = text
+        .strip_prefix("#[path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    let path = &value[..end];
+    (value[end + 1..].trim() == "]" && !path.contains('\\')).then(|| path.to_owned())
 }
 
 /// Return the byte immediately after a valid Rust raw string literal.
@@ -1582,6 +1599,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn escaped_path_attributes_do_not_probe_the_escaped_spelling() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1 @@\n+#[path = \"cu\\\\x73tom.rs\"]\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(!seeded.contains("cu\\\\x73tom.rs"), "{seeded}");
+    }
+
+    #[tokio::test]
+    async fn a_path_attribute_on_an_inline_module_makes_child_paths_unavailable() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,3 @@\n+#[path = \"custom.rs\"]\n+mod outer {\n+    pub mod foo;\n+}\n",
+        );
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(!seeded.contains("src/outer/foo.rs"), "{seeded}");
+        assert!(!seeded.contains("src/custom.rs"), "{seeded}");
+    }
+
+    #[tokio::test]
     async fn braces_in_comments_and_character_literals_do_not_change_module_scope() {
         let diff = crate::evidence::diff::parse_file_patch(
             "src/lib.rs",
@@ -1599,6 +1651,23 @@ mod tests {
             "{seeded}"
         );
         assert!(!seeded.contains("Unavailable"), "{seeded}");
+    }
+
+    #[tokio::test]
+    async fn an_unterminated_string_makes_later_module_paths_unavailable() {
+        let diff = crate::evidence::diff::parse_file_patch(
+            "src/lib.rs",
+            "@@ -1 +1,2 @@\n+let text = \"unterminated {\n+pub mod foo;\n",
+        );
+        let tree = MockTree::from_recorded(std::collections::BTreeMap::new());
+        let mut ledger = Ledger::default();
+        let seeded = ledger
+            .seed(&tree, &[diff], &LookupPolicy::default())
+            .await
+            .rendered;
+
+        assert!(seeded.contains("Unavailable"), "{seeded}");
+        assert!(!seeded.contains("src/foo.rs"), "{seeded}");
     }
 
     #[tokio::test]

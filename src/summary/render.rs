@@ -342,7 +342,12 @@ fn findings(out: &mut String, proposal: &Proposal) {
     if !noted.is_empty() {
         let has_unverified = noted.iter().any(|(lane, _)| lane.context_degraded);
         if has_unverified {
-            out.push_str("\n**Unverified notes — repository context was unavailable; these are not actionable findings**\n");
+            let only_unverified = noted.iter().all(|(lane, _)| lane.context_degraded);
+            if only_unverified {
+                out.push_str("\n**Unverified notes — repository context was unavailable; these are not actionable findings**\n");
+            } else {
+                out.push_str("\n**Notes**\n");
+            }
         } else {
             out.push_str("\n**Lower-confidence notes**\n");
         }

@@ -2050,6 +2050,14 @@ mod tests {
                 ..Default::default()
             },
         );
+        let answered_tests = lane(
+            LaneId::Tests,
+            crate::forge::types::CheckConclusion::Success,
+            "Reviewed test changes.",
+            &["model"],
+            &[],
+            None,
+        );
 
         let (summary, spend, _) = generate(
             &model,
@@ -2059,7 +2067,7 @@ mod tests {
                 ..PullRequest::default()
             },
             &[],
-            &[],
+            &[answered_tests],
             Some(&prior),
             &[],
         )

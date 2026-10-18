@@ -1049,7 +1049,7 @@ mod tests {
             calls.clone(),
             model
                 .review(
-                    &request,
+                    request,
                     &tree,
                     &crate::config::types::LookupPolicy::default(),
                 )

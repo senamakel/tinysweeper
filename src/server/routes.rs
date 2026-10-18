@@ -319,7 +319,7 @@ pub async fn serve_with_model_factory(
     // The manual full-review button, behind the same credential and absent for
     // the same reason when there is none. It is mounted separately from the
     // admin router because it needs the worker, not the trust database.
-    let dispatch: Arc<dyn FullReviews> = Arc::new(ManualDispatch {
+    let full_reviews: Arc<dyn FullReviews> = Arc::new(ManualDispatch {
         state: manual_state.clone(),
     });
     let merges: Arc<dyn Merges> = Arc::new(MergeDispatch {
@@ -337,7 +337,7 @@ pub async fn serve_with_model_factory(
     if let Some(routes) = manual::router(
         manual_auth,
         manual::allowed_org(),
-        dispatch,
+        full_reviews,
         merges,
         triages,
     ) {
@@ -2295,7 +2295,7 @@ impl ReviewRun<'_> {
         // indexing or model work. The caller releases this final key on every
         // normal return, while the old claim is released only after the new
         // one is acquired.
-        if self.expected_head != Some(pull_request.head_sha.as_str()) {
+        if expected_head != Some(pull_request.head_sha.as_str()) {
             let next = review_lease(repo, number, run.mode, Some(&pull_request.head_sha));
             if !state.store.claim_lease(&next, "server").await? {
                 tracing::debug!(%next, "another worker holds the live pull request head");

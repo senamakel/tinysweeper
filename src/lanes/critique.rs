@@ -1095,7 +1095,10 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
         assert_eq!(outcome.findings[0].severity, Severity::Critical);
-    assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
         assert!(outcome.summary.contains("capped at Likely confidence"));
         assert!(!outcome.summary.contains("old branch is broken"));
     }

@@ -588,10 +588,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                     continue;
                 }
                 if rest.starts_with("mod")
-                    && rest[3..]
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_whitespace)
+                    && rest[3..].chars().next().is_some_and(char::is_whitespace)
                     && (cursor == 0
                         || !text.as_bytes()[cursor - 1].is_ascii_alphanumeric()
                             && text.as_bytes()[cursor - 1] != b'_')
@@ -623,9 +620,9 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                             } else {
                                 let explicit = std::path::Path::new(&path);
                                 if explicit.is_absolute()
-                                    || explicit.components().any(|c| {
-                                        matches!(c, std::path::Component::ParentDir)
-                                    })
+                                    || explicit
+                                        .components()
+                                        .any(|c| matches!(c, std::path::Component::ParentDir))
                                 {
                                     declarations.push(AddedModulePaths::Unavailable {
                                         name: name.to_owned(),
@@ -634,7 +631,9 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                                 } else {
                                     declarations.push(AddedModulePaths::Resolved {
                                         name: name.to_owned(),
-                                        paths: vec![parent.join(explicit).to_string_lossy().into_owned()],
+                                        paths: vec![
+                                            parent.join(explicit).to_string_lossy().into_owned(),
+                                        ],
                                     });
                                 }
                             }
@@ -679,7 +678,10 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                     }
                     '}' => {
                         brace_depth = brace_depth.saturating_sub(1);
-                        while modules.last().is_some_and(|(depth, _)| *depth > brace_depth) {
+                        while modules
+                            .last()
+                            .is_some_and(|(depth, _)| *depth > brace_depth)
+                        {
                             modules.pop();
                         }
                     }
@@ -804,12 +806,11 @@ impl Ledger {
                             if !self.seen.insert(lookup.key()) {
                                 continue;
                             }
-                            let result = tree
-                                .lookup(&lookup)
-                                .await
-                                .unwrap_or_else(|err| Found::Unavailable {
+                            let result = tree.lookup(&lookup).await.unwrap_or_else(|err| {
+                                Found::Unavailable {
                                     reason: err.to_string(),
-                                });
+                                }
+                            });
                             let body = format!(
                                 "\n### Declared module `{name}` at `{path}` in the reviewed head\n\n{}\n",
                                 render_found(&result)
@@ -1444,8 +1445,7 @@ mod tests {
             .await;
 
         assert!(
-            seeded.rendered.contains("src/custom.rs")
-                && seeded.rendered.contains("pub fn foo()"),
+            seeded.rendered.contains("src/custom.rs") && seeded.rendered.contains("pub fn foo()"),
             "a path attribute must resolve to its declared file: {}",
             seeded.rendered
         );
@@ -1469,9 +1469,15 @@ mod tests {
             .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
             .await;
 
-        assert!(seeded.rendered.contains("Unavailable:"), "{}", seeded.rendered);
         assert!(
-            seeded.rendered.contains("not evidence that the module is missing"),
+            seeded.rendered.contains("Unavailable:"),
+            "{}",
+            seeded.rendered
+        );
+        assert!(
+            seeded
+                .rendered
+                .contains("not evidence that the module is missing"),
             "{}",
             seeded.rendered
         );
@@ -1557,10 +1563,26 @@ mod tests {
             .seed(&tree, std::slice::from_ref(&diff), &LookupPolicy::default())
             .await;
 
-        assert!(seeded.rendered.contains("src/client_1.rs"), "{}", seeded.rendered);
-        assert!(seeded.rendered.contains("src/client_2.rs"), "{}", seeded.rendered);
-        assert!(seeded.rendered.contains("src/client_3.rs"), "{}", seeded.rendered);
-        assert!(!seeded.rendered.contains("src/client_4.rs"), "bounded subset: {}", seeded.rendered);
+        assert!(
+            seeded.rendered.contains("src/client_1.rs"),
+            "{}",
+            seeded.rendered
+        );
+        assert!(
+            seeded.rendered.contains("src/client_2.rs"),
+            "{}",
+            seeded.rendered
+        );
+        assert!(
+            seeded.rendered.contains("src/client_3.rs"),
+            "{}",
+            seeded.rendered
+        );
+        assert!(
+            !seeded.rendered.contains("src/client_4.rs"),
+            "bounded subset: {}",
+            seeded.rendered
+        );
         assert!(
             seeded.rendered.contains("incomplete") || seeded.rendered.contains("omitted"),
             "a bounded caller sample must disclose omitted hits: {}",

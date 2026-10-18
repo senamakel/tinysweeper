@@ -49,8 +49,10 @@ pub struct CrossFileEvidenceIndex<'a> {
 impl<'a> CrossFileEvidenceIndex<'a> {
     /// Index changed module declarations and signature/call-site pairs.
     pub fn new(diffs: &'a [FileDiff]) -> Self {
-        let by_path: BTreeMap<&str, &FileDiff> =
-            diffs.iter().map(|diff| (diff.path.as_str(), diff)).collect();
+        let by_path: BTreeMap<&str, &FileDiff> = diffs
+            .iter()
+            .map(|diff| (diff.path.as_str(), diff))
+            .collect();
         let mut related: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
 
         for declaration in diffs {
@@ -84,7 +86,10 @@ impl<'a> CrossFileEvidenceIndex<'a> {
                 if let Some(signatures) = changed_signatures.get(name.as_str()) {
                     for signature in signatures {
                         if *signature != diff.path {
-                            related.entry(signature).or_default().insert(diff.path.as_str());
+                            related
+                                .entry(signature)
+                                .or_default()
+                                .insert(diff.path.as_str());
                             related
                                 .entry(diff.path.as_str())
                                 .or_default()
@@ -182,7 +187,9 @@ fn added_module_targets(diff: &FileDiff) -> Vec<String> {
                 .strip_prefix("mod ")?
                 .strip_suffix(';')?
                 .trim();
-            (declaration.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            (declaration
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && !declaration.is_empty())
             .then(|| {
                 vec![
@@ -241,7 +248,10 @@ fn added_call_names(diff: &FileDiff) -> BTreeSet<String> {
         .iter()
         .flat_map(|hunk| &hunk.lines)
         .filter(|line| line.kind == LineKind::Added)
-        .flat_map(|line| line.text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
+        .flat_map(|line| {
+            line.text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        })
         .filter(|token| !token.is_empty())
         .filter_map(|token| {
             let pattern = format!("{token}(");

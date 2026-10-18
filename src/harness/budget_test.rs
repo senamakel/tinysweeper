@@ -169,7 +169,7 @@ fn output_reservation_uses_the_lane_model_rolling_p90_bounded_by_the_cap() {
     assert_eq!(capped.call.output_tokens, 10_000);
     assert_eq!(
         capped.call.cost_micros,
-        ((serde_json::to_vec(&small_cap).unwrap().len() as u64).div_ceil(4) + 1024) as f64
+        (((serde_json::to_vec(&small_cap).unwrap().len() as u64).div_ceil(4) + 1024) as f64)
             .mul_add(0.4, 10_000.0 * 1.8)
             .ceil() as u64
     );

@@ -76,6 +76,7 @@ pub(crate) fn ledger(limit_usd: f64) -> Budget {
 /// Reserve against a configured alias bound or the public model rate table,
 /// with additional bounded tool input. Invalid configured rates never fall
 /// back to an estimate.
+#[cfg(test)]
 pub(crate) fn call(
     ledger: &Budget,
     request: &CompletionRequest,

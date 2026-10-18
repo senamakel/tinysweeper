@@ -898,10 +898,6 @@ async fn record_owned_disposition(
     .into()
 }
 
-fn defer_interrupted_review() -> WorkerDisposition {
-    WorkerDisposition::Deferred(unix_time_ms())
-}
-
 fn shutdown_disposition(review: &InnerReview, now_ms: i64) -> Option<WorkerDisposition> {
     matches!(review, InnerReview::Shutdown).then_some(WorkerDisposition::Deferred(now_ms))
 }
@@ -2806,10 +2802,7 @@ where
     work().await.map(Some)
 }
 
-async fn continue_after_open_status<F, Fut>(
-    go_on: bool,
-    review: F,
-) -> Result<InnerReview>
+async fn continue_after_open_status<F, Fut>(go_on: bool, review: F) -> Result<InnerReview>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<InnerReview>>,
@@ -2852,10 +2845,7 @@ struct ReviewRun<'a> {
 
 impl ReviewRun<'_> {
     /// Run the remainder of one review after its live pull request passes the gate.
-    async fn run(
-        self,
-        pull_request: PullRequest,
-    ) -> Result<InnerReview> {
+    async fn run(self, pull_request: PullRequest) -> Result<InnerReview> {
         let Self {
             state,
             repo,
@@ -3791,10 +3781,7 @@ mod tests {
         .await
         .expect("shutdown after status-open resolves as a typed result");
         assert_eq!(continued.load(Ordering::SeqCst), 0);
-        assert!(matches!(
-            shutdown_result,
-            InnerReview::Shutdown
-        ));
+        assert!(matches!(shutdown_result, InnerReview::Shutdown));
         let disposition = shutdown_disposition(&shutdown_result, unix_time_ms())
             .expect("the production handler defers shutdown results");
         assert!(
@@ -3850,15 +3837,17 @@ mod tests {
         .expect("live status continues review");
         assert_eq!(continued.load(Ordering::SeqCst), 1);
         assert!(shutdown_disposition(&normal_result, unix_time_ms()).is_none());
-        assert!(record_owned_disposition(
-            &normal_store,
-            &normal_owner,
-            WorkerDisposition::Terminal(TerminalOutcome::Declined),
-            unix_time_ms()
-        )
-        .await
-        .unwrap()
-        .expect("ordinary review uses normal terminal path"));
+        assert!(
+            record_owned_disposition(
+                &normal_store,
+                &normal_owner,
+                WorkerDisposition::Terminal(TerminalOutcome::Declined),
+                unix_time_ms()
+            )
+            .await
+            .unwrap()
+            .expect("ordinary review uses normal terminal path")
+        );
         assert_eq!(normal_store.unfinished(), 0);
     }
 

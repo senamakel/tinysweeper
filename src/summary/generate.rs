@@ -654,7 +654,7 @@ fn lane_statuses(
                 .iter()
                 .find(|lane| lane.lane == id)
                 .map(|lane| lane_status(lane, changed_paths))
-                .unwrap_or(LaneReviewStatus::Skipped);
+                .unwrap_or(lane_status_value(LaneStatusKind::Skipped, None, 0));
             (id.as_str().to_string(), status)
         })
         .collect()

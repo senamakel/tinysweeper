@@ -1845,6 +1845,7 @@ enum Conclusion<'a> {
 /// failure is retried a few times, and a review that still cannot run says so
 /// on the pull request through a blocking check. See `server::failure` for why
 /// the log line alone was not enough.
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, head_sha = tracing::field::Empty, mode = ?mode))]
 async fn handle_review(
     state: AppState,
     repo: String,
@@ -2081,6 +2082,9 @@ async fn review_inner(
         forge.pull_request(&repo_id, number).await?
     };
     tracing::Span::current().record("head_sha", pull_request.head_sha.as_str());
+    if let Some(worker) = tracing::Span::current().parent() {
+        worker.record("head_sha", pull_request.head_sha.as_str());
+    }
     run.timing
         .record(|r| r.head_sha = pull_request.head_sha.clone());
 

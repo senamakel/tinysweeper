@@ -583,7 +583,7 @@ impl GatewayModel {
 fn log_model_attempt(
     model: &str,
     cap: Option<u32>,
-    latency_ms: u64,
+    ladder_elapsed_ms: u64,
     usage: &openhuman_embed::complete::CompletionUsage,
     finish_reason: Option<&str>,
     reported_cost_usd: Option<f64>,
@@ -591,14 +591,14 @@ fn log_model_attempt(
     tracing::info!(
         model,
         cap,
-        latency_ms,
+        ladder_elapsed_ms,
         input_tokens = usage.input_tokens,
         cached_tokens = usage.cached_tokens,
         output_tokens = usage.output_tokens,
         reasoning_tokens = usage.reasoning_tokens,
         ?finish_reason,
         reported_cost_usd,
-        "model call"
+        "model attempt"
     );
 }
 
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn model_call_log_includes_latency_ms() {
+    fn model_call_log_includes_dispatch_latency_ms() {
         let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_bytes = bytes.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -758,14 +758,20 @@ mod tests {
             .with_writer(move || LogBytes(writer_bytes.clone()))
             .finish();
         tracing::subscriber::with_default(subscriber, || {
-            log_model_attempt(
-                "test/model",
-                Some(128),
-                37,
-                &openhuman_embed::complete::CompletionUsage::default(),
-                Some("stop"),
-                None,
-            );
+            let request = CompletionRequest::new("test/model", vec![]);
+            let response = openhuman_embed::complete::CompletionResponse {
+                text: "{}".into(),
+                structured: Some(serde_json::json!({})),
+                finish_reason: Some("stop".into()),
+                answered_model: Some("test/model".into()),
+                usage: Some(openhuman_embed::complete::CompletionUsage::default()),
+                raw: None,
+            };
+            ModelCallObserver(None).on_complete(&CompletionTrace {
+                request: &request,
+                outcome: Ok(&response),
+                latency: std::time::Duration::from_millis(37),
+            });
         });
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(line.contains("model call"));

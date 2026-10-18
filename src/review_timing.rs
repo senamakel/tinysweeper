@@ -121,7 +121,9 @@ impl ReviewTiming {
             .unwrap_or_default();
         tracing::info!(target: "tinysweeper::review_timing", repo = %r.repo, pr = r.pr,
             head_sha = %r.head_sha, mode = %r.mode, outcome = %r.outcome, total_ms,
-            queue_wait_ms = r.queue_wait_ms, phases_ms = ?r.phases_ms, lanes_ms = ?r.lanes_ms,
+            queue_wait_ms = r.queue_wait_ms,
+            phases_ms = %serde_json::to_string(&r.phases_ms).unwrap_or_default(),
+            lanes_ms = %serde_json::to_string(&r.lanes_ms).unwrap_or_default(),
             calls_attempted = r.calls_attempted, calls_succeeded = r.calls_succeeded,
             calls_refused = r.calls_refused, calls_errored = r.calls_errored,
             input_tokens = r.usage.input_tokens, output_tokens = r.usage.output_tokens,

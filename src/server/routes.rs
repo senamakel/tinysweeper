@@ -2826,12 +2826,11 @@ mod tests {
             forge.writes().is_empty(),
             "no review or check may be published"
         );
-        assert_eq!(
+        assert!(
             ForgeRead::pull_request(&forge, &repo, 7)
                 .await
                 .expect("live PR")
                 .merged,
-            true,
             "fixture must prove the queued action became stale"
         );
     }

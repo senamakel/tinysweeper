@@ -1110,14 +1110,6 @@ mod tests {
             None,
         );
         pending_e2e.pending = vec!["ci/linux".into()];
-        let mut no_response = lane(
-            LaneId::Tests,
-            crate::forge::types::CheckConclusion::Neutral,
-            "No reviewer produced a usable response.",
-            &[],
-            &["tests"],
-            None,
-        );
         let mut coverage_outcome = crate::lanes::LaneOutcome::default();
         coverage_outcome.include_reviewed_paths(["src/privacy.rs".into()]);
         coverage_outcome.unanswered = vec!["tests/privacy.rs".into()];
@@ -1147,9 +1139,6 @@ mod tests {
         );
         critique_lane.unanswered = coverage_outcome.unanswered;
         let lanes = vec![
-            no_response,
-            tests_lane,
-            pending_e2e,
             critique_lane,
             lane(
                 LaneId::Security,
@@ -1167,7 +1156,10 @@ mod tests {
                 &[],
                 None,
             ),
+            tests_lane,
+            pending_e2e,
         ];
+        let full_pr_paths = vec!["src/privacy.rs".into(), "tests/privacy.rs".into()];
         let full_stat = SummaryDiffstat {
             files: 2,
             additions: 83,
@@ -1179,10 +1171,7 @@ mod tests {
             &pull_request,
             SummaryGenerationInput {
                 diffs: &diffs,
-                full_pr_paths: &[
-                    "src/privacy.rs".into(),
-                    "tests/privacy.rs".into(),
-                ],
+                full_pr_paths: &full_pr_paths,
                 full_pr_diffstat: full_stat,
                 lanes: &lanes,
                 prior: None,
@@ -1213,14 +1202,15 @@ mod tests {
             "old-head"
         );
         assert_eq!(request["latest_push_delta"]["to_head"], "new-head");
-        assert_eq!(request["lanes"][2]["status"]["status"], "partial");
+        assert_eq!(request["lanes"][0]["status"]["status"], "partial");
         assert_eq!(
-            request["lanes"][2]["status"]["file_coverage"]["reviewed"],
+            request["lanes"][0]["status"]["file_coverage"]["reviewed"],
             1
         );
-        assert_eq!(request["lanes"][2]["status"]["file_coverage"]["total"], 2);
-        assert_eq!(request["lanes"][0]["status"]["status"], "no_response");
-        assert_eq!(request["lanes"][1]["status"]["status"], "skipped");
+        assert_eq!(request["lanes"][0]["status"]["file_coverage"]["total"], 2);
+        assert_eq!(request["lanes"][2]["status"]["status"], "no_response");
+        assert_eq!(request["lanes"][3]["status"]["status"], "skipped");
+        assert_eq!(request["lanes"][1]["status"]["status"], "answered");
         assert_eq!(request["lanes"][5]["status"]["status"], "partial");
         assert_eq!(request["lanes"][5]["status"]["pending_checks"], 1);
         assert!(request["lanes"][5]["status"].get("file_coverage").is_none());

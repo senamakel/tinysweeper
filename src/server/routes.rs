@@ -2288,12 +2288,8 @@ async fn review_inner(
     // the live head is known, then take its revision lease before any indexing.
     let initial_lease = review_lease(repo, number, run.mode, run.expected_head.as_deref());
     let mut lease = Some(initial_lease.clone());
-    if !state.store.claim_lease(&initial_lease, "server").await? {
-        tracing::debug!(%initial_lease, "another worker holds this review");
-        return Ok(None);
-    }
-
-    let reviewed = async {
+    let claimed = state.store.claim_lease(&initial_lease, "server").await?;
+    let reviewed = continue_if_lease_claimed(claimed, || async {
         let read_token = state.auth.review_read_token(installation).await?;
         let forge = crate::forge::github::GitHubRead::new(&read_token)?;
 
@@ -2313,14 +2309,29 @@ async fn review_inner(
             worker.run(pull_request)
         })
         .await
-    }
+    })
     .await;
+    if !claimed {
+        tracing::debug!(%initial_lease, "another worker holds this review");
+        return Ok(None);
+    }
     if let Some(lease) = &lease
         && let Err(err) = state.store.release_lease(lease).await
     {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
     Ok(reviewed?.flatten())
+}
+
+async fn continue_if_lease_claimed<T, F, Fut>(claimed: bool, work: F) -> Result<Option<T>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    if !claimed {
+        return Ok(None);
+    }
+    work().await.map(Some)
 }
 
 fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> String {
@@ -2381,7 +2392,11 @@ impl ReviewRun<'_> {
         // one is acquired.
         if run.expected_head.as_deref() != Some(pull_request.head_sha.as_str()) {
             let next = review_lease(repo, number, run.mode, Some(&pull_request.head_sha));
-            if !state.store.claim_lease(&next, "server").await? {
+            let claimed = state.store.claim_lease(&next, "server").await?;
+            if continue_if_lease_claimed(claimed, || async { Ok(()) })
+                .await?
+                .is_none()
+            {
                 tracing::debug!(%next, "another worker holds the live pull request head");
                 return Ok(None);
             }

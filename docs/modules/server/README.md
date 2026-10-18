@@ -48,11 +48,12 @@ an operator must redeliver that overflowed event. Other webhook actions keep
 their existing dispatch path.
 
 When a pull-request event supplies its head SHA, the worker claims that SHA
-before minting a read token or fetching live PR state. Comment and manual
-requests first claim a per-PR key, then claim the live SHA before indexing. If
-the head moved, the worker transfers its lease to the new SHA. The app checks
-the leased SHA again immediately after loading review context and skips before
-any model call if the context moved in the meantime.
+before minting a read token or fetching live PR state. A comment request has no
+SHA, so it reads and gates the live PR first, then claims that revision before
+indexing. Manual reviews pass the SHA they already read while preparing the
+button response. If a head moved, the worker transfers its lease to the new
+SHA. The app checks the leased SHA again immediately after loading review
+context and skips before any model call if the context moved in the meantime.
 
 ## The write-token boundary
 

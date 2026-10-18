@@ -126,10 +126,7 @@ pub async fn generate_with_input(
                 .collect::<Vec<_>>()
         })
         .collect();
-    let lane_statuses: BTreeMap<String, LaneReviewStatus> = lanes
-        .iter()
-        .map(|lane| (lane.lane.as_str().to_string(), lane_status(lane, &paths)))
-        .collect();
+    let lane_statuses = lane_statuses(lanes, &paths);
     let previous_head = prior_transcript.last().map(|turn| turn.head_sha.as_str());
     let evidence = json!({
         "whole_pull_request": {
@@ -147,15 +144,20 @@ pub async fn generate_with_input(
         "changed_paths": paths,
         "changed_symbols": symbols,
         "scrubbed_diff": crate::evidence::diff::render(diffs),
-        "lanes": lanes.iter().map(|lane| json!({
-            "lane": lane.lane.as_str(), "summary": lane.summary,
-            "findings": lane.findings.iter().chain(lane.overflow.iter().filter(|finding| !finding.grouped)).map(|finding| json!({
-                "title": finding.title, "path": finding.path, "rule": finding.rule
-            })).collect::<Vec<_>>(),
-            "pending": lane.pending, "unanswered": lane.unanswered,
-            "skipped": lane.skipped,
-            "status": lane_statuses.get(lane.lane.as_str()).expect("status for every lane"),
-        })).collect::<Vec<_>>(),
+        "lanes": LaneId::ALL.iter().map(|id| {
+            let status = lane_statuses.get(id.as_str()).expect("status for every known lane");
+            match lanes.iter().find(|lane| lane.lane == *id) {
+                Some(lane) => json!({
+                    "lane": lane.lane.as_str(), "summary": lane.summary,
+                    "findings": lane.findings.iter().chain(lane.overflow.iter().filter(|finding| !finding.grouped)).map(|finding| json!({
+                        "title": finding.title, "path": finding.path, "rule": finding.rule
+                    })).collect::<Vec<_>>(),
+                    "pending": lane.pending, "unanswered": lane.unanswered,
+                    "skipped": lane.skipped, "status": status,
+                }),
+                None => json!({"lane": id.as_str(), "status": status}),
+            }
+        }).collect::<Vec<_>>(),
         "prior_summary": prior,
     });
     let evidence = crate::evidence::redact::scrub_rendered(&evidence.to_string());
@@ -189,7 +191,6 @@ pub async fn generate_with_input(
 
     let mut summary = deterministic(config, pull_request, diffs, lanes, prior);
     summary.cache_chain_restarted = restarted;
-    sanitize_prior_narrative(&mut summary, lanes, &lane_statuses);
     let mut spend = Spend::default();
     let first = match model.complete(request.clone()).await {
         Ok(response) => response,
@@ -304,6 +305,12 @@ pub async fn generate_with_input(
         .positive_observations
         .into_iter()
         .filter_map(|(lane, observations)| {
+            if !matches!(
+                lane_statuses.get(lane.as_str()),
+                Some(LaneReviewStatus::Answered)
+            ) {
+                return None;
+            }
             let observations: Vec<_> = observations
                 .into_iter()
                 .filter(|observation| supported(&observation.citations))
@@ -361,6 +368,9 @@ pub fn deterministic(
         let drain = summary.history.len() - config.summary.history_entries;
         summary.history.drain(..drain);
     }
+    let paths: BTreeSet<String> = diffs.iter().map(|diff| diff.path.clone()).collect();
+    let statuses = lane_statuses(lanes, &paths);
+    sanitize_prior_narrative(&mut summary, lanes, &statuses);
     summary
 }
 
@@ -567,6 +577,23 @@ fn lane_status(lane: &LaneProposal, changed_paths: &BTreeSet<String>) -> LaneRev
         // that a reviewer answered.
         LaneReviewStatus::NoResponse
     }
+}
+
+fn lane_statuses(
+    lanes: &[LaneProposal],
+    changed_paths: &BTreeSet<String>,
+) -> BTreeMap<String, LaneReviewStatus> {
+    LaneId::ALL
+        .into_iter()
+        .map(|id| {
+            let status = lanes
+                .iter()
+                .find(|lane| lane.lane == id)
+                .map(|lane| lane_status(lane, changed_paths))
+                .unwrap_or(LaneReviewStatus::Skipped);
+            (id.as_str().to_string(), status)
+        })
+        .collect()
 }
 
 fn sanitize_prior_narrative(

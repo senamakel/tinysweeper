@@ -8,8 +8,8 @@ use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::ports::review_job::{
-    Admission, MAX_RUNNING_REVIEWS, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS,
-    OwnedReview, PaidStart, ReviewJobStore, ReviewRequest, ReviewSchedulerState, TerminalOutcome,
+    Admission, MAX_TERMINAL_REVIEW_RESERVATIONS, MAX_UNFINISHED_REVIEWS, OwnedReview, PaidStart,
+    ReviewJobStore, ReviewRequest, ReviewSchedulerState, TerminalOutcome,
 };
 
 /// In-memory implementation of [`ReviewJobStore`] for offline use and tests.

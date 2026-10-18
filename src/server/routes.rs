@@ -2589,6 +2589,13 @@ async fn handle_review(
                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                 return WorkerDisposition::Terminal(TerminalOutcome::Exhausted);
             }
+            Ok(review @ InnerReview::Shutdown) => {
+                let disposition = shutdown_disposition(&review, unix_time_ms())
+                    .expect("shutdown review has a deferred disposition");
+                drop(permit);
+                close_status(&state, &slot, Conclusion::NotReviewed).await;
+                return disposition;
+            }
             Err(err) => {
                 if matches!(err, Error::ReviewOwnershipLost) {
                     drop(permit);

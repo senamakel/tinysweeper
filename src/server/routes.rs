@@ -3136,7 +3136,11 @@ mod tests {
         })
         .await;
         assert!(matches!(result, Err(Error::Forge(_))));
-        assert_eq!(permits.available_permits(), 1, "failed expansion releases admission");
+        assert_eq!(
+            permits.available_permits(),
+            1,
+            "failed expansion releases admission"
+        );
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

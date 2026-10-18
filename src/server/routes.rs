@@ -25,6 +25,9 @@ use crate::index::mongo::MongoIndex;
 use crate::ports::forge::ForgeRead as _;
 use crate::ports::knowledge::KnowledgeStore;
 use crate::ports::model_factory::ModelFactory;
+use crate::ports::review_job::{
+    Admission, OwnedReview, ReviewJobMode, ReviewJobStore, ReviewRequest, TerminalOutcome,
+};
 use crate::pr_triage::Report as PrTriageReport;
 use crate::server::admin::{self, AdminAuth};
 use crate::server::auth::AppAuth;
@@ -171,7 +174,10 @@ struct AppState {
     knowledge: Option<Arc<dyn KnowledgeStore>>,
     auth: Arc<AppAuth>,
     permits: Arc<Semaphore>,
-    review_queue: mpsc::Sender<QueuedReview>,
+    review_jobs: Arc<dyn ReviewJobStore>,
+    review_owner: Arc<str>,
+    accepting_reviews: Arc<std::sync::atomic::AtomicBool>,
+    review_queue: mpsc::Sender<()>,
     /// The embedder and the retrieval stores, when `[embeddings]` names a
     /// provider. `None` runs every review diff-only, which is what tinysweeper
     /// did before an index existed.
@@ -200,16 +206,6 @@ struct AppState {
     in_flight: Arc<std::sync::Mutex<InFlightRegistry>>,
 }
 
-/// A webhook review waiting for one of the bounded worker slots.
-#[derive(Debug)]
-struct QueuedReview {
-    action: Action,
-    delivery: Option<String>,
-    event: String,
-    mode: Mode,
-    queued_at: tokio::time::Instant,
-}
-
 /// The admitted review's identity and revision, carried together into a worker.
 struct ReviewJob {
     repo: String,
@@ -220,6 +216,7 @@ struct ReviewJob {
     delivery: Option<String>,
     expected_head: Option<String>,
     queued_at: tokio::time::Instant,
+    owned: Option<OwnedReview>,
 }
 
 /// Run the server until the process is stopped.
@@ -284,8 +281,10 @@ pub async fn serve_with_model_factory(
 
     let admin_auth = config.admin_auth.clone();
     // One record may be held by the single dispatcher while it waits for a
-    // permit, so leave that slot out of the channel's capacity.
+    // permit. The channel contains wakeup hints only; the durable scheduler is
+    // authoritative and its poll recovers a request if a hint is lost.
     let (review_queue, review_receiver) = mpsc::channel(MAX_QUEUED_REVIEWS - 1);
+    let review_jobs: Arc<dyn ReviewJobStore> = Arc::new(store.clone());
     let state = AppState {
         config: Arc::new(config),
         store: store.clone(),
@@ -293,6 +292,13 @@ pub async fn serve_with_model_factory(
         knowledge: knowledge.clone(),
         auth: Arc::new(auth),
         permits: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
+        review_jobs,
+        review_owner: Arc::from(format!(
+            "{}-{}",
+            std::process::id(),
+            bson::oid::ObjectId::new().to_hex()
+        )),
+        accepting_reviews: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         review_queue,
         index: index.clone(),
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
@@ -413,16 +419,11 @@ pub async fn serve_with_model_factory(
     let review_dispatcher = tokio::spawn(drain_review_queue(
         review_receiver,
         state.permits.clone(),
+        state.review_jobs.clone(),
+        state.review_owner.clone(),
+        state.accepting_reviews.clone(),
         move |job, permit| {
-            tokio::spawn(dispatch(
-                state.clone(),
-                job.action,
-                job.delivery,
-                job.event,
-                Some(permit),
-                job.mode,
-                Some(job.queued_at),
-            ));
+            tokio::spawn(run_owned_review(state.clone(), job, permit));
         },
     ));
     let served = axum::serve(listener, app)
@@ -505,6 +506,9 @@ async fn shutdown_signal() {
 /// than that — GitHub's own redelivery or the next push starts it again once
 /// the new container is up.
 async fn conclude_in_flight(state: &AppState) {
+    state
+        .accepting_reviews
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let slots = {
         let mut registry = state.in_flight.lock().expect("in-flight reviews");
         registry.accepting = false;
@@ -621,32 +625,43 @@ async fn receive(
     }
 
     if matches!(&action, Action::Review { .. }) {
-        let queued = QueuedReview {
-            action,
-            delivery: Some(delivery),
-            event,
-            mode: Mode::Incremental,
-            queued_at: tokio::time::Instant::now(),
+        if !state
+            .accepting_reviews
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server is stopping; operator redelivery required",
+            )
+                .into_response();
+        }
+        let admission = match admit_webhook_review(&state, &action, &delivery, &event).await {
+            Ok(admission) => admission,
+            Err(err) => {
+                tracing::error!(%err, %delivery, "could not durably accept review; operator redelivery required");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "review scheduler unavailable; operator redelivery required",
+                )
+                    .into_response();
+            }
         };
-        return match try_enqueue_review(&state.review_queue, queued) {
-            Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
-            Err(ReviewQueueError::Full(job)) => {
-                let subject = match &job.action {
-                    Action::Review { repo, number, .. } => format!("{repo}#{number}"),
-                    _ => "unknown subject".to_owned(),
-                };
-                tracing::error!(%subject, delivery = %job.delivery.as_deref().unwrap_or("manual"), "review queue is full; operator redelivery required");
-                (
+        match admission {
+            Admission::Full => {
+                tracing::error!(%delivery, "durable review scheduler is full; operator redelivery required");
+                return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "review queue is full; operator redelivery required",
                 )
-                    .into_response()
+                    .into_response();
             }
-            Err(ReviewQueueError::Closed) => {
-                tracing::error!("review queue is closed");
-                (StatusCode::SERVICE_UNAVAILABLE, "review queue unavailable").into_response()
+            Admission::Admitted | Admission::Duplicate => {
+                // A dropped/full hint is harmless; the bounded durable
+                // scheduler is polled periodically by the dispatcher.
+                let _ = state.review_queue.try_send(());
             }
-        };
+        }
+        return (StatusCode::ACCEPTED, "queued").into_response();
     }
 
     // Everything past here is work, and none of it happens on this task.
@@ -682,41 +697,88 @@ async fn receive(
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
-#[derive(Debug)]
-enum ReviewQueueError {
-    Full(Box<QueuedReview>),
-    Closed,
+async fn admit_webhook_review(
+    state: &AppState,
+    action: &Action,
+    delivery: &str,
+    event: &str,
+) -> Result<Admission> {
+    let Action::Review {
+        repo,
+        number,
+        author,
+        installation,
+        head_sha,
+    } = action
+    else {
+        return Err(Error::Forge("only review actions use the durable scheduler".into()));
+    };
+    if delivery.is_empty() {
+        return Err(Error::Forge("review delivery has no delivery ID".into()));
+    }
+    state
+        .review_jobs
+        .admit_batch(vec![ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
+            repo: repo.clone(),
+            number: *number,
+            author: author.clone(),
+            installation: *installation,
+            head_sha: head_sha.clone(),
+            delivery: Some(delivery.to_owned()),
+            event: event.to_owned(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: unix_time_ms(),
+        }])
+        .await
 }
 
-fn try_enqueue_review(
-    sender: &mpsc::Sender<QueuedReview>,
-    job: QueuedReview,
-) -> std::result::Result<(), ReviewQueueError> {
-    sender.try_send(job).map_err(|error| match error {
-        mpsc::error::TrySendError::Full(job) => ReviewQueueError::Full(Box::new(job)),
-        mpsc::error::TrySendError::Closed(_) => ReviewQueueError::Closed,
-    })
+fn unix_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 /// Drain the bounded review queue, acquiring capacity before each worker is
 /// spawned. At most one queue-drainer waits on the semaphore; pending requests
 /// remain bounded channel entries.
 async fn drain_review_queue<F>(
-    mut receiver: mpsc::Receiver<QueuedReview>,
+    mut receiver: mpsc::Receiver<()>,
     permits: Arc<Semaphore>,
+    jobs: Arc<dyn ReviewJobStore>,
+    owner: Arc<str>,
+    accepting: Arc<std::sync::atomic::AtomicBool>,
     mut start: F,
 ) where
-    F: FnMut(QueuedReview, tokio::sync::OwnedSemaphorePermit),
+    F: FnMut(OwnedReview, tokio::sync::OwnedSemaphorePermit),
 {
-    while let Some(job) = receiver.recv().await {
-        let permit = match permits.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                tracing::error!(%err, "review permit pool closed; queued delivery was not started");
-                continue;
+    let mut poll = tokio::time::interval(std::time::Duration::from_secs(1));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            signal = receiver.recv() => {
+                if signal.is_none() {
+                    return;
+                }
             }
+            _ = poll.tick() => {}
+        }
+        if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            continue;
         };
-        start(job, permit);
+        match jobs.claim_next(&owner, unix_time_ms()).await {
+            Ok(Some(job)) => start(job, permit),
+            Ok(None) => drop(permit),
+            Err(err) => {
+                drop(permit);
+                tracing::error!(%err, "could not claim durable review work");
+            }
+        }
     }
 }
 
@@ -1377,7 +1439,8 @@ where
 }
 
 async fn enqueue_manual_jobs<'a, F>(
-    sender: &mpsc::Sender<QueuedReview>,
+    sender: &mpsc::Sender<()>,
+    store: &dyn ReviewJobStore,
     repo: &str,
     installation: u64,
     numbers: Vec<u64>,
@@ -1400,26 +1463,39 @@ where
     let mut jobs = Vec::with_capacity(numbers.len());
     for number in numbers {
         let pull_request = resolve(number).await?;
-        let action = Action::Review {
-            repo: repo.to_owned(),
+        jobs.push((
             number,
-            author: pull_request.author,
-            installation,
-            head_sha: Some(pull_request.head_sha),
-        };
-        let job = QueuedReview {
-            action,
-            delivery: None,
-            event: "manual-review".into(),
-            mode: Mode::Full,
-            queued_at: tokio::time::Instant::now(),
-        };
-        jobs.push((number, job));
+            ReviewRequest {
+                id: crate::ports::review_job::ReviewJobId(format!(
+                    "manual:{}:{}",
+                    bson::oid::ObjectId::new().to_hex(),
+                    number
+                )),
+                repo: repo.to_owned(),
+                number,
+                author: pull_request.author,
+                installation,
+                head_sha: Some(pull_request.head_sha),
+                delivery: None,
+                event: "manual-review".into(),
+                mode: ReviewJobMode::Full,
+                accepted_at_ms: unix_time_ms(),
+            },
+        ));
+    }
+
+    let admitted = store
+        .admit_batch(jobs.iter().map(|(_, job)| job.clone()).collect())
+        .await?;
+    match admitted {
+        Admission::Admitted => {}
+        Admission::Duplicate => return Ok(Vec::new()),
+        Admission::Full => return Err(Error::ReviewCapacityFull),
     }
 
     let mut queued = Vec::with_capacity(jobs.len());
-    for ((number, job), slot) in jobs.into_iter().zip(queue_slots) {
-        slot.send(job);
+    for ((number, _job), slot) in jobs.into_iter().zip(queue_slots) {
+        slot.send(());
         queued.push(number);
     }
     Ok(queued)
@@ -1459,6 +1535,7 @@ impl FullReviews for ManualDispatch {
             let repo_name = repo.to_string();
             enqueue_manual_jobs(
                 &self.state.review_queue,
+                self.state.review_jobs.as_ref(),
                 &repo_name,
                 installation,
                 numbers,

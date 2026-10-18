@@ -114,6 +114,11 @@ pub enum Error {
     #[error("pull request head changed before the review started")]
     ReviewSuperseded,
 
+    /// This process lost its durable scheduler ownership before a protected
+    /// review phase could start or publish.
+    #[error("review worker ownership expired or was replaced")]
+    ReviewOwnershipLost,
+
     /// A feature required for this code path was not compiled in.
     #[error("{0} requires the `{1}` feature; rebuild with --features {1}")]
     FeatureDisabled(&'static str, &'static str),

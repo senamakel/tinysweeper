@@ -3962,6 +3962,295 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exhausted_retry_budget_concludes_the_open_check_before_tombstoning() {
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::harness::MockModel;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let request = queued_test_review(7);
+        assert_eq!(
+            store.admit_batch(vec![request.clone()]).await.unwrap(),
+            Admission::Admitted
+        );
+        let now_ms = 2;
+        let owned = store
+            .claim_next("same-worker", now_ms)
+            .await
+            .unwrap()
+            .expect("accepted review is claimable");
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let forge = MockForge::new();
+        let model = MockModel::silent();
+        let mut check_id = None;
+        let mut last_result = None;
+
+        for _ in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
+            let attempt_model = model.clone();
+            let attempt_forge = forge.clone();
+            let result = review_with_paid_budget_and_status(
+                &store,
+                Some(&owned),
+                now_ms,
+                || async move {
+                    attempt_model
+                        .complete(ModelRequest {
+                            model: "test".into(),
+                            messages: vec![Message::user("retry this review")],
+                            schema: json!({"type": "object"}),
+                            schema_name: "review".into(),
+                            max_tokens: 16,
+                        })
+                        .await?;
+                    Ok(())
+                },
+                || async {
+                    if check_id.is_none() {
+                        check_id = Some(
+                            attempt_forge
+                                .publish_check(&repo, status::in_progress("sha-7"))
+                                .await
+                                .expect("open the in-flight check"),
+                        );
+                    }
+                    true
+                },
+                || async { Err(Error::Forge("transient test failure".into())) },
+            )
+            .await;
+            assert!(matches!(result, Err(Error::Forge(_))));
+            last_result = Some(result);
+        }
+        drop(last_result);
+        assert_eq!(model.requests().len(), 5, "five paid starts reached the model");
+        let check_id = check_id.expect("the transient review opened one check");
+
+        let exhausted = review_with_paid_budget_and_status(
+            &store,
+            Some(&owned),
+            now_ms,
+            || async {
+                panic!("the exhausted sixth start must not reach model work");
+                #[allow(unreachable_code)]
+                Ok(())
+            },
+            || async { true },
+            || async { panic!("exhaustion must not enter review work") },
+        )
+        .await
+        .expect("an exhausted budget is a normal terminal result");
+        assert!(matches!(exhausted, InnerReview::Exhausted));
+
+        let disposition = finalize_exhausted_review(
+            || async {
+                if store.owns(&owned, now_ms).await? {
+                    Ok(())
+                } else {
+                    Err(Error::ReviewOwnershipLost)
+                }
+            },
+            || async {
+                forge
+                    .update_check(&repo, check_id, status::not_reviewed("sha-7"))
+                    .await
+                    .expect("conclude the open check");
+            },
+        )
+        .await;
+        assert!(matches!(
+            disposition,
+            WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
+        ));
+        assert_eq!(
+            record_owned_disposition(&store, &owned, disposition, now_ms).await,
+            Some(Ok(true))
+        );
+        let conclusions: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::CheckUpdate { check_id: id, check } if id == check_id => Some(check),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(conclusions.len(), 1, "the open status is concluded once");
+        assert_eq!(
+            conclusions[0].conclusion,
+            Some(crate::forge::CheckConclusion::Neutral)
+        );
+        assert_eq!(model.requests().len(), 5, "no sixth model call was made");
+        assert_eq!(
+            store.admit_batch(vec![request]).await.unwrap(),
+            Admission::Duplicate,
+            "terminal exhaustion remains deduplicated"
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_cold_recovery_opens_and_concludes_its_fresh_check() {
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::ports::forge::ForgeWrite;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let request = queued_test_review(8);
+        store.admit_batch(vec![request]).await.unwrap();
+        let mut now_ms = 2;
+        for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
+            let owned = store
+                .claim_next(&format!("old-process-{generation}"), now_ms)
+                .await
+                .unwrap()
+                .expect("each paid start has an owner");
+            assert!(matches!(
+                with_paid_review_attempt(&store, &owned, now_ms, || async { () })
+                    .await
+                    .unwrap(),
+                PaidWork::Started(())
+            ));
+            now_ms += crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1;
+        }
+
+        let recovered = store
+            .claim_next("replacement-process", now_ms)
+            .await
+            .unwrap()
+            .expect("the fifth spent job remains recoverable until finalized");
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let forge = MockForge::new();
+        let model_starts = Arc::new(AtomicUsize::new(0));
+        let observed = model_starts.clone();
+        let mut check_id = None;
+        let attempt = review_with_paid_budget_and_status(
+            &store,
+            Some(&recovered),
+            now_ms,
+            || async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || async {
+                check_id = Some(
+                    forge
+                        .publish_check(&repo, status::in_progress("sha-8"))
+                        .await
+                        .expect("cold recovery opens a fresh check"),
+                );
+                true
+            },
+            || async { panic!("spent recovery must not enter review work") },
+        )
+        .await
+        .expect("exhaustion is terminal");
+        assert!(matches!(attempt, InnerReview::Exhausted));
+        assert_eq!(model_starts.load(Ordering::SeqCst), 0);
+        let check_id = check_id.expect("cold recovery must open a local status slot");
+
+        let disposition = finalize_exhausted_review(
+            || async {
+                if store.owns(&recovered, now_ms).await? {
+                    Ok(())
+                } else {
+                    Err(Error::ReviewOwnershipLost)
+                }
+            },
+            || async {
+                forge
+                    .update_check(&repo, check_id, status::not_reviewed("sha-8"))
+                    .await
+                    .expect("conclude fresh recovery check");
+            },
+        )
+        .await;
+        assert!(matches!(
+            disposition,
+            WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
+        ));
+        assert_eq!(
+            record_owned_disposition(&store, &recovered, disposition, now_ms).await,
+            Some(Ok(true))
+        );
+        let checks: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::Check(check) => Some(check),
+                Write::CheckUpdate { check_id: id, check } if id == check_id => Some(check),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].conclusion, None);
+        assert_eq!(
+            checks[1].conclusion,
+            Some(crate::forge::CheckConclusion::Neutral)
+        );
+        assert_eq!(model_starts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_stale_generation_cannot_conclude_the_replacement_check() {
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::ports::forge::ForgeWrite;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        store.admit_batch(vec![queued_test_review(9)]).await.unwrap();
+        let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
+        let stale_check_time = 3;
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let stale_check_id = forge
+            .publish_check(&repo, status::in_progress("sha-9"))
+            .await
+            .expect("old worker opens status");
+        let replacement_time = 2 + crate::ports::review_job::REVIEW_OWNER_TTL_MS + 1;
+        let replacement = store
+            .claim_next("replacement-process", replacement_time)
+            .await
+            .unwrap()
+            .expect("expired work gets a new generation");
+        let replacement_check_id = forge
+            .publish_check(&repo, status::in_progress("sha-9"))
+            .await
+            .expect("replacement opens its own status");
+
+        let disposition = finalize_exhausted_review(
+            || async {
+                if store.owns(&stale, stale_check_time).await? {
+                    Ok(())
+                } else {
+                    Err(Error::ReviewOwnershipLost)
+                }
+            },
+            || async {
+                forge
+                    .update_check(
+                        &repo,
+                        stale_check_id,
+                        status::not_reviewed("sha-9"),
+                    )
+                    .await
+                    .expect("stale close is rejected before reaching the forge");
+            },
+        )
+        .await;
+        assert!(matches!(disposition, WorkerDisposition::OwnershipLost));
+        let conclusions: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::CheckUpdate { check_id, check } => Some((check_id, check)),
+                _ => None,
+            })
+            .collect();
+        assert!(conclusions.is_empty());
+        assert_ne!(stale_check_id, replacement_check_id);
+        assert!(store.owns(&replacement, replacement_time).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn cancelling_an_owned_worker_drops_heartbeat_and_allows_expiry_recovery() {
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let request = ReviewRequest {

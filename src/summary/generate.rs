@@ -420,26 +420,8 @@ pub fn deterministic_with_paths(
     summary
 }
 
-fn purpose_opening(pull_request: &PullRequest, narrative: &str) -> String {
-    let title = validated_narrative(&pull_request.title)
-        .unwrap_or_default()
-        .trim_end_matches(['.', '!', '?'])
-        .trim()
-        .to_string();
-    let narrative = narrative.trim();
-    if title.is_empty() {
-        return narrative.to_string();
-    }
-    if narrative.get(..title.len()).is_some_and(|prefix| {
-        prefix.eq_ignore_ascii_case(&title)
-            && narrative[title.len()..]
-                .chars()
-                .next()
-                .is_some_and(|separator| matches!(separator, '.' | '!' | '?'))
-    }) {
-        return narrative.to_string();
-    }
-    format!("{title}. {narrative}")
+fn purpose_opening(_pull_request: &PullRequest, narrative: &str) -> String {
+    narrative.trim().to_string()
 }
 
 fn classify(diffs: &[FileDiff]) -> ChangeSurface {
@@ -624,14 +606,6 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
             .map(String::as_str)
             .filter(|path| full_pr_paths.contains(*path))
             .collect();
-        let assigned: BTreeSet<&str> = coverage
-            .reviewed
-            .iter()
-            .chain(coverage.unanswered.iter())
-            .chain(lane.unanswered.iter())
-            .map(String::as_str)
-            .filter(|path| full_pr_paths.contains(*path))
-            .collect();
         let reviewed: BTreeSet<&str> = coverage
             .reviewed
             .iter()
@@ -640,7 +614,7 @@ fn lane_status(lane: &LaneProposal, full_pr_paths: &BTreeSet<String>) -> LaneRev
             .filter(|path| !unanswered.contains(path))
             .collect();
         let count = reviewed.len();
-        let total = assigned.len();
+        let total = full_pr_paths.len();
         if count == 0 {
             lane_status_value(
                 LaneStatusKind::NoResponse,
@@ -754,12 +728,8 @@ fn sanitize_prior_narrative(
         {
             return false;
         }
-        observations.retain_mut(|observation| {
-            let Some(validated) = validated_model_narrative(observation, statuses) else {
-                return false;
-            };
-            *observation = validated;
-            true
+        observations.retain(|observation| {
+            validated_model_narrative(observation, statuses).is_some()
         });
         !observations.is_empty()
     });
@@ -801,45 +771,50 @@ fn claims_unsupported_lane_sentence(
     statuses: &BTreeMap<String, LaneReviewStatus>,
 ) -> bool {
     let lower = text.to_ascii_lowercase();
-    let words = lower
+    let words: BTreeSet<&str> = lower
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>();
-    let has_any = |terms: &[&str]| terms.iter().any(|term| words.contains(term));
-    let broad_scope =
-        has_any(&["all", "every"]) && has_any(&["lane", "lanes", "reviewer", "reviewers"]);
-    if broad_scope
+        .collect();
+    let positive = [
+        "confirm",
+        "confirms",
+        "confirmed",
+        "pass",
+        "passed",
+        "passing",
+        "clear",
+        "clean",
+        "successful",
+        "succeeded",
+        "sound",
+        "approve",
+        "approved",
+    ];
+    let broad_scope = (words.contains("all") || words.contains("every"))
+        && ["lane", "lanes", "reviewer", "reviewers"]
+            .iter()
+            .any(|word| words.contains(word));
+    let positive_phrase = positive.iter().any(|word| words.contains(word))
+        || lower.contains("no findings")
+        || lower.contains("found none")
+        || lower.contains("no issues");
+    let broad_claim = broad_scope && positive_phrase;
+    if broad_claim
         && statuses
             .values()
             .any(|status| !matches!(status.status, LaneStatusKind::Answered))
     {
         return true;
     }
+    if !positive_phrase {
+        return false;
+    }
     LaneId::ALL.iter().any(|lane| {
         statuses
             .get(lane.as_str())
             .is_some_and(|status| !matches!(status.status, LaneStatusKind::Answered))
-            && lane_subject_is_mentioned(*lane, &words)
+            && words.contains(lane.as_str())
     })
-}
-
-fn lane_subject_is_mentioned(lane: LaneId, words: &[&str]) -> bool {
-    let has_phrase = |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
-    let has_lane_subject = ["lane", "lanes", "reviewer", "reviewers"]
-        .iter()
-        .any(|subject| words.contains(subject));
-    if !has_lane_subject {
-        return false;
-    }
-    let aliases: &[&[&str]] = match lane {
-        LaneId::Critique => &[&["critique"], &["correctness"]],
-        LaneId::Security => &[&["security"]],
-        LaneId::Tests => &[&["tests"], &["test"]],
-        LaneId::Commits => &[&["commits"], &["commit"]],
-        LaneId::Description => &[&["description"]],
-        LaneId::E2e => &[&["e2e"], &["end", "to", "end"]],
-    };
-    aliases.iter().any(|alias| has_phrase(alias))
 }
 
 fn now_epoch() -> u64 {

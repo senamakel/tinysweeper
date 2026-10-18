@@ -56,7 +56,11 @@ impl CompletionObserver for ModelCallObserver {
         if let Some(observer) = &self.0 {
             observer.on_complete(trace);
         }
-        let usage = trace.outcome.as_ref().ok().and_then(|response| response.usage.as_ref());
+        let usage = trace
+            .outcome
+            .as_ref()
+            .ok()
+            .and_then(|response| response.usage.as_ref());
         let model = trace.request.model.as_str();
         let latency_ms = trace.latency.as_millis() as u64;
         let succeeded = trace.outcome.is_ok();

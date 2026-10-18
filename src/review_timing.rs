@@ -36,7 +36,10 @@ pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
 pub struct ReviewTiming(Arc<Inner>);
 
 #[derive(Debug)]
-struct Inner(Mutex<Record>);
+struct Inner {
+    record: Mutex<Record>,
+    worker_span: Span,
+}
 
 /// Snapshot of the server's structured telemetry for one review run.
 #[derive(Debug, Clone, Default)]
@@ -73,7 +76,10 @@ impl ReviewTiming {
         for phase in PHASES {
             record.phases_ms.insert((*phase).into(), 0);
         }
-        Self(Arc::new(Inner(Mutex::new(record))))
+        Self(Arc::new(Inner {
+            record: Mutex::new(record),
+            worker_span: tracing::Span::current(),
+        }))
     }
 
     pub fn phase(&self, name: &'static str) -> PhaseGuard {
@@ -116,17 +122,23 @@ impl ReviewTiming {
     }
 
     pub fn record(&self, update: impl FnOnce(&mut Record)) {
-        update(&mut self.0.0.lock().expect("review timing lock"));
+        let head_sha = {
+            let mut record = self.0.record.lock().expect("review timing lock");
+            update(&mut record);
+            record.head_sha.clone()
+        };
+        if !head_sha.is_empty() {
+            self.0.worker_span.record("head_sha", head_sha.as_str());
+        }
     }
 
     pub fn snapshot(&self) -> Record {
-        self.0.0.lock().expect("review timing lock").clone()
+        self.0.record.lock().expect("review timing lock").clone()
     }
 
     pub fn finish(&self, outcome: &str) {
         self.record(|r| r.outcome = outcome.to_owned());
     }
-
 }
 
 pub async fn measure<F: Future>(
@@ -161,7 +173,7 @@ pub async fn measure_lane<F: Future>(
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let r = self.0.get_mut().expect("review timing lock");
+        let r = self.0.record.get_mut().expect("review timing lock");
         let total_ms = r
             .started
             .map(|s| s.elapsed().as_millis() as u64)

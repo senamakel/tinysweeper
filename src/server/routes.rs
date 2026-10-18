@@ -2828,7 +2828,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_mock_forge_keeps_one_completed_report_through_failed_review_cycles() {
-        use crate::forge::{ForgeWrite, MockForge, RepoId, Write};
+        use crate::forge::{MockForge, RepoId, Write};
+        use crate::ports::forge::ForgeWrite;
 
         let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").expect("repository id");
@@ -2871,11 +2872,18 @@ mod tests {
             1,
             "the MockForge output should preserve the original report once"
         );
-        assert!(final_body.contains("timed out after 15 min"), "{final_body}");
+        assert!(
+            final_body.contains("timed out after 15 min"),
+            "{final_body}"
+        );
         assert!(final_body.contains("`def5678` below"), "{final_body}");
         assert!(!final_body.contains("\\#"), "{final_body}");
         assert!(!final_body.contains("Error::"), "{final_body}");
-        assert!(final_body.len() < 2_000, "failure wrappers grew: {}", final_body.len());
+        assert!(
+            final_body.len() < 2_000,
+            "failure wrappers grew: {}",
+            final_body.len()
+        );
     }
 
     #[tokio::test]

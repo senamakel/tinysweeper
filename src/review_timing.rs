@@ -18,7 +18,7 @@ pub fn outcome_for_error(error: &crate::error::Error) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct ReviewTiming(Arc<Mutex<Record>>);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Record {
     pub repo: String,
     pub pr: u64,
@@ -60,6 +60,10 @@ impl ReviewTiming {
 
     pub fn record(&self, update: impl FnOnce(&mut Record)) {
         update(&mut self.0.lock().expect("review timing lock"));
+    }
+
+    pub fn snapshot(&self) -> Record {
+        self.0.lock().expect("review timing lock").clone()
     }
 
     pub fn finish(&self, outcome: &str) {

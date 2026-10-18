@@ -44,7 +44,6 @@ struct ObservedModel {
 
 impl ObservedModel {
     async fn observe(&self, request: crate::ports::model::ModelRequest, tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>) -> Result<crate::ports::model::ModelResponse> {
-        use crate::ports::forge::ForgeRead;
         self.timing.record(|r| r.calls_attempted += 1);
         let started = std::time::Instant::now();
         let result = match tree {
@@ -1121,7 +1120,12 @@ pub async fn review_with_tree_observed(
     if let Some(timing) = &timing {
         timing.record(|r| {
             r.files_total = context.files.len();
-            r.files_unanswered = unreviewed.len();
+            let paths: std::collections::BTreeSet<_> = context.files.iter().map(|file| file.path.as_str()).collect();
+            let unanswered: std::collections::BTreeSet<_> = uninspected.iter().map(String::as_str)
+                .chain(lanes.iter().flat_map(|lane| lane.unanswered.iter().map(String::as_str)))
+                .filter(|path| paths.contains(path))
+                .collect();
+            r.files_unanswered = unanswered.len();
             r.files_answered = r.files_total.saturating_sub(r.files_unanswered);
         });
     }

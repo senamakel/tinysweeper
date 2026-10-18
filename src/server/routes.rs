@@ -1882,6 +1882,7 @@ async fn handle_review(
     // its own, report that failure against whatever head is live by then.
     // Holding it across retries also keeps a retry from going to the back of
     // the queue behind reviews that arrived while it was failing.
+    let permit_phase = timing.phase("permit");
     let permit = match state.permits.clone().acquire_owned().await {
         Ok(permit) => permit,
         Err(err) => {
@@ -1897,7 +1898,7 @@ async fn handle_review(
             return;
         }
     };
-    drop(timing.phase("permit"));
+    drop(permit_phase);
 
     // One deadline for the whole review, retries included. A per-attempt
     // deadline would let three transient failures late in the run stretch a
@@ -2202,7 +2203,6 @@ async fn review_inner(
         // survives the worker that took it. The boundary check first: the
         // metadata phase above was bounded per call, not by the deadline, so
         // this is where a budget it exhausted is noticed.
-        let lane_phase = run.timing.phase("lanes");
         let lanes = match run.check(repo, number) {
             Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                 state,
@@ -2218,7 +2218,6 @@ async fn review_inner(
             .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
             Err(spent) => Err(spent),
         };
-        drop(lane_phase);
 
         // The publish runs under its own, separate budget rather than the
         // remainder of `run.deadline`: a review that used all of its time in

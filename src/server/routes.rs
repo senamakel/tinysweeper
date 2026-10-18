@@ -2049,16 +2049,7 @@ async fn handle_review(
 
     let mut attempt = 1;
     let err = loop {
-        match review_inner(
-            &state,
-            &repo,
-            number,
-            &author,
-            installation,
-            &run,
-        )
-        .await
-        {
+        match review_inner(&state, &repo, number, &author, installation, &run).await {
             Ok(findings) => {
                 // Usually there is nothing to close: a run that declines — a
                 // blocked contributor, a draft, a lease another worker holds —

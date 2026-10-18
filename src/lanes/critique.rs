@@ -962,6 +962,27 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[derive(Debug)]
+    struct CountingTree {
+        inner: crate::ports::tree::MockTree,
+        lookups: std::sync::Mutex<Vec<Lookup>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::tree::TreeReader for CountingTree {
+        async fn lookup(&self, lookup: &Lookup) -> crate::error::Result<Found> {
+            self.lookups
+                .lock()
+                .expect("lookup calls")
+                .push(lookup.clone());
+            self.inner.lookup(lookup).await
+        }
+
+        fn describe(&self) -> String {
+            "counting mock tree".into()
+        }
+    }
+
     #[tokio::test]
     async fn a_not_found_or_other_path_mention_is_not_head_source_proof() {
         let mentioning_tree = crate::ports::tree::MockTree::from_files([(
@@ -1310,16 +1331,42 @@ fn helper() {
     }
 
     #[tokio::test]
-    async fn degraded_retrieval_keeps_unchanged_code_with_a_head_local_lookup() {
+    async fn degraded_retrieval_caps_readable_unchanged_anchor_without_caller_evidence() {
         let config = config();
         let diffs = vec![parse_file_patch(
             "src/main.rs",
             "@@ -1,2 +1,3 @@\n fn main() {\n+    helper();\n }\n",
         )];
-        let tree = crate::ports::tree::MockTree::from_files([(
-            "src/main.rs",
-            "fn main() {\n    helper();\n}\nfn helper() {}\n",
-        )]);
+        let anchor_read = Lookup::Read {
+            path: "src/main.rs".into(),
+            start: Some(1),
+            end: Some(1),
+        };
+        let caller_search = Lookup::Search {
+            pattern: "fn helper(".into(),
+            glob: None,
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [
+                (
+                    anchor_read.key(),
+                    Found::Text {
+                        text: "1 fn main() {".into(),
+                        start: 1,
+                        end: 1,
+                        total: 3,
+                    },
+                ),
+                (
+                    caller_search.key(),
+                    Found::Unavailable {
+                        reason: "cold index cannot search callers".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
         let model = MockModel::new()
             .then(json!({
                 "summary": "The existing call needs a guard.",
@@ -1331,6 +1378,61 @@ fn helper() {
                     "body": "The unchanged caller assumes an invalid contract.",
                     "severity": "high",
                     "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+        let model_handle = model.clone();
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(outcome.findings[0].late);
+        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert_eq!(outcome.findings[0].severity, Severity::High);
+        let request = model_handle
+            .requests()
+            .into_iter()
+            .find(|request| request.schema_name == "tinysweeper_critique")
+            .expect("the critique request");
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(prompt.contains("cold index cannot search callers"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn a_degraded_claim_about_an_existing_declared_module_is_still_capped() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let tree = crate::ports::tree::MockTree::from_files([(
+            "src/foo/mod.rs",
+            "pub fn foo() {}\n",
+        )]);
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The declared module is missing.",
+                "findings": [{
+                    "path": "src/lib.rs",
+                    "existing_code": "pub mod foo;",
+                    "rule": "missing-module",
+                    "title": "Add the missing foo module",
+                    "body": "The module file is absent.",
+                    "severity": "critical",
+                    "confidence": 0.99
                 }]
             }))
             .then(json!({"incorrect": []}));
@@ -1346,8 +1448,53 @@ fn helper() {
         .await;
 
         assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
-        assert!(outcome.findings[0].late);
-        assert_eq!(outcome.findings[0].confidence, 0.9);
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
+        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+    }
+
+    #[tokio::test]
+    async fn disabled_lookups_do_not_trigger_post_review_tree_reads() {
+        let mut config = config();
+        config.lookup.enabled = false;
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let tree = CountingTree {
+            inner: crate::ports::tree::MockTree::from_files([(
+                "src/foo/mod.rs",
+                "pub fn foo() {}\n",
+            )]),
+            lookups: std::sync::Mutex::new(Vec::new()),
+        };
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The declared module is missing.",
+                "findings": [{
+                    "path": "src/lib.rs",
+                    "existing_code": "pub mod foo;",
+                    "rule": "missing-module",
+                    "title": "Add the missing foo module",
+                    "body": "The module file is absent.",
+                    "severity": "critical",
+                    "confidence": 0.99
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.findings[0].confidence, DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        assert!(tree.lookups.lock().expect("lookup calls").is_empty());
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal

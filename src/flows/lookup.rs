@@ -1425,7 +1425,12 @@ mod tests {
             seeded.rendered
         );
         assert!(
-            !seeded.rendered.contains("No such file at this commit"),
+            !seeded
+                .rendered
+                .contains("Declared module `foo` at `src/foo.rs`")
+                && !seeded
+                    .rendered
+                    .contains("Declared module `foo` at `src/foo/mod.rs`"),
             "a default-path miss must not contradict the resolved nested module: {}",
             seeded.rendered
         );

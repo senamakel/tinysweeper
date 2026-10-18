@@ -531,9 +531,16 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
     out
 }
 
-/// Module files named by added out-of-line declarations, resolved relative to
-/// the declaring Rust source file (and therefore independent of index state).
-fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
+enum AddedModulePaths {
+    Resolved { name: String, paths: Vec<String> },
+    Unavailable { name: String, reason: &'static str },
+}
+
+/// Resolve added out-of-line module declarations only when the diff contains
+/// enough lexical context to name their paths. Partial hunks cannot prove the
+/// enclosing inline-module stack, and ambiguous paths must not become a
+/// `NotFound` result from probing Rust's default layout.
+fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModulePaths> {
     use crate::evidence::diff::LineKind;
     let source = std::path::Path::new(&diff.path);
     let parent = source.parent().unwrap_or_else(|| std::path::Path::new(""));
@@ -541,34 +548,159 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    let module_parent = if matches!(stem, "lib" | "main" | "mod") {
+    let base = if matches!(stem, "lib" | "main" | "mod") {
         parent.to_path_buf()
     } else {
         parent.join(stem)
     };
-    diff.hunks
-        .iter()
-        .flat_map(|hunk| &hunk.lines)
-        .filter(|line| line.kind == LineKind::Added)
-        .filter_map(|line| {
-            let text = line.text.trim();
-            let declaration = ["pub ", "pub(crate) ", "pub(super) ", ""]
-                .iter()
-                .find_map(|prefix| text.strip_prefix(prefix))?
-                .strip_prefix("mod ")?;
-            let name = declaration.strip_suffix(';')?.trim();
-            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(
-                || {
-                    vec![
-                        module_parent.join(format!("{name}.rs")),
-                        module_parent.join(name).join("mod.rs"),
-                    ]
-                },
-            )
-        })
-        .flatten()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect()
+    let incomplete_context = diff.hunks.iter().any(|hunk| hunk.new_start > 1);
+    let mut brace_depth = 0usize;
+    let mut modules: Vec<(usize, String)> = Vec::new();
+    let mut path_attribute: Option<String> = None;
+    let mut declarations = Vec::new();
+
+    for line in diff.hunks.iter().flat_map(|hunk| &hunk.lines) {
+        if line.kind == LineKind::Removed {
+            continue;
+        }
+        let text = line.text.as_str();
+        if let Some(path) = rust_path_attribute(text) {
+            path_attribute = Some(path);
+        } else if !text.trim().starts_with('#') && !text.trim().is_empty() {
+            let mut cursor = 0usize;
+            let mut pending_inline: Option<String> = None;
+            while cursor < text.len() {
+                let rest = &text[cursor..];
+                if rest.starts_with("//") {
+                    break;
+                }
+                if rest.starts_with('"') {
+                    cursor += 1;
+                    while cursor < text.len() {
+                        let byte = text.as_bytes()[cursor];
+                        cursor += 1;
+                        if byte == b'\\' {
+                            cursor = (cursor + 1).min(text.len());
+                        } else if byte == b'"' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if rest.starts_with("mod")
+                    && rest[3..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_whitespace)
+                    && (cursor == 0
+                        || !text.as_bytes()[cursor - 1].is_ascii_alphanumeric()
+                            && text.as_bytes()[cursor - 1] != b'_')
+                {
+                    let name_start = cursor + 3;
+                    let after_keyword = text[name_start..].trim_start();
+                    let whitespace = text[name_start..].len() - after_keyword.len();
+                    let name_start = name_start + whitespace;
+                    let name_end = text[name_start..]
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .map(|offset| name_start + offset)
+                        .unwrap_or(text.len());
+                    let name = &text[name_start..name_end];
+                    let suffix = text[name_end..].trim_start();
+                    if !name.is_empty() && suffix.starts_with(';') {
+                        if incomplete_context {
+                            declarations.push(AddedModulePaths::Unavailable {
+                                name: name.to_owned(),
+                                reason: "the diff does not show the enclosing module context",
+                            });
+                        } else if let Some(path) = path_attribute.take() {
+                            if !modules.is_empty() {
+                                declarations.push(AddedModulePaths::Unavailable {
+                                    name: name.to_owned(),
+                                    reason: "a path attribute inside an inline module has ambiguous base semantics",
+                                });
+                            } else {
+                                let explicit = std::path::Path::new(&path);
+                                if explicit.is_absolute()
+                                    || explicit.components().any(|c| {
+                                        matches!(c, std::path::Component::ParentDir)
+                                    })
+                                {
+                                    declarations.push(AddedModulePaths::Unavailable {
+                                        name: name.to_owned(),
+                                        reason: "the path attribute is not a safe repository-relative path",
+                                    });
+                                } else {
+                                    declarations.push(AddedModulePaths::Resolved {
+                                        name: name.to_owned(),
+                                        paths: vec![parent.join(explicit).to_string_lossy().into_owned()],
+                                    });
+                                }
+                            }
+                        } else {
+                            let mut module_parent = base.clone();
+                            for (_, module) in &modules {
+                                module_parent.push(module);
+                            }
+                            declarations.push(AddedModulePaths::Resolved {
+                                name: name.to_owned(),
+                                paths: vec![
+                                    module_parent
+                                        .join(format!("{name}.rs"))
+                                        .to_string_lossy()
+                                        .into_owned(),
+                                    module_parent
+                                        .join(name)
+                                        .join("mod.rs")
+                                        .to_string_lossy()
+                                        .into_owned(),
+                                ],
+                            });
+                        }
+                        cursor = name_end;
+                        continue;
+                    }
+                    if !name.is_empty() && suffix.starts_with('{') {
+                        pending_inline = Some(name.to_owned());
+                        cursor = name_end;
+                        continue;
+                    }
+                    cursor = name_end.max(cursor + 3);
+                    continue;
+                }
+                let ch = rest.chars().next().expect("cursor is in bounds");
+                match ch {
+                    '{' => {
+                        brace_depth += 1;
+                        if let Some(name) = pending_inline.take() {
+                            modules.push((brace_depth, name));
+                        }
+                    }
+                    '}' => {
+                        brace_depth = brace_depth.saturating_sub(1);
+                        while modules.last().is_some_and(|(depth, _)| *depth > brace_depth) {
+                            modules.pop();
+                        }
+                    }
+                    _ => {}
+                }
+                cursor += ch.len_utf8();
+            }
+            if !text.trim().ends_with('{') {
+                path_attribute = None;
+            }
+        }
+    }
+    declarations
+}
+
+fn rust_path_attribute(line: &str) -> Option<String> {
+    let text = line.trim();
+    if !text.starts_with("#[path") {
+        return None;
+    }
+    let equals = text.find('=')?;
+    let value = text[equals + 1..].trim().strip_prefix('"')?;
+    Some(value.split('"').next()?.to_owned())
 }
 
 /// Name of a function whose declaration was added or changed in this diff.

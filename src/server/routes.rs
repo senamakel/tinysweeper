@@ -3477,6 +3477,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_webhook_and_manual_reviews_recover_after_wakeup_loss() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        let webhook = Action::Review {
+            repo: "owner/repo".into(),
+            number: 7,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("webhook-head".into()),
+        };
+        assert_eq!(
+            admit_webhook_review(store.as_ref(), &webhook, "delivery-7", "pull_request")
+                .await
+                .expect("webhook admitted durably"),
+            Admission::Admitted
+        );
+
+        // Manual admission resolves every PR then atomically journals the
+        // complete batch. Drop its old process's channel without draining it
+        // to model SIGTERM after persistence but before a worker wakeup.
+        let (old_sender, old_receiver) = mpsc::channel(2);
+        let queued = enqueue_manual_jobs(
+            &old_sender,
+            store.as_ref(),
+            "owner/repo",
+            1,
+            vec![8, 9],
+            |number| {
+                Box::pin(async move {
+                    Ok(crate::forge::types::PullRequest {
+                        number,
+                        author: "contributor".into(),
+                        head_sha: format!("manual-head-{number}"),
+                        ..Default::default()
+                    })
+                })
+            },
+        )
+        .await
+        .expect("whole manual batch accepted");
+        assert_eq!(queued, vec![8, 9]);
+        drop(old_sender);
+        drop(old_receiver);
+
+        // A fresh dispatcher has a new, empty wakeup channel. Polling the
+        // durable scheduler must run each accepted PR exactly once.
+        let (new_sender, new_receiver) = mpsc::channel(1);
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let accepting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let observed = finished.clone();
+        let completing_store = store.clone();
+        let dispatcher = tokio::spawn(drain_review_queue(
+            new_receiver,
+            permits,
+            store.clone(),
+            Arc::from("restart-process"),
+            accepting,
+            move |owned, permit| {
+                let store = completing_store.clone();
+                let finished = observed.clone();
+                tokio::spawn(async move {
+                    let now = unix_time_ms();
+                    assert!(store
+                        .finish(&owned, TerminalOutcome::Published, now, now)
+                        .await
+                        .expect("owned job finishes"));
+                    finished.fetch_add(1, Ordering::SeqCst);
+                    drop(permit);
+                });
+            },
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while finished.load(Ordering::SeqCst) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all persisted reviews recover despite lost wakeups");
+        assert_eq!(finished.load(Ordering::SeqCst), 3);
+        assert_eq!(store.unfinished(), 0);
+        dispatcher.abort();
+        drop(new_sender);
+    }
+
+    #[tokio::test]
     async fn bounded_review_queue_keeps_backlog_as_data_and_starts_after_a_permit_frees() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 

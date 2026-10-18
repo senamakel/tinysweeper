@@ -3129,6 +3129,14 @@ mod tests {
         .await
         .expect("an available permit admits the work");
         assert_eq!(started.load(Ordering::SeqCst), 1);
+
+        let permits = Arc::new(Semaphore::new(1));
+        let result = with_manual_review_admission(permits.clone(), |_permit| async {
+            Err(Error::Forge("simulated GitHub read failure".into()))
+        })
+        .await;
+        assert!(matches!(result, Err(Error::Forge(_))));
+        assert_eq!(permits.available_permits(), 1, "failed expansion releases admission");
     }
 
     fn queued_test_review(number: u64) -> QueuedReview {

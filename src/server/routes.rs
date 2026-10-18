@@ -2462,13 +2462,40 @@ async fn run_lanes(
         )
         .await
     };
-    let proposal = tokio::time::timeout_at(run.deadline, review)
-        .await
-        .map_err(|_elapsed| {
-            Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
-        })??;
+    let proposal = review_before_deadline(
+        &run.timing,
+        run.deadline,
+        repo,
+        number,
+        review,
+    )
+    .await?;
 
     Ok((config.into_owned(), proposal))
+}
+
+/// Enforce the server's review deadline and record it before cancellation
+/// drops the in-flight pipeline and its model futures.
+async fn review_before_deadline<F, T>(
+    timing: &crate::review_timing::ReviewTiming,
+    deadline: tokio::time::Instant,
+    repo: &RepoId,
+    number: u64,
+    future: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    match tokio::time::timeout_at(deadline, future).await {
+        Ok(result) => result,
+        Err(_) => {
+            timing.finish("deadline");
+            Err(Error::timeout(
+                format!("the review of {repo}#{number}"),
+                REVIEW_DEADLINE,
+            ))
+        }
+    }
 }
 
 /// The UI preview routes' way into the brain.

@@ -213,6 +213,9 @@ pub struct LaneProposal {
     /// complete, without re-running the lane.
     #[serde(default)]
     pub pending: Vec<String>,
+    /// Why this lane was deliberately not run, when it was skipped.
+    #[serde(default)]
+    pub skipped: Option<String>,
     /// Findings that were suppressed because they are already on the pull
     /// request from an earlier push.
     ///
@@ -554,6 +557,7 @@ pub async fn review_with_tree(
                     noted: Vec::new(),
                     resolved: vec![],
                     pending: vec![],
+                    skipped: Some(format!("`{label}` is applied")),
                     deduped: 0,
                     highest_severity: None,
                     usage: Usage::default(),
@@ -1597,6 +1601,7 @@ fn lane_proposal(
         noted,
         resolved,
         pending: outcome.pending,
+        skipped: outcome.skipped,
         deduped,
         highest_severity,
         usage: spend.usage,
@@ -2015,6 +2020,7 @@ fn publish_unclaimed(lanes: &mut Vec<LaneProposal>, scan_findings: &[scan::types
             noted: Vec::new(),
             resolved: vec![],
             pending: vec![],
+            skipped: None,
             deduped: 0,
             highest_severity: Some(Severity::High),
             // Scanners are deterministic and offline: no model, no spend.

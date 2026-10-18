@@ -81,7 +81,10 @@ pub fn aggregate_coverage(lanes: &[crate::app::review::LaneProposal]) -> ReviewC
         }
     }
     let files = (!paths.is_empty()).then(|| {
-        (paths.len().saturating_sub(unanswered_paths.len()), paths.len())
+        (
+            paths.len().saturating_sub(unanswered_paths.len()),
+            paths.len(),
+        )
     });
     let unanswered_lane = lanes
         .iter()

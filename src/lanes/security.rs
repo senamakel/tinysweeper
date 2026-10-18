@@ -111,6 +111,19 @@ impl Lane for Security {
         // committed key is reported every time until it is gone, and "we
         // mentioned it last push" is not a reason to stop.
         let forced: Vec<&str> = scanner.iter().map(|f| f.path.as_str()).collect();
+        let fresh_paths: Vec<&str> = fresh.iter().map(|diff| diff.path.as_str()).collect();
+        let replayed: Vec<crate::evidence::diff::FileDiff> = input
+            .diffs
+            .iter()
+            .filter(|diff| {
+                !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str())
+            })
+            .cloned()
+            .collect();
+        // Replay proves the previous lane saw these unchanged paths, but only
+        // if security triage still considers them in scope. Prose, lockfiles
+        // and generated outputs remain deliberately outside this lane's count.
+        let mut covered_without_model = triage(&replayed, &forced).review;
         let forced_back: Vec<crate::evidence::diff::FileDiff> = input
             .diffs
             .iter()
@@ -128,13 +141,29 @@ impl Lane for Security {
         // did not already reach. A file a scanner flagged stays in whatever
         // its diff looks like — the match is the reason it is reviewed.
         let mechanical = mechanical::detect(&considered.iter().collect::<Vec<_>>());
+        let candidate_paths = triaged.review.clone();
+        let mut mechanical_verified = Vec::new();
         if let Some(sub) = &mechanical {
             triaged
                 .review
                 .retain(|path| forced.contains(&path.as_str()) || !sub.verified.contains(path));
+            mechanical_verified.extend(
+                sub.verified
+                    .iter()
+                    .filter(|path| {
+                        candidate_paths.contains(path)
+                            && !triaged.review.contains(path)
+                            && !forced.contains(&path.as_str())
+                    })
+                    .cloned(),
+            );
         }
 
-        if triaged.review.is_empty() && scanner.is_empty() {
+        if triaged.review.is_empty()
+            && scanner.is_empty()
+            && covered_without_model.is_empty()
+            && mechanical_verified.is_empty()
+        {
             return Ok(LaneOutcome::skipped(format!(
                 "No changed file has any attack surface.{}",
                 skip_note(&triaged.skipped)
@@ -221,6 +250,8 @@ impl Lane for Security {
         .await;
 
         let mut outcome = outcome.into_outcome();
+        covered_without_model.extend(mechanical_verified);
+        outcome.include_reviewed_paths(covered_without_model);
         // Tallied inside the capability, which every graph call passes through.
         // Folded in once rather than per file: `llm` is shared across the
         // fan-out, so per-file would multiply the bill by the file count.

@@ -1827,6 +1827,7 @@ struct Run {
     expected_head: Option<String>,
     owned: Option<OwnedReview>,
     owner_lost: Option<watch::Receiver<bool>>,
+    lease_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Run {
@@ -2532,7 +2533,7 @@ async fn review_inner(
         .await
     })
     .await;
-    if !claimed {
+        if !claimed {
         tracing::debug!(%initial_lease, "another worker holds this review");
         return Ok(InnerReview::Busy);
     }
@@ -2541,7 +2542,12 @@ async fn review_inner(
     {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
-    Ok(InnerReview::Complete(reviewed?.flatten().flatten()))
+    let reviewed = reviewed?.flatten().flatten();
+    if run.lease_busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        Ok(InnerReview::Busy)
+    } else {
+        Ok(InnerReview::Complete(reviewed))
+    }
 }
 
 async fn continue_if_lease_claimed<T, F, Fut>(claimed: bool, work: F) -> Result<Option<T>>

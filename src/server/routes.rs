@@ -784,7 +784,7 @@ async fn drain_review_queue<F>(
                     return;
                 }
             }
-            _ = poll.tick() => continue,
+            _ = poll.tick() => {}
         }
         if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
             return;
@@ -1639,7 +1639,9 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let _available = store.has_capacity_for(count).await?;
+    if !store.has_capacity_for(count).await? {
+        return Err(Error::ReviewCapacityFull);
+    }
     work().await
 }
 
@@ -2053,7 +2055,7 @@ where
     }
     // Mongo can answer after the conservative local deadline. Ownership must
     // still be locally valid when the awaited check returns.
-    if !ownership_check.await? {
+    if !ownership_check.await? || !locally_valid() {
         return Err(Error::ReviewOwnershipLost);
     }
     Ok(())
@@ -2792,7 +2794,7 @@ async fn review_inner(
     {
         Ok(InnerReview::Busy)
     } else {
-        Ok(InnerReview::Complete(None))
+        Ok(InnerReview::Shutdown)
     }
 }
 

@@ -57,6 +57,10 @@ containing directory to discover alternate implementations before reading
 them. Listing uses the same round, per-round and character budgets as other
 lookups; unsafe and sensitive paths are excluded. An unrecorded listing on
 replay stays unavailable rather than claiming the directory is empty.
+The host keeps `NotFound` distinct from `Unavailable`: the first establishes
+that a path is absent at the reviewed head, while the second means the reader
+could not check. A cold index does not change either result because these reads
+come from the pinned tree, not the index.
 
 A path `scan::is_sensitive_path` names — `.env`, a private key, `.netrc` — is
 never read: `read` answers `Unavailable` and says why, and `search` skips the
@@ -85,11 +89,18 @@ settle    the plain schema, told it is the last turn
 **Seeding is the part that pays.** An identifier on an added line followed
 by `(`, or a `Capitalised` one followed by `::` or `{`, is searched for as a
 definition — `fn name(`, `struct Name` — and the doc comment and signature
-above the hit are read. A same-file method the change calls is read further,
-because the unbounded sibling on #2313 was a hundred lines into one. The
-reviewer that asked for exactly these by name found the bug; the one that did
-not ask did not. Fetching them unasked removes the difference, and it costs
-reads rather than a model turn.
+above the hit are read. A changed function signature also seeds a search for
+its callers, and an added out-of-line module declaration reads its resolved
+`.rs` path at the reviewed head. A same-file method the change calls is read
+further, because the unbounded sibling on #2313 was a hundred lines into one.
+The reviewer that asked for exactly these by name found the bug; the one that
+did not ask did not. Fetching them unasked removes the difference, and it
+costs reads rather than a model turn.
+
+When retrieval is cold, stale or unavailable, critique does not treat that
+silence as proof that callers or files are absent. The prompt says so, and the
+lane withholds unchanged-line findings from action unless a current-head
+lookup supports them. Findings on changed lines remain grounded by the diff.
 
 Two host-side follow-ups save a round each: a glob-scoped search that finds
 nothing is retried across the whole tree and the retry is named — the
@@ -139,8 +150,12 @@ positive: a reviewer told a manifest was missing reported it missing.
 
 ## What the falsifier sees
 
-`src/falsify` is handed what the reviewer read, alongside the diff, and is
-told in so many words that a comment cannot disprove a finding. Before that,
+`src/falsify` is handed the whole pull-request diff, including files outside
+the reviewer's group, along with any repository evidence that reviewer read.
+Findings remain scoped to their group; the broader diff lets the reject-only
+filter catch a cross-file contradiction such as a module added beside its
+declaration. It is told in so many words that a comment cannot disprove a
+finding. Before that,
 the one correct finding on #2313 survived the reviewer and was deleted by the
 filter, which quoted the diff's own comment — *"this confirms the intent to
 exclude `round_start` itself"* — as proof. The comment was the claim under

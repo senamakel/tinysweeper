@@ -150,6 +150,7 @@ pub async fn generate_with_input(
             "title": pull_request.title,
             "description": pull_request.body,
             "head": pull_request.head_sha,
+            "changed_files": full_pr_paths,
             "diffstat": full_pr_diffstat,
         },
         "latest_push_delta": {
@@ -381,6 +382,7 @@ pub fn deterministic(
     deterministic_with_paths(config, pull_request, diffs, &full_pr_paths, lanes, prior)
 }
 
+/// Build a deterministic summary using the forge's complete changed-path set.
 pub fn deterministic_with_paths(
     config: &Config,
     pull_request: &PullRequest,
@@ -1203,6 +1205,11 @@ mod tests {
             pull_request.body
         );
         assert_eq!(request["whole_pull_request"]["diffstat"]["files"], 2);
+        assert_eq!(request["whole_pull_request"]["changed_files"].as_array().unwrap().len(), 2);
+        assert!(request["whole_pull_request"]["changed_files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("tests/privacy.rs")));
         assert_eq!(request["latest_push_delta"]["available"], false);
         assert_eq!(
             request["latest_push_delta"]["from_reviewed_head"],

@@ -13,16 +13,21 @@ citation names a changed path or known changed symbol. Unsupported claims that
 tests ran, passed, or reached numerical coverage are discarded as well.
 
 Summary evidence includes the pull request's title, scrubbed description, and
-the forge's full pull-request diffstat. It labels the latest-push delta
-separately. The current review input does not contain a diff between the
-previously reviewed head and the new head, so that field says it is unavailable
-instead of presenting the full PR diff as a push delta. Each lane also carries
-a typed `answered`, `partial`, `no_response`, or `skipped` status derived from
-its explicit file coverage, unanswered paths, skip state, and response usage.
-Partial file coverage carries its actual reviewed and total file counts;
-whole-pull-request lanes with waiting checks carry only the pending-check
-count, without a fabricated file denominator. Narrative that says a
-non-answered lane confirmed or passed is discarded.
+the forge's complete changed-path list and full pull-request diffstat. The
+executive opening starts with the pull-request title before any model narrative,
+so a re-review cannot lead with a claim about only the latest changed files.
+The latest-push delta is separately labelled. The review state retains the
+previous rendered diff, but the forge input has no base-to-head comparison
+port; that snapshot cannot prove the exact push delta, so the field says it is
+unavailable rather than presenting the full PR diff as a push delta. Each lane
+also carries a typed `answered`, `partial`, `no_response`, or `skipped` status.
+Per-file coverage uses the actual full forge path list and preserves explicit
+unanswered paths even when they had no parseable diff. Whole-pull-request lanes
+with waiting checks carry only the pending-check count, without a fabricated
+file denominator. Completion provenance distinguishes deterministic lane
+results from policy skips and unanswered model calls; old proposal shapes with
+no provenance remain unknown. Narrative that says a non-answered lane
+confirmed or passed is discarded.
 
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one

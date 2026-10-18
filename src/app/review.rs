@@ -2997,7 +2997,7 @@ mod tests {
             7,
         )
         .await
-        .expect("reviews")
+        .expect("reviews");
         assert_eq!(posted.findings().count(), 1);
 
         let mut comments = crate::app::apply::test_inline_comments(&posted, &[rust_file()]);
@@ -3028,7 +3028,7 @@ mod tests {
             7,
         )
         .await
-        .expect("reviews");
+        .expect("reviews")
 
         let titles: Vec<&str> = proposal.findings().map(|f| f.title.as_str()).collect();
         assert_eq!(titles, vec!["Rename this binding"]);

@@ -2790,10 +2790,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_queued_review_that_is_merged_before_start_does_no_review_work() {
+    async fn a_queued_review_that_is_closed_before_start_does_no_work() {
         use crate::forge::types::PullRequest as PullRequestData;
         use crate::harness::MockModel;
-        use crate::ports::forge::ForgeRead;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
 
         let repo = RepoId::parse("owner/repo").expect("repo id");
         let queued = PullRequestData {
@@ -2813,32 +2815,49 @@ mod tests {
         });
         let model = MockModel::silent();
 
-        let pull_request = pull_request_for_review(&forge, &repo, 7)
-            .await
-            .expect("fetch");
+        let result = with_open_pull_request(&forge, &repo, 7, |_| async {
+            model
+                .complete(ModelRequest {
+                    model: "test".into(),
+                    messages: vec![Message::user("run the review")],
+                    schema: json!({"type": "object"}),
+                    schema_name: "review".into(),
+                    max_tokens: 16,
+                })
+                .await?;
+            forge
+                .publish_check(
+                    &repo,
+                    crate::forge::CheckRun {
+                        name: "tinysweeper/review".into(),
+                        head_sha: "queued-head".into(),
+                        conclusion: Some(crate::forge::CheckConclusion::Success),
+                        title: "Reviewed".into(),
+                        summary: "Reviewed".into(),
+                        images: vec![],
+                    },
+                )
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("closed pull request is a successful no-op");
 
-        assert!(
-            pull_request.is_none(),
-            "a merged PR must decline before review work"
-        );
+        assert!(result.is_none(), "closed PR must skip the continuation");
         assert!(model.requests().is_empty(), "the model must not be called");
         assert!(
             forge.writes().is_empty(),
             "no review or check may be published"
         );
-        assert!(
-            ForgeRead::pull_request(&forge, &repo, 7)
-                .await
-                .expect("live PR")
-                .merged,
-            "fixture must prove the queued action became stale"
-        );
     }
 
     #[tokio::test]
-    async fn a_manual_review_that_is_closed_before_start_does_no_review_work() {
+    async fn an_open_pull_request_runs_the_guarded_review_continuation() {
         use crate::forge::types::PullRequest as PullRequestData;
         use crate::harness::MockModel;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
 
         let repo = RepoId::parse("owner/repo").expect("repo id");
         let pull_request = PullRequestData {
@@ -2848,21 +2867,39 @@ mod tests {
         };
         let forge =
             crate::forge::MockForge::new().with_pull_request(pull_request.clone(), vec![], vec![]);
-        forge.replace_pull_request(PullRequestData {
-            open: false,
-            merged: false,
-            ..pull_request
-        });
         let model = MockModel::silent();
 
-        assert!(
-            pull_request_for_review(&forge, &repo, 7)
-                .await
-                .expect("fetch")
-                .is_none()
-        );
-        assert!(model.requests().is_empty());
-        assert!(forge.writes().is_empty());
+        let result = with_open_pull_request(&forge, &repo, 7, |_| async {
+            model
+                .complete(ModelRequest {
+                    model: "test".into(),
+                    messages: vec![Message::user("run the review")],
+                    schema: json!({"type": "object"}),
+                    schema_name: "review".into(),
+                    max_tokens: 16,
+                })
+                .await?;
+            forge
+                .publish_check(
+                    &repo,
+                    crate::forge::CheckRun {
+                        name: "tinysweeper/review".into(),
+                        head_sha: "queued-head".into(),
+                        conclusion: Some(crate::forge::CheckConclusion::Success),
+                        title: "Reviewed".into(),
+                        summary: "Reviewed".into(),
+                        images: vec![],
+                    },
+                )
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("open pull request runs review work");
+
+        assert!(result.is_some());
+        assert_eq!(model.calls(), 1);
+        assert_eq!(forge.writes().len(), 1);
     }
 
     #[tokio::test]

@@ -461,11 +461,12 @@ impl ReviewSchedulerState {
             })
     }
 
-    /// Finish an owned deadline failure and persist a marker for the confirmed
-    /// SHA beyond the lifetime of its delivery tombstones.
+    /// Record an owned deadline and persist a marker for the confirmed SHA
+    /// beyond delivery tombstones. If a push raced the deadline, preserve the
+    /// accepted job for the next owner while keeping that head terminal.
     pub fn finish_deadline(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
         let Some(index) = self.unfinished.iter().position(|record| {
-            owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
+            owns(record, owned) && record.owner_until_ms > now_ms
         }) else {
             return false;
         };
@@ -478,6 +479,15 @@ impl ReviewSchedulerState {
             };
             budget.deadline_hit = true;
             budget.terminal_outcome = Some(TerminalOutcome::Deadline);
+        }
+        if self.unfinished[index].yield_requested {
+            let record = &mut self.unfinished[index];
+            record.owner = None;
+            record.owner_until_ms = 0;
+            record.not_before_ms = now_ms;
+            record.request.head_sha = record.latest_head_hint.clone();
+            record.yield_requested = false;
+            return true;
         }
         let record = self.unfinished.remove(index);
         self.terminal.extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {

@@ -968,8 +968,7 @@ pub async fn review_with_tree_observed(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let summary_phase = timing.as_ref().map(|t| t.phase("summary"));
-    let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
+    let (summary, summary_spend, summary_transcript) = crate::review_timing::measure(timing.as_ref(), "summary", async { if config.summary.enabled {
         if summary_generation_needed(config, &diffs) {
             let (summary, spend, transcript) = crate::summary::generate(
                 model.as_ref(),
@@ -1010,8 +1009,7 @@ pub async fn review_with_tree_observed(
                 .map(|state| state.summary_transcript.clone())
                 .unwrap_or_default(),
         )
-    };
-    drop(summary_phase);
+    }}).await;
     spend.merge(summary_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
@@ -1084,8 +1082,7 @@ pub async fn review_with_tree_observed(
         .iter()
         .flat_map(|lane| lane.resolved.iter().cloned())
         .collect();
-    let threads_phase = timing.as_ref().map(|t| t.phase("threads"));
-    let threads =
+    let threads = crate::review_timing::measure(timing.as_ref(), "threads", async { match
         match crate::threads::plan(forge, Some(model.as_ref()), config, repo, number, &resolved)
             .await
         {
@@ -1098,8 +1095,7 @@ pub async fn review_with_tree_observed(
                 tracing::warn!(%err, "could not plan thread resolution");
                 Default::default()
             }
-        };
-    drop(threads_phase);
+        }}).await;
 
     // The change map. Built last, from the findings that survived, so the
     // diagram marks the behaviours the review will actually comment on. It
@@ -1112,8 +1108,7 @@ pub async fn review_with_tree_observed(
     // request adds, removes or changes, read from the diff alone. One cheap
     // model call, independent of `src/preview` end to end — see
     // `docs/modules/wireframe/README.md`.
-    let wireframe_phase = timing.as_ref().map(|t| t.phase("wireframe"));
-    let (wireframe, wireframe_spend) = if config.wireframe.enabled {
+    let (wireframe, wireframe_spend) = crate::review_timing::measure(timing.as_ref(), "wireframe", async { if config.wireframe.enabled {
         let outcome = crate::wireframe::build(
             &crate::wireframe::WireframeInputs {
                 diffs: &diffs,
@@ -1129,8 +1124,7 @@ pub async fn review_with_tree_observed(
         (Some(outcome.set), outcome.spend)
     } else {
         (None, Spend::default())
-    };
-    drop(wireframe_phase);
+    }}).await;
     spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {

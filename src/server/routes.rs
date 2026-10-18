@@ -3327,23 +3327,31 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (sender, mut receiver) = mpsc::channel(2);
+        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = reads.clone();
-        let result = enqueue_manual_jobs(&sender, "owner/repo", 1, vec![7, 8], move |number| {
-            let observed = observed.clone();
-            Box::pin(async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                if number == 8 {
-                    return Err(Error::Forge("simulated second PR read failure".into()));
-                }
-                Ok(crate::forge::types::PullRequest {
-                    number,
-                    author: "contributor".into(),
-                    head_sha: "head".into(),
-                    ..Default::default()
+        let result = enqueue_manual_jobs(
+            &sender,
+            &store,
+            "owner/repo",
+            1,
+            vec![7, 8],
+            move |number| {
+                let observed = observed.clone();
+                Box::pin(async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    if number == 8 {
+                        return Err(Error::Forge("simulated second PR read failure".into()));
+                    }
+                    Ok(crate::forge::types::PullRequest {
+                        number,
+                        author: "contributor".into(),
+                        head_sha: "head".into(),
+                        ..Default::default()
+                    })
                 })
-            })
-        })
+            },
+        )
         .await;
 
         assert!(matches!(result, Err(Error::Forge(_))));
@@ -3353,6 +3361,7 @@ mod tests {
             2,
             "all reserved queue slots are returned"
         );
+        assert_eq!(store.unfinished(), 0);
         assert!(matches!(
             receiver.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -3364,15 +3373,23 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (sender, _receiver) = mpsc::channel(1);
+        let store = crate::ports::review_job::tests::MockReviewJobStore::default();
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = reads.clone();
-        let result = enqueue_manual_jobs(&sender, "owner/repo", 1, vec![7, 8], move |_| {
-            let observed = observed.clone();
-            Box::pin(async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                Ok(crate::forge::types::PullRequest::default())
-            })
-        })
+        let result = enqueue_manual_jobs(
+            &sender,
+            &store,
+            "owner/repo",
+            1,
+            vec![7, 8],
+            move |_| {
+                let observed = observed.clone();
+                Box::pin(async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Ok(crate::forge::types::PullRequest::default())
+                })
+            },
+        )
         .await;
 
         assert!(matches!(result, Err(Error::ReviewCapacityFull)));
@@ -3437,19 +3454,18 @@ mod tests {
         assert_eq!(model_calls.load(Ordering::SeqCst), 0);
     }
 
-    fn queued_test_review(number: u64) -> QueuedReview {
-        QueuedReview {
-            action: Action::Review {
-                repo: "owner/repo".into(),
-                number,
-                author: "contributor".into(),
-                installation: 1,
-                head_sha: Some(format!("sha-{number}")),
-            },
+    fn queued_test_review(number: u64) -> ReviewRequest {
+        ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId(format!("delivery-{number}")),
+            repo: "owner/repo".into(),
+            number,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(format!("sha-{number}")),
             delivery: Some(format!("delivery-{number}")),
             event: "pull_request".into(),
-            mode: Mode::Incremental,
-            queued_at: tokio::time::Instant::now(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: unix_time_ms(),
         }
     }
 
@@ -3460,13 +3476,22 @@ mod tests {
         let permits = Arc::new(Semaphore::new(1));
         let held = permits.clone().acquire_owned().await.expect("slot");
         let (sender, receiver) = mpsc::channel(1);
-        try_enqueue_review(&sender, queued_test_review(7)).expect("queued");
+        sender.try_send(()).expect("queued wakeup");
+        let store = Arc::new(crate::ports::review_job::tests::MockReviewJobStore::default());
+        store
+            .admit_batch(vec![queued_test_review(7)])
+            .await
+            .expect("admitted")
+            .eq(&Admission::Admitted);
 
         let started = Arc::new(AtomicUsize::new(0));
         let observed = started.clone();
         let dispatcher = tokio::spawn(drain_review_queue(
             receiver,
             permits,
+            store,
+            Arc::from("test-owner"),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
             move |_job, permit| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 drop(permit);
@@ -3488,12 +3513,10 @@ mod tests {
     }
 
     #[test]
-    fn a_full_review_queue_refuses_work_without_accepting_it() {
+    fn a_full_review_queue_does_not_change_durable_acceptance() {
         let (sender, _receiver) = mpsc::channel(1);
-        try_enqueue_review(&sender, queued_test_review(7)).expect("first job fits");
-
-        let rejected = try_enqueue_review(&sender, queued_test_review(8));
-        assert!(matches!(rejected, Err(ReviewQueueError::Full(_))));
+        sender.try_send(()).expect("first hint fits");
+        assert!(sender.try_send(()).is_err());
     }
 
     #[test]

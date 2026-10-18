@@ -3143,6 +3143,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn manual_admission_permit_lives_until_suspended_expansion_finishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let permits = Arc::new(Semaphore::new(1));
+        let expensive_reads = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let first_reads = expensive_reads.clone();
+        let first_permits = permits.clone();
+        let first = tokio::spawn(async move {
+            with_manual_review_admission(first_permits, |_permit| async move {
+                first_reads.fetch_add(1, Ordering::SeqCst);
+                let _ = started_tx.send(());
+                finish_rx
+                    .await
+                    .map_err(|_| Error::Forge("simulated GitHub read was cancelled".into()))?;
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.expect("first expansion began");
+
+        let second_reads = expensive_reads.clone();
+        let second = with_manual_review_admission(permits.clone(), move |_permit| async move {
+            second_reads.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        assert!(matches!(second, Err(Error::ReviewCapacityFull)));
+        assert_eq!(expensive_reads.load(Ordering::SeqCst), 1);
+
+        finish_tx.send(()).expect("first expansion is waiting");
+        first.await.expect("first task joins").expect("first succeeds");
+        assert_eq!(permits.available_permits(), 1);
+    }
+
     fn queued_test_review(number: u64) -> QueuedReview {
         QueuedReview {
             action: Action::Review {

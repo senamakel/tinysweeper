@@ -2071,6 +2071,7 @@ async fn review_inner(
         forge.pull_request(&repo_id, number).await?
     };
     tracing::Span::current().record("head_sha", pull_request.head_sha.as_str());
+    run.timing.record(|r| r.head_sha = pull_request.head_sha.clone());
 
     // Comment and review-comment deliveries do not carry the draft flag, so
     // routing alone cannot prevent a manual-looking request from waking the
@@ -2201,6 +2202,7 @@ async fn review_inner(
         // survives the worker that took it. The boundary check first: the
         // metadata phase above was bounded per call, not by the deadline, so
         // this is where a budget it exhausted is noticed.
+        let lane_phase = run.timing.phase("lanes");
         let lanes = match run.check(repo, number) {
             Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                 state,
@@ -2216,6 +2218,7 @@ async fn review_inner(
             .unwrap_or_else(|_| Err(Error::lane("review", "the review panicked"))),
             Err(spent) => Err(spent),
         };
+        drop(lane_phase);
 
         // The publish runs under its own, separate budget rather than the
         // remainder of `run.deadline`: a review that used all of its time in
@@ -2235,6 +2238,7 @@ async fn review_inner(
                 // its check — a lease held until `LEASE_TTL` and a check stuck
                 // "in progress" forever, which is exactly what this whole
                 // umbrella-check mechanism exists to prevent.
+                let publish_phase = run.timing.phase("publish");
                 let publish = std::panic::AssertUnwindSafe(async {
                     let write_token = state.auth.installation_token(installation).await?;
                     // The review reader has already been held across all the
@@ -2246,14 +2250,16 @@ async fn review_inner(
                     crate::app::apply(&read, &write, &config, &proposal, Some(&state.store)).await
                 })
                 .catch_unwind();
-                tokio::time::timeout(PUBLISH_DEADLINE, publish)
+                let published = tokio::time::timeout(PUBLISH_DEADLINE, publish)
                     .await
                     .map_err(|_elapsed| {
                         Error::timeout(
                             format!("publishing the review of {repo}#{number}"),
                             PUBLISH_DEADLINE,
                         )
-                    })
+                    });
+                drop(publish_phase);
+                published
                     .and_then(|published| {
                         published
                             .unwrap_or_else(|_| Err(Error::lane("review", "publishing panicked")))
@@ -2278,6 +2284,11 @@ async fn review_inner(
     };
 
     let (proposal, changes_requested) = outcome?;
+    run.timing.record(|r| {
+        r.files_total = proposal.lanes.iter().map(|l| l.files_reviewed.len() + l.unanswered.len()).sum();
+        r.files_unanswered = proposal.unanswered().len();
+        r.files_answered = r.files_total.saturating_sub(r.files_unanswered);
+    });
     let findings = proposal.findings().count();
     state.store.record_review(author, findings as u64).await?;
 

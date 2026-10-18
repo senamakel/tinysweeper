@@ -198,6 +198,8 @@ impl FanOut {
 
         let skipped = (reviewed == 0 && !self.failures.is_empty())
             .then(|| "No files could be reviewed; see the listed provider failures.".to_string());
+        let coverage = (reviewed + unanswered.len() > 0)
+            .then_some((reviewed, reviewed + unanswered.len()));
         LaneOutcome {
             summary,
             findings,
@@ -206,6 +208,7 @@ impl FanOut {
             skipped,
             pending: Vec::new(),
             unanswered,
+            coverage,
         }
     }
 }

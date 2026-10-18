@@ -220,6 +220,8 @@ pub struct LaneOutcome {
     /// change. A review that consulted no model once approved a pull request
     /// with "found nothing blocking · $0.0000 · 0 in / 0 out".
     pub unanswered: Vec<String>,
+    /// Per-file review coverage, when this lane fans out over changed files.
+    pub coverage: Option<(usize, usize)>,
 }
 
 impl LaneOutcome {

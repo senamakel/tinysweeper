@@ -73,6 +73,12 @@ impl ReviewTiming {
     }
 }
 
+impl Drop for ReviewTiming {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.0) == 1 { self.emit(); }
+    }
+}
+
 pub struct PhaseGuard { timing: ReviewTiming, name: &'static str, started: Instant }
 impl Drop for PhaseGuard {
     fn drop(&mut self) {

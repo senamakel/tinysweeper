@@ -1393,7 +1393,7 @@ where
     // Reserve the whole expansion before per-PR reads, then publish none until
     // all resolutions succeed. Dropping this iterator returns every slot on an
     // error, so a partial manual expansion cannot leak queue capacity or jobs.
-    let mut queue_slots = sender
+    let queue_slots = sender
         .try_reserve_many(numbers.len())
         .map_err(|_| Error::ReviewCapacityFull)?;
 
@@ -1414,17 +1414,7 @@ where
             mode: Mode::Full,
             queued_at: tokio::time::Instant::now(),
         };
-        queue_slots.next().expect("reserved queue slot").send(job);
-        jobs.push((
-            number,
-            QueuedReview {
-                action: Action::Ignore("temporary red proof"),
-                delivery: None,
-                event: String::new(),
-                mode: Mode::Full,
-                queued_at: tokio::time::Instant::now(),
-            },
-        ));
+        jobs.push((number, job));
     }
 
     let mut queued = Vec::with_capacity(jobs.len());

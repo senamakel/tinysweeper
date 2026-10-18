@@ -80,7 +80,8 @@ pub struct OwnedReview {
 }
 
 /// Terminal result retained as a dedupe tombstone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TerminalOutcome {
     /// Review was published or reconciled as already published.
     Published,
@@ -133,15 +134,10 @@ pub struct ReviewSchedulerState {
 
 impl ReviewSchedulerState {
     /// Atomically admit a whole batch in memory before the Mongo CAS persists it.
-    pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>) -> Admission {
+    pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>, now_ms: i64) -> Admission {
         if requests.is_empty() {
             return Admission::Duplicate;
         }
-        let now_ms = requests
-            .iter()
-            .map(|request| request.accepted_at_ms)
-            .max()
-            .unwrap_or_default();
         self.terminal.retain(|record| record.expires_at_ms > now_ms);
         let mut incoming = std::collections::HashSet::new();
         if requests.iter().any(|request| {

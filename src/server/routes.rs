@@ -14,7 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::FutureExt;
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tokio::sync::mpsc;
 
 use crate::automerge::types::Outcome;
@@ -217,6 +217,17 @@ struct ReviewJob {
     expected_head: Option<String>,
     queued_at: tokio::time::Instant,
     owned: Option<OwnedReview>,
+}
+
+enum WorkerDisposition {
+    Terminal(TerminalOutcome),
+    Deferred(i64),
+    OwnershipLost,
+}
+
+enum InnerReview {
+    Complete(Option<(usize, bool, status::ReviewCoverage)>),
+    Busy,
 }
 
 /// Run the server until the process is stopped.
@@ -825,7 +836,7 @@ async fn dispatch(
             installation,
             head_sha,
         } => {
-            handle_review(
+            let _ = handle_review(
                 state,
                 ReviewJob {
                     repo,
@@ -839,6 +850,7 @@ async fn dispatch(
                     owned: None,
                 },
                 review_permit,
+                None,
             )
             .await;
         }
@@ -1733,6 +1745,8 @@ struct Run {
     deadline: tokio::time::Instant,
     /// Revision admitted by the queue, retained across retries and all phases.
     expected_head: Option<String>,
+    owned: Option<OwnedReview>,
+    owner_lost: Option<watch::Receiver<bool>>,
 }
 
 impl Run {
@@ -1749,6 +1763,22 @@ impl Run {
                 format!("the review of {repo}#{number}"),
                 REVIEW_DEADLINE,
             ));
+        }
+        Ok(())
+    }
+
+    async fn check_owner(&self, state: &AppState) -> Result<()> {
+        if self
+            .owner_lost
+            .as_ref()
+            .is_some_and(|lost| *lost.borrow())
+        {
+            return Err(Error::ReviewOwnershipLost);
+        }
+        if let Some(owned) = &self.owned
+            && !state.review_jobs.owns(owned, unix_time_ms()).await?
+        {
+            return Err(Error::ReviewOwnershipLost);
         }
         Ok(())
     }
@@ -2146,7 +2176,8 @@ async fn handle_review(
     state: AppState,
     job: ReviewJob,
     queued_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-) {
+    owner_lost: Option<watch::Receiver<bool>>,
+) -> WorkerDisposition {
     let ReviewJob {
         repo,
         number,
@@ -2156,6 +2187,7 @@ async fn handle_review(
         delivery,
         expected_head,
         queued_at,
+        owned,
     } = job;
     tracing::debug!(%repo, number, queue_wait_ms = queued_at.elapsed().as_millis(), "starting admitted review worker");
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
@@ -2175,7 +2207,7 @@ async fn handle_review(
         {
             tracing::error!(%release, %delivery, "could not release the declined delivery claim");
         }
-        return;
+        return WorkerDisposition::Deferred(unix_time_ms());
     };
 
     // The permit is taken here, before the clock starts, and held across
@@ -2214,12 +2246,17 @@ async fn handle_review(
         slot: slot.clone(),
         deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
         expected_head,
+        owned: owned.clone(),
+        owner_lost: owner_lost.clone(),
     };
 
     let mut attempt = 1;
     let err = loop {
+        if let Err(err) = run.check_owner(&state).await {
+            break err;
+        }
         match review_inner(&state, &repo, number, &author, installation, &run).await {
-            Ok(findings) => {
+            Ok(InnerReview::Complete(findings)) => {
                 // Usually there is nothing to close: a run that declines — a
                 // blocked contributor, a draft, a lease another worker holds —
                 // does so before opening a check, and `close_status` is a no-op
@@ -2232,14 +2269,27 @@ async fn handle_review(
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
-                return;
+                return WorkerDisposition::Terminal(if findings.is_some() {
+                    TerminalOutcome::Published
+                } else {
+                    TerminalOutcome::Declined
+                });
+            }
+            Ok(InnerReview::Busy) => {
+                drop(permit);
+                close_status(&state, &slot, Conclusion::NotReviewed).await;
+                return WorkerDisposition::Deferred(unix_time_ms() + 5_000);
             }
             Err(err) => {
+                if matches!(err, Error::ReviewOwnershipLost) {
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
                 if matches!(err, Error::ReviewSuperseded) {
                     drop(permit);
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
                     tracing::debug!(%repo, number, "head changed while preparing review context");
-                    return;
+                    return WorkerDisposition::Terminal(TerminalOutcome::Superseded);
                 }
                 // The lease is released inside `review_inner` on every path,
                 // including this one, so a retry re-claims it rather than
@@ -2307,6 +2357,7 @@ async fn handle_review(
     {
         tracing::error!(%release, %delivery, "could not release the failed delivery claim");
     }
+    WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
 }
 
 /// Publish the check that says this pull request was not reviewed.

@@ -35,11 +35,16 @@ impl ReviewJobStore for MockReviewJobStore {
         if std::mem::take(&mut *self.fail_admission.lock().expect("admission failure")) {
             return Err(Error::Forge("simulated scheduler write failure".into()));
         }
+        let now_ms = requests
+            .iter()
+            .map(|request| request.accepted_at_ms)
+            .max()
+            .unwrap_or_default();
         Ok(self
             .state
             .lock()
             .expect("state")
-            .admit_batch(requests))
+            .admit_batch(requests, now_ms))
     }
 
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {

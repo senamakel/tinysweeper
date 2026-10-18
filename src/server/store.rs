@@ -19,8 +19,8 @@
 //! being the answer rather than an exception.
 
 use bson::{Document, doc};
-use mongodb::options::IndexOptions;
-use mongodb::{Collection, IndexModel};
+use mongodb::options::{Acknowledgment, CollectionOptions, IndexOptions, WriteConcern};
+use mongodb::{Collection, Database, IndexModel};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -128,6 +128,7 @@ pub const PREVIEW_SESSION_TTL: std::time::Duration = std::time::Duration::from_s
 /// The server's persistent state.
 #[derive(Clone, Debug)]
 pub struct Store {
+    database: Database,
     contributors: Collection<Contributor>,
     deliveries: Collection<Document>,
     leases: Collection<Document>,
@@ -143,48 +144,54 @@ impl ReviewJobStore for Store {
         &self,
         requests: Vec<crate::ports::review_job::ReviewRequest>,
     ) -> Result<Admission> {
-        self.change_review_scheduler(move |state| state.admit_batch(requests.clone()))
-            .await
+        self.change_review_scheduler(move |state, now_ms| {
+            state.admit_batch(requests.clone(), now_ms)
+        })
+        .await
     }
 
-    async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
+    async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
-        self.change_review_scheduler(move |state| state.claim_next(&owner, now_ms))
+        self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))
             .await
     }
 
-    async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+    async fn renew(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let owned = owned.clone();
-        self.change_review_scheduler(move |state| state.renew(&owned, now_ms))
+        self.change_review_scheduler(move |state, now_ms| state.renew(&owned, now_ms))
             .await
     }
 
-    async fn owns(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+    async fn owns(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let state = self.review_scheduler_state().await?;
-        Ok(state.owns(owned, now_ms))
+        Ok(state.owns(owned, self.server_now_ms().await?))
     }
 
     async fn defer(
         &self,
         owned: &OwnedReview,
-        now_ms: i64,
+        _now_ms: i64,
         not_before_ms: i64,
     ) -> Result<bool> {
         let owned = owned.clone();
-        self.change_review_scheduler(move |state| state.defer(&owned, now_ms, not_before_ms))
-            .await
+        let now_ms = self.server_now_ms().await?;
+        self.change_review_scheduler(move |state, now_ms| {
+            state.defer(&owned, now_ms, not_before_ms)
+        })
+        .await
     }
 
     async fn finish(
         &self,
         owned: &OwnedReview,
         outcome: TerminalOutcome,
-        now_ms: i64,
-        completed_at_ms: i64,
+        _now_ms: i64,
+        _completed_at_ms: i64,
     ) -> Result<bool> {
         let owned = owned.clone();
-        self.change_review_scheduler(move |state| {
-            state.finish(&owned, outcome, now_ms, completed_at_ms)
+        let now_ms = self.server_now_ms().await?;
+        self.change_review_scheduler(move |state, now_ms| {
+            state.finish(&owned, outcome, now_ms, now_ms)
         })
         .await
     }
@@ -198,15 +205,25 @@ impl Store {
         // server-selection timeout is the one GitHub's ten seconds depends on.
         let client = crate::index::client::connect(uri).await?;
         let database = client.database(name);
+        let scheduler_options = CollectionOptions::builder()
+            .write_concern(
+                WriteConcern::builder()
+                    .w(Acknowledgment::Nodes(1))
+                    .journal(true)
+                    .build(),
+            )
+            .build();
 
         let store = Self {
+            database: database.clone(),
             contributors: database.collection("contributors"),
             deliveries: database.collection("deliveries"),
             leases: database.collection("leases"),
             installations: database.collection("installations"),
             review_state: database.collection("review_state"),
             preview_sessions: database.collection("preview_sessions"),
-            review_scheduler: database.collection("review_scheduler"),
+            review_scheduler: database
+                .collection_with_options("review_scheduler", scheduler_options),
         };
         store.ensure_indexes().await?;
         Ok(store)
@@ -235,14 +252,27 @@ impl Store {
             .map_err(|err| Error::Forge(format!("could not decode review scheduler: {err}")))
     }
 
+    async fn server_now_ms(&self) -> Result<i64> {
+        let reply = self
+            .database
+            .run_command(doc! { "hello": 1 })
+            .await
+            .map_err(|err| Error::Forge(format!("could not read Mongo server time: {err}")))?;
+        reply
+            .get_datetime("localTime")
+            .map(|time| time.timestamp_millis())
+            .map_err(|err| Error::Forge(format!("Mongo hello omitted localTime: {err}")))
+    }
+
     async fn change_review_scheduler<T>(
         &self,
-        mut change: impl FnMut(&mut ReviewSchedulerState) -> T,
+        mut change: impl FnMut(&mut ReviewSchedulerState, i64) -> T,
     ) -> Result<T> {
         for _ in 0..REVIEW_SCHEDULER_CAS_RETRIES {
             let mut state = self.review_scheduler_state().await?;
             let before = state.clone();
-            let result = change(&mut state);
+            let now_ms = self.server_now_ms().await?;
+            let result = change(&mut state, now_ms);
             if state == before {
                 return Ok(result);
             }

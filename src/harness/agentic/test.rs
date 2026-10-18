@@ -6,6 +6,49 @@ use crate::ports::model::Message;
 use crate::ports::tree::MockTree;
 use serde_json::json;
 
+#[test]
+fn agentic_budget_refusal_retains_prior_paid_turn_usage() {
+    use openhuman_embed::CoreError;
+    use openhuman_embed::budget::{Budget, Spend, SpendLimits};
+
+    let ledger = Budget::new(SpendLimits {
+        tokens: None,
+        cost_micros: Some(5_000),
+    });
+    ledger
+        .reserve(Spend {
+            tokens: 4,
+            cost_micros: 3_000,
+        })
+        .unwrap()
+        .settle(Spend {
+            tokens: 4,
+            cost_micros: 3_000,
+        });
+    let source = ledger
+        .reserve(Spend {
+            tokens: 4,
+            cost_micros: 4_000,
+        })
+        .unwrap_err();
+
+    let failure = ReviewFailure::core(
+        CoreError::BudgetExceeded {
+            method: "agentic reviewer",
+            source,
+        },
+        "deep",
+        Some(&ledger),
+        Usage::default(),
+    );
+    assert!(matches!(failure.error, Error::Budget { .. }));
+    let usage = failure
+        .usage
+        .expect("budget refusal must retain prior paid turn usage");
+    assert_eq!(usage.input_tokens, 4);
+    assert_eq!(usage.cost_usd, 0.003);
+}
+
 #[tokio::test]
 async fn host_only_reviewer_reads_redacted_source_and_refuses_execution_tools() {
     let _guard = TEST_LOCK.lock().await;

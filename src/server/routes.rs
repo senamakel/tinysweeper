@@ -2584,8 +2584,9 @@ async fn review_inner(
     // manual requests have no revision; serialize those per pull request until
     // the live head is known, then take its revision lease before any indexing.
     let initial_lease = review_lease(repo, number, run.mode, run.expected_head.as_deref());
+    let holder = review_lease_holder(run);
     let mut lease = Some(initial_lease.clone());
-    let claimed = state.store.claim_lease(&initial_lease, "server").await?;
+    let claimed = state.store.claim_lease(&initial_lease, &holder).await?;
     let reviewed = continue_if_lease_claimed(claimed, || async {
         run.check_owner(state).await?;
         let read_token = state.auth.review_read_token(installation).await?;
@@ -2614,7 +2615,7 @@ async fn review_inner(
         return Ok(InnerReview::Busy);
     }
     if let Some(lease) = &lease
-        && let Err(err) = state.store.release_lease(lease).await
+        && let Err(err) = state.store.release_lease_for(lease, &holder).await
     {
         tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
     }
@@ -2643,6 +2644,13 @@ fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> Stri
         Some(head) => format!("{repo}#{number}@{head}{suffix}"),
         None => format!("{repo}#{number}!manual{suffix}"),
     }
+}
+
+fn review_lease_holder(run: &Run) -> String {
+    run.owned.as_ref().map_or_else(
+        || "server".to_owned(),
+        |owned| format!("{}:{}", owned.owner, owned.generation),
+    )
 }
 
 /// The server dependencies for the work after the pull request passes its gate.
@@ -2695,7 +2703,8 @@ impl ReviewRun<'_> {
         // one is acquired.
         if run.expected_head.as_deref() != Some(pull_request.head_sha.as_str()) {
             let next = review_lease(repo, number, run.mode, Some(&pull_request.head_sha));
-            let claimed = state.store.claim_lease(&next, "server").await?;
+            let holder = review_lease_holder(run);
+            let claimed = state.store.claim_lease(&next, &holder).await?;
             if continue_if_lease_claimed(claimed, || async { Ok(()) })
                 .await?
                 .is_none()
@@ -2706,7 +2715,7 @@ impl ReviewRun<'_> {
                 return Ok(None);
             }
             if let Some(previous) = lease.replace(next)
-                && let Err(err) = state.store.release_lease(&previous).await
+                && let Err(err) = state.store.release_lease_for(&previous, &holder).await
             {
                 tracing::error!(%err, %previous, "could not release the previous review lease");
             }

@@ -488,7 +488,7 @@ async fn concurrent_affordable_completions_wait_for_reservations_to_settle() {
 
 #[tokio::test]
 async fn reported_cost_over_reservation_is_retained_and_blocks_later_admission() {
-    let paid_usage = json!({"prompt_tokens":120,"completion_tokens":4_000,"cost":0.6});
+    let paid_usage = json!({"prompt_tokens":120,"completion_tokens":600,"cost":0.09});
     let gateway =
         FakeGateway::start(vec![Reply::completion("deep", ANSWER, "stop", paid_usage)]).await;
     let mut models = models(&gateway.base_url);
@@ -500,9 +500,9 @@ async fn reported_cost_over_reservation_is_retained_and_blocks_later_admission()
             output: 150.0,
         },
     );
-    let model = adapter(&models).scoped_budget(0.7).unwrap();
+    let model = adapter(&models).scoped_budget(0.1).unwrap();
     let first = model.complete(request("deep")).await.unwrap();
-    assert!((first.usage.cost_usd - 0.6).abs() < 1e-12);
+    assert!((first.usage.cost_usd - 0.09).abs() < 1e-12);
     let second = model.complete(request("deep")).await;
     assert!(matches!(second, Err(crate::error::Error::Budget { .. })));
     assert_eq!(
@@ -561,19 +561,19 @@ async fn a_timed_out_paid_route_retains_its_unknown_charge_reservation() {
             },
         );
     }
-    let model = adapter(&models).scoped_budget(1.0).unwrap();
+    let model = adapter(&models).scoped_budget(0.15).unwrap();
     let answer = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         model.complete(request("primary")),
     )
     .await
     .expect("physical timeout reaches fallback")
-    .expect("$0.60 unknown charge plus $0.20 fallback bound fits");
+    .expect("unknown primary reservation plus the bounded fallback fits");
     assert_eq!(answer.model, "fallback");
     let second = model.complete(request("primary")).await;
     assert!(
         second.is_err(),
-        "unknown $0.60 charge cannot be refunded to admit another $0.60 bound"
+        "the timeout's unknown charge cannot be refunded to admit another call"
     );
     assert_eq!(gateway.requests().len(), 2, "denied work never dispatches");
 }
@@ -598,7 +598,7 @@ async fn canceling_a_stalled_call_is_terminal_and_releases_paid_admission() {
             },
         );
     }
-    let model: std::sync::Arc<dyn Model> = adapter(&models).scoped_budget(1.0).unwrap();
+    let model: std::sync::Arc<dyn Model> = adapter(&models).scoped_budget(0.15).unwrap();
     let running = model.clone();
     let task = tokio::spawn(async move { running.complete(request("primary")).await });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -621,11 +621,11 @@ async fn canceling_a_stalled_call_is_terminal_and_releases_paid_admission() {
     )
     .await
     .expect("dropping the call releases admission")
-    .expect("remaining budget admits $0.20 fallback bound");
+    .expect("remaining budget admits the bounded fallback");
     assert_eq!(answer.model, "fallback");
     assert!(
         model.complete(request("primary")).await.is_err(),
-        "cancellation preserves the unknown $0.60 charge"
+        "cancellation preserves the unknown primary reservation"
     );
     assert_eq!(gateway.requests().len(), 2);
 }

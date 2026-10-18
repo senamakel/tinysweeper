@@ -2746,7 +2746,7 @@ mod tests {
             }],
             "tests": [{
                 "kind": "unit test fixture",
-                "behavior": "The fixture maps transaction rollback.",
+                "behavior": "The test fixture maps transaction rollback.",
                 "assessment": "The fixture covers the empty-state case.",
                 "citations": ["src/transaction.rs"]
             }],
@@ -2832,6 +2832,7 @@ mod tests {
         );
         assert!(!body.contains("Security found no issues"));
         assert!(!body.contains("All checks report no issues"));
+        assert!(body.contains("The test fixture maps transaction rollback"));
         assert!(body.contains("unit test fixture"));
         assert!(body.contains("parser now rejects unknown paths"));
         assert!(body.contains("parser handles unknown paths safely"));

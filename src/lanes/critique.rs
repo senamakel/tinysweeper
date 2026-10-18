@@ -52,10 +52,19 @@ use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
+use crate::ports::tree::{Found, Lookup, TreeReader};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 
 /// Confidence ceiling for critique model findings when retrieval is degraded.
 const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.5;
+
+/// Temporary former-gate evidence used only to capture the requested RED run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadReadEvidence {
+    path: String,
+    start: u32,
+    end: u32,
+}
 
 /// The correctness lane.
 pub struct Critique {
@@ -516,17 +525,52 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
-    // A degraded index cannot support model claims about repository context.
-    // Retain every critique finding in the lane outcome, but conservatively
-    // limit its confidence regardless of anchor or lookup output: a changed
-    // anchor does not prove claims about callers or other files, and
-    // availability alone does not prove a claim true. Normal proposal
-    // visibility thresholds still apply. Scanners have their own evidence
-    // and are outside this model-finding gate.
+    // Former behavior, restored only for a controlled RED run: successful
+    // reads of an anchor or a changed module's candidate file are treated as
+    // proof of the whole finding.
     if input.retrieval_status.is_degraded() {
-        capped_for_degraded_context = findings.len();
         for finding in &mut findings {
-            finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+            let mut supported = if finding.late {
+                match input.tree {
+                    Some(tree) => head_read(tree, &finding.path, finding.line)
+                        .await
+                        .is_some_and(|proof| proof.proves_path(&finding.path)),
+                    None => false,
+                }
+            } else {
+                false
+            };
+
+            let module_paths = finding.line.and_then(|line| {
+                input
+                    .diffs
+                    .iter()
+                    .find(|diff| diff.path == finding.path)
+                    .map(|diff| module_paths_added_at(diff, line))
+            });
+            if !supported {
+                if let Some(module_paths) = module_paths.filter(|paths| !paths.is_empty()) {
+                    supported = if let Some(tree) = input.tree {
+                        let mut supported = false;
+                        for path in module_paths {
+                            if head_read(tree, &path, None)
+                                .await
+                                .is_some_and(|proof| proof.proves_path(&path))
+                            {
+                                supported = true;
+                                break;
+                            }
+                        }
+                        supported
+                    } else {
+                        false
+                    };
+                }
+            }
+            if !supported {
+                finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+                capped_for_degraded_context += 1;
+            }
         }
     }
 
@@ -544,6 +588,70 @@ async fn review_group(
         resolved,
         spend,
     })
+}
+
+/// Read a path directly from the reviewed tree for the temporary former-gate
+/// RED run. This function is removed immediately after that run.
+async fn head_read(
+    tree: &dyn TreeReader,
+    path: &str,
+    line: Option<u64>,
+) -> Option<HeadReadEvidence> {
+    let line = line.and_then(|line| u32::try_from(line).ok());
+    let lookup = Lookup::Read {
+        path: path.to_string(),
+        start: line,
+        end: line,
+    };
+    match tree.lookup(&lookup).await.ok()? {
+        Found::Text { start, end, .. } => Some(HeadReadEvidence {
+            path: path.to_string(),
+            start,
+            end,
+        }),
+        Found::Hits { .. } | Found::NotFound | Found::Unavailable { .. } => None,
+    }
+}
+
+impl HeadReadEvidence {
+    fn proves_path(&self, path: &str) -> bool {
+        self.path == path && self.start <= self.end
+    }
+}
+
+/// Candidate Rust module layouts named by a changed out-of-line declaration.
+fn module_paths_added_at(diff: &FileDiff, head_line: u64) -> Vec<String> {
+    use crate::evidence::diff::LineKind;
+    let source = std::path::Path::new(&diff.path);
+    let parent = source.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let stem = source.file_stem().and_then(|name| name.to_str()).unwrap_or("");
+    let module_parent = if matches!(stem, "lib" | "main" | "mod") {
+        parent.to_path_buf()
+    } else {
+        parent.join(stem)
+    };
+    diff.hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind == LineKind::Added && line.new_line == Some(head_line))
+        .filter_map(|line| {
+            let text = line.text.trim();
+            let declaration = ["pub ", "pub(crate) ", "pub(super) ", ""]
+                .iter()
+                .find_map(|prefix| text.strip_prefix(prefix))?
+                .strip_prefix("mod ")?;
+            let name = declaration.strip_suffix(';')?.trim();
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| {
+                    vec![
+                        module_parent.join(format!("{name}.rs")),
+                        module_parent.join(name).join("mod.rs"),
+                    ]
+                })
+        })
+        .flatten()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Minimum changed lines a group needs before adaptive coverage passes

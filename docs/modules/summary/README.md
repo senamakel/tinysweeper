@@ -26,9 +26,9 @@ changed-path list; explicitly unanswered paths remain in scope even when they
 had no parseable diff. Whole-pull-request lanes with waiting checks carry only
 the pending-check count, without a fabricated file denominator. Completion provenance distinguishes deterministic lane
 results from policy skips and unanswered model calls; old proposal shapes with
-no provenance remain unknown. Narrative that explicitly names a non-answered
+no provenance remain unknown. A sentence that explicitly names a non-answered
 lane or makes a collective claim about all lanes/reviewers is discarded,
-regardless of its wording or claimed verdict.
+regardless of its wording or claimed verdict; unrelated sentences remain.
 
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one

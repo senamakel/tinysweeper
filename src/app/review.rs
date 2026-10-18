@@ -2365,6 +2365,10 @@ mod tests {
             input_tokens: 17,
             output_tokens: 5,
             reasoning_tokens: 3,
+            calls_attempted: 3,
+            calls_succeeded: 1,
+            calls_refused: 0,
+            calls_errored: 2,
             calls_attempted: 0,
             calls_succeeded: 0,
             calls_refused: 0,
@@ -2406,8 +2410,9 @@ mod tests {
                 <= record.started.unwrap().elapsed().as_millis() as u64
         );
         assert!(record.lanes_ms.contains_key("critique"));
-        assert!(record.calls_attempted > 0);
         assert!(record.calls_succeeded > 0);
+        assert_eq!(record.calls_attempted, record.calls_succeeded * 3);
+        assert_eq!(record.calls_errored, record.calls_succeeded * 2);
         assert_eq!(record.usage.reasoning_tokens, record.calls_succeeded * 3);
         assert_eq!(record.usage.cached_tokens, record.calls_succeeded * 4);
         assert_eq!(record.files_total, 1);
@@ -2472,7 +2477,8 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || drop(timing));
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(line.contains("review timing"));
-        assert!(line.contains("outcome=\"deadline\""), "{line}");
+        assert!(line.contains("outcome=deadline"), "{line}");
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
     }
 
     fn config() -> Config {

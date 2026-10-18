@@ -250,6 +250,10 @@ mod tests {
             input_tokens: 100,
             output_tokens: 10,
             reasoning_tokens: 0,
+            calls_attempted: 3,
+            calls_succeeded: 1,
+            calls_refused: 1,
+            calls_errored: 1,
             calls_attempted: 0,
             calls_succeeded: 0,
             calls_refused: 0,
@@ -262,6 +266,10 @@ mod tests {
             input_tokens: 50,
             output_tokens: 5,
             reasoning_tokens: 0,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            calls_refused: 0,
+            calls_errored: 0,
             calls_attempted: 0,
             calls_succeeded: 0,
             calls_refused: 0,
@@ -274,6 +282,10 @@ mod tests {
         assert_eq!(total.input_tokens, 150);
         assert_eq!(total.output_tokens, 15);
         assert_eq!(total.cached_tokens, 80);
+        assert_eq!(total.calls_attempted, 4);
+        assert_eq!(total.calls_succeeded, 2);
+        assert_eq!(total.calls_refused, 1);
+        assert_eq!(total.calls_errored, 1);
         assert_eq!(total.embed_tokens, 400);
         assert!((total.cost_usd - 0.03).abs() < f64::EPSILON);
     }

@@ -199,6 +199,13 @@ pub enum Anchoring {
 pub struct LaneOutcome {
     /// One or two sentences for the check-run summary.
     pub summary: String,
+    /// The model findings were reviewed without usable repository context.
+    ///
+    /// Only host lane code sets this bit; it is not part of any model schema.
+    /// The application keeps such findings visible as labeled, non-blocking
+    /// notes rather than treating their confidence as a repository-wide
+    /// verdict.
+    pub context_degraded: bool,
     /// The findings, before the shared filtering pipeline runs.
     pub findings: Vec<Finding>,
     /// Titles of earlier findings this revision fixed.

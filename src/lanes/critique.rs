@@ -166,6 +166,9 @@ impl Lane for Critique {
             input.config,
             input.config.models.budget_usd_per_pr,
         );
+        // Links between changed files are indexed once, then each group's
+        // falsifier gets only its own diff and mechanically related excerpts.
+        let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
 
         let outcome = per_unit(
             &groups,
@@ -175,13 +178,22 @@ impl Lane for Critique {
                 let llm = llm.clone();
                 let input = &input;
                 let changed_paths = &changed_paths;
+                let cross_file_evidence = &cross_file_evidence;
                 async move {
                     let group_diffs: Vec<FileDiff> = group
                         .paths
                         .iter()
                         .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
                         .collect();
-                    review_group(llm, input, changed_paths, &group.paths, &group_diffs).await
+                    review_group(
+                        llm,
+                        input,
+                        changed_paths,
+                        &group.paths,
+                        &group_diffs,
+                        cross_file_evidence,
+                    )
+                    .await
                 }
             },
         )
@@ -236,14 +248,15 @@ async fn review_group(
     changed_paths: &[String],
     group_paths: &[String],
     group_diffs: &[FileDiff],
+    cross_file_evidence: &replay::CrossFileEvidenceIndex<'_>,
 ) -> Result<FileReview> {
     let config: &Config = input.config;
     let evidence = replay::render(group_diffs);
     // Findings are confined to this group's paths, but contradictions can
-    // live in another PR file (for example, a module added beside its
-    // declaration). The reject-only pass needs the complete PR diff to test
-    // those cross-file claims without widening what reviewers may report.
-    let falsifier_evidence = replay::render(input.diffs);
+    // live in a mechanically related PR file (for example, a module added
+    // beside its declaration). The shared index keeps this bounded without
+    // replaying the complete PR diff for every group.
+    let falsifier_evidence = cross_file_evidence.render_for(group_diffs);
     let reviewers = council::reviewers(config, LaneId::Critique);
     let redaction_note = redaction_note(&evidence);
 

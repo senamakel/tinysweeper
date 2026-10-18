@@ -89,6 +89,7 @@ impl ReviewFailure {
                 failure.usage = Some(Box::new(Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
                     cached_tokens: usage.cached_tokens,
                     cost_usd: cost,
                     embed_tokens: 0,
@@ -114,6 +115,7 @@ impl ReviewFailure {
                     Box::new(Usage {
                         input_tokens: spent.tokens,
                         output_tokens: 0,
+                        reasoning_tokens: 0,
                         cached_tokens: 0,
                         cost_usd: spent.cost_micros as f64 / 1_000_000.0,
                         embed_tokens: 0,

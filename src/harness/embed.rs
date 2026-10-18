@@ -783,6 +783,21 @@ mod tests {
     #[derive(Clone)]
     struct LogBytes(Arc<std::sync::Mutex<Vec<u8>>>);
 
+    #[derive(Default)]
+    struct RecordedModelCall(std::sync::Mutex<Option<(Usage, bool, bool, std::time::Duration)>>);
+
+    impl crate::ports::model::ModelCallObserver for RecordedModelCall {
+        fn completed(
+            &self,
+            usage: Usage,
+            succeeded: bool,
+            refused: bool,
+            latency: std::time::Duration,
+        ) {
+            *self.0.lock().unwrap() = Some((usage, succeeded, refused, latency));
+        }
+    }
+
     impl std::io::Write for LogBytes {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.0.lock().unwrap().extend_from_slice(bytes);
@@ -821,6 +836,44 @@ mod tests {
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(line.contains("model call"));
         assert!(line.contains("latency_ms=37"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn every_model_call_log_also_updates_the_active_review_observer() {
+        let observer = Arc::new(RecordedModelCall::default());
+        let request = CompletionRequest::new("test/model", vec![]);
+        let response = openhuman_embed::complete::CompletionResponse {
+            text: "{}".into(),
+            structured: Some(serde_json::json!({})),
+            finish_reason: Some("length".into()),
+            answered_model: Some("test/model".into()),
+            usage: Some(openhuman_embed::complete::CompletionUsage {
+                input_tokens: 12,
+                output_tokens: 7,
+                cached_tokens: 3,
+                reasoning_tokens: 2,
+                cost_usd: Some(0.01),
+            }),
+            raw: None,
+        };
+        crate::ports::model::with_model_call_observer(observer.clone(), async {
+            ModelCallObserver(None).on_complete(&CompletionTrace {
+                request: &request,
+                outcome: Ok(&response),
+                latency: std::time::Duration::from_millis(37),
+            });
+        })
+        .await;
+
+        let call = observer.0.lock().unwrap().expect("call was observed");
+        assert!(call.1, "provider response is a successful dispatch");
+        assert!(!call.2);
+        assert_eq!(call.3, std::time::Duration::from_millis(37));
+        assert_eq!(call.0.calls_attempted, 1);
+        assert_eq!(call.0.calls_succeeded, 1);
+        assert_eq!(call.0.output_tokens, 7);
+        assert_eq!(call.0.reasoning_tokens, 2);
+        assert_eq!(call.0.cached_tokens, 3);
     }
 
     fn models() -> Models {

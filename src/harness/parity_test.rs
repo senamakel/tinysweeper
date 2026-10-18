@@ -347,7 +347,11 @@ async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelle
         "the second provider response remains paused until cancellation"
     );
     let calls = calls.0.lock().unwrap();
-    assert_eq!(calls.1.len(), 1, "the completed dispatch is flushed at once");
+    assert_eq!(
+        calls.1.len(),
+        1,
+        "the completed dispatch is flushed at once"
+    );
     assert_eq!(calls.0.input_tokens, 120);
     assert_eq!(calls.0.output_tokens, 30);
     assert_eq!(calls.0.calls_attempted, 1);

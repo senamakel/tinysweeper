@@ -49,6 +49,7 @@ pub(crate) fn observe_model_call(
 }
 
 /// Clone the active observer for model work moved into a spawned agent task.
+#[allow(dead_code)] // The gateway's spawned agent bridge consumes this when the harness observer lands.
 pub(crate) fn current_model_call_observer() -> Option<Arc<dyn ModelCallObserver>> {
     MODEL_CALL_OBSERVER.try_with(Arc::clone).ok()
 }
@@ -161,7 +162,7 @@ pub struct Usage {
     /// rejected its contents.
     #[serde(default)]
     pub calls_succeeded: u64,
-    /// Dispatches refused by admission or by the provider.
+    /// Requests refused before a provider response, including admission refusals.
     #[serde(default)]
     pub calls_refused: u64,
     /// Dispatches that failed without a refusal.

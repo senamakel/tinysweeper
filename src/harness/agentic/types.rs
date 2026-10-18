@@ -142,3 +142,30 @@ impl ReviewFailure {
         Self { error, usage }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_accumulation_retains_reasoning_tokens() {
+        let mut total = Usage::default();
+        accumulate_usage(
+            &mut total,
+            Usage {
+                input_tokens: 5,
+                output_tokens: 3,
+                reasoning_tokens: 2,
+                ..Usage::default()
+            },
+        );
+        accumulate_usage(
+            &mut total,
+            Usage {
+                reasoning_tokens: 4,
+                ..Usage::default()
+            },
+        );
+        assert_eq!(total.reasoning_tokens, 6);
+    }
+}

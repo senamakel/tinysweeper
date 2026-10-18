@@ -67,7 +67,7 @@ pub(crate) struct Record {
     pub(crate) lanes_ms: BTreeMap<String, u64>,
     /// Physical model attempts, plus one for pre-dispatch refusals.
     pub(crate) calls_attempted: u64,
-    /// Model attempts returning a usable answer.
+    /// Provider calls returning a response, including truncated or invalid output.
     pub(crate) calls_succeeded: u64,
     /// Model requests refused by admission or the provider.
     pub(crate) calls_refused: u64,
@@ -181,22 +181,6 @@ pub(crate) async fn measure<F: Future>(
 ) -> F::Output {
     if let Some(timing) = timing {
         let guard = timing.phase(name);
-        let output = future.instrument(guard.span.clone()).await;
-        drop(guard);
-        output
-    } else {
-        future.await
-    }
-}
-
-/// Run a future inside a named lane span and record elapsed time.
-pub(crate) async fn measure_lane<F: Future>(
-    timing: Option<&ReviewTiming>,
-    name: &'static str,
-    future: F,
-) -> F::Output {
-    if let Some(timing) = timing {
-        let guard = timing.lane(name);
         let output = future.instrument(guard.span.clone()).await;
         drop(guard);
         output

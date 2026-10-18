@@ -115,6 +115,8 @@ pub struct Usage {
     pub input_tokens: u64,
     /// Generated tokens.
     pub output_tokens: u64,
+    /// Tokens spent reasoning, as reported by the provider.
+    pub reasoning_tokens: u64,
     /// Prompt tokens served from the provider's cache. The difference between
     /// a cheap re-review and a ruinous one.
     pub cached_tokens: u64,
@@ -135,6 +137,7 @@ impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.reasoning_tokens += other.reasoning_tokens;
         self.cached_tokens += other.cached_tokens;
         self.embed_tokens += other.embed_tokens;
         self.cost_usd += other.cost_usd;

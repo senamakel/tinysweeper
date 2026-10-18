@@ -1,0 +1,85 @@
+//! Per-review telemetry shared by the server and the read-only review pipeline.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crate::ports::model::Usage;
+
+pub const PHASES: &[&str] = &[
+    "permit", "open_status", "checkout", "context", "knowledge", "retrieval",
+    "graph", "lanes", "summary", "threads", "wireframe", "publish",
+];
+
+#[derive(Debug, Clone)]
+pub struct ReviewTiming(Arc<Mutex<Record>>);
+
+#[derive(Debug, Default)]
+pub struct Record {
+    pub repo: String,
+    pub pr: u64,
+    pub head_sha: String,
+    pub mode: String,
+    pub outcome: String,
+    pub started: Option<Instant>,
+    pub queue_wait_ms: u64,
+    pub phases_ms: BTreeMap<String, u64>,
+    pub lanes_ms: BTreeMap<String, u64>,
+    pub calls_attempted: u64,
+    pub calls_succeeded: u64,
+    pub calls_refused: u64,
+    pub calls_errored: u64,
+    pub usage: Usage,
+    pub files_total: usize,
+    pub files_answered: usize,
+    pub files_unanswered: usize,
+}
+
+impl ReviewTiming {
+    pub fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
+        let mut record = Record {
+            repo: repo.into(), pr, mode: mode.into(), outcome: "cancelled".into(),
+            started: Some(Instant::now()),
+            ..Record::default()
+        };
+        for phase in PHASES { record.phases_ms.insert((*phase).into(), 0); }
+        Self(Arc::new(Mutex::new(record)))
+    }
+
+    pub fn phase(&self, name: &'static str) -> PhaseGuard {
+        PhaseGuard { timing: self.clone(), name, started: Instant::now() }
+    }
+
+    pub fn record(&self, update: impl FnOnce(&mut Record)) {
+        update(&mut self.0.lock().expect("review timing lock"));
+    }
+
+    pub fn finish(&self, outcome: &str) {
+        self.record(|r| r.outcome = outcome.to_owned());
+    }
+
+    pub fn emit(&self) {
+        let r = self.0.lock().expect("review timing lock");
+        let total_ms = r.started.map(|s| s.elapsed().as_millis() as u64).unwrap_or_default();
+        tracing::info!(target: "tinysweeper::review_timing", repo = %r.repo, pr = r.pr,
+            head_sha = %r.head_sha, mode = %r.mode, outcome = %r.outcome, total_ms,
+            queue_wait_ms = r.queue_wait_ms, phases_ms = ?r.phases_ms, lanes_ms = ?r.lanes_ms,
+            calls_attempted = r.calls_attempted, calls_succeeded = r.calls_succeeded,
+            calls_refused = r.calls_refused, calls_errored = r.calls_errored,
+            input_tokens = r.usage.input_tokens, output_tokens = r.usage.output_tokens,
+            reasoning_tokens = r.usage.reasoning_tokens, cached_tokens = r.usage.cached_tokens,
+            files_total = r.files_total, files_answered = r.files_answered,
+            files_unanswered = r.files_unanswered, "review timing");
+    }
+}
+
+pub struct PhaseGuard { timing: ReviewTiming, name: &'static str, started: Instant }
+impl Drop for PhaseGuard {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed().as_millis() as u64;
+        self.timing.record(|r| {
+            if self.name == "permit" { r.queue_wait_ms += elapsed; }
+            *r.phases_ms.entry(self.name.into()).or_default() += elapsed;
+        });
+    }
+}

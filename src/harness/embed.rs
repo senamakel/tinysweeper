@@ -1043,7 +1043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_queued_completion_does_not_hold_admission_or_dispatch() {
+    async fn live_capacity_refusal_is_fast_typed_and_does_not_dispatch() {
         let (model, gateway, request) = admission_fixture().await;
         let ledger = model.budget.as_ref().unwrap();
         let held = ledger
@@ -1052,17 +1052,18 @@ mod tests {
                 cost_micros: 1_000_000,
             })
             .unwrap();
-        let waiting_model = model.clone();
-        let waiting_request = request.clone();
-        let waiting = tokio::spawn(async move { waiting_model.complete(waiting_request).await });
-        tokio::task::yield_now().await;
-        assert!(!waiting.is_finished());
-        waiting.abort();
-        assert!(waiting.await.unwrap_err().is_cancelled());
+        let refusal = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            model.complete(request.clone()),
+        )
+        .await
+        .expect("live capacity refusal must not wait")
+        .expect_err("the live reservation leaves no capacity");
+        assert!(matches!(refusal, Error::Budget { .. }), "{refusal:?}");
         assert!(gateway.requests().is_empty());
         assert!(
-            ledger.refusal().is_none(),
-            "temporary waiting must not poison the shared ledger"
+            ledger.refusal().is_some(),
+            "a fail-fast admission refusal remains typed in the ledger"
         );
         assert_eq!(ledger.snapshot().reserved.cost_micros, 1_000_000);
         assert_eq!(
@@ -1078,7 +1079,7 @@ mod tests {
             model.review(request, &tree, &policy),
         )
         .await
-        .expect("non-agentic review waits only for physical capacity")
+        .expect("the next review runs after the reservation settles")
         .expect("next completion succeeds");
         assert_eq!(response.value["summary"], "checked");
         assert_eq!(gateway.requests().len(), 1);

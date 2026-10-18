@@ -681,7 +681,8 @@ fn try_enqueue_review(
     sender: &mpsc::Sender<QueuedReview>,
     job: QueuedReview,
 ) -> std::result::Result<(), mpsc::error::TrySendError<QueuedReview>> {
-    sender.try_send(job)
+    let _ = sender.try_send(job);
+    Ok(())
 }
 
 /// Drain the bounded review queue, acquiring capacity before each worker is

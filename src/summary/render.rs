@@ -638,44 +638,14 @@ pub(crate) fn md(text: &str) -> String {
     escaped
 }
 fn trustworthy_report(body: &str) -> Option<&str> {
-    if let Some(start) = body.find(LAST_REPORT_START) {
-        let content_start = start + LAST_REPORT_START.len();
-        let end = body[content_start..].find(LAST_REPORT_END)? + content_start;
-        return trustworthy_report(body[content_start..end].trim_matches('\n'));
-    }
-
-    if is_completed_report(body) {
+    if body.contains(MARKER)
+        && body.contains("**Reviewed head:**")
+        && !body.contains("**Reviewing `")
+        && !body.contains("**Review failed for `")
+    {
         return Some(body);
     }
-
-    // Older hubs nested the report in a details block before stable delimiters
-    // were introduced. Extract that block so an upgrade during a review keeps
-    // the report instead of replacing it with another status wrapper.
-    let opening = body.find("<details")?;
-    let content_start = body[opening..].find("</summary>")? + opening + "</summary>".len();
-    let mut cursor = opening;
-    let mut depth = 0usize;
-    let closing = loop {
-        let next_open = body[cursor..].find("<details").map(|offset| cursor + offset);
-        let next_close = body[cursor..]
-            .find("</details>")
-            .map(|offset| cursor + offset);
-        match (next_open, next_close) {
-            (Some(open), Some(close)) if open < close => {
-                depth += 1;
-                cursor = open + "<details".len();
-            }
-            (_, Some(close)) => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    break close;
-                }
-                cursor = close + "</details>".len();
-            }
-            _ => return None,
-        }
-    };
-    trustworthy_report(body[content_start..closing].trim())
+    None
 }
 
 fn is_completed_report(body: &str) -> bool {

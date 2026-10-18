@@ -649,12 +649,18 @@ fn code_span(text: &str) -> String {
 
 fn title_for(findings: usize, summary: &str, unanswered: usize) -> String {
     if unanswered > 0 {
-        if let Some(reviewed) = summary
-            .strip_prefix("Reviewed ")
-            .and_then(|text| text.split_once(" file").map(|(count, _)| count))
-            .and_then(|count| count.parse::<usize>().ok())
-        {
-            let total = reviewed + unanswered;
+        if let Some((reviewed, total)) = summary.strip_prefix("Reviewed ").and_then(|text| {
+            if let Some((reviewed, rest)) = text.split_once(" of ") {
+                let total = rest.split_once(" files")?.0;
+                Some((
+                    reviewed.parse::<usize>().ok()?,
+                    total.parse::<usize>().ok()?,
+                ))
+            } else {
+                let reviewed = text.split_once(" file")?.0.parse::<usize>().ok()?;
+                Some((reviewed, reviewed + unanswered))
+            }
+        }) {
             return format!("Reviewed {reviewed} of {total} files — {unanswered} not reviewed");
         }
     }

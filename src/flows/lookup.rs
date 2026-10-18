@@ -481,9 +481,7 @@ pub fn seed_symbols(diff: &crate::evidence::diff::FileDiff) -> Vec<String> {
         if text.starts_with("//") || text.starts_with('*') || text.starts_with("///") {
             continue;
         }
-        if let Some(name) = added_function_name(text)
-            && removed_functions.contains(name)
-        {
+        if let Some(name) = added_function_name(text) {
             let candidate = format!("@caller:{name}");
             if !out.contains(&candidate) {
                 out.push(candidate);
@@ -1218,13 +1216,26 @@ mod tests {
             "src/api.rs",
             "@@ -1,1 +1,1 @@\n-fn parse(value: &str) {}\n+pub fn parse(value: &str, strict: bool) {}\n",
         );
-        let tree = MockTree::from_files([
-            ("src/api.rs", "pub fn parse(value: &str, strict: bool) {}\n"),
-            (
-                "src/client.rs",
-                "pub fn handle(value: &str) {\n    parse(value, true);\n}\n",
-            ),
-        ]);
+        let caller_search = Lookup::Search {
+            pattern: "parse(".into(),
+            glob: None,
+        };
+        let tree = MockTree::from_recorded(
+            [(
+                caller_search.key(),
+                Found::Hits {
+                    hits: vec![crate::ports::tree::Hit {
+                        path: "src/client.rs".into(),
+                        line: 2,
+                        text: "parse(value, true);".into(),
+                    }],
+                    truncated: false,
+                    skipped: Vec::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
         let mut ledger = Ledger::default();
 
         let seeded = ledger

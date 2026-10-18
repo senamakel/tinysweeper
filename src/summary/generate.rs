@@ -1587,6 +1587,7 @@ mod tests {
         )
         .await;
 
+        assert!(summary.executive_summary.contains("Run tests on Windows"));
         assert!(summary
             .executive_summary
             .starts_with("Pull request purpose (title): Run tests on Windows."));

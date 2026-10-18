@@ -682,6 +682,7 @@ async fn receive(
     (StatusCode::ACCEPTED, "queued").into_response()
 }
 
+#[derive(Debug)]
 enum ReviewQueueError {
     Full(Box<QueuedReview>),
     Closed(Box<QueuedReview>),
@@ -1410,7 +1411,7 @@ impl FullReviews for ManualDispatch {
                     queued_at: tokio::time::Instant::now(),
                 },
             )
-            .map_err(|err| Error::Forge(format!("review queue is full or closed: {err}")))?;
+            .map_err(|err| Error::Forge(format!("review queue is full or closed: {err:?}")))?;
             queued.push(number);
         }
 

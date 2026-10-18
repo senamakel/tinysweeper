@@ -1933,7 +1933,11 @@ async fn handle_review(
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
-                timing.finish(if findings.is_some() { "success" } else { "superseded" });
+                if findings.is_some() {
+                    timing.finish("success");
+                } else if timing.snapshot().outcome == "cancelled" {
+                    timing.finish("declined");
+                }
                 return;
             }
             Err(err) => {
@@ -2057,6 +2061,7 @@ async fn review_inner(
 ) -> Result<Option<(usize, bool)>> {
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
+        run.timing.finish("declined");
         tracing::info!(%author, "blocked contributor; not reviewing");
         return Ok(None);
     }
@@ -2081,6 +2086,7 @@ async fn review_inner(
     // claims and start their first workflow only once GitHub says they are
     // ready for review.
     if pull_request.draft {
+        run.timing.finish("declined");
         tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
         return Ok(None);
     }
@@ -2113,6 +2119,7 @@ async fn review_inner(
         Mode::Full => format!("{repo}#{number}@{}!full", pull_request.head_sha),
     };
     if !state.store.claim_lease(&lease, "server").await? {
+        run.timing.finish("superseded");
         tracing::debug!(%lease, "another worker holds this review");
         return Ok(None);
     }

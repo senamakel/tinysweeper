@@ -430,6 +430,27 @@ mod tests {
     }
 
     #[test]
+    fn bounded_cross_file_evidence_keeps_the_reviewed_group_first() {
+        let mut diffs = vec![parse_file_patch(
+            "src/zown.rs",
+            "@@ -1 +1 @@\n-fn changed() {}\n+fn changed(value: u8) {}\n",
+        )];
+        for index in 0..10 {
+            diffs.push(parse_file_patch(
+                &format!("src/a{index}.rs"),
+                &format!("@@ -1 +1 @@\n-fn run() {{}}\n+fn run() {{ changed({index}); }}\n"),
+            ));
+        }
+
+        let evidence = CrossFileEvidenceIndex::new(&diffs).render_for(&diffs[..1]);
+
+        assert!(evidence.starts_with("--- src/zown.rs\n"), "{evidence}");
+        assert!(evidence.contains("fn changed(value: u8)"), "{evidence}");
+        assert!(evidence.contains("Cross-file evidence is incomplete"), "{evidence}");
+        assert!(evidence.len() <= 18_000, "{} bytes", evidence.len());
+    }
+
+    #[test]
     fn a_first_review_has_nothing_to_replay() {
         let current = render(&[parse_file_patch("src/main.rs", PATCH)]);
         let (reviewed, fresh) = split("", &current);

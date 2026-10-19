@@ -364,12 +364,27 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
 async fn whole_manual_batch_is_rejected_without_partial_admission() {
     let store = MockReviewJobStore::default();
     let full = (0..MAX_UNFINISHED_REVIEWS)
-        .map(|index| request(&format!("job-{index}"), 1))
+        .map(|index| {
+            let mut manual = request(&format!("job-{index}"), 1);
+            manual.mode = ReviewJobMode::Full;
+            manual
+        })
         .collect::<Vec<_>>();
     assert_eq!(store.admit_batch(full).await.unwrap(), Admission::Admitted);
     assert_eq!(
         store
-            .admit_batch(vec![request("manual-a", 2), request("manual-b", 2)])
+            .admit_batch(vec![
+                {
+                    let mut manual = request("manual-a", 2);
+                    manual.mode = ReviewJobMode::Full;
+                    manual
+                },
+                {
+                    let mut manual = request("manual-b", 2);
+                    manual.mode = ReviewJobMode::Full;
+                    manual
+                },
+            ])
             .await
             .unwrap(),
         Admission::Full
@@ -436,7 +451,11 @@ async fn live_lease_contention_defers_without_converting_it_to_a_success() {
 async fn running_claims_are_bounded_across_process_owners() {
     let store = MockReviewJobStore::default();
     let jobs = (0..=MAX_RUNNING_REVIEWS)
-        .map(|index| request(&format!("delivery-{index}"), 1))
+        .map(|index| {
+            let mut item = request(&format!("delivery-{index}"), 1);
+            item.number = 7 + index as u64;
+            item
+        })
         .collect();
     assert_eq!(store.admit_batch(jobs).await.unwrap(), Admission::Admitted);
     for index in 0..MAX_RUNNING_REVIEWS {

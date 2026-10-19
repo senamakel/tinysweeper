@@ -7,9 +7,10 @@ Do not run contributor code, build its dependencies, or execute its tests.
 
 ## Source baseline and prerequisites
 
-Research baseline: TinySweeper epic `818b5a481fe6df72dbd64c30555e1dc774621c6c`.
+Research began at TinySweeper epic `818b5a48`; final plan incorporates merged
+#233 at `af037206351888435580f8f5e29b64d0f8eca1ef`.
 Timing interfaces were inspected on the pending #221 branch, at `8526274b`.
-Merge #221 and #233 from the canonical epic into this branch before coding;
+Merge #221 from the canonical epic into this branch before coding;
 retain their production fixes, actual-path coverage and compact rendering.
 The canonical targets are TinySweeper `epic/236-review-health`, OpenHuman
 `ci-test/epic-236-review-health`, and TinyAgents `epic/236-review-health`.
@@ -87,6 +88,10 @@ candidate groups after the existing deterministic per-lane triage, replay and
 mechanical checks, using the same `GroupBounds` and graph as execution. Extract
 that preparation into shared lane-local helpers; do not maintain a second
 approximation which can select different groups. Planning makes no model call.
+Load host prior findings, run scanners and read the existing graph before the
+first paid model call, then finalize this plan. The execution scope may collect
+metadata earlier, but its mode/count ceiling is frozen before any paid dispatch;
+knowledge extraction, tests, summary and every other model consumer share it.
 Normal mode retains all groups, existing passes/council policy and ordering.
 
 For large mode, stable-sort all eligible critique/security groups together by
@@ -197,9 +202,12 @@ Extend summary rendering deterministically: display `not reviewed (large PR)`
 for size/count selection; use `not reviewed (time limit)` for deadline paths.
 Keep reason and full list in the existing collapsed Diagnostics / coverage
 section; retain #233's compact visible summary and #172's `Unverified` advisory
-labels. An interrupted model lane concludes Neutral even if it returned a
-blocking finding; keep that finding and the overall request-changes policy,
-but never claim complete coverage or emit approval. Existing complete lanes
+labels. An interrupted model lane with no qualifying blocking finding concludes Neutral.
+Preserve the existing `LaneOutcome::conclusion` precedence: a real finding at
+the blocking floor still gives Failure, followed by Neutral for unanswered
+work; never weaken a known defect merely because coverage is incomplete.
+Keep that finding and the overall request-changes policy, but never claim
+complete coverage or emit approval. Existing complete lanes
 may retain their truthful individual result. Preserve deterministic scanner
 findings independently of a stopped model lane.
 

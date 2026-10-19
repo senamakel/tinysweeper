@@ -17,6 +17,30 @@ and canonical epic targets. Branch from fetched main with `worktree`, then
 normal-merge the existing epic; never edit a checked-out vendor submodule here.
 The task is not complete until dependency PRs are merged and pins are coherent.
 
+### TinyInference: final pre-dispatch check
+
+The existing `BudgetedModel::admit` can await monetary capacity. Consequently
+checking the soft clock only before that wait admits a late provider call.
+Add a neutral optional synchronous `BeforeDispatch` hook in
+`crates/tinyinference-llm/src/model/budget.rs`, with a public builder on
+`BudgetedModel` and a default absent hook preserving all existing callers.
+Its method returns the existing engine Result without request content. Invoke
+it after monetary `admit` and immediately before the inner model invocation,
+for both invoke and stream construction. If it refuses, explicitly settle the
+already-owned monetary reservation with `Spend::default()`; return before
+creating physical telemetry or calling the provider. A failed preflight proves
+no dispatch, unlike a generic provider error whose reservation stays charged.
+Do not add a calls dimension or change normal settlement arithmetic.
+
+Red/green tests in sibling `budget_tests.rs` and `budget_wait_tests.rs`:
+block monetary capacity, advance the host clock past its soft deadline, free
+capacity, then reject in the hook; assert provider count zero and the new
+reservation leaves zero spent/reserved money. Test hook success, stream
+refusal and unchanged unknown-dispatched cancellation charging. Run focused
+`cargo test -j1 -p tinyinference-llm model::budget`, check, all-target Clippy and
+fmt. Open/merge the canonical TinyInference epic dependency PR first, update
+TinyAgents gitlink/dependency pins coherently, then continue below.
+
 ### TinyAgents
 
 Files under `crates/tinyagents-harness/src/`:
@@ -33,38 +57,42 @@ pub trait PhysicalDispatchAdmission: Send + Sync {
     async fn acquire(&self) -> Result<Arc<dyn PhysicalDispatchPermit>, DispatchRefusal>;
 }
 pub trait PhysicalDispatchPermit: Send + Sync {
-    fn mark_dispatched(&self);
+    fn mark_dispatched(&self) -> Result<(), DispatchRefusal>;
 }
 ```
 
 `DispatchRefusal` has a typed `DispatchRefusalReason` enum:
 `Deadline`, `CallLimit`, `Cancelled`. It implements Error/Display; displays no
-request content. `mark_dispatched` is idempotent and synchronous; releasing
+request content. `mark_dispatched` is idempotent and synchronous, rechecking the absolute clock
+and cancellation before committing the reserved count slot; releasing
 capacity happens in Drop of the host-owned permit. All exported items get docs.
 No admission value means the existing unbounded behavior.
 
 Add a wrapper builder accepting optional monetary `ModelBudget`, optional
 observer and optional admission, keeping old builder APIs delegating to it.
-For each invoke, acquire the permit before monetary reservation. Build a
-per-invocation inner provider wrapper holding that same permit:
+For each invoke acquire the count/concurrency permit before monetary admission.
+Build an ordinary BudgetedModel with the new pre-dispatch hook calling that
+same permit's `mark_dispatched`. Store a typed refusal in a call-local outcome
+slot if commit fails; the hook returns the engine error and BudgetedModel
+settles its zero-dispatch reservation to zero. Then inspect that slot when
+returning the controlled result. Without money policy, call commit directly
+immediately before the observed/normalized provider invocation. The order is:
 
 ```text
 acquire permit (reserved count slot, not an attempted call)
-  BudgetedModel(existing money/token ledger)
-    CommitDispatchModel(permit)
+  BudgetedModel: reserve money, optionally wait
+    before_dispatch: recheck deadline, commit count, or settle zero on refusal
       existing turn/explicit observers
         GatewayChargeModel
           concrete provider
 ```
 
-The commit wrapper calls `mark_dispatched()` immediately before calling the
-inner concrete ChatModel path, with no intervening await. A monetary admission
-refusal never reaches this wrapper: Drop refunds the uncommitted count slot,
-releases concurrency capacity and records no physical attempt. Once committed,
-the call count is never refunded on error, cancellation or unknown usage.
-The existing monetary reservation still normalizes/settles exactly once.
-No count refusal occurs *inside* a monetary reservation, so a refused count
-cannot accidentally charge money for an undispatched request.
+There is no await between successful commit and invoking the inner observed
+provider. A money refusal never commits; a late clock refusal settles money
+to zero and refunds the uncommitted count slot on Drop. Once committed, the
+call count is never refunded on failure, cancellation or unknown usage.
+The existing monetary reservation normalizes/settles exactly once. There is
+no duplicate ledger or copied monetary estimation/settlement algorithm.
 
 For streams, retain the permit in the returned guarded stream through terminal
 item, clean EOF, error or Drop. Fuse terminal streams so late polling cannot
@@ -290,6 +318,9 @@ soft cutoff, not a fresh 80 seconds. A genuinely exceeded hard deadline stays
 #223's terminal failure. Supersession during drain drops work and prevents old
 head publication; Full uses a separate job with the same size/count policy.
 Run targeted existing lease/status/backoff tests after wiring this option.
+The Neutral acceptance fixture has no blocking finding; a separate fixture
+proves an actual qualifying finding still yields Failure under existing #225
+precedence, while overall coverage stays partial and approval stays forbidden.
 
 ## 6. Docs, required gates, review and PR
 

@@ -201,7 +201,8 @@ async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_fai
     assert!(store.record_queued_check_id(&pending, 77, 11).await.unwrap());
     let owned = store.claim_next("review-worker", 12).await.unwrap().unwrap();
     assert_eq!(owned.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
-    assert_eq!(store.begin_paid(&owned, 13).await.unwrap(), super::PaidStart::Started);
+    assert!(store.confirm_head(&owned, "sha", 13).await.unwrap());
+    assert_eq!(store.begin_paid(&owned, 14).await.unwrap(), super::PaidStart::Started);
     assert!(store.finish(&owned, TerminalOutcome::Published, 20, 20).await.unwrap());
 
     assert!(

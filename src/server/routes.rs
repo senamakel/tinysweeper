@@ -3135,26 +3135,26 @@ impl ReviewRun<'_> {
             run.owned.as_ref(),
             run.mode,
             || async {
-        // A manual review deliberately takes a lease of its own: the operator asked
-        // for this run *because* the ordinary one already happened, so sharing the
-        // webhook path's key would make the button a silent no-op.
-        // The lease is held and the pull request is real, so this run is the one
-        // that will review this commit — which makes it the run that owns the
-        // status check. Opening it here rather than on the delivery path is what
-        // keeps a blocked contributor, a draft, or a duplicate delivery from
-        // announcing a review that is not going to happen.
-        //
-        // Still early: everything above is metadata reads, and every model call is
-        // below. A contributor sees the check appear seconds after pushing, not
-        // minutes.
-        //
-        // Deliberately *not* under `run.deadline`, and neither is anything else
-        // between here and `run_lanes`. The deadline is a cancellation, and
-        // cancelling a check-run POST after GitHub accepted it orphans the check
-        // this function exists to conclude. The forge calls here are bounded on
-        // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
-        // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
-        review_with_paid_budget_and_status(
+                // A manual review deliberately takes a lease of its own: the operator asked
+                // for this run *because* the ordinary one already happened, so sharing the
+                // webhook path's key would make the button a silent no-op.
+                // The lease is held and the pull request is real, so this run is the one
+                // that will review this commit — which makes it the run that owns the
+                // status check. Opening it here rather than on the delivery path is what
+                // keeps a blocked contributor, a draft, or a duplicate delivery from
+                // announcing a review that is not going to happen.
+                //
+                // Still early: everything above is metadata reads, and every model call is
+                // below. A contributor sees the check appear seconds after pushing, not
+                // minutes.
+                //
+                // Deliberately *not* under `run.deadline`, and neither is anything else
+                // between here and `run_lanes`. The deadline is a cancellation, and
+                // cancelling a check-run POST after GitHub accepted it orphans the check
+                // this function exists to conclude. The forge calls here are bounded on
+                // their own by `forge::github::REQUEST_TIMEOUT`, which is what the margin
+                // between `REVIEW_DEADLINE` and `LEASE_TTL` is for.
+                review_with_paid_budget_and_status(
             state.review_jobs.as_ref(),
             run.owned.as_ref(),
             unix_time_ms(),
@@ -4179,7 +4179,11 @@ mod tests {
         request.head_sha = Some("head-a".into());
         store.admit_batch(vec![request]).await.unwrap();
         let now = unix_time_ms();
-        let owned = store.claim_next("slow-store-worker", now).await.unwrap().unwrap();
+        let owned = store
+            .claim_next("slow-store-worker", now)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(store.confirm_head(&owned, "head-a", now).await.unwrap());
         store.delay_should_continue(std::time::Duration::from_millis(50));
 
@@ -4238,11 +4242,8 @@ mod tests {
         let forge = MockForge::new();
         let model = MockModel::silent();
         let repo_id = RepoId::parse("owner/repo").unwrap();
-        let published = run_if_confirmed_head_needs_review(
-            &store,
-            Some(&newer),
-            Mode::Incremental,
-            || async {
+        let published =
+            run_if_confirmed_head_needs_review(&store, Some(&newer), Mode::Incremental, || async {
                 model
                     .complete(ModelRequest {
                         model: "test".into(),
@@ -4270,26 +4271,27 @@ mod tests {
                     false,
                     status::ReviewCoverage::default(),
                 ))))
-            },
-        )
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap();
         assert!(matches!(published, InnerReview::Complete(Some(_))));
 
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request]).await.unwrap();
-        assert!(record_owned_disposition(
-            &store,
-            &newer,
-            WorkerDisposition::Terminal(TerminalOutcome::Published),
-            now + 5,
-        )
-        .await
-        .expect("owned terminal disposition")
-        .expect("scheduler update")
-        .expect("publication records terminal head while yielding"));
+        assert!(
+            record_owned_disposition(
+                &store,
+                &newer,
+                WorkerDisposition::Terminal(TerminalOutcome::Published),
+                now + 5,
+            )
+            .await
+            .expect("owned terminal disposition")
+            .expect("scheduler update")
+            .expect("publication records terminal head while yielding")
+        );
         assert_eq!(
             store.snapshot_for_test().incremental_heads[0].terminal_outcome,
             Some(TerminalOutcome::Published)
@@ -4352,10 +4354,12 @@ mod tests {
             forge.writes().len() == 1,
             "the delayed delivery publishes no duplicate check"
         );
-        assert!(store
-            .finish(&delayed, TerminalOutcome::Published, now + 8, now + 8)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .finish(&delayed, TerminalOutcome::Published, now + 8, now + 8)
+                .await
+                .unwrap()
+        );
         assert!(store.snapshot_for_test().terminal.iter().all(|record| {
             record.id.0 != "delayed-a" || record.outcome == TerminalOutcome::Published
         }));

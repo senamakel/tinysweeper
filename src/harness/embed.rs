@@ -118,7 +118,8 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             ..
         } = event
         {
-            let provider_responded = matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
+            let provider_responded =
+                matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             let observed_usage = Usage {
@@ -1643,6 +1644,7 @@ mod tests {
     #[tokio::test]
     async fn structured_repairs_report_each_physical_dispatch_once() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use tracing::{Instrument, instrument::WithSubscriber};
 
         let (mut model, _, request) = admission_fixture().await;
         let gateway = FakeGateway::start(vec![
@@ -1667,10 +1669,27 @@ mod tests {
         model.structured_output = StructuredOutput::JsonObject;
 
         let calls = Arc::new(RecordedModelCalls::default());
-        let response =
-            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
-                .await
-                .expect("the second physical dispatch repairs malformed JSON");
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_log = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || LogBytes(writer_log.clone()))
+            .finish();
+        let response = crate::ports::model::with_model_call_observer(calls.clone(), {
+            model
+                .complete(request)
+                .with_subscriber(tracing::Dispatch::new(subscriber))
+                .instrument(tracing::info_span!(
+                    "review",
+                    repo = "owner/repo",
+                    pr = 7,
+                    head_sha = "abc123",
+                    mode = "Incremental"
+                ))
+        })
+        .await
+        .expect("the second physical dispatch repairs malformed JSON");
 
         assert_eq!(response.value["summary"], "checked");
         assert_eq!(gateway.requests().len(), 2);
@@ -1684,6 +1703,13 @@ mod tests {
         assert_eq!(calls[1].0.output_tokens, 3);
         assert!(calls.iter().all(|call| call.0.calls_attempted == 1));
         assert!(calls.iter().all(|call| !call.3.is_zero()));
+        let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert_eq!(lines.matches("model call").count(), 2, "{lines}");
+        assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
+        assert!(lines.contains("repo=\"owner/repo\""), "{lines}");
+        assert!(lines.contains("pr=7"), "{lines}");
+        assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
+        assert!(lines.contains("mode=\"Incremental\""), "{lines}");
     }
 
     #[tokio::test]

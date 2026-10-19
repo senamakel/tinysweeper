@@ -32,7 +32,7 @@ pub async fn publish_queued_review_status(
     write
         .publish_check(
             repo,
-            &crate::server::status::queued(head_sha, reviews_ahead, external_id),
+            crate::server::status::queued(head_sha, reviews_ahead, external_id),
         )
         .await
 }

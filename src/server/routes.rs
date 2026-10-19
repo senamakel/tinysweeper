@@ -2937,7 +2937,7 @@ async fn handle_review(
     let queued_status = queue_check.as_ref().and_then(|check| {
         let check_id = check.check_id?;
         Some(ReviewStatus {
-            repo: RepoId::parse(&repo).ok()?,
+            repo: RepoId::parse(&repo)?,
             check_id,
             head_sha: check.head_sha.clone(),
             installation,

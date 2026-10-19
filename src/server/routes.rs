@@ -2367,6 +2367,7 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
 }
 
 /// Create or migrate the durable hub before the first model call.
+#[allow(clippy::too_many_arguments)]
 async fn open_review_hub(
     state: &AppState,
     slot: &StatusSlot,

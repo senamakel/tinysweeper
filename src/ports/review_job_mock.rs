@@ -49,7 +49,8 @@ impl ReviewJobStore for MockReviewJobStore {
         let state = self.state.lock().expect("state");
         Ok(count > 0
             && state.unfinished.len() + count <= MAX_UNFINISHED_REVIEWS
-            && state.reserved_capacity() + count <= MAX_TERMINAL_REVIEW_RESERVATIONS)
+            && state.terminal.len() + state.unfinished.len() + count
+                <= MAX_TERMINAL_REVIEW_RESERVATIONS)
     }
 
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission> {
@@ -76,14 +77,6 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").begin_paid(owned, now_ms))
     }
 
-    async fn confirm_head(&self, owned: &OwnedReview, head_sha: &str, now_ms: i64) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("state")
-            .confirm_head(owned, head_sha, now_ms))
-    }
-
     async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
         Ok(self.state.lock().expect("state").renew(owned, now_ms))
     }
@@ -92,24 +85,12 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").owns(owned, now_ms))
     }
 
-    async fn should_continue(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("state")
-            .should_continue(owned, now_ms))
-    }
-
     async fn defer(&self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> Result<bool> {
         Ok(self
             .state
             .lock()
             .expect("state")
             .defer(owned, now_ms, not_before_ms))
-    }
-
-    async fn defer_yield(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        Ok(self.state.lock().expect("state").defer_yield(owned, now_ms))
     }
 
     async fn finish(
@@ -124,13 +105,5 @@ impl ReviewJobStore for MockReviewJobStore {
             .lock()
             .expect("state")
             .finish(owned, outcome, now_ms, completed_at_ms))
-    }
-
-    async fn finish_deadline(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("state")
-            .finish_deadline(owned, now_ms))
     }
 }

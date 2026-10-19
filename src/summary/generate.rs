@@ -401,6 +401,7 @@ pub fn deterministic_with_paths(
         ..ReviewSummary::default()
     });
     summary.surface = classify(diffs);
+    summary.file_coverage = file_coverage(full_pr_paths, lanes);
     summary.cache_chain_restarted = false;
     summary.updated_at_epoch = now_epoch();
     summary.history.push(ReviewPass {
@@ -419,6 +420,54 @@ pub fn deterministic_with_paths(
     summary.purpose_title = normalized_purpose_title(pull_request);
     summary.executive_summary = purpose_opening(pull_request, &summary.executive_summary);
     summary
+}
+
+fn file_coverage(full_pr_paths: &[String], lanes: &[LaneProposal]) -> Option<crate::summary::types::FileReviewCoverage> {
+    let paths: BTreeSet<&str> = full_pr_paths.iter().map(String::as_str).collect();
+    if paths.is_empty() {
+        return None;
+    }
+
+    let mut reviewed = BTreeSet::new();
+    let mut has_evidence = false;
+    for lane in lanes {
+        if lane.skipped.is_some() {
+            continue;
+        }
+        if let Some(coverage) = &lane.coverage {
+            has_evidence = true;
+            let unanswered: BTreeSet<&str> = coverage
+                .unanswered
+                .iter()
+                .chain(lane.unanswered.iter())
+                .map(String::as_str)
+                .collect();
+            reviewed.extend(
+                coverage
+                    .reviewed
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|path| paths.contains(path) && !unanswered.contains(path)),
+            );
+        } else if lane.completed && lane.unanswered.is_empty() {
+            // A completed whole-pull-request lane covers the full forge path
+            // set; lanes with explicit fan-out coverage use that narrower list.
+            has_evidence = true;
+            reviewed.extend(paths.iter().copied());
+        }
+    }
+    if !has_evidence {
+        return None;
+    }
+
+    Some(crate::summary::types::FileReviewCoverage {
+        reviewed: reviewed.len(),
+        total: paths.len(),
+        unreviewed: paths
+            .difference(&reviewed)
+            .map(|path| (*path).to_string())
+            .collect(),
+    })
 }
 
 fn normalized_purpose_title(pull_request: &PullRequest) -> Option<String> {

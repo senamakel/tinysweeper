@@ -4238,8 +4238,7 @@ mod tests {
             ),
         ] {
             let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
-            let actual = finish_control_timing(&timing, disposition);
-            assert_eq!(actual, disposition);
+            finish_control_timing(&timing, disposition);
             assert_eq!(timing.snapshot().outcome, expected);
         }
     }

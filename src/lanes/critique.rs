@@ -182,6 +182,17 @@ impl Lane for Critique {
 
     async fn run(&self, input: LaneInput<'_>) -> Result<LaneOutcome> {
         let prepared = prepare(input.preparation());
+        self.run_prepared(input, prepared).await
+    }
+}
+
+impl Critique {
+    /// Run the exact model-free candidate preparation already used by planning.
+    pub(crate) async fn run_prepared(
+        &self,
+        input: LaneInput<'_>,
+        prepared: CritiquePreparation,
+    ) -> Result<LaneOutcome> {
         if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }

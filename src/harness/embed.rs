@@ -1116,7 +1116,7 @@ mod tests {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         use crate::ports::model::Message;
         use crate::ports::tree::MockTree;
-        use tracing::instrument::WithSubscriber;
+        use tracing::{Instrument, instrument::WithSubscriber};
 
         let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
         let tool_reply = Reply {
@@ -1183,7 +1183,9 @@ mod tests {
             calls.clone(),
             model
                 .review(request, &tree, &policy)
-                .with_subscriber(dispatch),
+                .with_subscriber(dispatch)
+                .instrument(tracing::info_span!("review", repo = "owner/repo", pr = 7,
+                    head_sha = "abc123", mode = "Incremental")),
         )
         .await
         .expect("agentic review completes");
@@ -1208,6 +1210,10 @@ mod tests {
         let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
         assert_eq!(lines.matches("model call").count(), 2, "{lines}");
         assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
+        assert!(lines.contains("repo=\"owner/repo\""), "{lines}");
+        assert!(lines.contains("pr=7"), "{lines}");
+        assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
+        assert!(lines.contains("mode=\"Incremental\""), "{lines}");
     }
 
     #[tokio::test]

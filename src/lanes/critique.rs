@@ -185,85 +185,16 @@ impl Lane for Critique {
     }
 
     async fn run(&self, input: LaneInput<'_>) -> Result<LaneOutcome> {
-        // Cheapest possible check first. A pull request that only deletes
-        // files, or only touches ignored paths, has nothing for this lane, and
-        // asking a model to confirm that is money for a foregone conclusion.
-        if !input.has_reviewable_content() {
-            return Ok(LaneOutcome::skipped(
-                "No added or modified lines to review.",
-            ));
+        let prepared = prepare(input.preparation());
+        if let Some(skipped) = prepared.skipped {
+            return Ok(skipped);
         }
-
-        if input.pull_request.draft && !input.config.review.draft_prs {
-            return Ok(LaneOutcome::skipped(
-                "Draft pull request; set `review.draft_prs = true` to review drafts.",
-            ));
-        }
-
-        // Files this lane has already reviewed, unchanged since, are skipped
-        // outright rather than replayed into a cacheable prefix. Both are
-        // sound, but a per-file lane can take the stronger one: skipping pays
-        // always, where a cache prefix only pays when the provider honours it.
-        // This is what `security` does, and for the same reason.
-        let fresh: Vec<&FileDiff> = replay::unreviewed(input.reviewed_evidence, input.diffs)
-            .into_iter()
-            .filter(|diff| !diff.changed_lines.is_empty())
-            .collect();
-        let mut covered_without_model: Vec<String> = input
-            .diffs
-            .iter()
-            .filter(|diff| {
-                !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
-            })
-            .map(|diff| diff.path.clone())
-            .collect();
-
-        // A mechanical rename is verified, not read. Every file the
-        // substitution explains in full is proven line for line here and
-        // named as such in the summary; the model's budget goes to the files
-        // it does not explain — which, on the pull request that motivated
-        // this, was one file in fifty-nine. See `lanes::mechanical`.
-        let mechanical = mechanical::detect(&fresh);
-        // One verified file is still read: the check proves every file got
-        // the *same* substitution, not that the substitution is harmless.
-        // `check_admin()` → `allow_guest()` across fifty files is uniform and
-        // is not a rename. One conversation over one sample answers that;
-        // fifty over fifty answered it fifty times.
-        let sample = mechanical.as_ref().and_then(|sub| sub.verified.first());
-        let paths: Vec<String> = fresh
-            .iter()
-            .filter(|diff| {
-                mechanical.as_ref().is_none_or(|sub| {
-                    !sub.verified.contains(&diff.path) || Some(&diff.path) == sample
-                })
-            })
-            .map(|diff| diff.path.clone())
-            .collect();
-
         let changed_paths = input.changed_paths();
-        // No model call: groups related changed files so a bug spanning them
-        // — a caller and its callee, a function and its test — is visible to
-        // one reviewer instead of hidden by the isolation clause each
-        // ungrouped conversation is given. Off, or a component too large to
-        // bet on, falls back to exactly the singleton fan-out this lane ran
-        // before grouping existed — see `lanes::grouping`.
-        let groups: Vec<FileGroup> = if input.config.grouping.enabled {
-            input.group(
-                &paths,
-                &GroupBounds {
-                    max_files: input.config.grouping.max_files,
-                    max_hunk_chars: input.config.grouping.max_hunk_chars,
-                },
-            )
-        } else {
-            paths
-                .iter()
-                .map(|path| FileGroup {
-                    label: path.clone(),
-                    paths: vec![path.clone()],
-                })
-                .collect()
-        };
+        let groups = prepared.groups;
+        let mut covered_without_model = prepared.covered_without_model;
+        let mechanical = prepared.mechanical;
+        let sample = prepared.sample;
+        let paths_empty = prepared.paths_empty;
 
         // One capability for the whole lane, so the pull-request budget is
         // enforced across every file and every reviewer at once. That is what

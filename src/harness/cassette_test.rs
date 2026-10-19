@@ -139,7 +139,8 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
     )
     .expect("take json");
     let context = take.review_context.expect("review query context");
-    assert_eq!(context.revision.as_deref(), Some(&"a".repeat(40)));
+    let revision = "a".repeat(40);
+    assert_eq!(context.revision.as_deref(), Some(revision.as_str()));
     assert_eq!(context.queries.len(), 2);
     assert!(matches!(
         context.queries[0].query,

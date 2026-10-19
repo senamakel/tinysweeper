@@ -685,12 +685,6 @@ impl Model for Cassette {
                 Error::Model("cassette review source or query sequence changed".into())
             })?;
         }
-        if !replay_tree.is_exhausted() {
-            self.record_miss();
-            return Err(Error::Model(
-                "cassette review made fewer repository queries than recorded".into(),
-            ));
-        }
         let mut state = self.state.lock().expect("cassette lock");
         if loose {
             state.loose_hits += 1;

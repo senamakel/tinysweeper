@@ -163,9 +163,11 @@ bounded number of times, and then leaves it to the holder, who is doing the same
 work anyway. A worker blocked on that claim would be a worker not indexing
 anything else, and with a bounded pool a few of those are the whole pool.
 
-`MAX_CONCURRENT_INDEXES` is lower than the review cap and for a different
-reason: a review is mostly waiting on one model, while a full index is a fetch,
-a tree in memory and thousands of embedding calls.
+The default `MAX_CONCURRENT_INDEXES` limit of two is lower than the default
+review limit of four, and for a different reason: a review is mostly waiting
+on one model, while a full index is a fetch, a tree in memory and thousands of
+embedding calls. The index limit is independent of the operator-configured
+review pool.
 
 ## Concurrency and failure
 

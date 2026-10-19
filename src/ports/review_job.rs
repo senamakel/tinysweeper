@@ -171,6 +171,23 @@ pub struct PendingReviewCheck {
     pub retired: bool,
 }
 
+/// A headless accepted review claimed for status-only metadata resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingReviewMetadata {
+    /// Stable current scheduler request identity.
+    pub job_id: ReviewJobId,
+    /// Repository whose pull request metadata is being read.
+    pub repo: String,
+    /// App installation used for the narrow metadata read.
+    pub installation: u64,
+    /// Pull request number.
+    pub number: u64,
+    /// Fenced status metadata claim generation.
+    pub generation: u64,
+    /// Claim expiry in Unix milliseconds.
+    pub claim_until_ms: i64,
+}
+
 /// A stale check retained until GitHub acknowledges a terminal status.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetiredReviewCheck {
@@ -445,6 +462,103 @@ impl ReviewSchedulerState {
             });
         }
         claims
+    }
+
+    /// Claim headless accepted jobs for narrow metadata resolution, without
+    /// acquiring review ownership or consuming paid-work capacity.
+    pub fn claim_pending_metadata(
+        &mut self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Vec<PendingReviewMetadata> {
+        let mut indices = self.unfinished.iter().enumerate()
+            .filter(|(_, job)| {
+                job.metadata_resolution_pending
+                    && job.request.head_sha.is_none()
+                    && job.owner.is_none()
+                    && job.not_before_ms <= now_ms
+                    && job.metadata_claim_until_ms <= now_ms
+            })
+            .map(|(index, job)| (index, job.enqueued_at_ms, job.request.id.0.clone()))
+            .collect::<Vec<_>>();
+        indices.sort_by_key(|(_, accepted_at, id)| (*accepted_at, id.clone()));
+        indices.into_iter().take(limit).map(|(index, _, _)| {
+            let job = &mut self.unfinished[index];
+            job.metadata_claim_generation = job.metadata_claim_generation.saturating_add(1);
+            job.metadata_claim_until_ms = now_ms.saturating_add(QUEUE_STATUS_CLAIM_TTL_MS);
+            PendingReviewMetadata {
+                job_id: job.request.id.clone(),
+                repo: job.request.repo.clone(),
+                installation: job.request.installation,
+                number: job.request.number,
+                generation: job.metadata_claim_generation,
+                claim_until_ms: job.metadata_claim_until_ms,
+            }
+        }).collect()
+    }
+
+    /// Revalidate a headless metadata claim at an external I/O boundary.
+    pub fn metadata_claim_current(&self, pending: &PendingReviewMetadata, now_ms: i64) -> bool {
+        self.unfinished.iter().any(|job| {
+            job.request.id == pending.job_id
+                && job.metadata_resolution_pending
+                && job.request.head_sha.is_none()
+                && job.owner.is_none()
+                && job.metadata_claim_generation == pending.generation
+                && job.metadata_claim_until_ms > now_ms
+        })
+    }
+
+    /// Resolve a headless accepted request after a narrow metadata GET. The
+    /// SHA is only an advisory queue hint; live review ownership confirms it
+    /// again before paid work. Closed and draft PRs are tombstoned without a
+    /// check write or model call.
+    pub fn resolve_pending_metadata(
+        &mut self,
+        pending: &PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        now_ms: i64,
+    ) -> bool {
+        let Some(index) = self.unfinished.iter().position(|job| {
+            job.request.id == pending.job_id
+                && job.metadata_resolution_pending
+                && job.request.head_sha.is_none()
+                && job.owner.is_none()
+                && job.metadata_claim_generation == pending.generation
+                && job.metadata_claim_until_ms > now_ms
+        }) else { return false; };
+        if !open || draft {
+            let record = self.unfinished.remove(index);
+            self.terminal.extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
+                id,
+                outcome: TerminalOutcome::Declined,
+                expires_at_ms: now_ms.saturating_add(REVIEW_TOMBSTONE_TTL_MS),
+            }));
+            return true;
+        }
+        let job = &mut self.unfinished[index];
+        let head = head_sha.to_owned();
+        let external_id = queued_check_external_id(&job.request.id, &head);
+        job.request.head_sha = Some(head.clone());
+        job.latest_head_hint = Some(head.clone());
+        job.metadata_resolution_pending = false;
+        job.metadata_claim_until_ms = 0;
+        if !job.review_checks.iter().any(|check| check.head_sha == head) {
+            job.review_checks.push(ReviewCheckRecord {
+                head_sha: head,
+                external_id,
+                check_id: None,
+                stage: ReviewCheckStage::Queued,
+                owner_generation: None,
+                published: false,
+                post_attempted: false,
+                write_claim_until_ms: 0,
+                write_generation: 0,
+            });
+        }
+        true
     }
 
     /// Persist the GitHub check ID only while the same queued identity and write claim remain current.

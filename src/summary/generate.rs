@@ -422,7 +422,10 @@ pub fn deterministic_with_paths(
     summary
 }
 
-fn file_coverage(full_pr_paths: &[String], lanes: &[LaneProposal]) -> Option<crate::summary::types::FileReviewCoverage> {
+fn file_coverage(
+    full_pr_paths: &[String],
+    lanes: &[LaneProposal],
+) -> Option<crate::summary::types::FileReviewCoverage> {
     let paths: BTreeSet<&str> = full_pr_paths.iter().map(String::as_str).collect();
     if paths.is_empty() {
         return None;

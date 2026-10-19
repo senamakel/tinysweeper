@@ -145,11 +145,15 @@ fn first_sentence(text: &str) -> &str {
 
 fn has_finding_signal(proposal: &Proposal) -> bool {
     proposal.findings().next().is_some()
-        || proposal.prior_findings.iter().any(|title| {
-            !proposal.reported().any(|finding| finding.title == *title)
-        })
+        || proposal
+            .prior_findings
+            .iter()
+            .any(|title| !proposal.reported().any(|finding| finding.title == *title))
         || proposal.overflowed().next().is_some()
-        || proposal.lanes.iter().any(|lane| !lane.noted.is_empty() || !lane.resolved.is_empty())
+        || proposal
+            .lanes
+            .iter()
+            .any(|lane| !lane.noted.is_empty() || !lane.resolved.is_empty())
 }
 
 fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
@@ -312,7 +316,10 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         );
     }
     for lane in &proposal.lanes {
-        if lane.lane == crate::config::types::LaneId::Tests && !lane.unanswered.is_empty() {
+        if lane.lane == crate::config::types::LaneId::Tests
+            && !lane.unanswered.is_empty()
+            && !lane.unanswered.iter().any(|item| item == &lane.check_name)
+        {
             let _ = writeln!(
                 out,
                 "- **Unreviewed:** {}",
@@ -356,21 +363,7 @@ fn over_budget(out: &mut String, proposal: &Proposal) {
         over.len()
     );
     for finding in over {
-        let _ = writeln!(
-            out,
-            "- {} · {} — {} ({})",
-            severity(finding.severity),
-            finding.lane,
-            prose(&finding.title),
-            code_span(&format!(
-                "{}{}",
-                finding.path,
-                finding
-                    .line
-                    .map(|line| format!(":{line}"))
-                    .unwrap_or_default()
-            ))
-        );
+        render_finding(out, finding, proposal);
     }
 }
 
@@ -393,22 +386,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
     }
     for lane in &proposal.lanes {
         for finding in &lane.findings {
-            let _ = writeln!(
-                out,
-                "- **{} · {} · {}** — {} ({})",
-                severity(finding.severity),
-                lane.lane,
-                prose(&finding.title),
-                prose(&concise(&finding.body)),
-                code_span(&format!(
-                    "{}{}",
-                    finding.path,
-                    finding
-                        .line
-                        .map(|line| format!(":{line}"))
-                        .unwrap_or_default()
-                ))
-            );
+            render_finding(out, finding, proposal);
         }
     }
     carried_findings(out, proposal);
@@ -421,14 +399,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
     if !noted.is_empty() {
         out.push_str("\n**Lower-confidence notes**\n");
         for finding in noted {
-            let _ = writeln!(
-                out,
-                "- {} · {} — {} ({})",
-                severity(finding.severity),
-                finding.lane,
-                prose(&finding.title),
-                code_span(&finding.path)
-            );
+            render_finding(out, finding, proposal);
         }
     }
     let resolved: Vec<_> = proposal
@@ -454,13 +425,38 @@ fn findings(out: &mut String, proposal: &Proposal) {
             prose(&pending.into_iter().cloned().collect::<Vec<_>>().join(", "))
         );
     }
-    if !proposal.unanswered().is_empty() {
-        let _ = writeln!(
-            out,
-            "\n**Could not review:** {}",
-            code_list(proposal.unanswered().into_iter())
-        );
-    }
+}
+
+fn render_finding(
+    out: &mut String,
+    finding: &crate::findings::types::Finding,
+    proposal: &Proposal,
+) {
+    let citation = crate::markdown::citation(
+        &format!(
+            "{}{}",
+            finding.path,
+            finding
+                .line
+                .map(|line| format!(":{line}"))
+                .unwrap_or_default()
+        ),
+        &proposal.repo,
+        &proposal.head_sha,
+    );
+    let _ = writeln!(
+        out,
+        "- **{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:** {}",
+        severity(finding.severity),
+        prose(&finding.title),
+        citation,
+        prose(&concise(&finding.body)),
+        finding
+            .suggestion
+            .as_deref()
+            .map(crate::markdown::code_block)
+            .unwrap_or_else(|| "No concrete fix was supplied.".to_string())
+    );
 }
 
 fn before_merge(out: &mut String, proposal: &Proposal) {
@@ -1196,6 +1192,11 @@ mod tests {
                         documentation: 1,
                         configuration: 0,
                     },
+                    file_coverage: Some(crate::summary::types::FileReviewCoverage {
+                        reviewed: 7,
+                        total: 7,
+                        unreviewed: vec![],
+                    }),
                     ..ReviewSummary::default()
                 },
                 &[],
@@ -1204,10 +1205,20 @@ mod tests {
         let visible = rendered.split("<details").next().expect("public summary");
 
         assert!(visible.contains("**State:**"), "{visible}");
-        assert!(visible.contains("**Coverage:** 7 files reviewed."), "{visible}");
-        assert!(visible.contains("The change adds a retry to the sync loop."), "{visible}");
+        assert!(
+            visible.contains("**Coverage:** 7 files reviewed."),
+            "{visible}"
+        );
+        assert!(
+            visible.contains("The change adds a retry to the sync loop."),
+            "{visible}"
+        );
         assert!(rendered.contains("<details>"), "{rendered}");
-        assert!(visible.len() <= 800, "{} chars outside details", visible.len());
+        assert!(
+            visible.len() <= 800,
+            "{} chars outside details",
+            visible.len()
+        );
         assert!(!visible.contains("## Tests"), "{visible}");
         assert!(!visible.contains("## Review snapshot"), "{visible}");
     }
@@ -1228,12 +1239,22 @@ mod tests {
             "unreviewed": ["src/unread.rs"],
             "summary": ReviewSummary::default(), "prior_findings": [],
             "cost_usd": 0.0, "cached_tokens": 0
-        })).expect("proposal");
+        }))
+        .expect("proposal");
 
         let rendered = render(&config, &proposal);
-        assert!(rendered.contains("not reviewed: `src/unread.rs`"), "{rendered}");
-        assert!(rendered.contains("tests reviewer did not respond"), "{rendered}");
-        assert!(!rendered.contains("Could not review: `src/tested.rs`"), "{rendered}");
+        assert!(
+            rendered.contains("not reviewed: `src/unread.rs`"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("tests reviewer did not respond"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("Could not review: `src/tested.rs`"),
+            "{rendered}"
+        );
         assert!(!rendered.contains("tinysweeper/"), "{rendered}");
     }
 
@@ -1258,12 +1279,19 @@ mod tests {
             }],
             "summary": ReviewSummary::default(), "prior_findings": [],
             "cost_usd": 0.0, "cached_tokens": 0
-        })).expect("proposal");
+        }))
+        .expect("proposal");
 
         let rendered = render(&config, &proposal);
-        let section = rendered.split("## Findings").nth(1).expect("findings section");
+        let section = rendered
+            .split("## Findings")
+            .nth(1)
+            .expect("findings section");
         assert!(section.contains("[`src/hub.rs:42`](https://github.com/acme/widget/blob/abcdef1234567890/src/hub.rs#L42)"), "{section}");
-        assert!(section.contains("An empty token bypasses validation."), "{section}");
+        assert!(
+            section.contains("An empty token bypasses validation."),
+            "{section}"
+        );
         assert!(section.contains("if token.is_empty()"), "{section}");
     }
 }

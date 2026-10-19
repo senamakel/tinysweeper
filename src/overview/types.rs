@@ -157,12 +157,13 @@ pub struct ChangeMap {
 }
 
 impl ChangeMap {
-    /// Whether there is anything worth drawing.
-    ///
-    /// A set of disconnected names is not a flow. Only draw when the graph can
-    /// explain at least one relationship.
+    /// Whether at least four changed, non-test symbols make a diagram useful.
     pub fn worth_drawing(&self) -> bool {
-        !self.links.is_empty()
+        self.changed()
+            .filter(|component| is_drawable_changed_symbol(component))
+            .count()
+            >= 4
+            && !self.links.is_empty()
     }
 
     /// The behaviours the change edits.
@@ -174,4 +175,47 @@ impl ChangeMap {
     pub fn impacted(&self) -> impl Iterator<Item = &Component> {
         self.components.iter().filter(|c| c.role == Role::Impacted)
     }
+}
+
+fn is_drawable_changed_symbol(component: &Component) -> bool {
+    if component.role != Role::Changed {
+        return false;
+    }
+    let Some((path, symbol)) = component.name.split_once('#') else {
+        return false;
+    };
+    let path = path.to_ascii_lowercase();
+    if path.split('/').any(|part| {
+        part == "tests" || part == "test" || part.starts_with("test_") || part.ends_with("_test.rs")
+    }) {
+        return false;
+    }
+    !matches!(
+        symbol.to_ascii_lowercase().as_str(),
+        "call"
+            | "json"
+            | "test"
+            | "tests"
+            | "module"
+            | "struct"
+            | "impl"
+            | "function"
+            | "class"
+            | "def"
+            | "use"
+            | "import"
+            | "return"
+            | "async"
+            | "await"
+            | "fn"
+            | "let"
+            | "const"
+            | "pub"
+            | "crate"
+            | "self"
+            | "new"
+            | "default"
+            | "build"
+            | "from"
+    )
 }

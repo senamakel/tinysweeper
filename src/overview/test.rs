@@ -121,10 +121,33 @@ fn golden_draws_the_behavioural_flow_around_the_change() {
 fn mermaid_requires_four_changed_behaviours_before_drawing() {
     let map = ChangeMap {
         components: vec![
-            Component { name: "a#one".into(), role: Role::Changed, files: 1, additions: 0, deletions: 0, findings: 0, worst: None, paths: vec![] },
-            Component { name: "b#two".into(), role: Role::Changed, files: 1, additions: 0, deletions: 0, findings: 0, worst: None, paths: vec![] },
+            Component {
+                name: "a#one".into(),
+                role: Role::Changed,
+                files: 1,
+                additions: 0,
+                deletions: 0,
+                findings: 0,
+                worst: None,
+                paths: vec![],
+            },
+            Component {
+                name: "b#two".into(),
+                role: Role::Changed,
+                files: 1,
+                additions: 0,
+                deletions: 0,
+                findings: 0,
+                worst: None,
+                paths: vec![],
+            },
         ],
-        links: vec![Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 }],
+        links: vec![Link {
+            from: 0,
+            to: 1,
+            relation: FlowRelation::Calls,
+            weight: 1,
+        }],
         files: 2,
         additions: 0,
         deletions: 0,

@@ -66,12 +66,24 @@ pub fn flowchart(map: &ChangeMap) -> Option<String> {
         return None;
     }
 
+    let components: Vec<_> = map
+        .components
+        .iter()
+        .enumerate()
+        .filter(|(_, component)| drawable_component(component))
+        .collect();
+    let indices: std::collections::BTreeMap<usize, usize> = components
+        .iter()
+        .enumerate()
+        .map(|(new, (old, _))| (*old, new))
+        .collect();
+
     let mut out = String::with_capacity(512);
     // Left-to-right follows call/data flow. Inbound callers and tests naturally
     // sit before the changed behaviour; its callees sit after it.
     out.push_str("```mermaid\nflowchart LR\n");
 
-    for (index, component) in map.components.iter().enumerate() {
+    for (index, (_, component)) in components.iter().enumerate() {
         let _ = writeln!(
             out,
             "  n{index}[\"{}\"]:::{}",
@@ -81,18 +93,67 @@ pub fn flowchart(map: &ChangeMap) -> Option<String> {
     }
 
     for link in &map.links {
+        let (Some(from), Some(to)) = (indices.get(&link.from), indices.get(&link.to)) else {
+            continue;
+        };
         let relation = link.relation.as_str();
         let edge_label = if link.weight == 1 {
             relation.to_string()
         } else {
             format!("{relation} x{}", link.weight)
         };
-        let _ = writeln!(out, "  n{} -->|{}| n{}", link.from, edge_label, link.to);
+        let _ = writeln!(out, "  n{from} -->|{edge_label}| n{to}");
     }
 
     out.push_str(CLASS_DEFS);
     out.push_str("```\n");
     Some(out)
+}
+
+fn drawable_component(component: &Component) -> bool {
+    if component.name.split_once('#').is_none() {
+        return false;
+    }
+    let path = component.name.split_once('#').map_or("", |(path, _)| path);
+    let lower_path = path.to_ascii_lowercase();
+    if lower_path.split('/').any(|part| {
+        part == "tests" || part == "test" || part.starts_with("test_") || part.ends_with("_test.rs")
+    }) {
+        return false;
+    }
+    let name = component
+        .name
+        .split_once('#')
+        .map_or(component.name.as_str(), |(_, symbol)| symbol)
+        .to_ascii_lowercase();
+    !matches!(
+        name.as_str(),
+        "call"
+            | "json"
+            | "test"
+            | "tests"
+            | "module"
+            | "struct"
+            | "impl"
+            | "function"
+            | "class"
+            | "def"
+            | "use"
+            | "import"
+            | "return"
+            | "async"
+            | "await"
+            | "fn"
+            | "let"
+            | "const"
+            | "pub"
+            | "crate"
+            | "self"
+            | "new"
+            | "default"
+            | "build"
+            | "from"
+    )
 }
 
 /// The style for each role, and for a behaviour the review has findings in.

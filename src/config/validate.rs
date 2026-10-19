@@ -47,7 +47,6 @@ pub fn validate(config: &Config) -> Vec<String> {
     problems
 }
 
-
 fn validate_server(config: &Config, problems: &mut Vec<String>) {
     let max = tokio::sync::Semaphore::MAX_PERMITS;
     for (name, value) in [

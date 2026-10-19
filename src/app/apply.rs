@@ -59,7 +59,11 @@ pub async fn retire_queued_review_status(
     head_sha: &str,
 ) -> Result<()> {
     write
-        .update_check(repo, check_id, crate::server::status::queued_review_incomplete(head_sha, None))
+        .update_check(
+            repo,
+            check_id,
+            crate::server::status::queued_review_incomplete(head_sha, None),
+        )
         .await
 }
 

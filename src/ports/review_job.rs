@@ -352,12 +352,27 @@ pub struct ReviewSchedulerState {
 impl ReviewSchedulerState {
     fn status_records_in_use(&self) -> usize {
         self.retired_checks.len()
-            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
-            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count()
-            + self.unfinished.iter().filter(|record| record.metadata_resolution_pending).count()
+            + self
+                .unfinished
+                .iter()
+                .map(|record| record.review_checks.len())
+                .sum::<usize>()
+            + self
+                .unfinished
+                .iter()
+                .filter(|record| record.status_reconcile_reserved)
+                .count()
+            + self
+                .unfinished
+                .iter()
+                .filter(|record| record.metadata_resolution_pending)
+                .count()
     }
 
-    fn detach_checks_except(record: &mut ScheduledReview, keep_head: Option<&str>) -> Vec<RetiredReviewCheck> {
+    fn detach_checks_except(
+        record: &mut ScheduledReview,
+        keep_head: Option<&str>,
+    ) -> Vec<RetiredReviewCheck> {
         Self::detach_checks_except_preserving(record, keep_head, None)
     }
 
@@ -405,7 +420,9 @@ impl ReviewSchedulerState {
             .iter()
             .filter(|(index, _, _)| {
                 let job = &self.unfinished[*index];
-                let Some(head) = job.request.head_sha.as_deref() else { return false; };
+                let Some(head) = job.request.head_sha.as_deref() else {
+                    return false;
+                };
                 job.not_before_ms <= now_ms
                     && job.review_checks.iter().any(|check| check.head_sha == head)
                     && (job.request.mode != ReviewJobMode::Incremental
@@ -478,7 +495,10 @@ impl ReviewSchedulerState {
         now_ms: i64,
         limit: usize,
     ) -> Vec<PendingReviewMetadata> {
-        let mut indices = self.unfinished.iter().enumerate()
+        let mut indices = self
+            .unfinished
+            .iter()
+            .enumerate()
             .filter(|(_, job)| {
                 job.metadata_resolution_pending
                     && job.request.head_sha.is_none()
@@ -489,19 +509,23 @@ impl ReviewSchedulerState {
             .map(|(index, job)| (index, job.enqueued_at_ms, job.request.id.0.clone()))
             .collect::<Vec<_>>();
         indices.sort_by_key(|(_, accepted_at, id)| (*accepted_at, id.clone()));
-        indices.into_iter().take(limit).map(|(index, _, _)| {
-            let job = &mut self.unfinished[index];
-            job.metadata_claim_generation = job.metadata_claim_generation.saturating_add(1);
-            job.metadata_claim_until_ms = now_ms.saturating_add(QUEUE_STATUS_CLAIM_TTL_MS);
-            PendingReviewMetadata {
-                job_id: job.request.id.clone(),
-                repo: job.request.repo.clone(),
-                installation: job.request.installation,
-                number: job.request.number,
-                generation: job.metadata_claim_generation,
-                claim_until_ms: job.metadata_claim_until_ms,
-            }
-        }).collect()
+        indices
+            .into_iter()
+            .take(limit)
+            .map(|(index, _, _)| {
+                let job = &mut self.unfinished[index];
+                job.metadata_claim_generation = job.metadata_claim_generation.saturating_add(1);
+                job.metadata_claim_until_ms = now_ms.saturating_add(QUEUE_STATUS_CLAIM_TTL_MS);
+                PendingReviewMetadata {
+                    job_id: job.request.id.clone(),
+                    repo: job.request.repo.clone(),
+                    installation: job.request.installation,
+                    number: job.request.number,
+                    generation: job.metadata_claim_generation,
+                    claim_until_ms: job.metadata_claim_until_ms,
+                }
+            })
+            .collect()
     }
 
     /// Revalidate a headless metadata claim at an external I/O boundary.
@@ -535,14 +559,17 @@ impl ReviewSchedulerState {
                 && job.owner.is_none()
                 && job.metadata_claim_generation == pending.generation
                 && job.metadata_claim_until_ms > now_ms
-        }) else { return false; };
+        }) else {
+            return false;
+        };
         if !open || draft {
             let record = self.unfinished.remove(index);
-            self.terminal.extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
-                id,
-                outcome: TerminalOutcome::Declined,
-                expires_at_ms: now_ms.saturating_add(REVIEW_TOMBSTONE_TTL_MS),
-            }));
+            self.terminal
+                .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
+                    id,
+                    outcome: TerminalOutcome::Declined,
+                    expires_at_ms: now_ms.saturating_add(REVIEW_TOMBSTONE_TTL_MS),
+                }));
             return true;
         }
         let job = &mut self.unfinished[index];
@@ -576,9 +603,11 @@ impl ReviewSchedulerState {
         now_ms: i64,
     ) -> bool {
         if pending.retired {
-            let Some(check) = self.retired_checks.iter_mut().find(|entry| {
-                entry.check.external_id == pending.check.external_id
-            }) else {
+            let Some(check) = self
+                .retired_checks
+                .iter_mut()
+                .find(|entry| entry.check.external_id == pending.check.external_id)
+            else {
                 return false;
             };
             if check.check.write_generation != pending.check.write_generation
@@ -590,13 +619,11 @@ impl ReviewSchedulerState {
             check.check.published = true;
             return true;
         }
-        let Some(job) = self
-            .unfinished
-            .iter_mut()
-            .find(|job| job.review_checks.iter().any(|check| {
-                check.external_id == pending.check.external_id
-            }))
-        else {
+        let Some(job) = self.unfinished.iter_mut().find(|job| {
+            job.review_checks
+                .iter()
+                .any(|check| check.external_id == pending.check.external_id)
+        }) else {
             return false;
         };
         let Some(check) = job.review_checks.iter_mut().find(|check| {
@@ -629,13 +656,13 @@ impl ReviewSchedulerState {
         }
         self.unfinished.iter().any(|job| {
             job.review_checks.iter().any(|check| {
-                    check.head_sha == pending.check.head_sha
-                        && check.external_id == pending.check.external_id
-                        && job.request.head_sha.as_deref() == Some(check.head_sha.as_str())
-                        && !check.published
-                        && check.write_generation == pending.check.write_generation
-                        && check.write_claim_until_ms > now_ms
-                })
+                check.head_sha == pending.check.head_sha
+                    && check.external_id == pending.check.external_id
+                    && job.request.head_sha.as_deref() == Some(check.head_sha.as_str())
+                    && !check.published
+                    && check.write_generation == pending.check.write_generation
+                    && check.write_claim_until_ms > now_ms
+            })
         })
     }
 
@@ -644,7 +671,9 @@ impl ReviewSchedulerState {
         if pending.retired || !self.queued_check_claim_current(pending, now_ms) {
             return false;
         }
-        let Some(check) = self.unfinished.iter_mut()
+        let Some(check) = self
+            .unfinished
+            .iter_mut()
             .flat_map(|job| job.review_checks.iter_mut())
             .find(|check| check.external_id == pending.check.external_id)
         else {
@@ -680,14 +709,20 @@ impl ReviewSchedulerState {
         stage: ReviewCheckStage,
         now_ms: i64,
     ) -> bool {
-        let Some(job) = self.unfinished.iter_mut().find(|job| {
-            owns(job, owned) && job.owner_until_ms > now_ms
-        }) else { return false; };
+        let Some(job) = self
+            .unfinished
+            .iter_mut()
+            .find(|job| owns(job, owned) && job.owner_until_ms > now_ms)
+        else {
+            return false;
+        };
         let Some(check) = job.review_checks.iter_mut().find(|check| {
             check.head_sha == head_sha
                 && check.check_id == Some(check_id)
                 && check.owner_generation == Some(owned.generation)
-        }) else { return false; };
+        }) else {
+            return false;
+        };
         check.stage = stage;
         true
     }
@@ -730,32 +765,45 @@ impl ReviewSchedulerState {
             return Admission::Full;
         }
         let status_records = self.status_records_in_use();
-        let additional_status_records = requests.iter().filter(|request| {
-            let existing = (request.mode == ReviewJobMode::Incremental).then(|| {
-                self.unfinished.iter().find(|record| {
-                    record.request.mode == ReviewJobMode::Incremental
-                        && record.request.repo == request.repo
-                        && record.request.number == request.number
-                })
-            }).flatten();
-            match (existing, request.head_sha.as_deref()) {
-                (Some(record), Some(head)) => !record.review_checks.iter().any(|check| check.head_sha == head),
-                (Some(_), None) => false,
-                (None, None) => true,
-                (None, Some(_)) => true,
-            }
-        }).count();
+        let additional_status_records = requests
+            .iter()
+            .filter(|request| {
+                let existing = (request.mode == ReviewJobMode::Incremental)
+                    .then(|| {
+                        self.unfinished.iter().find(|record| {
+                            record.request.mode == ReviewJobMode::Incremental
+                                && record.request.repo == request.repo
+                                && record.request.number == request.number
+                        })
+                    })
+                    .flatten();
+                match (existing, request.head_sha.as_deref()) {
+                    (Some(record), Some(head)) => !record
+                        .review_checks
+                        .iter()
+                        .any(|check| check.head_sha == head),
+                    (Some(_), None) => false,
+                    (None, None) => true,
+                    (None, Some(_)) => true,
+                }
+            })
+            .count();
         let new_jobs = new_uncoalesced_count(&self.unfinished, &requests);
-        let replenished_reservations = requests.iter().filter(|request| {
-            request.mode == ReviewJobMode::Incremental
-                && self.unfinished.iter().any(|record| {
-                    record.request.mode == ReviewJobMode::Incremental
-                        && record.request.repo == request.repo
-                        && record.request.number == request.number
-                        && !record.status_reconcile_reserved
-                })
-        }).count();
-        if status_records + additional_status_records + new_jobs + replenished_reservations > MAX_REVIEW_STATUS_RECORDS {
+        let replenished_reservations = requests
+            .iter()
+            .filter(|request| {
+                request.mode == ReviewJobMode::Incremental
+                    && self.unfinished.iter().any(|record| {
+                        record.request.mode == ReviewJobMode::Incremental
+                            && record.request.repo == request.repo
+                            && record.request.number == request.number
+                            && !record.status_reconcile_reserved
+                    })
+            })
+            .count();
+        if status_records + additional_status_records + new_jobs + replenished_reservations
+            > MAX_REVIEW_STATUS_RECORDS
+        {
             return Admission::Full;
         }
         let already = requests
@@ -835,8 +883,8 @@ impl ReviewSchedulerState {
                 }
                 record.latest_head_hint = request.head_sha.clone();
                 let new_head = request.head_sha.clone();
-                let is_unowned_head_change = record.owner.is_none()
-                    && record.request.head_sha != request.head_sha;
+                let is_unowned_head_change =
+                    record.owner.is_none() && record.request.head_sha != request.head_sha;
                 if let Some(check) = initial_check {
                     if !record
                         .review_checks
@@ -850,7 +898,8 @@ impl ReviewSchedulerState {
                     Some(record.head_history_reservations.unwrap_or_default() + 1);
                 record.status_reconcile_reserved = true;
                 record.metadata_resolution_pending = request.head_sha.is_none();
-                record.metadata_claim_generation = record.metadata_claim_generation.saturating_add(1);
+                record.metadata_claim_generation =
+                    record.metadata_claim_generation.saturating_add(1);
                 record.metadata_claim_until_ms = 0;
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
@@ -865,8 +914,8 @@ impl ReviewSchedulerState {
                 self.retired_checks.extend(detached_checks);
                 continue;
             }
-            let metadata_resolution_pending = request.mode == ReviewJobMode::Incremental
-                && request.head_sha.is_none();
+            let metadata_resolution_pending =
+                request.mode == ReviewJobMode::Incremental && request.head_sha.is_none();
             self.unfinished.push(ScheduledReview {
                 enqueued_at_ms: request.accepted_at_ms,
                 accepted_ids: vec![request.id.clone()],
@@ -965,7 +1014,12 @@ impl ReviewSchedulerState {
     }
 
     /// Claim the oldest eligible record within the configured global bound.
-    pub fn claim_next_with_limit(&mut self, owner: &str, now_ms: i64, limit: usize) -> Option<OwnedReview> {
+    pub fn claim_next_with_limit(
+        &mut self,
+        owner: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Option<OwnedReview> {
         let running = self
             .unfinished
             .iter()
@@ -993,7 +1047,12 @@ impl ReviewSchedulerState {
             .request
             .head_sha
             .as_deref()
-            .and_then(|head| record.review_checks.iter_mut().find(|check| check.head_sha == head))
+            .and_then(|head| {
+                record
+                    .review_checks
+                    .iter_mut()
+                    .find(|check| check.head_sha == head)
+            })
             .map(|check| {
                 check.owner_generation = Some(generation);
                 check.clone()
@@ -1162,9 +1221,11 @@ impl ReviewSchedulerState {
         head_sha: &str,
         now_ms: i64,
     ) -> ReconciledReviewCheck {
-        let Some(index) = self.unfinished.iter().position(|record| {
-            owns(record, owned) && record.owner_until_ms > now_ms
-        }) else {
+        let Some(index) = self
+            .unfinished
+            .iter()
+            .position(|record| owns(record, owned) && record.owner_until_ms > now_ms)
+        else {
             return ReconciledReviewCheck::OwnershipLost;
         };
         let has_check = self.unfinished[index]
@@ -1184,7 +1245,11 @@ impl ReviewSchedulerState {
         let record = &mut self.unfinished[index];
         record.request.head_sha = Some(head_sha.to_owned());
         let detached = Self::detach_checks_except(record, Some(head_sha));
-        let check = if let Some(existing) = record.review_checks.iter_mut().find(|check| check.head_sha == head_sha) {
+        let check = if let Some(existing) = record
+            .review_checks
+            .iter_mut()
+            .find(|check| check.head_sha == head_sha)
+        {
             existing.owner_generation = Some(owned.generation);
             existing.clone()
         } else {
@@ -1196,7 +1261,7 @@ impl ReviewSchedulerState {
                 stage: ReviewCheckStage::Queued,
                 owner_generation: Some(owned.generation),
                 published: false,
-            post_attempted: false,
+                post_attempted: false,
                 write_claim_until_ms: 0,
                 write_generation: 0,
             };
@@ -1375,13 +1440,19 @@ impl ReviewSchedulerState {
 
     /// Return the current owner's request to pending with bounded backoff.
     pub fn defer(&mut self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> bool {
-        let Some(index) = self.unfinished.iter().position(|record| owns(record, owned)) else {
+        let Some(index) = self
+            .unfinished
+            .iter()
+            .position(|record| owns(record, owned))
+        else {
             return false;
         };
         if self.unfinished[index].owner_until_ms <= now_ms {
             return false;
         }
-        let head = self.unfinished[index].yield_requested.then(|| self.unfinished[index].latest_head_hint.clone());
+        let head = self.unfinished[index]
+            .yield_requested
+            .then(|| self.unfinished[index].latest_head_hint.clone());
         let detached = {
             let record = &mut self.unfinished[index];
             record.owner = None;
@@ -1467,8 +1538,8 @@ impl ReviewSchedulerState {
         terminal_outcome: TerminalOutcome,
     ) {
         for mut check in record.review_checks.iter().cloned() {
-            let superseded = check.head_sha
-                != record.request.head_sha.as_deref().unwrap_or_default();
+            let superseded =
+                check.head_sha != record.request.head_sha.as_deref().unwrap_or_default();
             let never_started = check.stage == ReviewCheckStage::Queued
                 && terminal_outcome != TerminalOutcome::Published;
             let superseded_or_never_started = superseded || never_started;
@@ -1480,7 +1551,11 @@ impl ReviewSchedulerState {
             }
             check.write_generation = check.write_generation.saturating_add(1);
             check.write_claim_until_ms = 0;
-            if !self.retired_checks.iter().any(|entry| entry.check.external_id == check.external_id) {
+            if !self
+                .retired_checks
+                .iter()
+                .any(|entry| entry.check.external_id == check.external_id)
+            {
                 self.retired_checks.push(RetiredReviewCheck {
                     repo: record.request.repo.clone(),
                     installation: record.request.installation,
@@ -1597,10 +1672,18 @@ pub trait ReviewJobStore: Send + Sync {
     ) -> Result<bool>;
 
     /// Persist a POST-attempt marker before sending an ambiguous external write.
-    async fn mark_queue_post_attempted(&self, pending: &PendingReviewCheck, now_ms: i64) -> Result<bool>;
+    async fn mark_queue_post_attempted(
+        &self,
+        pending: &PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool>;
 
     /// Remove a retired status only after its terminal GitHub write succeeds.
-    async fn complete_retired_check(&self, pending: &PendingReviewCheck, now_ms: i64) -> Result<bool>;
+    async fn complete_retired_check(
+        &self,
+        pending: &PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool>;
 
     /// Persist a queued/in-progress/completed transition under the current review owner fence.
     async fn set_check_stage(

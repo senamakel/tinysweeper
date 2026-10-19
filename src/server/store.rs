@@ -179,8 +179,10 @@ impl ReviewJobStore for Store {
         _now_ms: i64,
         limit: usize,
     ) -> Result<Vec<crate::ports::review_job::PendingReviewMetadata>> {
-        self.change_review_scheduler(move |state, now_ms| state.claim_pending_metadata(now_ms, limit))
-            .await
+        self.change_review_scheduler(move |state, now_ms| {
+            state.claim_pending_metadata(now_ms, limit)
+        })
+        .await
     }
 
     async fn metadata_claim_current(
@@ -204,7 +206,8 @@ impl ReviewJobStore for Store {
         let head_sha = head_sha.to_owned();
         self.change_review_scheduler(move |state, now_ms| {
             state.resolve_pending_metadata(&pending, &head_sha, open, draft, now_ms)
-        }).await
+        })
+        .await
     }
 
     async fn record_queued_check_id(
@@ -265,7 +268,8 @@ impl ReviewJobStore for Store {
         let head_sha = head_sha.to_owned();
         self.change_review_scheduler(move |state, now_ms| {
             state.set_check_stage(&owned, &head_sha, check_id, stage, now_ms)
-        }).await
+        })
+        .await
     }
 
     async fn check_transition_current(

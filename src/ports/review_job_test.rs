@@ -85,7 +85,10 @@ fn queued_check_identity_keeps_head_and_stage_separate_from_paid_head_state() {
 #[test]
 fn queued_status_claims_cannot_publish_or_adopt_a_superseded_head() {
     let mut state = ReviewSchedulerState::default();
-    assert_eq!(state.admit_batch(vec![request("push-a", 10)], 10), Admission::Admitted);
+    assert_eq!(
+        state.admit_batch(vec![request("push-a", 10)], 10),
+        Admission::Admitted
+    );
     let old_claim = state.claim_pending_checks(10, 1).pop().unwrap();
 
     let mut newer = request("push-b", 20);
@@ -116,7 +119,10 @@ fn unowned_coalescing_detaches_the_old_queued_check_until_terminal_ack() {
     assert_eq!(state.admit_batch(vec![next], 12), Admission::Admitted);
     assert_eq!(state.retired_checks.len(), 1);
     assert_eq!(state.retired_checks[0].check.check_id, Some(41));
-    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
+    assert_eq!(
+        state.unfinished[0].request.head_sha.as_deref(),
+        Some("head-b")
+    );
 
     let claims = state.claim_pending_checks(12, 2);
     let active = claims.iter().find(|claim| !claim.retired).unwrap();
@@ -139,7 +145,11 @@ fn ambiguous_retired_post_survives_restart_and_empty_recovery_reads() {
     let mut next = request("ambiguous-status-b", 12);
     next.head_sha = Some("head-b".into());
     state.admit_batch(vec![next], 12);
-    let retired = state.claim_pending_checks(12, 2).into_iter().find(|claim| claim.retired).unwrap();
+    let retired = state
+        .claim_pending_checks(12, 2)
+        .into_iter()
+        .find(|claim| claim.retired)
+        .unwrap();
     assert!(retired.check.check_id.is_none());
     // The POST for A may have succeeded, but an initially empty external_id
     // recovery read is not evidence that it did not.
@@ -147,10 +157,11 @@ fn ambiguous_retired_post_survives_restart_and_empty_recovery_reads() {
 
     let bytes = serde_json::to_vec(&state).unwrap();
     let mut recovered: ReviewSchedulerState = serde_json::from_slice(&bytes).unwrap();
-    let again = recovered.claim_pending_checks(
-        12 + super::QUEUE_STATUS_CLAIM_TTL_MS + 1,
-        2,
-    ).into_iter().find(|claim| claim.retired).unwrap();
+    let again = recovered
+        .claim_pending_checks(12 + super::QUEUE_STATUS_CLAIM_TTL_MS + 1, 2)
+        .into_iter()
+        .find(|claim| claim.retired)
+        .unwrap();
     assert_eq!(again.check.external_id, old.check.external_id);
     assert!(recovered.record_queued_check_id(&again, 81, 13 + super::QUEUE_STATUS_CLAIM_TTL_MS));
     assert!(recovered.complete_retired_check(&again, 14 + super::QUEUE_STATUS_CLAIM_TTL_MS));
@@ -208,23 +219,50 @@ fn resolving_a_headless_status_does_not_consume_unreserved_status_capacity() {
         .collect();
     let mut headless = request("headless-capacity", 20);
     headless.head_sha = None;
-    assert_eq!(state.admit_batch(vec![headless.clone()], 20), Admission::Full);
+    assert_eq!(
+        state.admit_batch(vec![headless.clone()], 20),
+        Admission::Full
+    );
     state.retired_checks.pop();
     assert_eq!(state.admit_batch(vec![headless], 20), Admission::Admitted);
     assert_eq!(
         state.retired_checks.len()
-            + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
-            + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
-            + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count(),
+            + state
+                .unfinished
+                .iter()
+                .map(|job| job.review_checks.len())
+                .sum::<usize>()
+            + state
+                .unfinished
+                .iter()
+                .filter(|job| job.status_reconcile_reserved)
+                .count()
+            + state
+                .unfinished
+                .iter()
+                .filter(|job| job.metadata_resolution_pending)
+                .count(),
         super::MAX_REVIEW_STATUS_RECORDS,
     );
 
     let pending = state.claim_pending_metadata(20, 1).pop().unwrap();
     assert!(state.resolve_pending_metadata(&pending, "live-head", true, false, 21));
     let status_records = state.retired_checks.len()
-        + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
-        + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
-        + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count();
+        + state
+            .unfinished
+            .iter()
+            .map(|job| job.review_checks.len())
+            .sum::<usize>()
+        + state
+            .unfinished
+            .iter()
+            .filter(|job| job.status_reconcile_reserved)
+            .count()
+        + state
+            .unfinished
+            .iter()
+            .filter(|job| job.metadata_resolution_pending)
+            .count();
     assert!(
         status_records <= super::MAX_REVIEW_STATUS_RECORDS,
         "metadata resolution must exchange its reserved slot for the check identity"
@@ -245,7 +283,11 @@ fn stale_headless_metadata_cannot_replace_a_newer_accepted_head() {
     assert!(!state.resolve_pending_metadata(&pending, "stale-head-a", true, false, 13));
     let job = &state.unfinished[0];
     assert_eq!(job.request.head_sha.as_deref(), Some("head-b"));
-    assert!(job.review_checks.iter().any(|check| check.head_sha == "head-b"));
+    assert!(
+        job.review_checks
+            .iter()
+            .any(|check| check.head_sha == "head-b")
+    );
     assert!(!job.metadata_resolution_pending);
 }
 
@@ -253,7 +295,10 @@ fn stale_headless_metadata_cannot_replace_a_newer_accepted_head() {
 async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_failed() {
     let store = MockReviewJobStore::default();
     assert_eq!(
-        store.admit_batch(vec![request("published-with-status-outage", 10)]).await.unwrap(),
+        store
+            .admit_batch(vec![request("published-with-status-outage", 10)])
+            .await
+            .unwrap(),
         Admission::Admitted
     );
 
@@ -262,13 +307,38 @@ async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_fai
     // not acknowledge the published review either. Paid review work still ran
     // and reached Published, so cleanup must not replace its check with the
     // detached queue check's NotReviewed conclusion.
-    let pending = store.claim_pending_checks(10, 1).await.unwrap().pop().unwrap();
-    assert!(store.record_queued_check_id(&pending, 77, 11).await.unwrap());
-    let owned = store.claim_next("review-worker", 12).await.unwrap().unwrap();
-    assert_eq!(owned.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
+    let pending = store
+        .claim_pending_checks(10, 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        store
+            .record_queued_check_id(&pending, 77, 11)
+            .await
+            .unwrap()
+    );
+    let owned = store
+        .claim_next("review-worker", 12)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        owned.review_check.as_ref().unwrap().stage,
+        super::ReviewCheckStage::Queued
+    );
     assert!(store.confirm_head(&owned, "sha", 13).await.unwrap());
-    assert_eq!(store.begin_paid(&owned, 14).await.unwrap(), super::PaidStart::Started);
-    assert!(store.finish(&owned, TerminalOutcome::Published, 20, 20).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&owned, 14).await.unwrap(),
+        super::PaidStart::Started
+    );
+    assert!(
+        store
+            .finish(&owned, TerminalOutcome::Published, 20, 20)
+            .await
+            .unwrap()
+    );
 
     assert!(
         store.snapshot_for_test().retired_checks.is_empty(),
@@ -281,7 +351,10 @@ fn published_head_is_not_retired_as_not_reviewed_when_owner_yields() {
     let mut state = ReviewSchedulerState::default();
     let mut first = request("published-head-a", 10);
     first.head_sha = Some("head-a".into());
-    assert_eq!(state.admit_batch(vec![first.clone()], 10), Admission::Admitted);
+    assert_eq!(
+        state.admit_batch(vec![first.clone()], 10),
+        Admission::Admitted
+    );
     let pending = state.claim_pending_checks(10, 1).pop().unwrap();
     assert!(state.record_queued_check_id(&pending, 78, 11));
     let owned = state.claim_next("review-worker", 12).unwrap();
@@ -300,7 +373,11 @@ fn published_head_is_not_retired_as_not_reviewed_when_owner_yields() {
         state.retired_checks.is_empty(),
         "a published head's queued/in-progress status must not be overwritten as NotReviewed"
     );
-    assert_eq!(state.unfinished.len(), 1, "the newer accepted head remains resumable");
+    assert_eq!(
+        state.unfinished.len(),
+        1,
+        "the newer accepted head remains resumable"
+    );
 }
 
 #[test]
@@ -316,13 +393,24 @@ fn owned_advisory_head_does_not_retire_the_current_check_until_yield() {
     let mut next = request("owned-status-b", 13);
     next.head_sha = Some("head-b".into());
     state.admit_batch(vec![next], 13);
-    assert!(state.retired_checks.is_empty(), "an advisory push cannot retire a live owner's check");
-    assert!(state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-a"));
+    assert!(
+        state.retired_checks.is_empty(),
+        "an advisory push cannot retire a live owner's check"
+    );
+    assert!(
+        state.unfinished[0]
+            .review_checks
+            .iter()
+            .any(|check| check.head_sha == "head-a")
+    );
 
     assert!(state.defer_yield(&owner, 14));
     assert_eq!(state.retired_checks.len(), 1);
     assert_eq!(state.retired_checks[0].check.check_id, Some(51));
-    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
+    assert_eq!(
+        state.unfinished[0].request.head_sha.as_deref(),
+        Some("head-b")
+    );
 }
 
 #[test]
@@ -342,7 +430,10 @@ fn live_head_reconciliation_requeues_a_new_check_without_spending_paid_authority
     assert_eq!(live_check.head_sha, "live-b");
     assert_eq!(state.retired_checks[0].check.check_id, Some(61));
     assert_eq!(state.incremental_heads[0].head_sha, "live-b");
-    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("live-b"));
+    assert_eq!(
+        state.unfinished[0].request.head_sha.as_deref(),
+        Some("live-b")
+    );
 
     let pending = state.claim_pending_checks(13, 2);
     let active = pending.iter().find(|claim| !claim.retired).unwrap();
@@ -364,20 +455,28 @@ fn live_head_reconciliation_defers_atomically_at_status_capacity() {
     assert!(state.record_queued_check_id(&pending, 71, 11));
     let base_check = state.unfinished[0].review_checks[0].clone();
     state.unfinished[0].status_reconcile_reserved = false;
-    state.unfinished[0].review_checks.extend((0..super::MAX_REVIEW_STATUS_RECORDS - 1).map(|index| {
-        let mut check = base_check.clone();
-        check.head_sha = format!("padding-{index}");
-        check.external_id = format!("padding-id-{index}");
-        check
-    }));
+    state.unfinished[0]
+        .review_checks
+        .extend((0..super::MAX_REVIEW_STATUS_RECORDS - 1).map(|index| {
+            let mut check = base_check.clone();
+            check.head_sha = format!("padding-{index}");
+            check.external_id = format!("padding-id-{index}");
+            check
+        }));
     let owner = state.claim_next("owner", 12).unwrap();
     let before = state.incremental_heads.clone();
     assert_eq!(
         state.reconcile_live_check(&owner, "head-b", 13),
         super::ReconciledReviewCheck::CapacityDeferred,
     );
-    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-a"));
-    assert_eq!(state.incremental_heads, before, "capacity failure cannot change paid-head authority");
+    assert_eq!(
+        state.unfinished[0].request.head_sha.as_deref(),
+        Some("head-a")
+    );
+    assert_eq!(
+        state.incremental_heads, before,
+        "capacity failure cannot change paid-head authority"
+    );
 }
 
 #[test]
@@ -390,7 +489,11 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
     headless.head_sha = None;
     assert_eq!(state.admit_batch(vec![known], 10), Admission::Admitted);
     assert_eq!(state.admit_batch(vec![headless], 10), Admission::Admitted);
-    assert_eq!(state.unfinished.len(), 2, "the headless PR owns an independent reservation");
+    assert_eq!(
+        state.unfinished.len(),
+        2,
+        "the headless PR owns an independent reservation"
+    );
     assert!(state.unfinished[1].metadata_resolution_pending);
 
     let base = state.unfinished[0].review_checks[0].clone();
@@ -411,9 +514,21 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
         .collect();
     assert_eq!(
         state.retired_checks.len()
-            + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
-            + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
-            + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count(),
+            + state
+                .unfinished
+                .iter()
+                .map(|job| job.review_checks.len())
+                .sum::<usize>()
+            + state
+                .unfinished
+                .iter()
+                .filter(|job| job.status_reconcile_reserved)
+                .count()
+            + state
+                .unfinished
+                .iter()
+                .filter(|job| job.metadata_resolution_pending)
+                .count(),
         super::MAX_REVIEW_STATUS_RECORDS,
     );
 
@@ -421,10 +536,13 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
     assert_eq!(queued_a.check.head_sha, "head-a");
     assert!(state.record_queued_check_id(&queued_a, 90, 11));
     let owner = state.claim_next("owner", 12).unwrap();
-    let super::ReconciledReviewCheck::Pending(check_b) = state.reconcile_live_check(&owner, "head-b", 13) else {
+    let super::ReconciledReviewCheck::Pending(check_b) =
+        state.reconcile_live_check(&owner, "head-b", 13)
+    else {
         panic!("first live rebind consumes its reserved slot");
     };
-    let queued_b = state.claim_pending_checks(13, 2)
+    let queued_b = state
+        .claim_pending_checks(13, 2)
         .into_iter()
         .find(|claim| !claim.retired && claim.check.external_id == check_b.external_id)
         .unwrap();
@@ -435,29 +553,42 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
         super::ReconciledReviewCheck::CapacityDeferred,
         "a second rebind cannot spend the unresolved headless job's reserved status slot",
     );
-    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
-    assert!(state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-b"));
-    assert!(!state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-c"));
+    assert_eq!(
+        state.unfinished[0].request.head_sha.as_deref(),
+        Some("head-b")
+    );
+    assert!(
+        state.unfinished[0]
+            .review_checks
+            .iter()
+            .any(|check| check.head_sha == "head-b")
+    );
+    assert!(
+        !state.unfinished[0]
+            .review_checks
+            .iter()
+            .any(|check| check.head_sha == "head-c")
+    );
 }
 
 #[test]
 fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
     let mut state = ReviewSchedulerState::default();
-    assert_eq!(state.admit_batch(vec![request("same-check", 10)], 10), Admission::Admitted);
+    assert_eq!(
+        state.admit_batch(vec![request("same-check", 10)], 10),
+        Admission::Admitted
+    );
     let status_claim = state.claim_pending_checks(10, 1).pop().unwrap();
     assert!(state.record_queued_check_id(&status_claim, 77, 11));
 
     let owner = state.claim_next("worker-a", 12).unwrap();
     assert!(state.check_transition_current(&owner, "sha", 77, 13));
     assert_eq!(owner.review_check.as_ref().unwrap().check_id, Some(77));
-    assert_eq!(owner.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
-    assert!(state.set_check_stage(
-        &owner,
-        "sha",
-        77,
-        super::ReviewCheckStage::InProgress,
-        13,
-    ));
+    assert_eq!(
+        owner.review_check.as_ref().unwrap().stage,
+        super::ReviewCheckStage::Queued
+    );
+    assert!(state.set_check_stage(&owner, "sha", 77, super::ReviewCheckStage::InProgress, 13,));
 
     let persisted = serde_json::to_vec(&state).unwrap();
     let mut recovered: ReviewSchedulerState = serde_json::from_slice(&persisted).unwrap();
@@ -482,25 +613,20 @@ fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
 #[test]
 fn expired_owner_cannot_start_a_queued_check_after_replacement_claims_it() {
     let mut state = ReviewSchedulerState::default();
-    assert_eq!(state.admit_batch(vec![request("fenced-transition", 1)], 1), Admission::Admitted);
+    assert_eq!(
+        state.admit_batch(vec![request("fenced-transition", 1)], 1),
+        Admission::Admitted
+    );
     let pending = state.claim_pending_checks(1, 1).pop().unwrap();
     assert!(state.record_queued_check_id(&pending, 700, 2));
     let old = state.claim_next("old", 3).unwrap();
     assert!(state.check_transition_current(&old, "sha", 700, 4));
 
-    let replacement = state.claim_next("replacement", 3 + REVIEW_OWNER_TTL_MS + 1).unwrap();
-    assert!(!state.check_transition_current(
-        &old,
-        "sha",
-        700,
-        3 + REVIEW_OWNER_TTL_MS + 1,
-    ));
-    assert!(state.check_transition_current(
-        &replacement,
-        "sha",
-        700,
-        3 + REVIEW_OWNER_TTL_MS + 1,
-    ));
+    let replacement = state
+        .claim_next("replacement", 3 + REVIEW_OWNER_TTL_MS + 1)
+        .unwrap();
+    assert!(!state.check_transition_current(&old, "sha", 700, 3 + REVIEW_OWNER_TTL_MS + 1,));
+    assert!(state.check_transition_current(&replacement, "sha", 700, 3 + REVIEW_OWNER_TTL_MS + 1,));
 }
 
 #[tokio::test]

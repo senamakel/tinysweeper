@@ -284,17 +284,26 @@ impl MockForge {
     /// Record the next `count` check-run creates remotely, then return an error
     /// to model a lost response after the forge accepted the write.
     pub fn fail_after_check_publishes(&self, count: usize) {
-        *self.fail_after_check_publishes.lock().expect("mock failure lock") = count;
+        *self
+            .fail_after_check_publishes
+            .lock()
+            .expect("mock failure lock") = count;
     }
 
     /// Record terminal check-run creates remotely, then lose their responses.
     pub fn fail_after_terminal_check_publishes(&self, count: usize) {
-        *self.fail_after_terminal_check_publishes.lock().expect("mock terminal-response lock") = count;
+        *self
+            .fail_after_terminal_check_publishes
+            .lock()
+            .expect("mock terminal-response lock") = count;
     }
 
     /// Fail the next `count` check-run updates before recording the write.
     pub fn fail_next_check_updates(&self, count: usize) {
-        *self.fail_check_updates.lock().expect("mock update failure lock") = count;
+        *self
+            .fail_check_updates
+            .lock()
+            .expect("mock update failure lock") = count;
     }
 
     /// A forge serving `state`.
@@ -828,23 +837,34 @@ impl ForgeWrite for MockForge {
         }
         let terminal = check.conclusion.is_some();
         self.record(Write::Check(check));
-        let mut failures = self.fail_after_check_publishes.lock().expect("mock lost-response lock");
+        let mut failures = self
+            .fail_after_check_publishes
+            .lock()
+            .expect("mock lost-response lock");
         if *failures > 0 {
             *failures -= 1;
             return Err(Error::Forge("simulated lost check-run response".into()));
         }
         if terminal {
-            let mut failures = self.fail_after_terminal_check_publishes.lock().expect("mock terminal-response lock");
+            let mut failures = self
+                .fail_after_terminal_check_publishes
+                .lock()
+                .expect("mock terminal-response lock");
             if *failures > 0 {
                 *failures -= 1;
-                return Err(Error::Forge("simulated lost terminal check-run response".into()));
+                return Err(Error::Forge(
+                    "simulated lost terminal check-run response".into(),
+                ));
             }
         }
         Ok(id)
     }
 
     async fn update_check(&self, _repo: &RepoId, check_id: u64, check: CheckRun) -> Result<()> {
-        let mut failures = self.fail_check_updates.lock().expect("mock update failure lock");
+        let mut failures = self
+            .fail_check_updates
+            .lock()
+            .expect("mock update failure lock");
         if *failures > 0 {
             *failures -= 1;
             return Err(Error::Forge("simulated check-run update failure".into()));

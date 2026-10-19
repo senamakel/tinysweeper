@@ -592,6 +592,13 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         proposal.cached_tokens,
         proposal.embed_tokens
     );
+    if summary.updated_at_epoch > 0 {
+        let _ = writeln!(
+            out,
+            "- **Updated:** {}",
+            iso8601_utc(summary.updated_at_epoch)
+        );
+    }
     if summary.cache_chain_restarted {
         out.push_str("- **Continuity:** summary cache chain restarted at the storage ceiling.\n");
     }
@@ -1204,9 +1211,9 @@ mod tests {
         );
         let visible = rendered.split("<details").next().expect("public summary");
 
-        assert!(visible.contains("**State:**"), "{visible}");
+        assert!(visible.contains("**Verdict:**"), "{visible}");
         assert!(
-            visible.contains("**Coverage:** 7 files reviewed."),
+            visible.contains("**Coverage:** Reviewed 7 of 7 files."),
             "{visible}"
         );
         assert!(
@@ -1234,7 +1241,7 @@ mod tests {
                 "lane": "tests", "check_name": "tinysweeper/tests",
                 "conclusion": "neutral", "summary": "No answer.",
                 "findings": [],
-                "unanswered": ["src/tested.rs"]
+                "unanswered": ["tinysweeper/tests"]
             }],
             "unreviewed": ["src/unread.rs"],
             "summary": ReviewSummary::default(), "prior_findings": [],

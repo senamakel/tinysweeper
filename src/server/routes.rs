@@ -4963,7 +4963,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(store.as_ref(), unix_time_ms()).await;
+        seed_previously_published_queue_checks(&*store, unix_time_ms()).await;
         let first = store
             .claim_next("first-owner", unix_time_ms())
             .await
@@ -5021,7 +5021,7 @@ mod tests {
                 .unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(normal_store.as_ref(), unix_time_ms()).await;
+        seed_previously_published_queue_checks(&*normal_store, unix_time_ms()).await;
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())
             .await
@@ -5062,7 +5062,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -5112,7 +5112,7 @@ mod tests {
         request.head_sha = Some("head-a".into());
         store.admit_batch(vec![request]).await.unwrap();
         let now = unix_time_ms();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store
             .claim_next("slow-store-worker", now)
             .await
@@ -5171,7 +5171,7 @@ mod tests {
             store.admit_batch(requests).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
+        seed_previously_published_queue_checks(&*store, now + 4).await;
 
         let owned = store
             .claim_next("burst-worker", now + 4)
@@ -5294,7 +5294,7 @@ mod tests {
         request_a.number = 7;
         request_a.head_sha = Some("head-a".into());
         store.admit_batch(vec![request_a.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
         assert_eq!(
@@ -5357,7 +5357,7 @@ mod tests {
         request_b.head_sha = Some("head-b".into());
         request_b.accepted_at_ms = now + 2;
         store.admit_batch(vec![request_b]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now + 2).await;
+        seed_previously_published_queue_checks(&*store, now + 2).await;
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(2), worker)
                 .await
@@ -5451,7 +5451,7 @@ mod tests {
         let mut request = queued_test_review(7);
         request.head_sha = Some("head-a-delayed".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let newer = store
             .claim_next("newer-worker", now)
             .await
@@ -5510,7 +5510,7 @@ mod tests {
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
+        seed_previously_published_queue_checks(&*store, now + 4).await;
         assert!(
             record_owned_disposition(
                 &store,
@@ -5620,7 +5620,7 @@ mod tests {
         let mut request = queued_test_review(84);
         request.head_sha = Some("head-b".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let active = store
             .claim_next("retrying-worker", now)
             .await
@@ -5645,7 +5645,7 @@ mod tests {
         request.head_sha = Some("head-a-older-hint".into());
         request.accepted_at_ms = now + 3;
         store.admit_batch(vec![request]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
+        seed_previously_published_queue_checks(&*store, now + 4).await;
         assert!(!store.should_continue(&active, now + 4).await.unwrap());
 
         let run = Run {
@@ -5766,7 +5766,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), now).await;
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -5841,7 +5841,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(store.as_ref(), 2).await;
+        seed_previously_published_queue_checks(&*store, 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -5930,7 +5930,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
-        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
+        seed_previously_published_queue_checks(&*store, now_ms).await;
         let owned = store
             .claim_next("same-worker", now_ms)
             .await
@@ -6088,7 +6088,7 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = queued_test_review(8);
         store.admit_batch(vec![request]).await.unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), 2).await;
+        seed_previously_published_queue_checks(&*store, 2).await;
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
             let owned = store
@@ -6199,7 +6199,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
-        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
+        seed_previously_published_queue_checks(&*store, now_ms).await;
         let owned = store
             .claim_next("shutdown-owner", now_ms)
             .await
@@ -6259,7 +6259,7 @@ mod tests {
             .admit_batch(vec![queued_test_review(9)])
             .await
             .unwrap();
-        seed_previously_published_queue_checks(store.as_ref(), 2).await;
+        seed_previously_published_queue_checks(&*store, 2).await;
         let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
         let stale_check_time = 3;
         let forge = MockForge::new();
@@ -6329,7 +6329,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(store.as_ref(), unix_time_ms()).await;
+        seed_previously_published_queue_checks(&*store, unix_time_ms()).await;
         let now = unix_time_ms();
         let owned = store
             .claim_next("first", now)
@@ -6826,7 +6826,7 @@ mod tests {
             Admission::Admitted
         );
         let forge = crate::forge::MockForge::new();
-        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), unix_time_ms()).await;
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
         assert_eq!(
             forge.writes().iter().filter(|write| matches!(
                 write,

@@ -4675,6 +4675,23 @@ impl Previews for PreviewDispatch {
 mod tests {
     use super::*;
 
+    fn test_execution_context(
+        started_at: tokio::time::Instant,
+        hard_deadline: tokio::time::Instant,
+    ) -> Arc<crate::app::review_execution::ReviewRunContext> {
+        let large_pr = Config::default().review.large_pr;
+        Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline,
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: large_pr.soft_deadline_percent,
+                drain_seconds: large_pr.drain_seconds,
+            },
+        ))
+    }
+
     #[derive(Clone, Default)]
     struct ReviewBudgetProbe {
         remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -6012,6 +6029,10 @@ mod tests {
             timing: crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             slot: Arc::new(std::sync::Mutex::new(None)),
             deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+            execution: test_execution_context(
+                tokio::time::Instant::now(),
+                tokio::time::Instant::now() + REVIEW_DEADLINE,
+            ),
             expected_head: Some("head-b".into()),
             owned: Some(active.clone()),
             owner_lost: None,
@@ -8730,6 +8751,11 @@ mod tests {
             deadline: now
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(now),
+            execution: test_execution_context(
+                now,
+                now.checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap_or(now),
+            ),
             expected_head: None,
             owned: None,
             owner_lost: None,
@@ -8747,6 +8773,7 @@ mod tests {
             slot,
             timing: crate::review_timing::ReviewTiming::new("o/r", 7, "Incremental"),
             deadline: now + REVIEW_DEADLINE,
+            execution: test_execution_context(now, now + REVIEW_DEADLINE),
             expected_head: None,
             owned: None,
             owner_lost: None,

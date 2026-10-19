@@ -17,12 +17,23 @@ use crate::ports::review_job::{
 pub struct MockReviewJobStore {
     state: Mutex<ReviewSchedulerState>,
     fail_admission: Mutex<bool>,
+    #[cfg(test)]
+    should_continue_delay: Mutex<Option<std::time::Duration>>,
 }
 
 impl MockReviewJobStore {
     /// Make the next whole-batch admission fail with a simulated store error.
     pub fn fail_next_admission(&self) {
         *self.fail_admission.lock().expect("admission failure") = true;
+    }
+
+    /// Delay the control-plane check to exercise a local lease expiring in flight.
+    #[cfg(all(test, feature = "serve"))]
+    pub(crate) fn delay_should_continue(&self, delay: std::time::Duration) {
+        *self
+            .should_continue_delay
+            .lock()
+            .expect("control-plane delay") = Some(delay);
     }
 
     /// Return the number of pending or currently owned requests.
@@ -49,8 +60,7 @@ impl ReviewJobStore for MockReviewJobStore {
         let state = self.state.lock().expect("state");
         Ok(count > 0
             && state.unfinished.len() + count <= MAX_UNFINISHED_REVIEWS
-            && state.terminal.len() + state.unfinished.len() + count
-                <= MAX_TERMINAL_REVIEW_RESERVATIONS)
+            && state.reserved_capacity() + count <= MAX_TERMINAL_REVIEW_RESERVATIONS)
     }
 
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission> {
@@ -77,6 +87,22 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").begin_paid(owned, now_ms))
     }
 
+    async fn confirm_head(&self, owned: &OwnedReview, head_sha: &str, now_ms: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .confirm_head(owned, head_sha, now_ms))
+    }
+
+    async fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .head_is_terminal(owned, now_ms))
+    }
+
     async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
         Ok(self.state.lock().expect("state").renew(owned, now_ms))
     }
@@ -85,12 +111,33 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").owns(owned, now_ms))
     }
 
+    async fn should_continue(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        #[cfg(test)]
+        let delay = *self
+            .should_continue_delay
+            .lock()
+            .expect("control-plane delay");
+        #[cfg(test)]
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .should_continue(owned, now_ms))
+    }
+
     async fn defer(&self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> Result<bool> {
         Ok(self
             .state
             .lock()
             .expect("state")
             .defer(owned, now_ms, not_before_ms))
+    }
+
+    async fn defer_yield(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        Ok(self.state.lock().expect("state").defer_yield(owned, now_ms))
     }
 
     async fn finish(
@@ -105,5 +152,13 @@ impl ReviewJobStore for MockReviewJobStore {
             .lock()
             .expect("state")
             .finish(owned, outcome, now_ms, completed_at_ms))
+    }
+
+    async fn finish_deadline(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .finish_deadline(owned, now_ms))
     }
 }

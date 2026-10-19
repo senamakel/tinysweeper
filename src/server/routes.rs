@@ -891,26 +891,18 @@ async fn record_owned_disposition(
 ) -> Option<Result<bool>> {
     match disposition {
         WorkerDisposition::Terminal(TerminalOutcome::Deadline) => {
-            let finished = store.finish_deadline(owned, now_ms).await?;
-            if !finished
-                && store.owns(owned, now_ms).await?
-                && !store.should_continue(owned, now_ms).await?
-            {
-                store.defer_yield(owned, now_ms).await
-            } else {
-                Ok(finished)
-            }
+            Some(finish_or_yield(store, owned, now_ms, || {
+                store.finish_deadline(owned, now_ms)
+            })
+            .await)
         }
         WorkerDisposition::Terminal(outcome) => {
-            let finished = store.finish(owned, outcome, now_ms, now_ms).await?;
-            if !finished
-                && store.owns(owned, now_ms).await?
-                && !store.should_continue(owned, now_ms).await?
-            {
-                store.defer_yield(owned, now_ms).await
-            } else {
-                Ok(finished)
-            }
+            Some(
+                finish_or_yield(store, owned, now_ms, || {
+                    store.finish(owned, outcome, now_ms, now_ms)
+                })
+                .await,
+            )
         }
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(owned, now_ms, not_before_ms).await
@@ -919,6 +911,27 @@ async fn record_owned_disposition(
         WorkerDisposition::OwnershipLost => return None,
     }
     .into()
+}
+
+async fn finish_or_yield<F, Fut>(
+    store: &dyn ReviewJobStore,
+    owned: &OwnedReview,
+    now_ms: i64,
+    finish: F,
+) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let finished = finish().await?;
+    if !finished
+        && store.owns(owned, now_ms).await?
+        && !store.should_continue(owned, now_ms).await?
+    {
+        store.defer_yield(owned, now_ms).await
+    } else {
+        Ok(finished)
+    }
 }
 
 async fn finalize_exhausted_review<CheckOwner, CheckOwnerFuture, Conclude, ConcludeFuture>(

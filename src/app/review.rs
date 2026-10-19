@@ -2748,7 +2748,10 @@ mod tests {
             .await;
         assert!(matches!(result, Err(Error::Budget { .. })));
         let record = timing.snapshot();
-        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(
+            record.calls_attempted, 0,
+            "a refusal before provider admission is not a physical dispatch"
+        );
         assert_eq!(record.calls_refused, 1);
         assert_eq!(record.calls_errored, 0);
         assert_eq!(record.calls_succeeded, 0);

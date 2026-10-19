@@ -115,6 +115,8 @@ pub fn check_run(head_sha: &str, err: &Error) -> CheckRun {
         conclusion: Some(CheckConclusion::ActionRequired),
         title: title_for(err).to_string(),
         summary: summary_for(err),
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }

@@ -79,8 +79,152 @@ impl ReviewJobStore for MockReviewJobStore {
             .admit_batch(requests, now_ms))
     }
 
+    async fn claim_pending_checks(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewCheck>> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .claim_pending_checks(now_ms, limit))
+    }
+
+    async fn claim_pending_metadata(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewMetadata>> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .claim_pending_metadata(now_ms, limit))
+    }
+
+    async fn metadata_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .metadata_claim_current(pending, now_ms))
+    }
+
+    async fn resolve_pending_metadata(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        let head_sha = head_sha.to_owned();
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .resolve_pending_metadata(&pending, &head_sha, open, draft, now_ms))
+    }
+
+    async fn record_queued_check_id(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        check_id: u64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .record_queued_check_id(pending, check_id, now_ms))
+    }
+
+    async fn queued_check_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .queued_check_claim_current(pending, now_ms))
+    }
+
+    async fn mark_queue_post_attempted(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .mark_queue_post_attempted(pending, now_ms))
+    }
+
+    async fn complete_retired_check(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .complete_retired_check(pending, now_ms))
+    }
+
+    async fn set_check_stage(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        stage: crate::ports::review_job::ReviewCheckStage,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .set_check_stage(owned, head_sha, check_id, stage, now_ms))
+    }
+
+    async fn check_transition_current(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .check_transition_current(owned, head_sha, check_id, now_ms))
+    }
+
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
+    }
+
+    async fn claim_next_with_limit(
+        &self,
+        owner: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Option<OwnedReview>> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .claim_next_with_limit(owner, now_ms, limit))
     }
 
     async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart> {
@@ -93,6 +237,19 @@ impl ReviewJobStore for MockReviewJobStore {
             .lock()
             .expect("state")
             .confirm_head(owned, head_sha, now_ms))
+    }
+
+    async fn reconcile_live_check(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        now_ms: i64,
+    ) -> Result<crate::ports::review_job::ReconciledReviewCheck> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .reconcile_live_check(owned, head_sha, now_ms))
     }
 
     async fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {

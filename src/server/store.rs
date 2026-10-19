@@ -165,10 +165,141 @@ impl ReviewJobStore for Store {
         .await
     }
 
+    async fn claim_pending_checks(
+        &self,
+        _now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewCheck>> {
+        self.change_review_scheduler(move |state, now_ms| state.claim_pending_checks(now_ms, limit))
+            .await
+    }
+
+    async fn claim_pending_metadata(
+        &self,
+        _now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewMetadata>> {
+        self.change_review_scheduler(move |state, now_ms| {
+            state.claim_pending_metadata(now_ms, limit)
+        })
+        .await
+    }
+
+    async fn metadata_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.metadata_claim_current(pending, self.server_now_ms().await?))
+    }
+
+    async fn resolve_pending_metadata(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.resolve_pending_metadata(&pending, &head_sha, open, draft, now_ms)
+        })
+        .await
+    }
+
+    async fn record_queued_check_id(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        check_id: u64,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.record_queued_check_id(&pending, check_id, now_ms)
+        })
+        .await
+    }
+
+    async fn queued_check_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.queued_check_claim_current(pending, self.server_now_ms().await?))
+    }
+
+    async fn mark_queue_post_attempted(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.mark_queue_post_attempted(&pending, now_ms)
+        })
+        .await
+    }
+
+    async fn complete_retired_check(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.complete_retired_check(&pending, now_ms)
+        })
+        .await
+    }
+
+    async fn set_check_stage(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        stage: crate::ports::review_job::ReviewCheckStage,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let owned = owned.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.set_check_stage(&owned, &head_sha, check_id, stage, now_ms)
+        })
+        .await
+    }
+
+    async fn check_transition_current(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.check_transition_current(owned, head_sha, check_id, self.server_now_ms().await?))
+    }
+
     async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
         self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))
             .await
+    }
+
+    async fn claim_next_with_limit(
+        &self,
+        owner: &str,
+        _now_ms: i64,
+        limit: usize,
+    ) -> Result<Option<OwnedReview>> {
+        let owner = owner.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.claim_next_with_limit(&owner, now_ms, limit)
+        })
+        .await
     }
 
     async fn begin_paid(&self, owned: &OwnedReview, _now_ms: i64) -> Result<PaidStart> {
@@ -187,6 +318,20 @@ impl ReviewJobStore for Store {
         let head_sha = head_sha.to_owned();
         self.change_review_scheduler(move |state, now_ms| {
             state.confirm_head(&owned, &head_sha, now_ms)
+        })
+        .await
+    }
+
+    async fn reconcile_live_check(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        _now_ms: i64,
+    ) -> Result<crate::ports::review_job::ReconciledReviewCheck> {
+        let owned = owned.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.reconcile_live_check(&owned, &head_sha, now_ms)
         })
         .await
     }

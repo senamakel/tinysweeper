@@ -786,6 +786,56 @@ pub(crate) async fn review_with_tree_observed_at_head(
     expected_head: Option<&str>,
     timing: Option<crate::review_timing::ReviewTiming>,
 ) -> Result<Proposal> {
+    let started_at = tokio::time::Instant::now();
+    let large_pr = config.review.large_pr;
+    let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + std::time::Duration::from_secs(900),
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: None,
+            soft_deadline_percent: large_pr.soft_deadline_percent,
+            drain_seconds: large_pr.drain_seconds,
+        },
+    ));
+    let model = execution
+        .bind_model(model, config.models.budget_usd_per_pr)
+        .model
+        .clone();
+    review_with_tree_observed_at_head_in_run(
+        forge,
+        model,
+        config,
+        repo,
+        number,
+        store,
+        knowledge,
+        retrieval,
+        tree,
+        expected_head,
+        execution,
+        timing,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "review"))]
+/// Run an attempt inside the server job's shared execution and model scope.
+pub(crate) async fn review_with_tree_observed_at_head_in_run(
+    forge: &dyn ForgeRead,
+    model: Arc<dyn Model>,
+    config: &Config,
+    repo: &RepoId,
+    number: u64,
+    store: Option<&dyn ReviewStateStore>,
+    knowledge: Option<&dyn KnowledgeStore>,
+    retrieval: Option<&Retriever<'_>>,
+    tree: Option<&dyn TreeReader>,
+    expected_head: Option<&str>,
+    execution: Arc<crate::app::review_execution::ReviewRunContext>,
+    timing: Option<crate::review_timing::ReviewTiming>,
+) -> Result<Proposal> {
     let model: Arc<dyn Model> = if let Some(timing) = &timing {
         Arc::new(ObservedModel {
             inner: model,

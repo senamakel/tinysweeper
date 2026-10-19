@@ -28,6 +28,42 @@
 
 use crate::evidence::diff::{FileDiff, LineKind};
 
+/// Host-only priority signals shared with large-review planning.
+///
+/// These reuse security triage's established path and sink indicators; public
+/// API detection is intentionally a bounded textual hint, not a parser.
+pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
+    let sensitive = sensitive_path(&diff.path) || added_sinks(diff) > 0;
+    let lower_path = diff.path.to_ascii_lowercase();
+    let public_path = ["/api/", "/schema/", "/schemas/"]
+        .iter()
+        .any(|segment| lower_path.contains(segment))
+        || lower_path.starts_with("api/")
+        || lower_path.starts_with("schema/")
+        || [".h", ".hh", ".hpp", ".hxx"].iter().any(|suffix| lower_path.ends_with(suffix))
+        || lower_path.contains("openapi.");
+    let public_declaration = diff.hunks.iter().flat_map(|hunk| &hunk.lines).any(|line| {
+        if !matches!(line.kind, LineKind::Added | LineKind::Removed) {
+            return false;
+        }
+        let text = line.text.trim_start();
+        if matches!(line.kind, LineKind::Removed) {
+            return text.starts_with("pub ")
+                && !text.starts_with("pub(crate)")
+                && !text.starts_with("pub(super)")
+                && !text.starts_with("pub(in ");
+        }
+        (text.starts_with("pub ")
+            && !text.starts_with("pub(crate)")
+            && !text.starts_with("pub(super)")
+            && !text.starts_with("pub(in "))
+            || text.starts_with("export ")
+            || text.starts_with("export{")
+            || text.starts_with("__all__")
+    });
+    (sensitive, public_path || public_declaration)
+}
+
 /// The outcome of triaging one pull request's diffs.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Triage {

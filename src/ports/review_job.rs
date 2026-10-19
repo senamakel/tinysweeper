@@ -98,6 +98,8 @@ pub struct OwnedReview {
     pub owner: String,
     /// Monotonic generation for this job's ownership.
     pub generation: u64,
+    /// Durable queued check selected for this owner generation, if published.
+    pub review_check: Option<ReviewCheckRecord>,
 }
 
 /// Stage of the durable umbrella check associated with one pinned head.
@@ -581,11 +583,22 @@ impl ReviewSchedulerState {
         record.generation += 1;
         record.owner = Some(owner.to_owned());
         record.owner_until_ms = now_ms + REVIEW_OWNER_TTL_MS;
+        let generation = record.generation;
+        let review_check = record
+            .request
+            .head_sha
+            .as_deref()
+            .and_then(|head| record.review_checks.iter_mut().find(|check| check.head_sha == head))
+            .map(|check| {
+                check.owner_generation = Some(generation);
+                check.clone()
+            });
         Some(OwnedReview {
             request: record.request.clone(),
             accepted_ids: record.accepted_ids.clone(),
             owner: owner.to_owned(),
-            generation: record.generation,
+            generation,
+            review_check,
         })
     }
 

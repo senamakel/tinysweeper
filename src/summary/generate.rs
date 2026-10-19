@@ -2540,4 +2540,42 @@ mod tests {
         assert_eq!(summary.history[0].head_sha, "empty-head");
         assert_eq!(summary.surface, ChangeSurface::default());
     }
+
+    #[test]
+    fn deterministic_summary_counts_only_paths_with_review_evidence() {
+        let lanes = [lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Success,
+            "Reviewed",
+            &["model"],
+            &["src/missing.rs"],
+            Some(crate::lanes::FileCoverage {
+                reviewed: vec!["src/reviewed.rs".into()],
+                unanswered: vec!["src/missing.rs".into()],
+            }),
+        )];
+        let full_paths = vec![
+            "src/reviewed.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        let diffs = [FileDiff {
+            path: "src/reviewed.rs".into(),
+            ..FileDiff::default()
+        }];
+
+        let summary = deterministic_with_paths(
+            &Config::default(),
+            &PullRequest::default(),
+            &diffs,
+            &full_paths,
+            &lanes,
+            None,
+        );
+
+        let coverage = summary.file_coverage.expect("known lane coverage");
+        assert_eq!(coverage.reviewed, 1);
+        assert_eq!(coverage.total, 3);
+        assert_eq!(coverage.unreviewed, ["README.md", "src/missing.rs"]);
+    }
 }

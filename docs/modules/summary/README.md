@@ -38,7 +38,9 @@ fix. File gaps and whole-lane no-response messages use separate lines. New
 summaries carry reviewed and total file counts only when lane evidence supports
 them; an older proposal without that metadata reports coverage as unavailable.
 Models, cache continuity, and run diagnostics remain inside the collapsed
-details block.
+details block. The Mermaid flow appears only when at least four changed,
+non-test symbols can be shown; test names and generic keyword nodes are left
+out.
 
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one

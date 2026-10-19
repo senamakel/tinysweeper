@@ -186,7 +186,9 @@ fn lane_gaps(out: &mut String, proposal: &Proposal) {
     let gaps: Vec<_> = proposal
         .lanes
         .iter()
-        .filter(|lane| lane.unanswered.iter().any(|item| item == &lane.check_name))
+        .filter(|lane| {
+            !lane.completed && lane.unanswered.iter().any(|item| item == &lane.check_name)
+        })
         .collect();
     if gaps.is_empty() {
         return;

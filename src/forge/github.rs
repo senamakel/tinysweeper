@@ -698,6 +698,10 @@ fn type_names_from_json(raw: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn check_run_owned_by_app(item: &serde_json::Value, expected_app_id: Option<u64>) -> bool {
+    expected_app_id.is_none_or(|app_id| item["app"]["id"].as_u64() == Some(app_id))
+}
+
 /// Read-only GitHub access.
 pub struct GitHubRead {
     client: Octocrab,
@@ -1252,6 +1256,7 @@ impl ForgeRead for GitHubRead {
         // Read to exhaustion rather than truncated at the first page. A missing
         // check reads to the auto-merge gate as "not reported", so short data
         // would turn a red required check into a merge.
+        let expected_app_id = self.expected_app_id;
         read_all_pages(
             |page| async move {
                 let route = format!(
@@ -1302,9 +1307,7 @@ impl ForgeRead for GitHubRead {
                     .filter(|item| {
                         item["name"].as_str() == Some(crate::forge::types::REVIEW_CHECK_NAME)
                             && item["external_id"].as_str() == Some(external_id)
-                            && self.expected_app_id.is_none_or(|app_id| {
-                                item["app"]["id"].as_u64() == Some(app_id)
-                            })
+                            && check_run_owned_by_app(item, expected_app_id)
                     })
                     .filter_map(|item| item["id"].as_u64())
                     .collect::<Vec<_>>()
@@ -2023,6 +2026,14 @@ mod tests {
                 .get("images")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn recovered_check_must_belong_to_the_configured_github_app() {
+        let item = json!({"app": {"id": 123}});
+        assert!(check_run_owned_by_app(&item, Some(123)));
+        assert!(!check_run_owned_by_app(&item, Some(456)));
+        assert!(check_run_owned_by_app(&item, None));
     }
 
     #[test]

@@ -109,6 +109,7 @@ fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
     assert!(state.record_queued_check_id(&status_claim, 77, 11));
 
     let owner = state.claim_next("worker-a", 12).unwrap();
+    assert!(state.check_transition_current(&owner, "sha", 77, 13));
     assert_eq!(owner.review_check.as_ref().unwrap().check_id, Some(77));
     assert_eq!(owner.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
     assert!(state.set_check_stage(

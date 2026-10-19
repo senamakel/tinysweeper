@@ -174,12 +174,13 @@ async fn thirty_findings_over_three_passes_post_the_budget_and_list_the_rest() {
         let location = format!(
             "[`src/large.rs:{line}`](https://github.com/tinyhumansai/tinysweeper/blob/abcdef1234567890/src/large.rs#L{line})"
         );
-        let start = hub
-            .find(title)
+        let title_row = hub
+            .lines()
+            .find(|row| row.contains(&format!(": {title}**")))
             .unwrap_or_else(|| panic!("missing {title}:\n{hub}"));
         assert!(
-            hub[start..].contains(&location),
-            "missing {location} after {title}:\n{hub}"
+            title_row.contains(&location),
+            "missing {location} beside {title}:\n{title_row}"
         );
     }
 

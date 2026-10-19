@@ -2670,6 +2670,7 @@ mod tests {
         let mut config = config();
         config.review.lanes = vec!["critique".into(), "security".into()];
         config.review.passes = 1;
+        config.council.enabled = false;
         config.models.agentic_reviewers = false;
         config.summary.enabled = false;
         config.wireframe.enabled = false;
@@ -2683,7 +2684,7 @@ mod tests {
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
-        let mut config = scheduling_config();
+        let config = scheduling_config();
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(500),

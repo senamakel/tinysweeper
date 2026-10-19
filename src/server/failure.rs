@@ -315,7 +315,10 @@ mod tests {
         let error = Error::ReviewExecutionUnavailable;
         let check = check_run("abc123", &error);
 
-        assert_eq!(title_for(&error), "The review cannot enforce its large-review limits");
+        assert_eq!(
+            title_for(&error),
+            "The review cannot enforce its large-review limits"
+        );
         assert!(summary_for(&error).contains("physical-dispatch control"));
         assert_eq!(check.conclusion, Some(CheckConclusion::ActionRequired));
         assert!(!is_transient(&error));

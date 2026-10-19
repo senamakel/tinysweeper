@@ -40,7 +40,9 @@ pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
         .any(|segment| lower_path.contains(segment))
         || lower_path.starts_with("api/")
         || lower_path.starts_with("schema/")
-        || [".h", ".hh", ".hpp", ".hxx"].iter().any(|suffix| lower_path.ends_with(suffix))
+        || [".h", ".hh", ".hpp", ".hxx"]
+            .iter()
+            .any(|suffix| lower_path.ends_with(suffix))
         || lower_path.contains("openapi.");
     let public_declaration = diff.hunks.iter().flat_map(|hunk| &hunk.lines).any(|line| {
         if !matches!(line.kind, LineKind::Added | LineKind::Removed) {

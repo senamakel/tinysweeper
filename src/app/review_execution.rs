@@ -77,11 +77,7 @@ impl ReviewRunContext {
     /// A missing monetary hook preserves legacy behavior; Large-mode callers
     /// require physical control separately, while the production Gateway
     /// supplies the shared monetary root.
-    pub(crate) fn bind_model(
-        &self,
-        base: Arc<dyn Model>,
-        budget_usd: f64,
-    ) -> &ReviewModelBinding {
+    pub(crate) fn bind_model(&self, base: Arc<dyn Model>, budget_usd: f64) -> &ReviewModelBinding {
         self.model.get_or_init(|| {
             let rooted = base.with_review_budget(budget_usd);
             let review_budget_bound = rooted.is_some();

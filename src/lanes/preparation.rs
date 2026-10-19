@@ -21,7 +21,7 @@ pub(crate) struct LanePreparationInput<'a> {
     pub(crate) graph: Option<&'a crate::index::types::Neighbourhood>,
 }
 
-impl LanePreparationInput<'_> {
+impl<'a> LanePreparationInput<'a> {
     /// Whether any file has added or modified lines for a model lane.
     pub(crate) fn has_reviewable_content(&self) -> bool {
         self.diffs.iter().any(|diff| !diff.changed_lines.is_empty())
@@ -33,7 +33,7 @@ impl LanePreparationInput<'_> {
     }
 
     /// Scanner findings owned by the requested lane.
-    pub(crate) fn scanner_findings_of(&self, kinds: &[ScanKind]) -> Vec<&ScanFinding> {
+    pub(crate) fn scanner_findings_of(&self, kinds: &[ScanKind]) -> Vec<&'a ScanFinding> {
         self.scan_findings
             .iter()
             .filter(|finding| kinds.contains(&finding.kind))

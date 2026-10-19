@@ -294,6 +294,18 @@ pub trait Model: Send + Sync {
         None
     }
 
+    /// Bind a shared monetary budget to one review, when supported.
+    ///
+    /// Lane scopes created from the returned model should be children of this
+    /// review budget, so their local caps also consume the shared review
+    /// allowance. This neutral hook accepts a dollar limit without exposing a
+    /// provider or Embed budget type. The default keeps legacy models
+    /// source-compatible; `None` means the adapter cannot bind a review-wide
+    /// monetary ledger.
+    fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn Model>> {
+        None
+    }
+
     /// Return a model clone that preserves one review-wide dispatch control.
     ///
     /// The default keeps existing offline and custom models source-compatible.

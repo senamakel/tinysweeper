@@ -6,12 +6,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::types::LaneId;
 
+/// File and line counts for the pull-request diff supplied by the forge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryDiffstat {
+    /// Changed files in the complete pull-request diff.
+    pub files: usize,
+    /// Added lines in the complete pull-request diff.
+    pub additions: u64,
+    /// Removed lines in the complete pull-request diff.
+    pub deletions: u64,
+}
+
+impl SummaryDiffstat {
+    /// Count a parsed reviewable diff when the forge's complete file list is
+    /// unavailable (primarily for offline callers and tests).
+    pub fn from_diffs(diffs: &[crate::evidence::diff::FileDiff]) -> Self {
+        Self {
+            files: diffs.len(),
+            additions: diffs.iter().map(|diff| diff.additions() as u64).sum(),
+            deletions: diffs.iter().map(|diff| diff.deletions() as u64).sum(),
+        }
+    }
+}
+
 /// Generated and deterministic material carried from review to apply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReviewSummary {
     /// Short model-authored explanation shown above the fold.
     pub executive_summary: String,
+    /// Scrubbed PR title used for the deterministic purpose opening.
+    ///
+    /// Keeping this source separately lets incremental updates replace only
+    /// the prior generated title preamble before validating stored narrative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose_title: Option<String>,
     /// Model-authored behavioral explanation.
     pub changes: String,
     /// Cited feature descriptions.

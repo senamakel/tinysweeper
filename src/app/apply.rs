@@ -1085,10 +1085,12 @@ mod tests {
                     CheckConclusion::Failure
                 },
                 summary: "Reviewed.".into(),
+                completed: true,
                 findings,
                 noted: Vec::new(),
                 resolved: vec![],
                 pending: vec![],
+                skipped: None,
                 deduped: 0,
                 highest_severity,
                 usage: Default::default(),
@@ -2726,6 +2728,127 @@ mod tests {
         assert!(body.contains("blob/abc123/src/main.rs#L2"), "{body}");
         assert!(!body.contains("Unsupported line"), "{body}");
         assert!(!body.contains("#L999999"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn mock_forge_render_drops_false_success_claim_for_no_response_lane() {
+        use crate::harness::mock::MockModel;
+
+        let forge = forge("abc123");
+        let config = config();
+        let model = MockModel::new().then(serde_json::json!({
+            "executive_summary": "The security lane gives this change a greenlight. Security found no issues. Security is clean. The end-to-end lane confirms all checks are complete. The transaction commits each event once. The transaction commit no longer loses events. This adds a test fixture with no new dependencies. The test fixture maps the empty-state case. The commit reviewer found no issues. The parser now rejects unknown paths.",
+            "changes": "All checks report no issues. The parser handles unknown paths safely.",
+            "features": [{
+                "kind": "addition",
+                "name": "Atomic commit mapping",
+                "impact": "Transaction writes preserve each event.",
+                "citations": ["src/transaction.rs"]
+            }],
+            "tests": [{
+                "kind": "unit test fixture",
+                "behavior": "The test fixture maps transaction rollback.",
+                "assessment": "The fixture covers the empty-state case.",
+                "citations": ["src/transaction.rs"]
+            }],
+            "positive_observations": {}
+        }));
+        let lanes: Vec<_> = [
+            LaneId::Tests,
+            LaneId::Security,
+            LaneId::E2e,
+            LaneId::Commits,
+        ]
+        .into_iter()
+        .map(|lane| {
+            let outcome =
+                crate::lanes::LaneOutcome::unanswered(lane, crate::ports::model::Spend::default());
+            LaneProposal {
+                lane,
+                check_name: lane.check_name(),
+                conclusion: CheckConclusion::Neutral,
+                summary: outcome.summary,
+                completed: outcome.completed,
+                findings: vec![],
+                noted: vec![],
+                resolved: vec![],
+                pending: vec![],
+                skipped: outcome.skipped,
+                deduped: 0,
+                highest_severity: None,
+                usage: Default::default(),
+                models: vec![],
+                unanswered: outcome.unanswered,
+                coverage: outcome.coverage,
+                overflow: vec![],
+            }
+        })
+        .collect();
+        let diffs = [crate::evidence::diff::parse_file_patch(
+            "src/transaction.rs",
+            "@@ -1,1 +1,2 @@ fn persist()\n old\n+new\n",
+        )];
+        let (summary, _, _) = crate::summary::generate(
+            &model,
+            &config,
+            &PullRequest {
+                number: 7,
+                title: "Enforce speech privacy".into(),
+                body: "Keep private speech out of logs.".into(),
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
+            &diffs,
+            &lanes,
+            None,
+            &[],
+        )
+        .await;
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes = lanes;
+        proposal.summary = Some(summary);
+
+        apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("applies");
+
+        let body = overview_comments(&forge)
+            .into_iter()
+            .find_map(|write| match write {
+                Write::Comment { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("hub comment");
+        let opening = body
+            .split("# Tiny Sweeper review\n\n")
+            .nth(1)
+            .and_then(|text| text.lines().next())
+            .expect("executive opening");
+        assert!(!body.to_ascii_lowercase().contains("security lane gives"));
+        assert!(!body.to_ascii_lowercase().contains("greenlight"));
+        assert!(
+            !body
+                .to_ascii_lowercase()
+                .contains("end-to-end lane confirms")
+        );
+        assert!(!body.contains("Security found no issues"));
+        assert!(!body.contains("All checks report no issues"));
+        assert!(body.contains("The transaction commit no longer loses events"));
+        assert!(body.contains("This adds a test fixture with no new dependencies"));
+        assert!(!body.contains("Security is clean"));
+        assert!(body.contains("The test fixture maps transaction rollback"));
+        assert!(body.contains("unit test fixture"));
+        assert!(body.contains("parser now rejects unknown paths"));
+        assert!(body.contains("parser handles unknown paths safely"));
+        assert!(body.contains("Atomic commit mapping"));
+        assert!(body.contains("The transaction commits each event once"));
+        assert!(body.contains("The test fixture maps the empty-state case"));
+        assert!(!body.contains("The commit reviewer found no issues"));
+        assert!(
+            opening.starts_with("Pull request purpose (title): Enforce speech privacy."),
+            "{opening}"
+        );
+        assert!(body.contains("No reviewer produced a usable response."));
     }
 
     #[tokio::test]

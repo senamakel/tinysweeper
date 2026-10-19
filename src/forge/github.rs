@@ -1300,7 +1300,7 @@ impl ForgeRead for GitHubRead {
                 items
                     .iter()
                     .filter(|item| {
-                        item["name"].as_str() == Some(crate::server::status::CHECK_NAME)
+                        item["name"].as_str() == Some(crate::forge::types::REVIEW_CHECK_NAME)
                             && item["external_id"].as_str() == Some(external_id)
                             && self.expected_app_id.is_none_or(|app_id| {
                                 item["app"]["id"].as_u64() == Some(app_id)

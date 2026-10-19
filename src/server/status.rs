@@ -58,7 +58,7 @@ use crate::forge::types::{CheckConclusion, CheckRun};
 /// verdict, and a review that has not finished — or never reached the lanes at
 /// all — has no verdict to report; reusing `tinysweeper/critique` here would
 /// overwrite a real result from an earlier push with a liveness signal.
-pub const CHECK_NAME: &str = "tinysweeper/review";
+pub const CHECK_NAME: &str = crate::forge::types::REVIEW_CHECK_NAME;
 
 /// Coverage aggregated across every lane in one review proposal.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

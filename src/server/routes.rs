@@ -2515,9 +2515,13 @@ async fn open_status(
             let transitioned = async {
                 use crate::ports::forge::ForgeWrite;
                 let token = state.auth.installation_token(installation).await?;
-                crate::forge::github::GitHubWrite::new(&token)?
-                    .update_check(repo, existing.check_id, status::in_progress(head_sha))
-                    .await
+                crate::app::apply::start_queued_review_status(
+                    &crate::forge::github::GitHubWrite::new(&token)?,
+                    repo,
+                    existing.check_id,
+                    head_sha,
+                )
+                .await
             }
             .await;
             match transitioned {

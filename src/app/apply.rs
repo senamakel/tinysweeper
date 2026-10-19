@@ -37,6 +37,19 @@ pub async fn publish_queued_review_status(
         .await
 }
 
+/// Transition the previously published queue check under the same status-only write boundary.
+#[cfg(feature = "serve")]
+pub async fn start_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    check_id: u64,
+    head_sha: &str,
+) -> Result<()> {
+    write
+        .update_check(repo, check_id, crate::server::status::in_progress(head_sha))
+        .await
+}
+
 /// Whether a review proposal was published against the live pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDisposition {

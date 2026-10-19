@@ -60,22 +60,38 @@ claims, renewals, and completion; local expiry checks stop a paused process
 before it resumes model work, and model dispatches also verify ownership. A
 shutdown stops new claims and leaves unfinished jobs in Mongo for the next
 process. If shutdown lands while the initial status check is being opened, that
-accepted job is deferred and remains available to the next owner. Terminal
-outcomes remain deduped for seven days. GitHub publication
-still uses the app's live-head and idempotency checks because a process can
-crash between a GitHub write and recording its outcome. A job has five durable
-paid-work starts across restarts; recovery after the fifth opens or resumes
-the status check, then concludes it as **Not reviewed** before recording the
-terminal tombstone. No further index or model work runs for an exhausted job.
+accepted job is deferred and remains available to the next owner.
 
-When a pull-request event supplies its head SHA, the worker claims that SHA
-before minting a read token or fetching live PR state. A comment request has no
-SHA, so it claims a provisional per-PR key before reading and gating the live
-PR, then claims that revision before indexing. Manual reviews currently resolve
-their pull request numbers and SHAs before enqueueing, so the response can list
-the queued reviews. If a head moved, the worker transfers its lease to the new
-SHA. The app checks the leased SHA again immediately after loading review
-context and skips before any model call if the context moved in the meantime.
+Incremental jobs coalesce by repository and pull request. A newer delivery
+adds its ID to the existing reservation and asks an active owner to yield;
+queued hints collapse to one pending job. The running lease and global slot
+remain occupied until that owner acknowledges the yield or its lease expires,
+so a hint cannot free capacity while the old model call is still running. The
+replacement owner reads the authoritative live Forge head before paid work;
+an older delayed event cannot make its SHA the review target. Each confirmed
+head has five durable paid-work starts across retries, owners, and restarts. A
+same-head deadline or other terminal result remains recorded until a live read
+confirms a different head; another delivery ID or webhook SHA hint cannot
+refill the budget. After the fifth start, recovery opens or resumes the status
+check, then concludes it as **Not reviewed** before recording the terminal
+outcome. No further index or model work runs for that exhausted head. Manual
+full reviews use a separate claim key and are not superseded by incremental
+deliveries.
+
+All coalesced delivery IDs and per-head history consume reserved bounded-state
+capacity. An admission that would exceed those reservation limits is refused
+as a whole, like an oversized manual batch. GitHub publication still uses the
+app's live-head and idempotency checks: a process can crash between a GitHub
+write and recording its outcome, so the scheduler cannot promise exactly-once
+remote writes. A confirmed successful publication is retained when an owner
+yields, preventing a known success from being rerun for the same head.
+
+Before minting a read token or fetching live PR state, the worker claims a
+provisional per-PR key. It then confirms the authoritative head from live
+Forge state and binds the lease before indexing or model work. Manual reviews
+resolve pull request numbers and SHAs before enqueueing, so the response can
+list the queued reviews. The app checks the leased SHA again after loading
+review context and skips before any model call if the context moved.
 
 ## The write-token boundary
 

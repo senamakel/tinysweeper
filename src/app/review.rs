@@ -2759,6 +2759,54 @@ mod tests {
 
     #[cfg(feature = "harness")]
     #[tokio::test]
+    async fn a_gateway_budget_refusal_is_not_reported_as_a_physical_call() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::FakeGateway;
+
+        let gateway = FakeGateway::start(vec![]).await;
+        let mut config = Config::default().models;
+        config.base_url = gateway.base_url.clone();
+        config.fallback.clear();
+        config.budget_prices.insert(
+            "deep".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 0.0,
+                cached: 0.0,
+                output: 100.0,
+            },
+        );
+        let gateway_model = GatewayModel::with_key(&config, "fixture".into())
+            .scoped_budget(0.0)
+            .expect("gateway supports budget scopes");
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        let model = ObservedModel {
+            inner: gateway_model,
+            timing: timing.clone(),
+        };
+
+        let result = model
+            .complete(crate::ports::model::ModelRequest {
+                model: "deep".into(),
+                messages: vec![crate::ports::model::Message::user("Review this.")],
+                schema: json!({"type":"object"}),
+                schema_name: "critique".into(),
+                max_tokens: 32,
+            })
+            .await;
+
+        assert!(matches!(result, Err(Error::Budget { .. })));
+        assert!(gateway.requests().is_empty(), "budget refused before dispatch");
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 0);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.usage.input_tokens, 0);
+        assert_eq!(record.usage.output_tokens, 0);
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
     async fn observed_gateway_dispatch_logs_once_with_review_correlation() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};

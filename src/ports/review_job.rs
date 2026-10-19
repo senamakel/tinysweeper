@@ -579,6 +579,7 @@ impl ReviewSchedulerState {
             return false;
         };
         let request = self.unfinished[index].request.clone();
+        let mut existing_terminal = None;
         if request.mode == ReviewJobMode::Incremental {
             let Some(budget) = self
                 .incremental_heads
@@ -587,16 +588,23 @@ impl ReviewSchedulerState {
             else {
                 return false;
             };
-            if matches!(
+            existing_terminal = budget
+                .terminal_outcome
+                .or_else(|| budget.deadline_hit.then_some(TerminalOutcome::Deadline));
+            if existing_terminal.is_none()
+                && matches!(
                 outcome,
                 TerminalOutcome::Published
                     | TerminalOutcome::Declined
                     | TerminalOutcome::Exhausted
                     | TerminalOutcome::Deadline
-            ) {
+                )
+            {
                 budget.terminal_outcome = Some(outcome);
             }
-            budget.deadline_hit = outcome == TerminalOutcome::Deadline;
+            if existing_terminal.is_none() && outcome == TerminalOutcome::Deadline {
+                budget.deadline_hit = true;
+            }
         }
         if self.unfinished[index].yield_requested {
             let record = &mut self.unfinished[index];
@@ -614,7 +622,7 @@ impl ReviewSchedulerState {
         self.terminal
             .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
                 id,
-                outcome: TerminalOutcome::Deadline,
+                outcome: existing_terminal.unwrap_or(TerminalOutcome::Deadline),
                 expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
             }));
         true

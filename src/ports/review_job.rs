@@ -1274,7 +1274,10 @@ impl ReviewSchedulerState {
 
     fn retire_removed_record_checks(&mut self, record: &ScheduledReview) {
         for mut check in record.review_checks.iter().cloned() {
-            if check.stage == ReviewCheckStage::Completed
+            let superseded_or_never_started = check.head_sha != record.request.head_sha.as_deref().unwrap_or_default()
+                || check.stage == ReviewCheckStage::Queued;
+            if !superseded_or_never_started
+                || check.stage == ReviewCheckStage::Completed
                 || (!check.published && check.check_id.is_none() && check.write_generation == 0)
             {
                 continue;

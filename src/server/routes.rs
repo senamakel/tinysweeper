@@ -3567,18 +3567,45 @@ impl ReviewRun<'_> {
         // The live head whose exact lease is now held is the revision passed
         // into context construction, even for a stateless request that had no
         // webhook SHA. This lets the app recheck for a move during that fetch.
-        let run = Run {
+        let mut run = Run {
             expected_head: Some(pull_request.head_sha.clone()),
             ..run.clone()
         };
-        if let Some(owned) = &run.owned
-            && run.mode == Mode::Incremental
-            && !state
-                .review_jobs
-                .confirm_head(owned, &pull_request.head_sha, unix_time_ms())
+        if let Some(owned) = &run.owned {
+            match state.review_jobs
+                .reconcile_live_check(owned, &pull_request.head_sha, unix_time_ms())
                 .await?
-        {
-            return Err(Error::ReviewOwnershipLost);
+            {
+                crate::ports::review_job::ReconciledReviewCheck::Ready(check) => {
+                    let Some(check_id) = check.check_id else {
+                        return Err(Error::ReviewOwnershipLost);
+                    };
+                    *run.slot.lock().expect("status slot") = Some(ReviewStatus {
+                        repo: repo_id.clone(),
+                        check_id,
+                        head_sha: check.head_sha,
+                        installation,
+                        stage: check.stage,
+                        owned: Some(owned.clone()),
+                        hub_comment_id: None,
+                        prior_hub_body: None,
+                    });
+                }
+                crate::ports::review_job::ReconciledReviewCheck::Pending(_)
+                | crate::ports::review_job::ReconciledReviewCheck::CapacityDeferred => {
+                    // The old head has already moved to the detached outbox.
+                    // Clearing the slot prevents Busy handling from PATCHing it
+                    // independently while the durable worker publishes the new head.
+                    run.slot.lock().expect("status slot").take();
+                    let _ = state.review_jobs
+                        .defer(owned, unix_time_ms(), unix_time_ms())
+                        .await?;
+                    return Ok(InnerReview::Busy);
+                }
+                crate::ports::review_job::ReconciledReviewCheck::OwnershipLost => {
+                    return Err(Error::ReviewOwnershipLost);
+                }
+            }
         }
         run.check_work(state).await?;
 

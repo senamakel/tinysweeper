@@ -4706,7 +4706,11 @@ mod tests {
         store.admit_batch(vec![request.clone()]).await.unwrap();
         let now = unix_time_ms();
         seed_previously_published_queue_checks(&*store, now).await;
-        let owned = store.claim_next("review-budget-worker", now).await.unwrap().unwrap();
+        let owned = store
+            .claim_next("review-budget-worker", now)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(store.confirm_head(&owned, "head-a", now).await.unwrap());
 
         let probe = ReviewBudgetProbe::default();

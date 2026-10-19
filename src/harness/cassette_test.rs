@@ -101,7 +101,8 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
             .expect("the first response fits the review root");
         assert_eq!(first.value, answer());
         assert!(matches!(
-            lane.complete(request("probe", "second paid response")).await,
+            lane.complete(request("probe", "second paid response"))
+                .await,
             Err(Error::Budget { .. })
         ));
         assert_eq!(completed.load(Ordering::Relaxed), 1);
@@ -109,8 +110,27 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
         assert_eq!(cassette.spend().usage.input_tokens, 2);
         assert_eq!(cassette.spend().usage.output_tokens, 1);
         assert_eq!(cassette.cost_usd(), 0.25);
-        assert_eq!(cassette.flush().expect("the original recorder sees the take"), 1);
-        assert_eq!(load(dir.path()).expect("the recorded take remains readable").len(), 1);
+        assert_eq!(
+            cassette
+                .flush()
+                .expect("the original recorder sees the take"),
+            1
+        );
+        assert_eq!(
+            load(dir.path())
+                .expect("the recorded take remains readable")
+                .len(),
+            1
+        );
+
+        let replay = Cassette::replay(dir.path(), Mode::Strict).expect("strict replay loads");
+        assert!(!replay.complete_reports_physical_calls());
+        assert!(!replay.review_reports_physical_calls());
+        replay
+            .complete(request("probe", "first paid response"))
+            .await
+            .expect("replay serves the recorded response without another live call");
+        assert_eq!(completed.load(Ordering::Relaxed), 1);
     }
 }
 

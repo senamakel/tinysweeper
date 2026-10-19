@@ -11,9 +11,14 @@ use async_trait::async_trait;
 /// Why a review-wide policy refused to start a physical model dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelExecutionRefusal {
-    /// The review has committed or reserved its physical-call ceiling.
+    /// The review has exhausted its ceiling with committed physical dispatches.
+    ///
+    /// Acquisitions wait while the ceiling is occupied only by refundable
+    /// reservations; a reservation becoming committed or being dropped wakes
+    /// those waiters to re-evaluate the ceiling.
     CallLimit,
-    /// The absolute review soft deadline has passed.
+    /// The absolute review soft deadline has passed, either at acquisition or
+    /// when a reserved permit is committed for dispatch.
     SoftDeadline,
 }
 
@@ -21,6 +26,11 @@ pub enum ModelExecutionRefusal {
 #[async_trait]
 pub trait ModelExecutionControl: Send + Sync {
     /// Reserve one dispatch slot before any potentially blocking money wait.
+    ///
+    /// If outstanding uncommitted reservations temporarily fill the ceiling,
+    /// wait for a reservation to commit or be dropped instead of refusing the
+    /// request. Return `CallLimit` once committed dispatches exhaust the
+    /// ceiling, or `SoftDeadline` once the absolute soft deadline has passed.
     async fn acquire(
         &self,
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal>;
@@ -32,5 +42,8 @@ pub trait ModelExecutionPermit: Send + Sync {
     ///
     /// Implementations make this idempotent. Dropping an uncommitted permit
     /// releases its reservation; dropping a committed permit never refunds it.
+    /// Recheck the absolute soft deadline here because callers may wait for
+    /// money after acquiring. A refusal leaves this permit uncommitted and does
+    /// not consume a committed-call slot.
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal>;
 }

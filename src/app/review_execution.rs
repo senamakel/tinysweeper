@@ -1,10 +1,8 @@
 //! Review-wide execution scope for physical model dispatches.
 //!
-//! The scope is created from the server's already-established review window and
-//! cloned through model wrappers. This source scaffold defines the ownership,
-//! deadline and accounting surface; production refusal and waiting policy
-//! remain intentionally unimplemented until the control behavior is compiled
-//! and observed red.
+//! Test-only implementation of the review-wide dispatch gate. Production
+//! runtime wiring remains deferred; remove the `cfg(test)` gate when callers
+//! are integrated.
 
 #![cfg(test)]
 
@@ -439,6 +437,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_waiting_reservation_expires_at_the_soft_deadline() {
+        let started_at = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_millis(250),
+        )));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let held = control.acquire().await.expect("first reservation");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut waiting = tokio::task::JoinSet::new();
+        waiting.spawn(async move {
+            started_tx.send(()).expect("test receiver");
+            control.acquire().await
+        });
+        started_rx.await.expect("waiting acquire started");
+
+        let result = tokio::time::timeout(Duration::from_secs(2), waiting.join_next())
+            .await
+            .expect("deadline wakes a capacity waiter")
+            .expect("waiting task")
+            .expect("waiting acquire task");
+        assert!(matches!(result, Err(ModelExecutionRefusal::SoftDeadline)));
+        assert_eq!(execution.snapshot().reserved_calls, 1);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+        drop(held);
+    }
+
+    #[tokio::test]
     async fn a_permit_crossing_the_absolute_soft_deadline_cannot_commit() {
         let started_at = Instant::now();
         let crossed_deadline = Arc::new(AtomicBool::new(false));
@@ -493,6 +521,38 @@ mod tests {
         permit.mark_dispatched().expect("idempotent commit");
 
         assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_commits_of_one_permit_count_one_dispatch() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(4),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit: Arc<dyn ModelExecutionPermit> =
+            Arc::from(execution.acquire().await.expect("one shared reservation"));
+        let workers = 16;
+        let barrier = Arc::new(tokio::sync::Barrier::new(workers + 1));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..workers {
+            let permit = Arc::clone(&permit);
+            let barrier = Arc::clone(&barrier);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                permit.mark_dispatched()
+            });
+        }
+        barrier.wait().await;
+
+        while let Some(result) = tasks.join_next().await {
+            result.expect("commit task").expect("commit succeeds");
+        }
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 0);
     }
 
     #[tokio::test]

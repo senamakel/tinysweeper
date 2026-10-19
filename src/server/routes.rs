@@ -4177,7 +4177,7 @@ mod tests {
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let mut request = queued_test_review(75);
         request.head_sha = Some("head-a".into());
-        store.admit_batch(vec![request.clone()]).await.unwrap();
+        store.admit_batch(vec![request]).await.unwrap();
         let now = unix_time_ms();
         let owned = store
             .claim_next("slow-store-worker", now)
@@ -4209,6 +4209,97 @@ mod tests {
 
         assert!(matches!(result, Err(Error::ReviewOwnershipLost)));
         assert!(model.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_queued_push_burst_runs_and_publishes_only_the_confirmed_last_head() {
+        use crate::forge::{MockForge, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let now = unix_time_ms();
+        let requests = ["head-a", "head-b", "head-c"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, head)| {
+                let mut request = queued_test_review(81 + index as u64);
+                request.repo = "owner/repo".into();
+                request.number = 7;
+                request.head_sha = Some(head.into());
+                request.accepted_at_ms = now + index as i64;
+                request
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            store.admit_batch(requests).await.unwrap(),
+            Admission::Admitted
+        );
+
+        let owned = store.claim_next("burst-worker", now + 4).await.unwrap().unwrap();
+        assert_eq!(owned.accepted_ids.len(), 3);
+        assert!(store.confirm_head(&owned, "head-c", now + 5).await.unwrap());
+        assert_eq!(
+            store.begin_paid(&owned, now + 6).await.unwrap(),
+            PaidStart::Started
+        );
+
+        let model = MockModel::silent();
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let result = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&owned),
+            Mode::Incremental,
+            || async {
+                model
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![Message::user("review confirmed head-c")],
+                        schema: json!({"type": "object"}),
+                        schema_name: "review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
+                forge
+                    .publish_check(
+                        &repo,
+                        crate::forge::CheckRun {
+                            name: "tinysweeper/review".into(),
+                            head_sha: "head-c".into(),
+                            conclusion: Some(crate::forge::CheckConclusion::Success),
+                            title: "Reviewed".into(),
+                            summary: "Only the confirmed coalesced head ran".into(),
+                            images: vec![],
+                        },
+                    )
+                    .await?;
+                Ok(InnerReview::Complete(Some((
+                    1,
+                    false,
+                    status::ReviewCoverage::default(),
+                ))))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, InnerReview::Complete(Some(_))));
+        assert_eq!(model.requests().len(), 1);
+        assert!(model.requests()[0].messages[0].content.contains("head-c"));
+        let writes = forge.writes();
+        assert_eq!(writes.len(), 1);
+        assert!(matches!(
+            &writes[0],
+            crate::forge::Write::Check(check) if check.head_sha == "head-c"
+        ));
+        assert!(store
+            .finish(&owned, TerminalOutcome::Published, now + 7, now + 7)
+            .await
+            .unwrap());
+        assert_eq!(store.snapshot_for_test().terminal.len(), 3);
     }
 
     #[tokio::test]

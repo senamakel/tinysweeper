@@ -4702,7 +4702,7 @@ mod tests {
         let request = queued_test_review(71);
         assert_eq!(
             store.admit_batch(vec![request]).await.unwrap(),
-            Some(Admission::Admitted)
+            Admission::Admitted
         );
         let first = store
             .claim_next("first-owner", unix_time_ms())
@@ -4759,7 +4759,7 @@ mod tests {
                 .admit_batch(vec![queued_test_review(72)])
                 .await
                 .unwrap(),
-            Some(Admission::Admitted)
+            Admission::Admitted
         );
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())
@@ -6405,7 +6405,7 @@ mod tests {
             )
             .await
             .expect("webhook admitted durably"),
-            Admission::Admitted
+            Some(Admission::Admitted)
         );
 
         // Manual admission resolves every PR then atomically journals the
@@ -6565,7 +6565,7 @@ mod tests {
             )
             .await
             .expect("accepted durably"),
-            Admission::Admitted
+            Some(Admission::Admitted)
         );
 
         let check = forge.checks().get(status::CHECK_NAME).cloned();

@@ -609,7 +609,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                     out,
                     "- [ ] Complete the {} review for {}.",
                     lane.lane,
-                    code_list(paths)
+                    code_list(paths.into_iter())
                 );
             }
         }
@@ -654,7 +654,10 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
                 if paths.is_empty() {
                     "no lane response".into()
                 } else {
-                    format!("incomplete; unanswered files: {}", code_list(paths))
+                    format!(
+                        "incomplete; unanswered files: {}",
+                        code_list(paths.into_iter())
+                    )
                 }
             }
         );

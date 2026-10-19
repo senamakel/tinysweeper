@@ -3887,7 +3887,7 @@ mod tests {
             &self,
             request: crate::ports::model::ModelRequest,
         ) -> Result<crate::ports::model::ModelResponse> {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             self.0.complete(request).await
         }
     }
@@ -3960,7 +3960,7 @@ mod tests {
         );
         let error = checkout_then_review_before_deadline(
             &timing,
-            tokio::time::Instant::now() + std::time::Duration::from_millis(80),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
             &repo,
             7,
             || async {

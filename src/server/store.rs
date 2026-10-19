@@ -196,6 +196,21 @@ impl ReviewJobStore for Store {
         Ok(state.queued_check_claim_current(pending, self.server_now_ms().await?))
     }
 
+    async fn set_check_stage(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        stage: crate::ports::review_job::ReviewCheckStage,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let owned = owned.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.set_check_stage(&owned, &head_sha, check_id, stage, now_ms)
+        }).await
+    }
+
     async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
         self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))

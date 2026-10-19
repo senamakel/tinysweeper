@@ -378,6 +378,27 @@ impl ReviewSchedulerState {
         })
     }
 
+    /// Advance a check stage only for the live review owner generation.
+    pub fn set_check_stage(
+        &mut self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        stage: ReviewCheckStage,
+        now_ms: i64,
+    ) -> bool {
+        let Some(job) = self.unfinished.iter_mut().find(|job| {
+            owns(job, owned) && job.owner_until_ms > now_ms
+        }) else { return false; };
+        let Some(check) = job.review_checks.iter_mut().find(|check| {
+            check.head_sha == head_sha
+                && check.check_id == Some(check_id)
+                && check.owner_generation == Some(owned.generation)
+        }) else { return false; };
+        check.stage = stage;
+        true
+    }
+
     /// Atomically admit a whole batch in memory before the Mongo CAS persists it.
     pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>, now_ms: i64) -> Admission {
         if requests.is_empty() {
@@ -1037,6 +1058,16 @@ pub trait ReviewJobStore: Send + Sync {
     async fn queued_check_claim_current(
         &self,
         pending: &PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool>;
+
+    /// Persist a queued/in-progress/completed transition under the current review owner fence.
+    async fn set_check_stage(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        stage: ReviewCheckStage,
         now_ms: i64,
     ) -> Result<bool>;
 

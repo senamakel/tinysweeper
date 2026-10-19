@@ -2490,7 +2490,25 @@ async fn open_status(
 ) -> bool {
     // A retry re-enters `review_inner`, so without this the second attempt
     // would open a second check and orphan the first.
-    if slot.lock().expect("status slot").is_some() {
+    if let Some(existing) = slot.lock().expect("status slot").as_ref().cloned() {
+        if existing.stage == crate::ports::review_job::ReviewCheckStage::Queued {
+            let transitioned = async {
+                use crate::ports::forge::ForgeWrite;
+                let token = state.auth.installation_token(installation).await?;
+                crate::forge::github::GitHubWrite::new(&token)?
+                    .update_check(repo, existing.check_id, status::in_progress(head_sha))
+                    .await
+            }
+            .await;
+            match transitioned {
+                Ok(()) => {
+                    if let Some(status) = slot.lock().expect("status slot").as_mut() {
+                        status.stage = crate::ports::review_job::ReviewCheckStage::InProgress;
+                    }
+                }
+                Err(err) => tracing::warn!(%err, %repo, check_id = existing.check_id, "could not transition queued check to in-progress"),
+            }
+        }
         return true;
     }
 
@@ -2807,7 +2825,19 @@ async fn handle_review(
     let timing = crate::review_timing::ReviewTiming::new(repo.clone(), number, format!("{mode:?}"));
     timing.record(|record| record.queue_wait_ms = queued_at.elapsed().as_millis() as u64);
     tracing::debug!(%repo, number, queue_wait_ms = queued_at.elapsed().as_millis(), "starting admitted review worker");
-    let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
+    let queued_status = queue_check.as_ref().and_then(|check| {
+        let check_id = check.check_id?;
+        Some(ReviewStatus {
+            repo: RepoId::parse(&repo).ok()?,
+            check_id,
+            head_sha: check.head_sha.clone(),
+            installation,
+            stage: check.stage,
+            hub_comment_id: None,
+            prior_hub_body: None,
+        })
+    });
+    let slot: StatusSlot = Arc::new(std::sync::Mutex::new(queued_status));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
         // been opened yet, so there is nothing to conclude. Declining here,

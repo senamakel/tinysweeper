@@ -55,8 +55,13 @@ fn finding(path: &str, severity: Severity) -> Finding {
 }
 
 #[test]
-fn golden_draws_the_behavioural_flow_around_the_change() {
-    let diffs = [diff("src/order.rs", "settle")];
+fn one_changed_behaviour_does_not_get_a_mermaid_diagram() {
+    let diffs = [
+        diff("src/order.rs", "settle"),
+        diff("src/a.rs", "alpha"),
+        diff("src/b.rs", "beta"),
+        diff("src/c.rs", "gamma"),
+    ];
     let walk = Neighbourhood {
         nodes: vec![
             symbol("src/order.rs", "settle"),
@@ -89,32 +94,8 @@ fn golden_draws_the_behavioural_flow_around_the_change() {
         GraphView::Walked(&walk),
         &limits(),
     );
-    let diagram = mermaid::flowchart(&map).expect("a flow worth drawing");
-
-    assert_eq!(
-        diagram,
-        "```mermaid\n\
-         flowchart LR\n  \
-         n0[\"settle<br/>changed<br/>1 finding\"]:::blocking\n  \
-         n1[\"handle_request\"]:::impacted\n  \
-         n2[\"emit_receipt\"]:::impacted\n  \
-         n3[\"settles_an_order\"]:::impacted\n  \
-         n0 -->|calls| n2\n  \
-         n1 -->|calls| n0\n  \
-         n3 -->|tests| n0\n  \
-         classDef changed fill:#0d4429,stroke:#238636,color:#e6edf3\n  \
-         classDef impacted fill:#161b22,stroke:#6e7681,color:#c9d1d9\n  \
-         classDef flagged fill:#5a1e02,stroke:#d93f0b,color:#ffffff\n  \
-         classDef blocking fill:#67060c,stroke:#f85149,color:#ffffff\n\
-         ```\n"
-    );
-
-    let body = comment(&map).expect("a flow worth publishing");
-    assert!(body.contains("### How this change flows"), "{body}");
-    assert!(body.contains("**1 changed behaviour**"), "{body}");
-    assert!(!body.contains("Changed files"), "{body}");
-    assert!(!body.contains("src/order.rs"), "{body}");
-    assert!(!body.contains("+1 -"), "{body}");
+    assert!(mermaid::flowchart(&map).is_none());
+    assert!(comment(&map).is_none());
 }
 
 #[test]
@@ -228,12 +209,47 @@ fn calls_uses_implementations_and_tests_are_named_on_arrows() {
         edges.push(edge(&format!("{path}#{name}"), "src/api.rs#serve", kind));
     }
     let walk = Neighbourhood { nodes, edges };
-    let diagram = mermaid::flowchart(&build(&diffs, &[], GraphView::Walked(&walk), &limits()))
-        .expect("typed flow");
+    let map = build(&diffs, &[], GraphView::Walked(&walk), &limits());
+    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Calls));
+    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Uses));
+    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Implements));
+    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Tests));
+    assert!(mermaid::flowchart(&map).is_none());
+}
 
-    for label in ["|calls|", "|uses|", "|implements|", "|tests|"] {
-        assert!(diagram.contains(label), "missing {label} in {diagram}");
+#[test]
+fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
+    let component = |name: &str, role| Component {
+        name: name.into(), role, files: 1, additions: 1, deletions: 0,
+        findings: 0, worst: None, paths: vec![],
+    };
+    let map = ChangeMap {
+        components: vec![
+            component("src/a.rs#alpha", Role::Changed),
+            component("src/b.rs#beta", Role::Changed),
+            component("src/c.rs#gamma", Role::Changed),
+            component("src/d.rs#delta", Role::Changed),
+            component("src/caller.rs#call", Role::Impacted),
+            component("tests/api.rs#works", Role::Impacted),
+        ],
+        links: vec![
+            Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 1, to: 2, relation: FlowRelation::Uses, weight: 1 },
+            Link { from: 2, to: 3, relation: FlowRelation::Implements, weight: 1 },
+            Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 5, to: 0, relation: FlowRelation::Tests, weight: 1 },
+        ],
+        files: 4, additions: 4, deletions: 0, folded: 0,
+        graph: GraphStatus::Walked { nodes: 6 },
+    };
+
+    let diagram = mermaid::flowchart(&map).expect("four changed symbols");
+    for symbol in ["alpha", "beta", "gamma", "delta"] {
+        assert!(diagram.contains(symbol), "{diagram}");
     }
+    assert!(!diagram.contains("call"), "{diagram}");
+    assert!(!diagram.contains("works"), "{diagram}");
+    assert!(!diagram.contains("|tests|"), "{diagram}");
 }
 
 #[test]
@@ -317,8 +333,16 @@ fn a_hostile_symbol_cannot_escape_the_diagram() {
         nodes: vec![
             symbol("src/order.rs", "settle"),
             symbol("src/caller.rs", hostile),
+            symbol("src/a.rs", "alpha"),
+            symbol("src/b.rs", "beta"),
+            symbol("src/c.rs", "gamma"),
         ],
-        edges: vec![edge(&hostile_id, "src/order.rs#settle", EdgeKind::Calls)],
+        edges: vec![
+            edge(&hostile_id, "src/order.rs#settle", EdgeKind::Calls),
+            edge("src/a.rs#alpha", "src/order.rs#settle", EdgeKind::Calls),
+            edge("src/b.rs#beta", "src/order.rs#settle", EdgeKind::Calls),
+            edge("src/c.rs#gamma", "src/order.rs#settle", EdgeKind::Calls),
+        ],
     };
     let diagram =
         mermaid::flowchart(&build(&diffs, &[], GraphView::Walked(&walk), &limits())).expect("flow");

@@ -443,7 +443,7 @@ mod tests {
             ReviewMode::Large,
             Some(1),
             started_at,
-            started_at + Duration::from_millis(250),
+            started_at + Duration::from_millis(1_250),
         )));
         let control: Arc<dyn ModelExecutionControl> = execution.clone();
         let held = control.acquire().await.expect("first reservation");
@@ -454,8 +454,13 @@ mod tests {
             control.acquire().await
         });
         started_rx.await.expect("waiting acquire started");
+        let pending = tokio::time::timeout(Duration::from_millis(25), waiting.join_next()).await;
+        assert!(
+            pending.is_err(),
+            "the second acquisition waits while the reservation is held"
+        );
 
-        let result = tokio::time::timeout(Duration::from_secs(2), waiting.join_next())
+        let result = tokio::time::timeout(Duration::from_secs(3), waiting.join_next())
             .await
             .expect("deadline wakes a capacity waiter")
             .expect("waiting task")

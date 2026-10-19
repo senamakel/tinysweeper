@@ -3969,7 +3969,6 @@ mod tests {
     #[tokio::test]
     async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Mutex;
 
         let (_lost, lost_receiver) = watch::channel(false);
         let (_until_sender, until) =
@@ -4310,6 +4309,7 @@ mod tests {
         use crate::forge::{MockForge, RepoId};
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Usage};
+        use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::sync::Notify;
 

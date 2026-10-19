@@ -492,7 +492,8 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
             },
         );
     }
-    let mut gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
+    let mut gateway_model =
+        crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
     gateway_model.budget = Some(crate::harness::budget::ledger(10.0));
     let (execution, control) = execution_control(1);
     let dir = tempfile::tempdir().expect("temporary cassette directory");
@@ -508,7 +509,10 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
     let request = ModelRequest {
         model: "b".into(),
-        messages: vec![Message::system("Review this evidence."), Message::user("Check the implementation.")],
+        messages: vec![
+            Message::system("Review this evidence."),
+            Message::user("Check the implementation."),
+        ],
         schema: json!({
             "type":"object", "additionalProperties":false,
             "properties":{"summary":{"type":"string"}}, "required":["summary"]
@@ -518,7 +522,11 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     };
     let result = crate::ports::model::with_model_call_observer(
         physical_events.clone(),
-        model.review(request, &tree, &crate::config::types::LookupPolicy::default()),
+        model.review(
+            request,
+            &tree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
     )
     .await;
 

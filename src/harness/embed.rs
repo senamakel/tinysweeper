@@ -1603,6 +1603,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn structured_repairs_report_each_physical_dispatch_once() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let (mut model, _, request) = admission_fixture().await;
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3,"cost":0.25}),
+            ),
+        ])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        model.langfuse = None;
+        model.budget_prices.get_mut("b").unwrap().output = 5000.0;
+        model.budget = Some(crate::harness::budget::ledger(10.0));
+        model.structured_output = StructuredOutput::JsonObject;
+
+        let calls = Arc::new(RecordedModelCalls::default());
+        let response = crate::ports::model::with_model_call_observer(
+            calls.clone(),
+            model.complete(request),
+        )
+        .await
+        .expect("the second physical dispatch repairs malformed JSON");
+
+        assert_eq!(response.value["summary"], "checked");
+        assert_eq!(gateway.requests().len(), 2);
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "each admitted provider dispatch must be reported once, even when the logical completion repairs JSON"
+        );
+        assert_eq!(calls[0].0.output_tokens, 2);
+        assert_eq!(calls[1].0.output_tokens, 3);
+        assert!(calls.iter().all(|call| call.0.calls_attempted == 1));
+        assert!(calls.iter().all(|call| !call.3.is_zero()));
+    }
+
+    #[tokio::test]
     async fn json_object_truncation_repairs_twice_before_growing_the_ceiling() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         let (mut model, _, request) = admission_fixture().await;

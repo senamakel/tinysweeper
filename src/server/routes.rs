@@ -4289,7 +4289,6 @@ mod tests {
             )
             .await
             .expect("owned terminal disposition")
-            .expect("scheduler update")
             .expect("publication records terminal head while yielding")
         );
         assert_eq!(
@@ -4354,15 +4353,26 @@ mod tests {
             forge.writes().len() == 1,
             "the delayed delivery publishes no duplicate check"
         );
+        let mut latest_hint = request.clone();
+        latest_hint.id = crate::ports::review_job::ReviewJobId("push-c".into());
+        latest_hint.delivery = Some("push-c".into());
+        latest_hint.head_sha = Some("head-c-hint".into());
+        latest_hint.accepted_at_ms = now + 8;
+        store.admit_batch(vec![latest_hint]).await.unwrap();
         assert!(
             store
-                .finish(&delayed, TerminalOutcome::Published, now + 8, now + 8)
+                .finish(&delayed, TerminalOutcome::Declined, now + 9, now + 9)
                 .await
                 .unwrap()
         );
-        assert!(store.snapshot_for_test().terminal.iter().all(|record| {
-            record.id.0 != "delayed-a" || record.outcome == TerminalOutcome::Published
-        }));
+        let state = store.snapshot_for_test();
+        assert_eq!(
+            state.incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published),
+            "a yielded stale completion cannot replace a known publication"
+        );
+        assert_eq!(state.unfinished.len(), 1);
+        assert_eq!(state.unfinished[0].accepted_ids.len(), 3);
     }
 
     #[tokio::test]

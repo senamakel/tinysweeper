@@ -593,11 +593,11 @@ impl ReviewSchedulerState {
                 .or_else(|| budget.deadline_hit.then_some(TerminalOutcome::Deadline));
             if existing_terminal.is_none()
                 && matches!(
-                outcome,
-                TerminalOutcome::Published
-                    | TerminalOutcome::Declined
-                    | TerminalOutcome::Exhausted
-                    | TerminalOutcome::Deadline
+                    outcome,
+                    TerminalOutcome::Published
+                        | TerminalOutcome::Declined
+                        | TerminalOutcome::Exhausted
+                        | TerminalOutcome::Deadline
                 )
             {
                 budget.terminal_outcome = Some(outcome);
@@ -731,7 +731,11 @@ impl ReviewSchedulerState {
                 .find(|budget| {
                     budget.repo == record.request.repo && budget.number == record.request.number
                 })
-                .and_then(|budget| budget.terminal_outcome)
+                .and_then(|budget| {
+                    budget
+                        .terminal_outcome
+                        .or_else(|| budget.deadline_hit.then_some(TerminalOutcome::Deadline))
+                })
         } else {
             None
         };

@@ -6911,6 +6911,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_in_progress_write_does_not_label_exhausted_paid_work_unreviewed() {
+        use crate::forge::MockForge;
+        use crate::ports::review_job::{ReviewJobId, ReviewRequest};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let status_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        assert_eq!(
+            store.admit_batch(vec![ReviewRequest {
+                id: ReviewJobId("failed-stage-paid-work".into()),
+                repo: "owner/repo".into(),
+                number: 47,
+                author: "contributor".into(),
+                installation: 1,
+                head_sha: Some("head-with-paid-work".into()),
+                delivery: Some("failed-stage-paid-work".into()),
+                event: "pull_request".into(),
+                mode: ReviewJobMode::Incremental,
+                accepted_at_ms: 10,
+            }]).await.unwrap(),
+            Admission::Admitted,
+        );
+        publish_pending_queue_checks_at(&store, factory.clone(), 10).await.unwrap();
+        let queued = forge.checks().remove(status::CHECK_NAME).unwrap();
+        let check_id = forge.check_run_by_external_id(
+            &RepoId::parse("owner/repo").unwrap(),
+            &queued.head_sha,
+            queued.external_id.as_deref().unwrap(),
+        ).await.unwrap().unwrap();
+
+        // The remote in-progress PATCH fails, but paid work can still reach
+        // the scheduler's exhausted terminal state before cleanup retries.
+        forge.fail_next_check_updates(1);
+        assert!(crate::app::apply::start_queued_review_status(
+            &forge,
+            &RepoId::parse("owner/repo").unwrap(),
+            check_id,
+            &queued.head_sha,
+        ).await.is_err());
+        let owner = store.claim_next("worker", 12).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owner, &queued.head_sha, 13).await.unwrap());
+        assert_eq!(store.begin_paid(&owner, 14).await.unwrap(), PaidStart::Started);
+        assert!(store.finish(&owner, TerminalOutcome::Exhausted, 20, 20).await.unwrap());
+
+        publish_pending_queue_checks_at(&store, factory, 21).await.unwrap();
+        let terminal = forge.writes().into_iter().find_map(|write| match write {
+            crate::forge::Write::CheckUpdate { check_id: updated_id, check } if updated_id == check_id => Some(check),
+            _ => None,
+        }).expect("retired status is retried after paid work ends");
+        assert_eq!(terminal.conclusion, Some(crate::forge::CheckConclusion::Neutral));
+        assert_eq!(terminal.title, "Review incomplete");
+        assert!(terminal.summary.contains("could not confirm completion"));
+        assert!(terminal.summary.contains("Work may have started"));
+        assert!(!terminal.summary.contains("Nothing is wrong with the code"));
+        assert!(!terminal.summary.contains("nothing was checked"));
+    }
+
+    #[tokio::test]
     async fn headless_review_delivery_is_durable_when_status_metadata_is_unavailable() {
         use crate::forge::{MockForge, types::PullRequest};
         use crate::forge::types::CheckRunStatus;

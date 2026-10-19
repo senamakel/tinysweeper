@@ -924,7 +924,27 @@ where
         return Ok(Some(WorkerDisposition::OwnershipLost));
     }
     if matches!(err, Error::ReviewSuperseded) {
-        let _ = (jobs, owned, local_owner_valid);
+        if !local_owner_valid() {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        let Some(owned) = owned else {
+            return Ok(Some(WorkerDisposition::Terminal(
+                TerminalOutcome::Superseded,
+            )));
+        };
+        let owns = jobs.owns(owned, unix_time_ms()).await?;
+        if !local_owner_valid() || !owns {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        let should_continue = jobs.should_continue(owned, unix_time_ms()).await?;
+        if !local_owner_valid() {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        return Ok(Some(if should_continue {
+            WorkerDisposition::Terminal(TerminalOutcome::Superseded)
+        } else {
+            WorkerDisposition::Yielded
+        }));
     }
     Ok(None)
 }

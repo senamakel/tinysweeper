@@ -3019,14 +3019,18 @@ mod tests {
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if String::from_utf8_lossy(&log.lock().unwrap()).contains("model call") {
+                // The adapter logs the terminal before it updates ReviewTiming.
+                // Wait for the accounting signal itself so this assertion cannot
+                // race the observer between those two operations.
+                let record = timing.snapshot();
+                if record.calls_attempted == 1 && record.calls_errored == 1 {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("the worker's physical cancellation terminal was drained");
+        .expect("the worker's physical cancellation terminal was accounted");
 
         let record = timing.snapshot();
         assert_eq!(record.calls_attempted, 1);

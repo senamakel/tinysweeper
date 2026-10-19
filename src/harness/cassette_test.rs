@@ -119,7 +119,11 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
     let policy = crate::config::types::LookupPolicy::default();
 
     let response = recorder
-        .review(request("test/review-only", "inspect this change"), &ReviewTree, &policy)
+        .review(
+            request("test/review-only", "inspect this change"),
+            &ReviewTree,
+            &policy,
+        )
         .await
         .expect("records through review");
 
@@ -221,27 +225,43 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
     );
     let review_request = request("test/review-only", "inspect this change");
     let policy = crate::config::types::LookupPolicy::default();
-    recorder.review(review_request.clone(), &ReviewTree, &policy).await.expect("records");
+    recorder
+        .review(review_request.clone(), &ReviewTree, &policy)
+        .await
+        .expect("records");
     recorder.flush().expect("flushes");
 
     let player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
     let mut changed_policy = policy.clone();
     changed_policy.rounds += 1;
-    assert!(player.review(review_request.clone(), &ReviewTree, &changed_policy).await.is_err());
+    assert!(
+        player
+            .review(review_request.clone(), &ReviewTree, &changed_policy)
+            .await
+            .is_err()
+    );
     assert_eq!(player.strict_misses(), 1);
 
     struct DifferentRevision;
     #[async_trait::async_trait]
     impl TreeReader for DifferentRevision {
-        async fn lookup(&self, _: &Lookup) -> Result<Found> { Ok(Found::NotFound) }
-        fn describe(&self) -> String { "same reader".into() }
-        fn revision(&self) -> Option<String> { Some("b".repeat(40)) }
+        async fn lookup(&self, _: &Lookup) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+        fn describe(&self) -> String {
+            "same reader".into()
+        }
+        fn revision(&self) -> Option<String> {
+            Some("b".repeat(40))
+        }
     }
     let revision_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
-    assert!(revision_player
-        .review(review_request.clone(), &DifferentRevision, &policy)
-        .await
-        .is_err());
+    assert!(
+        revision_player
+            .review(review_request.clone(), &DifferentRevision, &policy)
+            .await
+            .is_err()
+    );
     assert_eq!(revision_player.strict_misses(), 1);
 
     let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
@@ -251,16 +271,30 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
     struct SameRevisionDifferentSource;
     #[async_trait::async_trait]
     impl TreeReader for SameRevisionDifferentSource {
-        async fn lookup(&self, _: &Lookup) -> Result<Found> { Ok(Found::NotFound) }
-        async fn explore(&self, _: &TreeQuery) -> Result<Found> { Ok(Found::NotFound) }
-        fn describe(&self) -> String { "/different/absolute/archive".into() }
-        fn revision(&self) -> Option<String> { Some("a".repeat(40)) }
+        async fn lookup(&self, _: &Lookup) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+        async fn explore(&self, _: &TreeQuery) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+        fn describe(&self) -> String {
+            "/different/absolute/archive".into()
+        }
+        fn revision(&self) -> Option<String> {
+            Some("a".repeat(40))
+        }
     }
     let source_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
-    assert!(source_player
-        .review(request("test/review-only", "inspect this change"), &SameRevisionDifferentSource, &policy)
-        .await
-        .is_err());
+    assert!(
+        source_player
+            .review(
+                request("test/review-only", "inspect this change"),
+                &SameRevisionDifferentSource,
+                &policy
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(source_player.strict_misses(), 1);
     assert_eq!(source_player.cost_usd(), 0.0);
 }
@@ -275,14 +309,14 @@ impl Model for ScopedQuotaModel {
     async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if call > 0 {
-            return Err(crate::error::Error::Model("scope exhausted".into()).with_usage(
-                Usage {
+            return Err(
+                crate::error::Error::Model("scope exhausted".into()).with_usage(Usage {
                     input_tokens: 50,
                     output_tokens: 7,
                     cost_usd: 0.005,
                     ..Default::default()
-                },
-            ));
+                }),
+            );
         }
         Ok(ModelResponse {
             value: answer(),
@@ -346,7 +380,12 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
     assert_eq!(recorder.served(), 1);
     assert_eq!(recorder.spend().usage.input_tokens, 150);
     assert_eq!(recorder.cost_usd(), 0.015);
-    assert_eq!(recorder.flush().expect("root cassette sees scoped response"), 1);
+    assert_eq!(
+        recorder
+            .flush()
+            .expect("root cassette sees scoped response"),
+        1
+    );
 }
 
 #[test]

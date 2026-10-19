@@ -289,11 +289,17 @@ struct CaseRevisionTree<'a> {
 
 #[async_trait::async_trait]
 impl TreeReader for CaseRevisionTree<'_> {
-    async fn lookup(&self, lookup: &crate::ports::tree::Lookup) -> Result<crate::ports::tree::Found> {
+    async fn lookup(
+        &self,
+        lookup: &crate::ports::tree::Lookup,
+    ) -> Result<crate::ports::tree::Found> {
         self.inner.lookup(lookup).await
     }
 
-    async fn explore(&self, query: &crate::ports::tree::TreeQuery) -> Result<crate::ports::tree::Found> {
+    async fn explore(
+        &self,
+        query: &crate::ports::tree::TreeQuery,
+    ) -> Result<crate::ports::tree::Found> {
         self.inner.explore(query).await
     }
 

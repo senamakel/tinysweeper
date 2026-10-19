@@ -404,11 +404,9 @@ impl<'a> QueryRecordingTree<'a> {
                 let canonical = canonical_schema(
                     &serde_json::to_value(found).expect("Found always serializes"),
                 );
-                hex_digest(
-                    &Sha256::digest(
-                        serde_json::to_vec(&canonical).expect("canonical Found serializes"),
-                    ),
-                )
+                hex_digest(&Sha256::digest(
+                    serde_json::to_vec(&canonical).expect("canonical Found serializes"),
+                ))
             }
             Err(_) => "failed".into(),
         };
@@ -438,20 +436,25 @@ impl crate::ports::tree::TreeReader for QueryRecordingTree<'_> {
         query: &crate::ports::tree::TreeQuery,
     ) -> Result<crate::ports::tree::Found> {
         let recorded = match query {
-            crate::ports::tree::TreeQuery::List { path, limit } => {
-                RecordedTreeQuery::List { path: path.clone(), limit: *limit }
-            }
-            crate::ports::tree::TreeQuery::Symbol { symbol, limit } => {
-                RecordedTreeQuery::Symbol { symbol: symbol.clone(), limit: *limit }
-            }
-            crate::ports::tree::TreeQuery::History { commit, path, start, end } => {
-                RecordedTreeQuery::History {
-                    commit: commit.clone(),
-                    path: path.clone(),
-                    start: *start,
-                    end: *end,
-                }
-            }
+            crate::ports::tree::TreeQuery::List { path, limit } => RecordedTreeQuery::List {
+                path: path.clone(),
+                limit: *limit,
+            },
+            crate::ports::tree::TreeQuery::Symbol { symbol, limit } => RecordedTreeQuery::Symbol {
+                symbol: symbol.clone(),
+                limit: *limit,
+            },
+            crate::ports::tree::TreeQuery::History {
+                commit,
+                path,
+                start,
+                end,
+            } => RecordedTreeQuery::History {
+                commit: commit.clone(),
+                path: path.clone(),
+                start: *start,
+                end: *end,
+            },
         };
         let result = self.inner.explore(query).await;
         self.record(recorded, &result);
@@ -482,18 +485,35 @@ impl<'a> QueryReplayTree<'a> {
         let result = match &expected.query {
             RecordedTreeQuery::Lookup(lookup) => self.inner.lookup(lookup).await,
             RecordedTreeQuery::List { path, limit } => {
-                self.inner.explore(&TreeQuery::List { path: path.clone(), limit: *limit }).await
+                self.inner
+                    .explore(&TreeQuery::List {
+                        path: path.clone(),
+                        limit: *limit,
+                    })
+                    .await
             }
             RecordedTreeQuery::Symbol { symbol, limit } => {
-                self.inner.explore(&TreeQuery::Symbol { symbol: symbol.clone(), limit: *limit }).await
+                self.inner
+                    .explore(&TreeQuery::Symbol {
+                        symbol: symbol.clone(),
+                        limit: *limit,
+                    })
+                    .await
             }
-            RecordedTreeQuery::History { commit, path, start, end } => {
-                self.inner.explore(&TreeQuery::History {
-                    commit: commit.clone(),
-                    path: path.clone(),
-                    start: *start,
-                    end: *end,
-                }).await
+            RecordedTreeQuery::History {
+                commit,
+                path,
+                start,
+                end,
+            } => {
+                self.inner
+                    .explore(&TreeQuery::History {
+                        commit: commit.clone(),
+                        path: path.clone(),
+                        start: *start,
+                        end: *end,
+                    })
+                    .await
             }
         };
         let matches = match (expected.result.as_str(), result) {
@@ -503,11 +523,9 @@ impl<'a> QueryReplayTree<'a> {
                 let canonical = canonical_schema(
                     &serde_json::to_value(found).expect("Found always serializes"),
                 );
-                let actual = hex_digest(
-                    &Sha256::digest(
-                        serde_json::to_vec(&canonical).expect("canonical Found serializes"),
-                    ),
-                );
+                let actual = hex_digest(&Sha256::digest(
+                    serde_json::to_vec(&canonical).expect("canonical Found serializes"),
+                ));
                 actual == expected_digest
             }
             (_, Err(_)) => false,
@@ -611,7 +629,8 @@ impl Model for Cassette {
             Some(_) => {
                 state.misses += 1;
                 Err(Error::Model(
-                    "cassette method mismatch: completion cannot replay a repository-aware review".into(),
+                    "cassette method mismatch: completion cannot replay a repository-aware review"
+                        .into(),
                 ))
             }
             None => Err(Error::Model(format!(

@@ -226,7 +226,10 @@ mod tests {
     fn stop_reasons_keep_partial_completion_causes_distinct() {
         assert_ne!(ReviewStopReason::LargePrLimit, ReviewStopReason::CallLimit);
         assert_ne!(ReviewStopReason::CallLimit, ReviewStopReason::SoftDeadline);
-        assert_ne!(ReviewStopReason::LargePrLimit, ReviewStopReason::SoftDeadline);
+        assert_ne!(
+            ReviewStopReason::LargePrLimit,
+            ReviewStopReason::SoftDeadline
+        );
     }
 
     fn options(

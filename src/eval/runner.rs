@@ -279,6 +279,33 @@ async fn review_case(
     .await
 }
 
+/// Gives both live and replay trees the immutable revision the fixture names.
+/// Replay fixtures do not carry a checkout, but the review still validates that
+/// repository evidence belongs to the pull request head under evaluation.
+struct CaseRevisionTree<'a> {
+    inner: &'a dyn TreeReader,
+    revision: String,
+}
+
+#[async_trait::async_trait]
+impl TreeReader for CaseRevisionTree<'_> {
+    async fn lookup(&self, lookup: &crate::ports::tree::Lookup) -> Result<crate::ports::tree::Found> {
+        self.inner.lookup(lookup).await
+    }
+
+    async fn explore(&self, query: &crate::ports::tree::TreeQuery) -> Result<crate::ports::tree::Found> {
+        self.inner.explore(query).await
+    }
+
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+
+    fn revision(&self) -> Option<String> {
+        Some(self.revision.clone())
+    }
+}
+
 /// The configuration a corpus run is allowed to use.
 ///
 /// One override, and it is the load-bearing one: `incremental` forced off so

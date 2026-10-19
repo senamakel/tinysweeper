@@ -146,9 +146,12 @@ impl ReviewJobStore for Store {
         state
             .terminal
             .retain(|record| record.expires_at_ms > now_ms);
+        state
+            .head_history
+            .retain(|record| record.expires_at_ms > now_ms);
         Ok(count > 0
             && state.unfinished.len() + count <= crate::ports::review_job::MAX_UNFINISHED_REVIEWS
-            && state.terminal.len() + state.unfinished.len() + count
+            && state.reserved_capacity() + count
                 <= crate::ports::review_job::MAX_TERMINAL_REVIEW_RESERVATIONS)
     }
 
@@ -174,6 +177,25 @@ impl ReviewJobStore for Store {
             .await
     }
 
+    async fn confirm_head(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let owned = owned.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.confirm_head(&owned, &head_sha, now_ms)
+        })
+        .await
+    }
+
+    async fn head_is_terminal(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.head_is_terminal(owned, self.server_now_ms().await?))
+    }
+
     async fn renew(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let owned = owned.clone();
         self.change_review_scheduler(move |state, now_ms| state.renew(&owned, now_ms))
@@ -183,6 +205,11 @@ impl ReviewJobStore for Store {
     async fn owns(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let state = self.review_scheduler_state().await?;
         Ok(state.owns(owned, self.server_now_ms().await?))
+    }
+
+    async fn should_continue(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.should_continue(owned, self.server_now_ms().await?))
     }
 
     async fn defer(
@@ -199,6 +226,12 @@ impl ReviewJobStore for Store {
         .await
     }
 
+    async fn defer_yield(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state, now_ms| state.defer_yield(&owned, now_ms))
+            .await
+    }
+
     async fn finish(
         &self,
         owned: &OwnedReview,
@@ -211,6 +244,12 @@ impl ReviewJobStore for Store {
             state.finish(&owned, outcome, now_ms, now_ms)
         })
         .await
+    }
+
+    async fn finish_deadline(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
+        let owned = owned.clone();
+        self.change_review_scheduler(move |state, now_ms| state.finish_deadline(&owned, now_ms))
+            .await
     }
 }
 
@@ -265,8 +304,10 @@ impl Store {
             return Ok(ReviewSchedulerState::default());
         };
         document.remove("_id");
-        bson::deserialize_from_document(document)
-            .map_err(|err| Error::Forge(format!("could not decode review scheduler: {err}")))
+        let mut state: ReviewSchedulerState = bson::deserialize_from_document(document)
+            .map_err(|err| Error::Forge(format!("could not decode review scheduler: {err}")))?;
+        state.normalize_legacy_records();
+        Ok(state)
     }
 
     async fn server_now_ms(&self) -> Result<i64> {

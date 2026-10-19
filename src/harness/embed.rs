@@ -76,6 +76,7 @@ pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
     // Shared across this review and every lane child derived from it.
     review_budget: Option<openhuman_embed::budget::Budget>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
     output_history: crate::harness::budget::OutputHistory,
     agentic_reviewers: bool,
@@ -201,6 +202,7 @@ struct PhysicalModelObserver {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
 }
@@ -211,9 +213,181 @@ struct PhysicalModelTerminal {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    counts: PhysicalDispatchCounts,
     correlation: crate::ports::model::ModelCallContext,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
+}
+
+#[derive(Clone, Default)]
+struct PhysicalDispatchCounts(Arc<std::sync::Mutex<PhysicalDispatchCountSnapshot>>);
+
+#[derive(Clone, Copy, Default)]
+struct PhysicalDispatchCountSnapshot {
+    calls_attempted: u64,
+    calls_succeeded: u64,
+    calls_refused: u64,
+    calls_errored: u64,
+}
+
+impl PhysicalDispatchCounts {
+    fn record(&self, succeeded: bool, refused: bool) {
+        let mut counts = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        counts.calls_attempted = counts.calls_attempted.saturating_add(1);
+        counts.calls_succeeded = counts.calls_succeeded.saturating_add(u64::from(succeeded));
+        counts.calls_refused = counts.calls_refused.saturating_add(u64::from(refused));
+        counts.calls_errored = counts.calls_errored.saturating_add(u64::from(!succeeded));
+    }
+
+    fn snapshot(&self) -> PhysicalDispatchCountSnapshot {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+struct GatewayExecutionAdmission {
+    control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+}
+
+struct GatewayExecutionPermit(Box<dyn crate::ports::model_execution::ModelExecutionPermit>);
+
+fn dispatch_refusal(
+    reason: crate::ports::model_execution::ModelExecutionRefusal,
+) -> openhuman_embed::budget::DispatchRefusal {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use openhuman_embed::budget::DispatchRefusalReason;
+
+    openhuman_embed::budget::DispatchRefusal::new(match reason {
+        ModelExecutionRefusal::CallLimit => DispatchRefusalReason::CallLimit,
+        ModelExecutionRefusal::SoftDeadline => DispatchRefusalReason::Deadline,
+        ModelExecutionRefusal::Cancelled => DispatchRefusalReason::Cancelled,
+    })
+}
+
+fn model_execution_refusal(
+    refusal: openhuman_embed::budget::DispatchRefusal,
+) -> crate::ports::model_execution::ModelExecutionRefusal {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use openhuman_embed::budget::DispatchRefusalReason;
+
+    match refusal.reason() {
+        DispatchRefusalReason::CallLimit => ModelExecutionRefusal::CallLimit,
+        DispatchRefusalReason::Deadline => ModelExecutionRefusal::SoftDeadline,
+        DispatchRefusalReason::Cancelled => ModelExecutionRefusal::Cancelled,
+    }
+}
+
+#[async_trait]
+impl openhuman_embed::budget::PhysicalDispatchAdmission for GatewayExecutionAdmission {
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<
+        Arc<dyn openhuman_embed::budget::PhysicalDispatchPermit>,
+        openhuman_embed::budget::DispatchRefusal,
+    > {
+        self.control
+            .acquire()
+            .await
+            .map(|permit| {
+                Arc::new(GatewayExecutionPermit(permit))
+                    as Arc<dyn openhuman_embed::budget::PhysicalDispatchPermit>
+            })
+            .map_err(dispatch_refusal)
+    }
+}
+
+impl openhuman_embed::budget::PhysicalDispatchPermit for GatewayExecutionPermit {
+    fn mark_dispatched(
+        &self,
+    ) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
+        self.0.mark_dispatched().map_err(dispatch_refusal)
+    }
+}
+
+fn execution_refusal_error(
+    error: &openhuman_embed::routing::LadderError,
+    counts: PhysicalDispatchCountSnapshot,
+) -> Option<Error> {
+    let (refusal, current_usage) = match &error.last_error {
+        openhuman_embed::CoreError::DispatchAdmission { source, usage, .. } => {
+            (model_execution_refusal(*source), usage.as_ref())
+        }
+        _ => return None,
+    };
+
+    let mut input_tokens = 0_u64;
+    let mut output_tokens = 0_u64;
+    let mut cached_tokens = 0_u64;
+    let mut reasoning_tokens = 0_u64;
+    let mut cost_usd = Some(0.0_f64);
+    let mut had_usage = false;
+    let mut missing_usage = false;
+    let mut append_usage = |usage: &openhuman_embed::complete::CompletionUsage| {
+        had_usage = true;
+        input_tokens = input_tokens.saturating_add(usage.input_tokens);
+        output_tokens = output_tokens.saturating_add(usage.output_tokens);
+        cached_tokens = cached_tokens.saturating_add(usage.cached_tokens);
+        reasoning_tokens = reasoning_tokens.saturating_add(usage.reasoning_tokens);
+        cost_usd = match (cost_usd, usage.cost_usd) {
+            (Some(total), Some(charge)) if charge.is_finite() && charge >= 0.0 => {
+                Some((total + charge).min(f64::MAX))
+            }
+            _ => None,
+        };
+    };
+
+    // The ladder's final attempt is a refusal placeholder for this same rung;
+    // the typed CoreError carries its preceding paid repair usage separately.
+    for attempt in error
+        .attempts
+        .iter()
+        .take(error.attempts.len().saturating_sub(1))
+    {
+        if let Some(usage) = &attempt.usage {
+            append_usage(usage);
+        } else {
+            // A prior rung may have reached a provider without returning usage.
+            missing_usage = true;
+            cost_usd = None;
+        }
+    }
+    if let Some(usage) = current_usage {
+        append_usage(usage);
+    }
+    drop(append_usage);
+
+    let has_physical_calls = counts.calls_attempted > 0;
+    let usage = has_physical_calls.then(|| {
+        Box::new(Usage {
+            input_tokens,
+            output_tokens,
+            reasoning_tokens,
+            cached_tokens,
+            calls_attempted: counts.calls_attempted,
+            calls_succeeded: counts.calls_succeeded,
+            calls_refused: counts.calls_refused,
+            calls_errored: counts.calls_errored,
+            // The adjacent availability marker distinguishes an unknown cost
+            // from a real zero charge without estimating a missing amount.
+            cost_usd: cost_usd.unwrap_or_default(),
+            ..Usage::default()
+        })
+    });
+    let accounting_complete = has_physical_calls
+        && had_usage
+        && !missing_usage
+        && cost_usd.is_some();
+
+    Some(Error::ModelExecutionRefused {
+        refusal,
+        usage,
+        accounting_complete,
+    })
 }
 
 impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserver {
@@ -231,6 +405,7 @@ impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserv
             output_cap: self.output_cap,
             history: self.history.clone(),
             timing: self.timing.clone(),
+            counts: self.counts.clone(),
             correlation: self
                 .timing
                 .as_ref()
@@ -256,6 +431,8 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         let provider_responded = matches!(outcome.status, PhysicalDispatchStatus::Succeeded);
+        self.counts
+            .record(provider_responded, outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused));
         let accounting = Usage {
             input_tokens: usage.map_or(0, |usage| usage.input_tokens),
             output_tokens: usage.map_or(0, |usage| usage.output_tokens),
@@ -312,6 +489,7 @@ impl std::fmt::Debug for GatewayModel {
             .field("base_url", &self.base_url)
             .field("fallbacks", &self.fallbacks)
             .field("provider", &self.provider)
+            .field("has_execution_control", &self.execution_control.is_some())
             .field("api_key", &"<redacted>")
             .finish()
     }
@@ -475,6 +653,7 @@ impl GatewayModel {
             api_key,
             budget: None,
             review_budget: None,
+            execution_control: None,
             budget_prices: models.budget_prices.clone(),
             output_history: Default::default(),
             agentic_reviewers: models.agentic_reviewers,
@@ -558,6 +737,7 @@ impl GatewayModel {
         request: &ModelRequest,
         completion: &CompletionRequest,
         unpinned: bool,
+        counts: PhysicalDispatchCounts,
     ) -> Result<CompletionRung> {
         let base = self
             .routes
@@ -576,10 +756,16 @@ impl GatewayModel {
             output_cap: base,
             history: self.output_history.clone(),
             timing: crate::ports::model::current_model_call_observer(),
+            counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
         });
         let mut completer = self.completer().physical_observer(physical);
+        if let Some(control) = &self.execution_control {
+            completer = completer.dispatch_admission(Arc::new(GatewayExecutionAdmission {
+                control: Arc::clone(control),
+            }));
+        }
         if let Some(ledger) = &self.budget {
             let mut bound = completion.clone();
             bound.model = model.to_owned();
@@ -604,15 +790,23 @@ impl GatewayModel {
 
     async fn complete_ladder(&self, request: &ModelRequest) -> Result<ModelResponse> {
         let completion = self.completion_request(request);
+        let physical_counts = PhysicalDispatchCounts::default();
         let mut ladder = CompletionLadder::new(self.completion_rung(
             &request.model,
             request,
             &completion,
             false,
+            physical_counts.clone(),
         )?)
         .truncation_retry(TruncationRetry::new(MAX_TRUNCATION_RETRIES as u8, u32::MAX));
         for model in &self.fallbacks {
-            ladder = ladder.fallback(self.completion_rung(model, request, &completion, false)?);
+            ladder = ladder.fallback(self.completion_rung(
+                model,
+                request,
+                &completion,
+                false,
+                physical_counts.clone(),
+            )?);
         }
         let primary = self.routing_for(&request.model);
         if primary.last_resort_unpinned && !primary.is_empty() {
@@ -621,6 +815,7 @@ impl GatewayModel {
                 request,
                 &completion,
                 true,
+                physical_counts.clone(),
             )?);
         }
         let result = ladder.complete(completion).await.map_err(|error| {

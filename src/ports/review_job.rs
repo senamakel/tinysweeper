@@ -300,7 +300,12 @@ impl ReviewSchedulerState {
             let Some(check_index) = self.unfinished[index]
                 .review_checks
                 .iter()
-                .position(|check| !check.published && check.write_claim_until_ms <= now_ms)
+                .position(|check| {
+                    self.unfinished[index].request.head_sha.as_deref()
+                        == Some(check.head_sha.as_str())
+                        && !check.published
+                        && check.write_claim_until_ms <= now_ms
+                })
             else {
                 continue;
             };
@@ -341,7 +346,8 @@ impl ReviewSchedulerState {
         }) else {
             return false;
         };
-        if check.published
+        if job.request.head_sha.as_deref() != Some(check.head_sha.as_str())
+            || check.published
             || check.write_generation != pending.check.write_generation
             || check.write_claim_until_ms <= now_ms
         {

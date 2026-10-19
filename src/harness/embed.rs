@@ -1884,6 +1884,86 @@ mod tests {
         assert_eq!(gateway.requests().len(), 1);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_root_reservation_blocks_scoped_and_direct_gateway_calls() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let reply = || {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+            )
+        };
+        let (gateway, release) = FakeGateway::start_paused(vec![reply(), reply(), reply()]).await;
+        model.base_url = gateway.base_url.clone();
+        let root_budget = crate::harness::budget::ledger(1.0);
+        model.budget = Some(root_budget.clone());
+        model.review_budget = Some(root_budget.clone());
+        let held = root_budget
+            .reserve(openhuman_embed::budget::Spend {
+                tokens: 0,
+                cost_micros: 1_000_000,
+            })
+            .expect("the review root reserves its full $1 allowance");
+        let root: Arc<dyn Model> = Arc::new(model);
+        let lane_models = models();
+        let first = crate::flows::caps::ModelCapability::new(root.clone(), lane_models.clone())
+            .with_budget(1.0)
+            .model()
+            .clone();
+        let second = crate::flows::caps::ModelCapability::new(root.clone(), lane_models)
+            .with_budget(1.0)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (caller, request) in [
+            (first, request.clone()),
+            (second, request.clone()),
+            (root, request),
+        ] {
+            let barrier = Arc::clone(&barrier);
+            let started_tx = started_tx.clone();
+            calls.spawn(async move {
+                started_tx.send(()).expect("test receiver");
+                barrier.wait().await;
+                caller.complete(request).await
+            });
+        }
+        drop(started_tx);
+        for _ in 0..3 {
+            started_rx.recv().await.expect("model call task started");
+        }
+        barrier.wait().await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let writes_while_root_is_reserved = gateway.requests().len();
+
+        // Always release the fixture before asserting so an expected failure
+        // cannot strand model tasks or paused HTTP responses.
+        held.settle(Default::default());
+        release.add_permits(3);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(result) = calls.join_next().await {
+                result.expect("model call task");
+            }
+        })
+        .await
+        .expect("all held calls finish after fixture cleanup");
+
+        assert_eq!(
+            writes_while_root_is_reserved, 0,
+            "lane scopes and direct completion must share the held review root"
+        );
+    }
+
     fn review_reservation_micros(model: &GatewayModel, request: &ModelRequest) -> u64 {
         let base = request.max_tokens;
         let mut completion = model.completion_request(request);
@@ -2275,6 +2355,7 @@ mod tests {
         }];
         let gateway = GatewayModel {
             budget: None,
+            review_budget: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2322,6 +2403,7 @@ mod tests {
         }];
         let mut gateway = GatewayModel {
             budget: None,
+            review_budget: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2436,6 +2518,7 @@ mod tests {
             agentic_reviewers: false,
             request_timeout_ms: 120_000,
             budget: None,
+            review_budget: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
         };
@@ -2490,6 +2573,7 @@ mod tests {
         // error, then builds the gateway directly for the positive case.
         let gateway = GatewayModel {
             budget: None,
+            review_budget: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,

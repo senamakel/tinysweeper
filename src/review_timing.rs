@@ -10,7 +10,7 @@ use tracing::Span;
 use crate::ports::model::Usage;
 
 /// Aggregated completed-pass yields with no group identifiers or content.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub(crate) struct PassYield {
     /// Groups that completed this pass.
     pub(crate) groups: u64,

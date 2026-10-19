@@ -2684,6 +2684,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_timing_records_zero_yield_for_an_empty_one_pass_review() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut config = critique_config();
+        config.review.passes = 1;
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        review_with_tree_observed(
+            &forge,
+            Arc::new(MockModel::always(json!({"summary":"Fine.","findings":[]}))),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        )
+        .await
+        .expect("mock review completes");
+        timing.finish("success");
+
+        let record = timing.snapshot();
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("one-pass critique yield is in the terminal record");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 0);
+        assert_eq!(yield_one.survivors, 0);
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":0,\"survivors\":0}}"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn terminal_timing_keeps_pass_one_yield_when_pass_two_is_cancelled() {
+        use crate::ports::model::{Message, ModelRequest, ModelResponse};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::mpsc;
+
+        struct BlockCoverage {
+            critique_calls: AtomicUsize,
+            second_pass_started: mpsc::UnboundedSender<()>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for BlockCoverage {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                let value = match request.schema_name.as_str() {
+                    "tinysweeper_falsify" => json!({"incorrect":[{
+                        "index":1,"reason":"The candidate is disproved."
+                    }]}),
+                    "tinysweeper_critique" => {
+                        if self.critique_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            json!({
+                                "summary":"Candidate found.",
+                                "findings":[{
+                                    "path":"src/main.rs",
+                                    "existing_code":"let x0 = 0;",
+                                    "rule":"unchecked-index",
+                                    "title":"Guard x0",
+                                    "body":"The value may be invalid.",
+                                    "severity":"high",
+                                    "confidence":0.9
+                                }]
+                            })
+                        } else {
+                            self.second_pass_started.send(()).unwrap();
+                            return std::future::pending::<Result<ModelResponse>>().await;
+                        }
+                    }
+                    other => panic!("unexpected model schema {other}"),
+                };
+                Ok(ModelResponse {
+                    value,
+                    model: request.model,
+                    usage: Usage::default(),
+                })
+            }
+        }
+
+        let mut patch = String::from("@@ -1,2 +1,82 @@\n fn main() {\n");
+        patch.push_str("+    let x0 = 0;\n");
+        for index in 1..80 {
+            patch.push_str(&format!("+    let x{index} = {index};\n"));
+        }
+        patch.push_str(" }\n");
+        let file = ChangedFile {
+            path: "src/main.rs".into(),
+            status: FileStatus::Modified,
+            patch: Some(patch),
+            ..ChangedFile::default()
+        };
+        let forge = forge_with(vec![file], vec![]);
+        let mut config = critique_config();
+        config.review.passes = 2;
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let model = Arc::new(BlockCoverage {
+            critique_calls: AtomicUsize::new(0),
+            second_pass_started: started,
+        });
+        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let review_timing = timing.clone();
+        let mut running = Box::pin(review_with_tree_observed(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(review_timing),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut running => panic!("review completed before pass-two cancellation: {result:?}"),
+                signal = started_rx.recv() => signal.expect("the model sent its start signal"),
+            }
+        })
+        .await
+        .expect("the second reviewer pass started");
+        drop(running);
+
+        let record = timing.snapshot();
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("the completed first pass remains after cancellation");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 1);
+        assert_eq!(yield_one.survivors, 0);
+        assert!(!record.pass_yields.contains_key("critique:2"));
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":1,\"survivors\":0}}"), "{line}");
+    }
+
+    #[tokio::test]
     async fn a_deadline_keeps_the_partial_timing_record_and_outcome() {
         struct SlowModel;
         #[async_trait::async_trait]

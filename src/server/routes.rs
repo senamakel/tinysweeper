@@ -6922,9 +6922,10 @@ mod tests {
             unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
         ).await.expect("retired status drain succeeds");
 
-        let check = forge.checks().remove(status::CHECK_NAME)
-            .expect("a terminal status is published for superseded A");
-        assert_eq!(check.head_sha, "head-a");
+        let check = forge.writes().into_iter().find_map(|write| match write {
+            crate::forge::Write::Check(check) if check.head_sha == "head-a" => Some(check),
+            _ => None,
+        }).expect("a terminal status is published for superseded A");
         assert_eq!(check.status, None, "terminal checks omit pending status");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
         assert!(check.summary.contains("superseded before review"));

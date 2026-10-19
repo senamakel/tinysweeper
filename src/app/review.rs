@@ -144,14 +144,52 @@ impl ObservedModel {
         })
         .await;
         pending.completed = true;
-        if physical && matches!(&result, Err(Error::Budget { .. })) {
-            // Budget admission can refuse before a provider starts, so there
-            // is no physical terminal to account for. Preserve the refusal
-            // without claiming that a dispatch happened.
-            self.timing.record(|record| record.calls_refused += 1);
-        }
-        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 && !physical {
-            match &result {
+        let observed_calls = observer
+            .observed
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let execution_refusal = result.as_ref().err().and_then(|error| match error {
+            Error::ModelExecutionRefused { refusal, .. } => Some(*refusal),
+            _ => None,
+        });
+        if let Some(refusal) = execution_refusal {
+            // This refusal is a host decision, not a provider dispatch. If no
+            // physical callback already recorded prior paid work, retain any
+            // usage the adapter attached without inventing missing counters.
+            let usage = (observed_calls == 0)
+                .then(|| result.as_ref().err().and_then(Error::usage))
+                .flatten();
+            self.timing.record(|record| {
+                if let Some(usage) = usage {
+                    if usage.calls_attempted
+                        + usage.calls_succeeded
+                        + usage.calls_refused
+                        + usage.calls_errored
+                        > 0
+                    {
+                        record.calls_attempted += usage.calls_attempted;
+                        record.calls_succeeded += usage.calls_succeeded;
+                        record.calls_refused += usage.calls_refused;
+                        record.calls_errored += usage.calls_errored;
+                    }
+                    record.usage.add(usage);
+                }
+                if matches!(
+                    refusal,
+                    crate::ports::model_execution::ModelExecutionRefusal::CallLimit
+                        | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
+                ) {
+                    record.calls_refused += 1;
+                }
+            });
+        } else {
+            if physical && matches!(&result, Err(Error::Budget { .. })) {
+                // Budget admission can refuse before a provider starts, so
+                // there is no physical terminal to account for. Preserve the
+                // refusal without claiming that a dispatch happened.
+                self.timing.record(|record| record.calls_refused += 1);
+            }
+            if observed_calls == 0 && !physical {
+                match &result {
                 Ok(response) => self.timing.record(|r| {
                     let usage = response.usage;
                     if usage.calls_attempted > 0 {
@@ -189,6 +227,7 @@ impl ObservedModel {
                         r.usage.add(usage);
                     }
                 }),
+                }
             }
         }
         result

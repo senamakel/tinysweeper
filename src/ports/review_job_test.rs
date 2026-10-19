@@ -396,6 +396,8 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
             let mut check = base.clone();
             check.head_sha = format!("padding-{index}");
             check.external_id = format!("padding-id-{index}");
+            check.stage = super::ReviewCheckStage::Completed;
+            check.published = true;
             super::RetiredReviewCheck {
                 repo: "owner/repo".into(),
                 installation: 1,

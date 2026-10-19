@@ -141,9 +141,16 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 .as_deref()
                 .or(requested_model.as_deref())
                 .unwrap_or("unknown");
+            let correlation = self
+                .timing
+                .as_ref()
+                .map(|observer| observer.correlation())
+                .unwrap_or_default();
             tracing::dispatcher::with_default(&self.dispatch, || {
                 self.span.in_scope(|| {
                     tracing::info!(target: "tinysweeper::model", model,
+                        repo = %correlation.repo, pr = correlation.pr,
+                        head_sha = %correlation.head_sha, mode = %correlation.mode,
                         latency_ms = *duration_ms, succeeded = provider_responded,
                         completion_valid = finish_reason.is_some(),
                         input_tokens = observed_usage.input_tokens,
@@ -189,6 +196,7 @@ struct PhysicalModelTerminal {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    correlation: crate::ports::model::ModelCallContext,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
 }
@@ -208,6 +216,11 @@ impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserv
             output_cap: self.output_cap,
             history: self.history.clone(),
             timing: self.timing.clone(),
+            correlation: self
+                .timing
+                .as_ref()
+                .map(|observer| observer.correlation())
+                .unwrap_or_default(),
             dispatch: self.dispatch.clone(),
             span: self.span.clone(),
         })
@@ -256,6 +269,8 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
         tracing::dispatcher::with_default(&self.dispatch, || {
             self.span.in_scope(|| {
                 tracing::info!(target: "tinysweeper::model", model, lane = %self.lane,
+                    repo = %self.correlation.repo, pr = self.correlation.pr,
+                    head_sha = %self.correlation.head_sha, mode = %self.correlation.mode,
                     latency_ms = outcome.duration.as_millis() as u64,
                     succeeded = provider_responded, refused = outcome.refused,
                     input_tokens = accounting.input_tokens,

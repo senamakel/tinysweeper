@@ -22,6 +22,19 @@ use crate::error::Result;
 pub(crate) trait ModelCallObserver: Send + Sync {
     /// Record safe accounting and elapsed time for one provider call.
     fn completed(&self, usage: Usage, succeeded: bool, refused: bool, latency: Duration);
+
+    /// Correlate physical-call telemetry to its review without retaining content.
+    fn correlation(&self) -> ModelCallContext {
+        ModelCallContext::default()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ModelCallContext {
+    pub(crate) repo: String,
+    pub(crate) pr: u64,
+    pub(crate) head_sha: String,
+    pub(crate) mode: String,
 }
 
 tokio::task_local! {

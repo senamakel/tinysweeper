@@ -76,6 +76,16 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
             record.usage.add(usage);
         });
     }
+
+    fn correlation(&self) -> crate::ports::model::ModelCallContext {
+        let record = self.timing.snapshot();
+        crate::ports::model::ModelCallContext {
+            repo: record.repo,
+            pr: record.pr,
+            head_sha: record.head_sha,
+            mode: record.mode,
+        }
+    }
 }
 
 struct PendingModelCall {

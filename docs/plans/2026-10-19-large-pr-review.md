@@ -104,7 +104,8 @@ to singletons. Omitted member paths remain explicitly unanswered in that lane.
 Risk inputs are host-derived only:
 
 - Scanner-forced paths always sort first; scanner findings remain published
-  even if no model group fits. Previous posted unresolved findings rank next.
+  even if no model group fits. Previously posted finding paths (`PriorReview.anchors`) rank next. This is
+  a host priority hint; do not infer paths from free-form model titles.
 - Reuse the security-path/sink/supply-chain predicates in `lanes/triage.rs`;
   expose a `pub(crate)` scoring helper rather than copy their lists.
 - Public API means changed Rust `pub` declarations, JS/TS `export` declarations,

@@ -221,7 +221,10 @@ One locked state contains committed calls, reserved slots and stop reason.
 atomically. If only live reservations fill the count, wait on a notification
 until a permit commits/drops or deadline elapses; recheck under the lock to
 avoid a lost wakeup. If all allowed calls are committed, return CallLimit.
-`mark_dispatched` moves reserved to committed exactly once. Drop refunds only
+`mark_dispatched` first rechecks the absolute deadline/cancellation; if not
+already committed, it then moves reserved to committed exactly once. A failed
+commit leaves the slot uncommitted and the upstream hook settles money to zero.
+An already committed permit returns success without counting twice. Drop refunds only
 uncommitted reservation; committed calls remain spent. In normal mode there
 is no count ceiling, but the absolute soft clock is still enforced. #229 later
 adds the separate eight-slot semaphore to the same acquire/permit lifetime.

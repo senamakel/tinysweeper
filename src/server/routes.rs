@@ -459,6 +459,7 @@ pub async fn serve_with_model_factory(
     let review_dispatcher = tokio::spawn(drain_review_queue(
         review_receiver,
         state.permits.clone(),
+        review_concurrency,
         state.review_jobs.clone(),
         state.review_owner.clone(),
         state.accepting_reviews.clone(),
@@ -6667,6 +6668,7 @@ mod tests {
         let dispatcher = tokio::spawn(drain_review_queue(
             new_receiver,
             permits,
+            MAX_CONCURRENT_REVIEWS,
             store.clone(),
             Arc::from("restart-process"),
             accepting,
@@ -6721,6 +6723,7 @@ mod tests {
         let dispatcher = tokio::spawn(drain_review_queue(
             receiver,
             permits,
+            1,
             store,
             Arc::from("test-owner"),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),

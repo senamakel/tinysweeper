@@ -113,5 +113,13 @@
   ],
   "comments": [],
   "blobs": {},
-  "lookups": {}
+  "lookups": {
+    "read crates/openhuman-core/src/voice/server/singleton.rs:88-120": {
+      "outcome": "text",
+      "text": "   88| /// Creates a fresh `VoiceServer` that is **not** registered in the global\n   89| /// singleton used by `voice_server_status` RPC. This keeps CLI-started\n   90| /// instances isolated from the core RPC lifecycle.\n   91| pub async fn run_standalone(\n   92|     ctx: &crate::core::runtime::DispatchCtx,\n   93|     app_config: Config,\n   94|     server_config: VoiceServerConfig,\n   95| ) -> Result<(), String> {\n   96|     info!(\"{LOG_PREFIX} starting standalone voice server\");\n   97|     info!(\"{LOG_PREFIX} hotkey: {}\", server_config.hotkey);\n   98|     info!(\"{LOG_PREFIX} mode: {:?}\", server_config.activation_mode);\n   99|     info!(\"{LOG_PREFIX} press the hotkey to start dictating\");\n  100| \n  101|     let server = VoiceServer::new(server_config);\n  102| \n  103|     // Handle Ctrl+C gracefully.\n  104|     let server_arc = Arc::new(server);\n  105|     let server_for_signal = server_arc.clone();\n  106| \n  107|     tokio::spawn(async move {\n  108|         if let Ok(()) = tokio::signal::ctrl_c().await {\n  109|             info!(\"{LOG_PREFIX} Ctrl+C received, shutting down\");\n  110|             server_for_signal.stop().await;\n  111|         }\n  112|     });\n  113| \n  114|     // This is safe because we hold the Arc and nothing else moves it.\n  115|     // The server.run() borrows &self, and we await it to completion.\n  116|     server_arc.run(ctx, &app_config).await\n  117| }",
+      "start": 88,
+      "end": 117,
+      "total": 117
+    }
+  }
 }

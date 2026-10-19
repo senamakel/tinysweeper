@@ -113,5 +113,20 @@
   ],
   "comments": [],
   "blobs": {},
-  "lookups": {}
+  "lookups": {
+    "read docs/gitbooks/en/features/privacy-mode.md:1-26": {
+      "outcome": "text",
+      "text": "    1| ---\n    2| description: >-\n    3|   One switch, enforced in the Rust core. Local-only mode blocks cloud model\n    4|   calls, network tools, web search, integrations and cloud embeddings, and\n    5|   allows only on-device runtimes. Voice is the exception, because there is no\n    6|   local speech-to-text engine.\n    7| icon: lock\n    8| ---\n    9| \n   10| # Privacy mode\n   11| \n   12| Most assistants' privacy story is a paragraph in a system prompt. OpenHuman's is an enforcement point in the Rust core.\n   13| \n   14| The `[privacy]` config block defines three modes:\n   15| \n   16| | Mode | What it means |\n   17| | --- | --- |\n   18| | `standard` (default) | Normal operation. Managed cloud routing, BYO providers and local models are all available. |\n   19| | `local_only` | No inference leaves the device. Every external chat provider is refused when it is built: the managed cloud, BYO cloud keys, even CLI delegates like Claude Code. Network tools, web search, integrations and cloud embeddings are refused at their egress points. Only local runtimes pass: Ollama, LM Studio, MLX and local OpenAI-compatible endpoints. Voice is the one exception, because no local speech-to-text engine exists. |\n   20| | `sensitive` | The base for an upcoming PII-aware tier (detection, redaction, destination disclosure). Today it behaves like `standard`. |\n   21| \n   22| ## Why enforcement matters\n   23| \n   24| Privacy mode is not a policy the model is asked to follow. The first check lives in the inference provider factory (`crates/openhuman-core/src/inference/provider/factory/`). Under `local_only`, the core refuses to build an external provider at all. The error names the blocked provider and tells you how to fix it: switch to a local model, or change the mode in Settings.\n   25| \n   26| That makes the guarantee independent of prompts, agents, tools or upstream bugs. If any code path tries to reach a cloud model in local-only mode, it cannot get a client.",
+      "start": 1,
+      "end": 26,
+      "total": 60
+    },
+    "read crates/openhuman-core/src/platform/about_app/catalog_conversation_intelligence.rs:68-80": {
+      "outcome": "text",
+      "text": "   68|         name: \"Speech Recognition Engine\",\n   69|         domain: \"voice\",\n   70|         category: CapabilityCategory::Conversation,\n   71|         description: \"Choose which hosted engine transcribes your speech. \\\"Backend\\\" uses \\\n   72|                       OpenHuman's transcription proxy and needs no setup; ElevenLabs and OpenAI \\\n   73|                       call the provider directly with your own API key. Audio always leaves the \\\n   74|                       device — the bundled offline whisper.cpp engine was removed, so there is \\\n   75|                       no local option.\",\n   76|         how_to: \"Settings → Voice → Speech recognition engine\",\n   77|         status: CapabilityStatus::Beta,\n   78|         privacy: DERIVED_TO_BACKEND,\n   79|     },\n   80| Capability {",
+      "start": 68,
+      "end": 80,
+      "total": 649
+    }
+  }
 }

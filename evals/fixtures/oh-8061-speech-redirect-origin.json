@@ -113,5 +113,20 @@
   ],
   "comments": [],
   "blobs": {},
-  "lookups": {}
+  "lookups": {
+    "read crates/openhuman-core/src/voice/factory/stt_providers.rs:96-112": {
+      "outcome": "text",
+      "text": "   96|     ) -> Self {\n   97|         let endpoint: String = endpoint.into();\n   98|         Self {\n   99|             slug: slug.into(),\n  100|             endpoint: endpoint.clone(),\n  101|             api_style,\n  102|             client: ExternalSttClient::new(\n  103|                 reqwest::Client::new(),\n  104|                 model,\n  105|                 endpoint,\n  106|                 api_key,\n  107|                 api_style,\n  108|             ),\n  109|         }\n  110|     }\n  111| }\n  112| ",
+      "start": 96,
+      "end": 112,
+      "total": 164
+    },
+    "read crates/openhuman-core/src/voice/factory/tts_providers.rs:140-155": {
+      "outcome": "text",
+      "text": "  140|         let endpoint: String = endpoint.into();\n  141|         Self {\n  142|             slug: slug.into(),\n  143|             endpoint: endpoint.clone(),\n  144|             default_voice: default_voice.into(),\n  145|             api_style,\n  146|             client: ExternalTtsClient::new(reqwest::Client::new(), endpoint, api_key, api_style),\n  147|         }\n  148|     }\n  149| }\n  150| \n  151| #[async_trait]\n  152| impl TtsProvider for ExternalTtsProvider {\n  153|     fn name(&self) -> &'static str {\n  154|         \"external\"\n  155|     }",
+      "start": 140,
+      "end": 155,
+      "total": 200
+    }
+  }
 }

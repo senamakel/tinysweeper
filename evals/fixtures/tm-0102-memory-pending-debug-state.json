@@ -194,5 +194,13 @@
   ],
   "comments": [],
   "blobs": {},
-  "lookups": {}
+  "lookups": {
+    "read crates/tinymcp/src/registry/oauth/pending.rs:130-155": {
+      "outcome": "text",
+      "text": "  130|     /// already dropped them. For tests and diagnostics.\n  131|     ///\n  132|     /// # Errors\n  133|     ///\n  134|     /// Whatever the store reports when it cannot be read.\n  135|     fn count(&self) -> BoxFuture<'_, Result<usize>>;\n  136| }\n  137| \n  138| /// The default store: pending authorizations in this process's memory.\n  139| ///\n  140| /// Right when the redirect returns to the process that started the sign-in.\n  141| /// Expired entries are dropped whenever the store is touched.\n  142| #[derive(Debug, Default)]\n  143| pub struct MemoryPendingStore {\n  144|     entries: Mutex<HashMap<String, PendingAuthorization>>,\n  145| }\n  146| \n  147| impl MemoryPendingStore {\n  148|     /// An empty store.\n  149|     #[must_use]\n  150|     pub fn new() -> Self {\n  151|         Self::default()\n  152|     }\n  153| \n  154|     fn pruned(&self) -> parking_lot::MutexGuard<'_, HashMap<String, PendingAuthorization>> {\n  155|         let mut entries = self.entries.lock();",
+      "start": 130,
+      "end": 155,
+      "total": 190
+    }
+  }
 }

@@ -1097,11 +1097,13 @@ mod tests {
                 cost_usd: 0.01,
                 ..Default::default()
             });
-        let config: Config = crate::config::DEFAULTS
+        let mut config: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()
             .unwrap()
             .try_into()
             .unwrap();
+        config.models.reasoning_effort = "high".into();
+        config.models.summary_reasoning_effort = "off".into();
         let (summary, spend, transcript) = generate(
             &model,
             &config,
@@ -1143,8 +1145,8 @@ mod tests {
         assert!(
             request
                 .iter()
-                .all(|request| request.reasoning_effort.as_deref() == Some("low")),
-            "both summary generation and its schema repair carry the summary effort"
+                .all(|request| request.reasoning_effort.as_deref() == Some("off")),
+            "both summary generation and its schema repair carry the custom summary effort"
         );
         assert!(
             request[0].schema["properties"]["positive_observations"]["additionalProperties"]

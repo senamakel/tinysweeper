@@ -2803,7 +2803,7 @@ mod tests {
 
     #[tokio::test]
     async fn observed_model_counts_typed_call_limit_without_double_counting_usage() {
-        use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
+        use crate::harness::mock::execution_test_support::execution_control;
         use crate::ports::model_execution::ModelExecutionRefusal;
 
         let mock = MockModel::silent().with_usage(Usage {
@@ -2816,13 +2816,14 @@ mod tests {
         });
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
         let observed: Arc<dyn Model> = Arc::new(ObservedModel {
-            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            inner: Arc::new(mock.clone()),
             timing: timing.clone(),
         });
         let (execution, control) = execution_control(1);
         let observed = observed
             .with_execution_control(control)
             .expect("observed model forwards the dispatch control");
+        assert!(!observed.complete_reports_physical_calls());
 
         assert!(observed.complete(observed_control_request()).await.is_ok());
         assert!(matches!(
@@ -2847,7 +2848,6 @@ mod tests {
 
     #[tokio::test]
     async fn observed_model_counts_expired_execution_deadline_without_a_dispatch() {
-        use crate::harness::mock::execution_test_support::DispatchProbe;
         use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
         use std::time::Duration;
 
@@ -2858,12 +2858,13 @@ mod tests {
         let mock = MockModel::silent();
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
         let observed: Arc<dyn Model> = Arc::new(ObservedModel {
-            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            inner: Arc::new(mock.clone()),
             timing: timing.clone(),
         });
         let observed = observed
             .with_execution_control(control)
             .expect("observed model forwards the dispatch control");
+        assert!(!observed.complete_reports_physical_calls());
 
         assert!(matches!(
             observed.complete(observed_control_request()).await,
@@ -2884,7 +2885,6 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_pending_observed_dispatch_counts_no_terminal_call() {
-        use crate::harness::mock::execution_test_support::DispatchProbe;
         use crate::ports::model_execution::ModelExecutionControl;
         use std::future::Future;
         use std::task::Poll;
@@ -2896,17 +2896,18 @@ mod tests {
         let mock = MockModel::silent();
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
         let observed: Arc<dyn Model> = Arc::new(ObservedModel {
-            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            inner: Arc::new(mock.clone()),
             timing: timing.clone(),
         });
         let observed = observed
             .with_execution_control(control)
             .expect("observed model forwards the dispatch control");
-        let future = observed.complete(observed_control_request());
-        let mut future = Box::pin(future);
+        assert!(!observed.complete_reports_physical_calls());
         let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
         let mut pending_tx = Some(pending_tx);
         let mut waiter = tokio::spawn(async move {
+            let future = observed.complete(observed_control_request());
+            let mut future = Box::pin(future);
             std::future::poll_fn(|cx| match future.as_mut().poll(cx) {
                 Poll::Pending => {
                     if let Some(pending_tx) = pending_tx.take() {

@@ -5432,10 +5432,41 @@ mod tests {
         assert!(requests[0].contains("head-a"));
         assert!(requests[1].contains("head-b"));
         drop(requests);
-        assert!(matches!(
-            &forge.writes()[..],
-            [crate::forge::Write::Check(check)] if check.head_sha == "head-b"
-        ));
+        let writes = forge.writes();
+        let queued_b = writes
+            .iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "head-b"
+                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("B's queued check is written before review work");
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "head-b",
+            queued_b.external_id.as_deref().expect("queued B identity"),
+        )
+        .await
+        .unwrap()
+        .expect("B's queued check has a remote ID");
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == queued_b_id
+                    && check.head_sha == "head-b"
+                    && check.conclusion == Some(crate::forge::CheckConclusion::Success)
+        )), "B's completed review updates the same check: {writes:#?}");
+        assert!(!writes.iter().any(|write| match write {
+            crate::forge::Write::Check(check) => check.head_sha == "head-a",
+            crate::forge::Write::CheckUpdate { check, .. } => check.head_sha == "head-a",
+            _ => false,
+        }));
     }
 
     #[tokio::test]

@@ -483,6 +483,204 @@ async fn concurrent_scoped_clones_share_recorded_takes_and_usage_errors() {
     );
 }
 
+struct PhysicalFlagModel {
+    complete_physical: bool,
+    review_physical: bool,
+    scoped_physical: (bool, bool),
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+fn physical_response(model: &str, cost_usd: f64) -> ModelResponse {
+    ModelResponse {
+        value: answer(),
+        model: model.into(),
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 3,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            cost_usd,
+            ..Default::default()
+        },
+    }
+}
+
+fn report_physical_call(succeeded: bool) {
+    if let Some(observer) = crate::ports::model::current_model_call_observer() {
+        observer.completed(
+            Usage {
+                input_tokens: 10,
+                output_tokens: 3,
+                calls_attempted: 1,
+                calls_succeeded: if succeeded { 1 } else { 0 },
+                calls_errored: if succeeded { 0 } else { 1 },
+                cost_usd: 0.001,
+                ..Default::default()
+            },
+            succeeded,
+            false,
+            std::time::Duration::from_millis(2),
+        );
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for PhysicalFlagModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.events.lock().expect("event log").push("complete");
+        if self.complete_reports_physical_calls() {
+            report_physical_call(true);
+        }
+        Ok(physical_response("test/physical", 0.001))
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.complete_physical
+    }
+
+    async fn review(
+        &self,
+        _request: ModelRequest,
+        _tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.events.lock().expect("event log").push("review");
+        if self.review_reports_physical_calls() {
+            report_physical_call(true);
+        }
+        Ok(physical_response("test/physical", 0.002))
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.review_physical
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        Some(Arc::new(Self {
+            complete_physical: self.scoped_physical.0,
+            review_physical: self.scoped_physical.1,
+            scoped_physical: self.scoped_physical,
+            events: self.events.clone(),
+        }))
+    }
+}
+
+#[derive(Default)]
+struct PhysicalEvents(std::sync::Mutex<Vec<Usage>>);
+
+impl crate::ports::model::ModelCallObserver for PhysicalEvents {
+    fn completed(
+        &self,
+        usage: Usage,
+        _succeeded: bool,
+        _refused: bool,
+        _latency: std::time::Duration,
+    ) {
+        self.0.lock().expect("physical events").push(usage);
+    }
+}
+
+#[tokio::test]
+async fn physical_call_capabilities_follow_each_live_scope_and_replay_emits_none() {
+    use crate::ports::model::with_model_call_observer;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let inner = Arc::new(PhysicalFlagModel {
+        complete_physical: true,
+        review_physical: false,
+        scoped_physical: (false, true),
+        events: events.clone(),
+    });
+    let recorder = Arc::new(Cassette::record(inner, dir.path()));
+    assert!(recorder.complete_reports_physical_calls());
+    assert!(!recorder.review_reports_physical_calls());
+
+    let root_observer = Arc::new(PhysicalEvents::default());
+    with_model_call_observer(
+        root_observer.clone(),
+        recorder.complete(request("test/physical", "root complete")),
+    )
+    .await
+    .expect("records completion");
+    with_model_call_observer(
+        root_observer.clone(),
+        recorder.review(
+            request("test/physical", "root review"),
+            &ReviewTree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
+    )
+    .await
+    .expect("records review");
+
+    let scoped = recorder.scoped_budget(1.0).expect("scoped recorder");
+    assert!(!scoped.complete_reports_physical_calls());
+    assert!(scoped.review_reports_physical_calls());
+    with_model_call_observer(
+        root_observer.clone(),
+        scoped.complete(request("test/physical", "scoped complete")),
+    )
+    .await
+    .expect("records scoped completion");
+    with_model_call_observer(
+        root_observer.clone(),
+        scoped.review(
+            request("test/physical", "scoped review"),
+            &ReviewTree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
+    )
+    .await
+    .expect("records scoped review");
+
+    let observed = root_observer.0.lock().expect("physical events");
+    assert_eq!(
+        observed.len(),
+        2,
+        "only the flagged live methods report physical calls"
+    );
+    assert_eq!(observed[0].cost_usd, 0.001);
+    assert_eq!(observed[1].cost_usd, 0.001);
+    drop(observed);
+    assert!(
+        (recorder.cost_usd() - 0.006).abs() < 1e-12,
+        "logical tape spend is counted once: {}",
+        recorder.cost_usd()
+    );
+    assert_eq!(recorder.flush().expect("root flushes scoped takes"), 4);
+    assert_eq!(
+        events.lock().expect("model calls").as_slice(),
+        ["complete", "review", "complete", "review"]
+    );
+
+    let replay = Cassette::replay(dir.path(), Mode::Strict).expect("loads physical tape");
+    assert!(!replay.complete_reports_physical_calls());
+    assert!(!replay.review_reports_physical_calls());
+    let replay_observer = Arc::new(PhysicalEvents::default());
+    with_model_call_observer(
+        replay_observer.clone(),
+        replay.complete(request("test/physical", "root complete")),
+    )
+    .await
+    .expect("replays completion");
+    with_model_call_observer(
+        replay_observer.clone(),
+        replay.review(
+            request("test/physical", "root review"),
+            &ReviewTree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
+    )
+    .await
+    .expect("replays review");
+    assert!(
+        replay_observer.0.lock().expect("replay events").is_empty(),
+        "offline replay cannot emit synthetic physical dispatches"
+    );
+}
+
 #[test]
 fn the_key_covers_everything_that_can_change_an_answer() {
     let base = request("z-ai/glm-5.2", "the diff");

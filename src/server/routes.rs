@@ -865,25 +865,34 @@ async fn publish_pending_queue_checks_at(
                         .check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id)
                         .await?,
                 };
-                let Some(check_id) = check_id else {
-                    // An ambiguous POST may have succeeded despite a delayed
-                    // recovery read. Keep the outbox record and try again.
-                    return Ok(());
-                };
-                if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
-                    return Ok(());
+                if let Some(check_id) = check_id {
+                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        return Ok(());
+                    }
+                    if check.check.check_id.is_none()
+                        && !jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?
+                    {
+                        return Ok(());
+                    }
+                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        return Ok(());
+                    }
+                    crate::app::apply::retire_queued_review_status(
+                        clients.write.as_ref(), &repo, check_id, &check.check.head_sha,
+                    ).await?;
+                } else {
+                    // The exact head/external ID was not found. Publish a
+                    // terminal status directly, never another queued run.
+                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        return Ok(());
+                    }
+                    let check_id = crate::app::apply::publish_superseded_review_status(
+                        clients.write.as_ref(), &repo, &check.check.head_sha, &check.check.external_id,
+                    ).await?;
+                    if !jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await? {
+                        return Ok(());
+                    }
                 }
-                if check.check.check_id.is_none()
-                    && !jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?
-                {
-                    return Ok(());
-                }
-                if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
-                    return Ok(());
-                }
-                crate::app::apply::retire_queued_review_status(
-                    clients.write.as_ref(), &repo, check_id, &check.check.head_sha,
-                ).await?;
                 let _ = jobs.complete_retired_check(&check, unix_time_ms()).await?;
             } else {
                 let check_id = match clients

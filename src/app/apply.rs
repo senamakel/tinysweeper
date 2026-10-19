@@ -63,6 +63,20 @@ pub async fn retire_queued_review_status(
         .await
 }
 
+/// Publish a decided terminal status when a superseded queued run has no
+/// recoverable ID. This remains a status-only write plan from server policy.
+#[cfg(feature = "serve")]
+pub async fn publish_superseded_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    head_sha: &str,
+    external_id: &str,
+) -> Result<u64> {
+    write
+        .publish_check(repo, crate::server::status::superseded_before_review(head_sha, external_id))
+        .await
+}
+
 /// Whether a review proposal was published against the live pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDisposition {

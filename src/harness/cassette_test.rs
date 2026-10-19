@@ -6,7 +6,8 @@ use serde_json::json;
 
 use super::*;
 use crate::harness::mock::MockModel;
-use crate::ports::model::Message;
+use crate::ports::model::{Message, ModelResponse};
+use crate::ports::tree::{Found, Lookup, TreeQuery, TreeReader};
 
 fn request(model: &str, prompt: &str) -> ModelRequest {
     ModelRequest {
@@ -20,6 +21,125 @@ fn request(model: &str, prompt: &str) -> ModelRequest {
 
 fn answer() -> serde_json::Value {
     json!({"summary": "Nothing to report.", "findings": []})
+}
+
+struct ReviewOnlyModel {
+    reviews: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Model for ReviewOnlyModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(crate::error::Error::Model(
+            "the test requires Model::review".into(),
+        ))
+    }
+
+    async fn review(
+        &self,
+        _request: ModelRequest,
+        tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.reviews
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = tree
+            .lookup(&Lookup::Read {
+                path: "src/lib.rs".into(),
+                start: Some(1),
+                end: Some(2),
+            })
+            .await?;
+        let _ = tree
+            .explore(&TreeQuery::Symbol {
+                symbol: "load_state".into(),
+                limit: 3,
+            })
+            .await?;
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/review-only".into(),
+            usage: Usage {
+                input_tokens: 17,
+                output_tokens: 5,
+                cost_usd: 0.002,
+                ..Default::default()
+            },
+        })
+    }
+}
+
+struct ReviewTree;
+
+#[async_trait::async_trait]
+impl TreeReader for ReviewTree {
+    async fn lookup(&self, lookup: &Lookup) -> Result<Found> {
+        Ok(match lookup {
+            Lookup::Read { path, .. } if path == "src/lib.rs" => Found::Text {
+                text: "1: pub fn load_state() {}\n2: // source".into(),
+                start: 1,
+                end: 2,
+                total: 2,
+            },
+            _ => Found::NotFound,
+        })
+    }
+
+    async fn explore(&self, query: &TreeQuery) -> Result<Found> {
+        Ok(match query {
+            TreeQuery::Symbol { symbol, .. } if symbol == "load_state" => Found::Hits {
+                hits: vec![crate::ports::tree::Hit {
+                    path: "src/lib.rs".into(),
+                    line: 1,
+                    text: "pub fn load_state() {}".into(),
+                }],
+                truncated: false,
+                skipped: vec![],
+            },
+            _ => Found::NotFound,
+        })
+    }
+
+    fn describe(&self) -> String {
+        "test tree".into()
+    }
+
+    fn revision(&self) -> Option<String> {
+        Some("a".repeat(40))
+    }
+}
+
+#[tokio::test]
+async fn recording_review_forwards_actual_review_and_tree_queries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let live = Arc::new(ReviewOnlyModel {
+        reviews: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let recorder = Cassette::record(live.clone(), dir.path());
+    let policy = crate::config::types::LookupPolicy::default();
+
+    let response = recorder
+        .review(request("test/review-only", "inspect this change"), &ReviewTree, &policy)
+        .await
+        .expect("records through review");
+
+    assert_eq!(response.model, "test/review-only");
+    assert_eq!(live.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(recorder.flush().expect("flushes"), 1);
+    let take: Take = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::fs::read_dir(dir.path())
+                .expect("cassette directory")
+                .next()
+                .expect("one take")
+                .expect("take entry")
+                .path(),
+        )
+        .expect("take file"),
+    )
+    .expect("take json");
+    assert_eq!(take.model_answered, "test/review-only");
+    assert_eq!(take.usage.cost_usd, 0.002);
 }
 
 #[test]

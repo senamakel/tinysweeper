@@ -752,7 +752,7 @@ async fn admit_webhook_review(
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
-    jobs.admit_batch(vec![ReviewRequest {
+    let admission = jobs.admit_batch(vec![ReviewRequest {
         id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
         repo: repo.clone(),
         number: *number,
@@ -764,20 +764,57 @@ async fn admit_webhook_review(
         mode: ReviewJobMode::Incremental,
         accepted_at_ms: unix_time_ms(),
     }])
-    .await
+    .await?;
+    if matches!(admission, Admission::Admitted | Admission::Duplicate) {
+        // This deterministic write is the narrow #19 exception: it reports
+        // trusted accepted work only. No review context, lease, budget, index,
+        // model or model credential is reachable from this path.
+        if let Err(err) = publish_pending_queue_checks(jobs, _status_client).await {
+            tracing::warn!(%err, %delivery, "queued review status remains durable and will be retried");
+        }
+    }
+    Ok(admission)
+}
+
+async fn publish_pending_queue_checks(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+) -> Result<()> {
+    let pending = jobs.claim_pending_checks(unix_time_ms(), 16).await?;
+    if pending.is_empty() { return Ok(()); }
+    let clients = factory().await?;
+    for check in pending {
+        let repo = RepoId::parse(&check.request.repo)
+            .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
+        let check_id = match clients.read.check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id).await? {
+            Some(id) => id,
+            None => clients.write.publish_check(&repo, status::queued(&check.check.head_sha, check.reviews_ahead, &check.check.external_id)).await?,
+        };
+        let _ = jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?;
+    }
+    Ok(())
 }
 
 /// Lazily mint a status-only GitHub client after admission policy allows its
 /// first use. The factory itself performs no token exchange or forge request.
 type QueueStatusClientFactory =
-    Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<Arc<dyn ForgeWrite>>> + Send>;
+    Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send>;
+
+struct QueueStatusClients {
+    read: Arc<dyn crate::ports::forge::ForgeRead>,
+    write: Arc<dyn ForgeWrite>,
+}
 
 fn github_queue_status_client(auth: Arc<AppAuth>, installation: u64) -> QueueStatusClientFactory {
     Box::new(move || {
         async move {
             let token = auth.installation_token(installation).await?;
-            let client = crate::forge::github::GitHubWrite::new(&token)?;
-            Ok(Arc::new(client) as Arc<dyn ForgeWrite>)
+            let read = crate::forge::github::GitHubRead::new(&token)?;
+            let write = crate::forge::github::GitHubWrite::new(&token)?;
+            Ok(QueueStatusClients {
+                read: Arc::new(read),
+                write: Arc::new(write),
+            })
         }
         .boxed()
     })
@@ -6453,7 +6490,7 @@ mod tests {
         let forge = MockForge::new();
         let status_forge = forge.clone();
         let status_client: QueueStatusClientFactory = Box::new(move || {
-            async move { Ok(Arc::new(status_forge) as Arc<dyn ForgeWrite>) }.boxed()
+            async move { Ok(QueueStatusClients { read: Arc::new(status_forge.clone()), write: Arc::new(status_forge) }) }.boxed()
         });
         let action = Action::Review {
             repo: "owner/repo".into(),

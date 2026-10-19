@@ -84,6 +84,14 @@ impl ReviewJobStore for MockReviewJobStore {
             .confirm_head(owned, head_sha, now_ms))
     }
 
+    async fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .head_is_terminal(owned, now_ms))
+    }
+
     async fn renew(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
         Ok(self.state.lock().expect("state").renew(owned, now_ms))
     }

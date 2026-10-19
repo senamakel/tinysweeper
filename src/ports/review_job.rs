@@ -284,7 +284,7 @@ impl ReviewSchedulerState {
                 })
                 .flatten()
             {
-                record.accepted_ids.push(request.id);
+                record.accepted_ids.push(request.id.clone());
                 record.latest_head_hint = request.head_sha.clone();
                 record.head_history_reservations =
                     Some(record.head_history_reservations.unwrap_or_default() + 1);

@@ -2734,6 +2734,7 @@ mod tests {
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
         assert!(lines.contains("mode=\"Incremental\""), "{lines}");
+    }
 
     #[tokio::test]
     async fn deterministic_commits_outcome_is_answered_in_summary_evidence() {

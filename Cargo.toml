@@ -154,11 +154,25 @@ required-features = ["serve"]
 # patch tables, so these paths must follow each source revision.
 [patch."https://github.com/tinyhumansai/tinytools"]
 tinytools = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinytools/crates/tinytools" }
+tinytools-std = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinytools/crates/tinytools-std" }
 tinytools-agent = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinytools/crates/tinytools-agent" }
 
+[patch."https://github.com/tinyhumansai/tinybus"]
+tinybus = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus" }
+tinybus-macros = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus-macros" }
+tinybus-module = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus-module" }
+
 [patch."https://github.com/tinyhumansai/tinystoragedrivers"]
-tinystoragedrivers-core = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinystoragedrivers/crates/tinystoragedrivers-core" }
-tinystoragedrivers-sqlite = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinystoragedrivers/crates/tinystoragedrivers-sqlite" }
+tinystoragedrivers = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers" }
+tinystoragedrivers-bus = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-bus" }
+tinystoragedrivers-busproxy = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-busproxy" }
+tinystoragedrivers-client = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-client" }
+tinystoragedrivers-core = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-core" }
+tinystoragedrivers-file = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-file" }
+tinystoragedrivers-mongodb = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-mongodb" }
+tinystoragedrivers-s3 = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-s3" }
+tinystoragedrivers-secrets = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-secrets" }
+tinystoragedrivers-sqlite = { path = "vendor/openhuman/vendor/tinystoragedrivers/crates/tinystoragedrivers-sqlite" }
 
 [patch."https://github.com/tinyhumansai/tinyinference"]
 tinyinference-decisions = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-decisions" }
@@ -170,6 +184,13 @@ tinyinference-providers = { path = "vendor/openhuman/vendor/tinyagents/vendor/ti
 tinyinference-voice = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-voice" }
 
 [patch.crates-io]
+tinyagents-live = { path = "vendor/openhuman/vendor/tinyagents/crates/tinyagents-live" }
+tinyagents-harness = { path = "vendor/openhuman/vendor/tinyagents/crates/tinyagents-harness" }
+tinyagents-hooks = { path = "vendor/openhuman/vendor/tinyagents/crates/tinyagents-hooks" }
+tinytools = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinytools/crates/tinytools" }
+tinybus = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus" }
+tinybus-macros = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus-macros" }
+tinybus-module = { path = "vendor/openhuman/vendor/tinybus/crates/tinybus-module" }
 tinyinference-core = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-core" }
 tinyinference-embeddings = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-embeddings" }
 tinyinference-llm = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-llm" }
@@ -178,7 +199,8 @@ tinyinference-providers = { path = "vendor/openhuman/vendor/tinyagents/vendor/ti
 tinyinference-voice = { path = "vendor/openhuman/vendor/tinyagents/vendor/tinyinference/crates/tinyinference-voice" }
 tinyflows = { path = "vendor/openhuman/vendor/tinyflows/crates/tinyflows" }
 tinychannels = { path = "vendor/openhuman/vendor/tinychannels" }
+tiny-artifacts = { path = "vendor/openhuman/vendor/tiny-artifacts/crates/tiny-artifacts" }
 
 [package.metadata.openhuman]
 repository = "https://github.com/tinyhumansai/openhuman"
-rev = "e91a47423acfd74c90f9a2b6d1d1da4c5c25e047"
+rev = "de31a490758dbc053961bffde59c2160acb38d8d"

@@ -54,11 +54,11 @@ pub struct RunOptions {
     /// Store prompts in the cassette. Off by default — a prompt embeds the
     /// reviewed repository's diff.
     pub record_prompts: bool,
-    /// Stop the whole run at this many dollars. Checked between cases.
+    /// Stop admitting cases once known spend reaches this amount. Checked
+    /// between cases, so the currently running case can take the total over it.
     ///
-    /// Distinct from `models.budget_usd_per_pr`, which the engine already
-    /// enforces per case: this is the ceiling on the *corpus*, so a bad prompt
-    /// cannot turn one command into an unbounded bill.
+    /// Distinct from `models.budget_usd_per_pr`, which the engine applies
+    /// within a case. This is not a provider-side or whole-run hard cap.
     pub max_cost_usd: f64,
     /// A checkout of the case's head, for the reviewer to look things up in
     /// while recording. What it reads is written into the fixture's

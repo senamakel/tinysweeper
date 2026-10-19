@@ -91,6 +91,7 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
 struct PendingModelCall {
     observer: std::sync::Arc<ReviewCallObserver>,
     completed: bool,
+    physical: bool,
 }
 
 impl Drop for PendingModelCall {
@@ -100,7 +101,8 @@ impl Drop for PendingModelCall {
             // adapter observer. Only synthesize one logical failure when no
             // adapter exposed physical call telemetry (or the first dispatch
             // itself was cancelled before it could report).
-            if self
+            if !self.physical
+                && self
                 .observer
                 .observed
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -119,6 +121,11 @@ impl ObservedModel {
         request: crate::ports::model::ModelRequest,
         tree: Option<(&dyn TreeReader, &crate::config::types::LookupPolicy)>,
     ) -> Result<crate::ports::model::ModelResponse> {
+        let physical = if tree.is_some() {
+            self.inner.review_reports_physical_calls()
+        } else {
+            self.inner.complete_reports_physical_calls()
+        };
         let observer = std::sync::Arc::new(ReviewCallObserver {
             timing: self.timing.clone(),
             observed: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -126,6 +133,7 @@ impl ObservedModel {
         let mut pending = PendingModelCall {
             observer: observer.clone(),
             completed: false,
+            physical,
         };
         let result = crate::ports::model::with_model_call_observer(observer.clone(), async {
             match tree {
@@ -135,7 +143,13 @@ impl ObservedModel {
         })
         .await;
         pending.completed = true;
-        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        if physical && matches!(&result, Err(Error::Budget { .. })) {
+            // Budget admission can refuse before a provider starts, so there
+            // is no physical terminal to account for. Preserve the refusal
+            // without claiming that a dispatch happened.
+            self.timing.record(|record| record.calls_refused += 1);
+        }
+        if observer.observed.load(std::sync::atomic::Ordering::Relaxed) == 0 && !physical {
             match &result {
                 Ok(response) => self.timing.record(|r| {
                     let usage = response.usage;
@@ -161,10 +175,9 @@ impl ObservedModel {
                         r.calls_succeeded += usage.calls_succeeded;
                         r.calls_refused += usage.calls_refused;
                         r.calls_errored += usage.calls_errored;
-                    } else if error.to_string().to_lowercase().contains("refus")
-                        || error.to_string().to_lowercase().contains("budget")
-                        || matches!(error, Error::Budget { .. })
-                    {
+                    } else if matches!(error, Error::Budget { .. }) {
+                        r.calls_refused += 1;
+                    } else if error.to_string().to_lowercase().contains("refus") {
                         r.calls_attempted += 1;
                         r.calls_refused += 1;
                     } else {
@@ -197,6 +210,14 @@ impl Model for ObservedModel {
         policy: &crate::config::types::LookupPolicy,
     ) -> Result<crate::ports::model::ModelResponse> {
         self.observe(request, Some((tree, policy))).await
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {

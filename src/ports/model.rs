@@ -257,6 +257,13 @@ pub trait Model: Send + Sync {
     /// Run one completion.
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse>;
 
+    /// Whether `complete` reports each physical provider dispatch through the
+    /// task-scoped [`ModelCallObserver`]. Adapters without a physical observer
+    /// keep the legacy one-result accounting fallback.
+    fn complete_reports_physical_calls(&self) -> bool {
+        false
+    }
+
     /// Review against a borrowed read-only repository. Offline models retain
     /// their completion behavior; live adapters may supply bounded tools.
     /// Implementations must enforce the lookup policy and redact repository
@@ -268,6 +275,13 @@ pub trait Model: Send + Sync {
         _policy: &crate::config::types::LookupPolicy,
     ) -> Result<ModelResponse> {
         self.complete(request).await
+    }
+
+    /// Whether `review` reports each physical provider dispatch. This is
+    /// separate from `complete` because agentic adapters may install physical
+    /// observation only when their scoped budget middleware is active.
+    fn review_reports_physical_calls(&self) -> bool {
+        self.complete_reports_physical_calls()
     }
 
     /// Create a fresh shared budget scope for a lane, when supported.

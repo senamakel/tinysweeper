@@ -899,7 +899,7 @@ async fn record_owned_disposition(
 }
 
 async fn finalize_exhausted_review<CheckOwner, CheckOwnerFuture, Conclude, ConcludeFuture>(
-    _timing: &crate::review_timing::ReviewTiming,
+    timing: &crate::review_timing::ReviewTiming,
     check_owner: CheckOwner,
     conclude: Conclude,
 ) -> WorkerDisposition
@@ -913,6 +913,7 @@ where
         return WorkerDisposition::OwnershipLost;
     }
     conclude().await;
+    timing.finish("failure");
     WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
 }
 
@@ -2000,6 +2001,14 @@ impl OwnedModel {
 
 #[async_trait::async_trait]
 impl Model for OwnedModel {
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
+    }
+
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         self.check_owner().await?;
         self.inner.complete(request).await

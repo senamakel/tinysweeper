@@ -933,6 +933,16 @@ impl GatewayModel {
 
 #[async_trait]
 impl Model for GatewayModel {
+    fn complete_reports_physical_calls(&self) -> bool {
+        true
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        // Agentic calls are physically observed by TinyAgents' budget model
+        // wrapper. The ordinary completion ladder installs its own observer.
+        self.budget.is_some() || !self.agentic_reviewers
+    }
+
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
         let mut model = self.clone();
         model.budget = Some(crate::harness::budget::ledger(budget_usd));

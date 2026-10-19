@@ -407,6 +407,77 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
     );
 }
 
+struct ConcurrentScopedModel {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Model for ConcurrentScopedModel {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if request
+            .messages
+            .last()
+            .is_some_and(|message| message.content == "fail")
+        {
+            return Err(crate::error::Error::Model("scoped refusal".into()).with_usage(Usage {
+                input_tokens: 50,
+                output_tokens: 7,
+                cost_usd: 0.005,
+                ..Default::default()
+            }));
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/concurrent".into(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cost_usd: 0.001,
+                ..Default::default()
+            },
+        })
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        Some(Arc::new(Self {
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn concurrent_scoped_clones_share_recorded_takes_and_usage_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model = Arc::new(ConcurrentScopedModel {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
+    let first_scope = recorder.scoped_budget(1.0).expect("first scoped model");
+    let second_scope = recorder.scoped_budget(1.0).expect("second scoped model");
+
+    let (root_result, first_result, second_result) = tokio::join!(
+        recorder.complete(request("test/concurrent", "root")),
+        first_scope.complete(request("test/concurrent", "scope one")),
+        second_scope.complete(request("test/concurrent", "fail")),
+    );
+
+    assert!(root_result.is_ok());
+    assert!(first_result.is_ok());
+    assert!(second_result.is_err());
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(recorder.served(), 2);
+    assert_eq!(recorder.spend().usage.input_tokens, 70);
+    assert_eq!(recorder.cost_usd(), 0.007);
+    assert_eq!(recorder.flush().expect("root sees both scoped takes"), 2);
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("cassette dir").count(),
+        2
+    );
+}
+
 #[test]
 fn the_key_covers_everything_that_can_change_an_answer() {
     let base = request("z-ai/glm-5.2", "the diff");

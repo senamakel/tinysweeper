@@ -13,11 +13,17 @@ use crate::scan::types::{Finding as ScanFinding, ScanKind};
 
 /// The host-derived inputs needed to decide which groups a lane can review.
 pub(crate) struct LanePreparationInput<'a> {
+    /// Review policy that controls draft handling and file grouping.
     pub(crate) config: &'a Config,
+    /// Pull request metadata used by deterministic lane eligibility checks.
     pub(crate) pull_request: &'a PullRequest,
+    /// Read-only changed-file evidence used to select and group candidates.
     pub(crate) diffs: &'a [FileDiff],
+    /// Host-side scanner results used to force security-sensitive paths in.
     pub(crate) scan_findings: &'a [ScanFinding],
+    /// Prior review evidence used to omit paths that remain unchanged.
     pub(crate) reviewed_evidence: &'a str,
+    /// Read-only repository neighborhood used when grouping related files.
     pub(crate) graph: Option<&'a crate::index::types::Neighbourhood>,
 }
 

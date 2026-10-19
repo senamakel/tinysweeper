@@ -187,7 +187,7 @@ impl Lane for Critique {
         }
         let changed_paths = input.changed_paths();
         let groups = prepared.groups;
-        let mut covered_without_model = prepared.covered_without_model;
+        let covered_without_model = prepared.covered_without_model;
         let mechanical = prepared.mechanical;
         let paths_empty = prepared.paths_empty;
 

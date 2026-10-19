@@ -91,6 +91,8 @@ pub(crate) struct SecurityPreparation<'a> {
 /// Prepare security groups without constructing prompts or calling a model.
 pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparation<'a> {
     let scanner = input.scanner_findings_of(&ADJUDICATES);
+    // Scanner evidence remains actionable even when the patch only deletes
+    // lines; for example, a removed permission guard can widen access.
     if !input.has_reviewable_content() && scanner.is_empty() {
         return SecurityPreparation {
             skipped: Some(LaneOutcome::skipped(
@@ -119,6 +121,9 @@ pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparatio
         };
     }
 
+    // Keep matched files in scope even if replay or mechanical analysis would
+    // otherwise omit them: the scanner fact persists until the risky code is
+    // removed from the tree.
     let forced: Vec<&str> = scanner
         .iter()
         .map(|finding| finding.path.as_str())
@@ -135,7 +140,7 @@ pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparatio
         .filter(|diff| !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str()))
         .cloned()
         .collect();
-    let mut covered_without_model = triage(&replayed, &forced).review;
+    let covered_without_model = triage(&replayed, &forced).review;
     let forced_back: Vec<FileDiff> = input
         .diffs
         .iter()
@@ -151,6 +156,8 @@ pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparatio
     let candidate_paths = triaged.review.clone();
     let mut mechanical_verified = Vec::new();
     if let Some(substitution) = &mechanical {
+        // Scanner-forced paths stay reviewable even when the same substitution
+        // is mechanically verified for other files.
         triaged.review.retain(|path| {
             forced.contains(&path.as_str()) || !substitution.verified.contains(path)
         });

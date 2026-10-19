@@ -1142,7 +1142,10 @@ impl ReviewSchedulerState {
             return self.finish(owned, outcome, now_ms, now_ms);
         }
         let record = self.unfinished.remove(index);
-        self.retire_removed_record_checks(&record);
+        self.retire_removed_record_checks(
+            &record,
+            existing_terminal.unwrap_or(TerminalOutcome::Deadline),
+        );
         self.terminal
             .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
                 id,
@@ -1254,7 +1257,6 @@ impl ReviewSchedulerState {
             return false;
         };
         let record = self.unfinished.remove(index);
-        self.retire_removed_record_checks(&record);
         let existing_terminal = if record.request.mode == ReviewJobMode::Incremental {
             self.incremental_heads
                 .iter()
@@ -1269,6 +1271,7 @@ impl ReviewSchedulerState {
         } else {
             None
         };
+        self.retire_removed_record_checks(&record, existing_terminal.unwrap_or(outcome));
         if existing_terminal.is_none()
             && record.request.mode == ReviewJobMode::Incremental
             && matches!(
@@ -1297,10 +1300,17 @@ impl ReviewSchedulerState {
         true
     }
 
-    fn retire_removed_record_checks(&mut self, record: &ScheduledReview) {
+    fn retire_removed_record_checks(
+        &mut self,
+        record: &ScheduledReview,
+        terminal_outcome: TerminalOutcome,
+    ) {
         for mut check in record.review_checks.iter().cloned() {
-            let superseded_or_never_started = check.head_sha != record.request.head_sha.as_deref().unwrap_or_default()
-                || check.stage == ReviewCheckStage::Queued;
+            let superseded = check.head_sha
+                != record.request.head_sha.as_deref().unwrap_or_default();
+            let never_started = check.stage == ReviewCheckStage::Queued
+                && terminal_outcome != TerminalOutcome::Published;
+            let superseded_or_never_started = superseded || never_started;
             if !superseded_or_never_started
                 || check.stage == ReviewCheckStage::Completed
                 || (!check.published && check.check_id.is_none() && !check.post_attempted)

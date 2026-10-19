@@ -127,6 +127,9 @@ labels are valid; they are not outputs from the current TinySweeper pipeline.
 The cases have no cassettes yet, so the corpus does not claim a hit rate or
 recall percentage for them.
 
+Each case selects only the `critique` lane. A future recording is evidence
+about that lane on these fixtures, not a full review across all lanes.
+
 Their original PR bodies and comments are omitted: the available PR bodies
 contain later fix explanations, and the exact review-time snapshots were not
 retained. The frozen changed-file patches and commit ranges are pinned to the

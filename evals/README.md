@@ -119,6 +119,10 @@ or a recall percentage. The earlier `oc-2313-round-boundary-leaks` case also
 remains in the corpus; its prior 0/2 result is a historical replay result, not
 a score for these new cases.
 
+The new cases select only the `critique` lane. Any future recording measures
+that lane on the frozen diff and read-only source lookups; it does not measure a
+full review across every lane.
+
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations
 and no exact original body/comment snapshot was available. The changed patches

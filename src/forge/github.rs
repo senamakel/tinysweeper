@@ -14,8 +14,8 @@ use crate::error::{Error, Result};
 use crate::evidence::diff::truncate_patch;
 use crate::forge::types::{
     ChangedFile, CheckConclusion, CheckRun, CheckStatus, Commit, FileStatus, Issue, IssueComment,
-    MAX_CHECK_IMAGES, OwnReview, PullRequest, RepoId, ReviewComment, ReviewEvent, ReviewThread,
-    PullRequestMetadata, ReviewVerdict, ThreadComment, TreeListing,
+    MAX_CHECK_IMAGES, OwnReview, PullRequest, PullRequestMetadata, RepoId, ReviewComment,
+    ReviewEvent, ReviewThread, ReviewVerdict, ThreadComment, TreeListing,
 };
 use crate::ports::forge::{ForgeRead, ForgeWrite};
 

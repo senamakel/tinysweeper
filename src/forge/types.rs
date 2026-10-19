@@ -711,6 +711,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_check_runs_default_to_the_existing_pending_status() {
+        let mut raw = serde_json::to_value(CheckRun::default()).expect("serializes");
+        let fields = raw.as_object_mut().expect("check object");
+        fields.remove("status");
+        fields.remove("external_id");
+
+        let recovered: CheckRun = serde_json::from_value(raw).expect("legacy check loads");
+        assert_eq!(recovered.status, None);
+        assert_eq!(recovered.external_id, None);
+        assert!(recovered.is_in_progress());
+    }
+
+    #[test]
     fn repo_ids_round_trip() {
         let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("parses");
         assert_eq!(repo.owner, "tinyhumansai");

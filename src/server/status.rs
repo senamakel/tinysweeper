@@ -266,8 +266,14 @@ mod tests {
         assert_eq!(check.name, CHECK_NAME);
         assert_eq!(check.head_sha, "head-123");
         assert_eq!(check.conclusion, None);
-        assert_eq!(check.status, Some(crate::forge::types::CheckRunStatus::Queued));
-        assert_eq!(check.external_id.as_deref(), Some("review:job-123:head-123"));
+        assert_eq!(
+            check.status,
+            Some(crate::forge::types::CheckRunStatus::Queued)
+        );
+        assert_eq!(
+            check.external_id.as_deref(),
+            Some("review:job-123:head-123")
+        );
         assert_eq!(check.title, "Queued — 3 reviews ahead");
     }
 

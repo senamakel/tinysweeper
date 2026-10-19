@@ -118,11 +118,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             ..
         } = event
         {
-            let provider_responded = matches!(
-                status,
-                openhuman_embed::PhysicalDispatchStatus::Succeeded
-                    | openhuman_embed::PhysicalDispatchStatus::Refused
-            );
+            let provider_responded = matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             let observed_usage = Usage {
@@ -227,19 +223,25 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
             self.history
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
-        let provider_responded = matches!(
-            outcome.status,
-            PhysicalDispatchStatus::Succeeded | PhysicalDispatchStatus::Refused
-        );
+        let provider_responded = matches!(outcome.status, PhysicalDispatchStatus::Succeeded);
         let accounting = Usage {
             input_tokens: usage.map_or(0, |usage| usage.input_tokens),
             output_tokens: usage.map_or(0, |usage| usage.output_tokens),
             reasoning_tokens: usage.map_or(0, |usage| usage.reasoning_tokens),
             cached_tokens: usage.map_or(0, |usage| usage.cached_tokens),
-            cost_usd: usage
-                .and_then(|usage| usage.cost_usd)
-                .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                .unwrap_or_default(),
+            cost_usd: usage.map_or(0.0, |usage| {
+                usage
+                    .cost_usd
+                    .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                    .unwrap_or_else(|| {
+                        crate::harness::pricing::completion_cost(
+                            &self.requested_model,
+                            usage.input_tokens,
+                            usage.cached_tokens,
+                            usage.output_tokens,
+                        )
+                    })
+            }),
             calls_attempted: 1,
             calls_succeeded: u64::from(provider_responded),
             calls_refused: u64::from(outcome.refused),

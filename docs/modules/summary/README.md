@@ -12,6 +12,38 @@ observations. A generated feature or test claim is discarded unless every
 citation names a changed path or known changed symbol. Unsupported claims that
 tests ran, passed, or reached numerical coverage are discarded as well.
 
+Summary evidence includes the pull request's title, scrubbed description, and
+the forge's complete changed-path list and full pull-request diffstat. The
+executive opening starts with the pull-request title before any model narrative,
+so a re-review cannot lead with a claim about only the latest changed files.
+The latest-push delta is separately labelled. The review state retains the
+previous rendered diff, but the forge input has no base-to-head comparison
+port; that snapshot cannot prove the exact push delta, so the field says it is
+unavailable rather than presenting the full PR diff as a push delta. Each lane
+also carries a typed `answered`, `partial`, `no_response`, or `skipped` status.
+Per-file coverage counts only assigned paths, bounded to the forge's full
+changed-path list; explicitly unanswered paths remain in scope even when they
+had no parseable diff. Whole-pull-request lanes with waiting checks carry only
+the pending-check count, without a fabricated file denominator. Completion provenance distinguishes deterministic lane
+results from policy skips and unanswered model calls; old proposal shapes with
+no provenance remain unknown. A sentence that explicitly names a non-answered
+lane or makes a collective claim about all lanes/reviewers is discarded,
+regardless of its wording or claimed verdict; unrelated sentences remain.
+
+The structured schema restricts positive observations to the six known lane
+keys. If a reply still fails typed deserialization, generation makes one
+semantic repair request with the scrubbed rejected JSON fenced as untrusted
+data. A second shape mismatch or a model/transport failure uses the
+deterministic summary. Both successful replies and paid usage attached to a
+failed call remain in accounting. Diagnostics record only a failure category,
+the schema name, and the attempt number; they never include reply values or
+serde error text.
+
+Production logs do not retain raw provider replies for schema fallbacks. The
+contract regression uses a synthetic witness derived from the difference
+between the permissive wire schema and the typed lane-key parser; it is not a
+captured production response.
+
 When no supported change explanation exists the "What changed" section is
 omitted rather than filled with failure text, and the update time renders as
 ISO 8601 UTC (`2026-10-08T11:39:30Z`), never as raw epoch seconds.

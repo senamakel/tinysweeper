@@ -174,10 +174,12 @@ mod tests {
                     CheckConclusion::Success
                 },
                 summary: "Reviewed.".into(),
+                completed: true,
                 findings: vec![],
                 noted: vec![],
                 resolved: vec![],
                 pending: vec![],
+                skipped: None,
                 deduped: 0,
                 highest_severity: highest,
                 usage: Default::default(),

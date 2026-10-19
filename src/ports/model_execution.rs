@@ -32,7 +32,8 @@ pub trait ModelExecutionControl: Send + Sync {
     /// If outstanding uncommitted reservations temporarily fill the ceiling,
     /// wait for a reservation to commit or be dropped instead of refusing the
     /// request. Return `CallLimit` once committed dispatches exhaust the
-    /// ceiling, or `SoftDeadline` once the absolute soft deadline has passed.
+    /// ceiling, `SoftDeadline` once the absolute soft deadline has passed, or
+    /// `Cancelled` when the review owner stops execution.
     async fn acquire(
         &self,
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal>;

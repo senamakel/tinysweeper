@@ -251,14 +251,16 @@ fn resolving_a_headless_status_does_not_consume_unreserved_status_capacity() {
         write_claim_until_ms: 0,
         write_generation: 1,
     };
-    let mut state = ReviewSchedulerState::default();
-    state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS - 1)
-        .map(|_| super::RetiredReviewCheck {
-            repo: "owner/repo".into(),
-            installation: 1,
-            check: check.clone(),
-        })
-        .collect();
+    let mut state = ReviewSchedulerState {
+        retired_checks: (0..super::MAX_REVIEW_STATUS_RECORDS - 1)
+            .map(|_| super::RetiredReviewCheck {
+                repo: "owner/repo".into(),
+                installation: 1,
+                check: check.clone(),
+            })
+            .collect(),
+        ..ReviewSchedulerState::default()
+    };
     let mut headless = request("headless-capacity", 20);
     headless.head_sha = None;
     assert_eq!(

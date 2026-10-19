@@ -309,7 +309,7 @@ fn legacy_paid_attempts_remain_consumed_when_the_live_head_is_first_confirmed() 
     assert!(state.confirm_head(&owned, "actual-live-head", 11));
     assert_eq!(
         state.begin_paid(&owned, 12),
-        PaidStart::Exhausted,
+        super::PaidStart::Exhausted,
         "the first authoritative SHA cannot grant five extra starts to a legacy job"
     );
     assert_eq!(state.incremental_heads[0].paid_attempts, 5);

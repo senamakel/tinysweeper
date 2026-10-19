@@ -911,6 +911,26 @@ async fn record_owned_disposition(
     .into()
 }
 
+async fn classify_retry_boundary_error<Valid>(
+    err: &Error,
+    jobs: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+    local_owner_valid: Valid,
+) -> Result<Option<WorkerDisposition>>
+where
+    Valid: Fn() -> bool,
+{
+    if matches!(err, Error::ReviewOwnershipLost) {
+        return Ok(Some(WorkerDisposition::OwnershipLost));
+    }
+    if matches!(err, Error::ReviewSuperseded) {
+        // The historical top-of-retry path let this error fall through to the
+        // generic failure budget; the live owner must instead acknowledge it.
+        let _ = (jobs, owned, local_owner_valid);
+    }
+    Ok(None)
+}
+
 async fn finish_or_yield<F, Fut>(
     store: &dyn ReviewJobStore,
     owned: &OwnedReview,
@@ -2619,6 +2639,39 @@ async fn handle_review(
     let mut attempt = 1;
     let err = loop {
         if let Err(err) = run.check_work(&state).await {
+            match classify_retry_boundary_error(
+                &err,
+                state.review_jobs.as_ref(),
+                run.owned.as_ref(),
+                || run.local_owner_valid(),
+            )
+            .await
+            {
+                Ok(Some(WorkerDisposition::Yielded)) => {
+                    close_status(&state, &slot, Conclusion::NotReviewed).await;
+                    drop(permit);
+                    return WorkerDisposition::Yielded;
+                }
+                Ok(Some(WorkerDisposition::Terminal(TerminalOutcome::Superseded))) => {
+                    close_status(&state, &slot, Conclusion::NotReviewed).await;
+                    drop(permit);
+                    return WorkerDisposition::Terminal(TerminalOutcome::Superseded);
+                }
+                Ok(Some(WorkerDisposition::OwnershipLost)) | Err(_) => {
+                    drop(permit);
+                    return WorkerDisposition::OwnershipLost;
+                }
+                Ok(Some(WorkerDisposition::Terminal(outcome))) => {
+                    close_status(&state, &slot, Conclusion::NotReviewed).await;
+                    drop(permit);
+                    return WorkerDisposition::Terminal(outcome);
+                }
+                Ok(Some(WorkerDisposition::Deferred(not_before_ms))) => {
+                    drop(permit);
+                    return WorkerDisposition::Deferred(not_before_ms);
+                }
+                Ok(None) => {}
+            }
             break err;
         }
         let review_result = review_inner(&state, &repo, number, &author, installation, &run).await;
@@ -4660,6 +4713,137 @@ mod tests {
         );
         assert_eq!(state.unfinished.len(), 1);
         assert_eq!(state.unfinished[0].accepted_ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_push_during_retry_backoff_yields_instead_of_exhausting_the_live_head() {
+        use crate::forge::{MockForge, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let now = unix_time_ms();
+        let mut request = queued_test_review(84);
+        request.head_sha = Some("head-b".into());
+        store.admit_batch(vec![request.clone()]).await.unwrap();
+        let active = store
+            .claim_next("retrying-worker", now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&active, "head-b", now + 1)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.begin_paid(&active, now + 2).await.unwrap(),
+            PaidStart::Started
+        );
+
+        // The prior model attempt failed transiently. A delivery arrives during
+        // its backoff, so the next handle_review attempt boundary sees the yield.
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        request.id = crate::ports::review_job::ReviewJobId("delayed-a-retry".into());
+        request.delivery = Some("delayed-a-retry".into());
+        request.head_sha = Some("head-a-older-hint".into());
+        request.accepted_at_ms = now + 3;
+        store.admit_batch(vec![request]).await.unwrap();
+        assert!(!store.should_continue(&active, now + 4).await.unwrap());
+
+        let run = Run {
+            mode: Mode::Incremental,
+            slot: Arc::new(std::sync::Mutex::new(None)),
+            deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+            expected_head: Some("head-b".into()),
+            owned: Some(active.clone()),
+            owner_lost: None,
+            owner_until: None,
+            lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let disposition =
+            classify_retry_boundary_error(&Error::ReviewSuperseded, &store, Some(&active), || {
+                run.local_owner_valid()
+            })
+            .await
+            .unwrap();
+        assert!(matches!(disposition, Some(WorkerDisposition::Yielded)));
+        assert!(
+            record_owned_disposition(
+                &store,
+                &active,
+                disposition.expect("the boundary classified the yield"),
+                now + 5,
+            )
+            .await
+            .expect("owned retry yield")
+            .expect("scheduler update")
+        );
+
+        let resumed = store
+            .claim_next("replacement-worker", now + 6)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&resumed, "head-b", now + 7)
+                .await
+                .unwrap()
+        );
+        assert!(!store.head_is_terminal(&resumed, now + 8).await.unwrap());
+        assert_eq!(
+            store.begin_paid(&resumed, now + 9).await.unwrap(),
+            PaidStart::Started,
+            "a delivery hint during backoff must not mark B exhausted"
+        );
+        let model = MockModel::silent();
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let result = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&resumed),
+            Mode::Incremental,
+            || async {
+                model
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![Message::user("review live head-b after retry yield")],
+                        schema: serde_json::json!({"type": "object"}),
+                        schema_name: "review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
+                forge
+                    .publish_check(
+                        &repo,
+                        crate::forge::CheckRun {
+                            name: "tinysweeper/review".into(),
+                            head_sha: "head-b".into(),
+                            conclusion: Some(crate::forge::CheckConclusion::Success),
+                            title: "Reviewed B".into(),
+                            summary: "Retry yield left the live head reviewable".into(),
+                            images: vec![],
+                        },
+                    )
+                    .await?;
+                Ok(InnerReview::Complete(Some((
+                    1,
+                    false,
+                    status::ReviewCoverage::default(),
+                ))))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, InnerReview::Complete(Some(_))));
+        assert_eq!(model.requests().len(), 1);
+        assert!(matches!(
+            &forge.writes()[..],
+            [crate::forge::Write::Check(check)] if check.head_sha == "head-b"
+        ));
     }
 
     #[tokio::test]

@@ -228,7 +228,9 @@ pub(crate) async fn review_accounted(
         call: budget.call,
     });
     let ledger = budget.as_ref().map(|budget| budget.ledger.clone());
-    let mut running = TurnGuard(WORKERS.spawn(async move {
+    let run_context_dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let run_context_span = tracing::Span::current();
+    let turn_future = async move {
         let mut turn = agent
             .turn(evidence)
             .untrusted_input(true)
@@ -247,7 +249,10 @@ pub(crate) async fn review_accounted(
             turn = turn.budget(budget);
         }
         turn.send().await
-    }));
+    }
+    .with_subscriber(run_context_dispatch)
+    .instrument(run_context_span);
+    let mut running = TurnGuard(WORKERS.spawn(turn_future));
     let dispatch = bridge::dispatch(tree, policy, received, successful.clone(), lookup_budget);
     tokio::pin!(dispatch);
     let joined = tokio::select! {

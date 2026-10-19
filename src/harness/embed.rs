@@ -94,55 +94,7 @@ impl CompletionObserver for ModelCallObserver {
         if let Some(observer) = &self.0 {
             observer.on_complete(trace);
         }
-        let usage = trace
-            .outcome
-            .as_ref()
-            .ok()
-            .and_then(|response| response.usage.as_ref());
-        let model = trace.request.model.as_str();
-        let latency_ms = trace.latency.as_millis() as u64;
-        let succeeded = trace.outcome.is_ok();
-        let provider_response = succeeded
-            || matches!(
-                trace.outcome,
-                Err(openhuman_embed::CoreError::StructuredOutput { .. })
-            );
-        let refused = matches!(
-            trace.outcome,
-            Err(openhuman_embed::CoreError::BudgetExceeded { .. })
-        );
-        let failed_usage = match trace.outcome {
-            Err(openhuman_embed::CoreError::StructuredOutput { failure, .. }) => {
-                failure.usage.as_ref()
-            }
-            _ => None,
-        };
-        let usage = usage.or(failed_usage);
-        let accounting = Usage {
-            input_tokens: usage.map_or(0, |usage| usage.input_tokens),
-            output_tokens: usage.map_or(0, |usage| usage.output_tokens),
-            reasoning_tokens: usage.map_or(0, |usage| usage.reasoning_tokens),
-            cached_tokens: usage.map_or(0, |usage| usage.cached_tokens),
-            cost_usd: usage.and_then(|usage| usage.cost_usd).unwrap_or_default(),
-            calls_attempted: 1,
-            calls_succeeded: u64::from(provider_response),
-            calls_refused: u64::from(refused),
-            calls_errored: u64::from(!provider_response && !refused),
-            ..Usage::default()
-        };
-        tracing::info!(target: "tinysweeper::model", model, latency_ms,
-            succeeded = provider_response, completion_valid = succeeded,
-            input_tokens = accounting.input_tokens,
-            output_tokens = accounting.output_tokens,
-            reasoning_tokens = accounting.reasoning_tokens,
-            cached_tokens = accounting.cached_tokens,
-            "model call");
-        crate::ports::model::observe_model_call(
-            accounting,
-            provider_response,
-            refused,
-            trace.latency,
-        );
+        let _ = trace;
     }
 }
 
@@ -238,6 +190,7 @@ struct PhysicalModelObserver {
 
 struct PhysicalModelTerminal {
     lane: String,
+    requested_model: String,
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
@@ -252,6 +205,11 @@ impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserv
     ) -> Box<dyn openhuman_embed::complete::PhysicalDispatchTerminal> {
         Box::new(PhysicalModelTerminal {
             lane: self.lane.clone(),
+            requested_model: _metadata
+                .requested_model
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_owned(),
             output_cap: self.output_cap,
             history: self.history.clone(),
             timing: self.timing.clone(),
@@ -292,8 +250,7 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
         let model = outcome
             .answered_model
             .as_deref()
-            .or(outcome.usage.as_ref().and_then(|_| None))
-            .unwrap_or("unknown");
+            .unwrap_or(&self.requested_model);
         tracing::dispatcher::with_default(&self.dispatch, || {
             self.span.in_scope(|| {
                 tracing::info!(target: "tinysweeper::model", model, lane = %self.lane,
@@ -595,7 +552,15 @@ impl GatewayModel {
             self.routing_for(model)
         };
         let options = provider_options(&self.reasoning_effort, &routing);
-        let mut completer = self.completer();
+        let physical = Arc::new(PhysicalModelObserver {
+            lane: request.schema_name.clone(),
+            output_cap: base,
+            history: self.output_history.clone(),
+            timing: crate::ports::model::current_model_call_observer(),
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::current(),
+        });
+        let mut completer = self.completer().physical_observer(physical);
         if let Some(ledger) = &self.budget {
             let mut bound = completion.clone();
             bound.model = model.to_owned();
@@ -641,11 +606,6 @@ impl GatewayModel {
         }
         let call_started = std::time::Instant::now();
         let result = ladder.complete(completion).await.map_err(|error| {
-            record_output_attempts(
-                &self.output_history,
-                &request.schema_name,
-                &error.attempts,
-            );
             for attempt in &error.attempts {
                 let model = attempt
                     .answered_model
@@ -661,13 +621,13 @@ impl GatewayModel {
                             usage.output_tokens,
                         )
                     });
-                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                    tracing::debug!(model, lane = %request.schema_name, cap = attempt.max_tokens,
                         input_tokens = usage.input_tokens, cached_tokens = usage.cached_tokens,
                         output_tokens = usage.output_tokens, reported_cost_usd = reported,
-                        settled_cost_usd = settled, failed = true, "model call");
+                        settled_cost_usd = settled, failed = true, "model attempt settlement");
                 } else {
-                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
-                        settled_cost_usd = Option::<f64>::None, failed = true, "model call");
+                    tracing::debug!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                        settled_cost_usd = Option::<f64>::None, failed = true, "model attempt settlement");
                 }
             }
             // Keep the operator's actionable ceiling diagnostic when every
@@ -755,7 +715,6 @@ impl GatewayModel {
                     cost_usd,
             })
         })?;
-        record_output_attempts(&self.output_history, &request.schema_name, &result.attempts);
         let response = result.response;
         let attempts = result.attempts.len() as u64;
         let answered = response
@@ -784,14 +743,8 @@ impl GatewayModel {
                 )
             });
             cost += settled;
-            log_model_attempt(
-                model,
-                attempt.max_tokens,
-                call_started.elapsed().as_millis() as u64,
-                &usage,
-                attempt.finish_reason.as_deref(),
-                reported,
-            );
+            tracing::debug!(model, cap = attempt.max_tokens, reported_cost_usd = reported,
+                settled_cost_usd = settled, "model attempt settlement");
             if reasoning_crowds_the_answer(
                 attempt.max_tokens.unwrap_or_default(),
                 usage.reasoning_tokens,

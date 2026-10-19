@@ -5388,6 +5388,28 @@ mod tests {
             PaidStart::Started
         );
         let repo = RepoId::parse("owner/repo").unwrap();
+        let queued_b = forge
+            .writes()
+            .into_iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "head-b"
+                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("B's queued check is written before review work");
+        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "head-b",
+            queued_b.external_id.as_deref().expect("queued B identity"),
+        )
+        .await
+        .unwrap()
+        .expect("B's queued check has a remote ID");
         let result = run_if_confirmed_head_needs_review(
             store.as_ref(),
             Some(&owned_b),
@@ -5403,8 +5425,9 @@ mod tests {
                     })
                     .await?;
                 forge
-                    .publish_check(
+                    .update_check(
                         &repo,
+                        queued_b_id,
                         crate::forge::CheckRun {
                             name: "tinysweeper/review".into(),
                             head_sha: "head-b".into(),
@@ -5418,7 +5441,7 @@ mod tests {
                     )
                     .await?;
                 Ok(InnerReview::Complete(Some((
-                    1,
+                    queued_b_id,
                     false,
                     status::ReviewCoverage::default(),
                 ))))
@@ -5433,40 +5456,21 @@ mod tests {
         assert!(requests[1].contains("head-b"));
         drop(requests);
         let writes = forge.writes();
-        let queued_b = writes
-            .iter()
-            .find_map(|write| match write {
-                crate::forge::Write::Check(check)
-                    if check.head_sha == "head-b"
-                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued) =>
-                {
-                    Some(check)
-                }
-                _ => None,
-            })
-            .expect("B's queued check is written before review work");
-        let repo = RepoId::parse("owner/repo").unwrap();
-        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
-            &forge,
-            &repo,
-            "head-b",
-            queued_b.external_id.as_deref().expect("queued B identity"),
-        )
-        .await
-        .unwrap()
-        .expect("B's queued check has a remote ID");
-        assert!(writes.iter().any(|write| matches!(
+        assert_eq!(writes.iter().filter(|write| matches!(
             write,
             crate::forge::Write::CheckUpdate { check_id, check }
                 if *check_id == queued_b_id
                     && check.head_sha == "head-b"
                     && check.conclusion == Some(crate::forge::CheckConclusion::Success)
-        )), "B's completed review updates the same check: {writes:#?}");
-        assert!(!writes.iter().any(|write| match write {
-            crate::forge::Write::Check(check) => check.head_sha == "head-a",
-            crate::forge::Write::CheckUpdate { check, .. } => check.head_sha == "head-a",
-            _ => false,
-        }));
+        )).count(), 1, "B's completed review updates its queued check once: {writes:#?}");
+        assert!(writes.iter().filter_map(|write| match write {
+            crate::forge::Write::Check(check) if check.head_sha == "head-a" => Some(check),
+            crate::forge::Write::CheckUpdate { check, .. } if check.head_sha == "head-a" => Some(check),
+            _ => None,
+        }).all(|check| {
+            check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
+                && check.title == "Review incomplete"
+        }), "A may only receive its neutral retirement status: {writes:#?}");
     }
 
     #[tokio::test]

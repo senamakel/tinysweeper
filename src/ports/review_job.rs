@@ -144,7 +144,7 @@ pub struct ScheduledReview {
     /// Reserved slots for terminal-head history records this accepted work
     /// could create while resolving successive authoritative heads.
     #[serde(default)]
-    pub head_history_reservations: usize,
+    pub head_history_reservations: Option<usize>,
 }
 
 /// A completed ID retained to dedupe redeliveries for seven days.
@@ -281,7 +281,9 @@ impl ReviewSchedulerState {
             }).flatten() {
                 record.accepted_ids.push(request.id);
                 record.latest_head_hint = request.head_sha.clone();
-                record.head_history_reservations += 1;
+                record.head_history_reservations = Some(
+                    record.head_history_reservations.unwrap_or_default() + 1,
+                );
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
                         record.yield_requested = true;
@@ -294,9 +296,9 @@ impl ReviewSchedulerState {
             self.unfinished.push(ScheduledReview {
                 accepted_ids: vec![request.id.clone()],
                 latest_head_hint: request.head_sha.clone(),
-                head_history_reservations: usize::from(
+                head_history_reservations: Some(usize::from(
                     request.mode == ReviewJobMode::Incremental,
-                ),
+                )),
                 request,
                 owner: None,
                 generation: 0,
@@ -317,13 +319,13 @@ impl ReviewSchedulerState {
             .unfinished
             .iter()
             .filter(|record| record.request.mode == ReviewJobMode::Incremental)
-            .map(|record| (record.request.repo.as_str(), record.request.number))
+            .map(|record| (record.request.repo.clone(), record.request.number))
             .collect::<std::collections::HashSet<_>>();
         let pending_head_slots = pending_prs
             .iter()
             .filter(|(repo, number)| {
                 !self.incremental_heads.iter().any(|budget| {
-                    budget.repo.as_str() == *repo && budget.number == *number
+                    budget.repo == *repo && budget.number == *number
                 })
             })
             .count();
@@ -342,7 +344,7 @@ impl ReviewSchedulerState {
                     if record.request.mode == ReviewJobMode::Incremental {
                         record
                             .head_history_reservations
-                            .max(record.accepted_ids.len().max(1))
+                            .unwrap_or_else(|| record.accepted_ids.len().max(1))
                     } else {
                         0
                     }
@@ -363,9 +365,9 @@ impl ReviewSchedulerState {
                 record.latest_head_hint = record.request.head_sha.clone();
             }
             if record.request.mode == ReviewJobMode::Incremental
-                && record.head_history_reservations == 0
+                && record.head_history_reservations.is_none()
             {
-                record.head_history_reservations = record.accepted_ids.len();
+                record.head_history_reservations = Some(record.accepted_ids.len());
             }
         }
     }
@@ -466,10 +468,19 @@ impl ReviewSchedulerState {
                 return true;
             }
             if current.terminal_outcome.is_some() || current.deadline_hit {
-                if self.unfinished[index].head_history_reservations == 0 {
+                if self.unfinished[index]
+                    .head_history_reservations
+                    .unwrap_or_default()
+                    == 0
+                {
                     return false;
                 }
-                self.unfinished[index].head_history_reservations -= 1;
+                self.unfinished[index].head_history_reservations = Some(
+                    self.unfinished[index]
+                        .head_history_reservations
+                        .unwrap_or_default()
+                        - 1,
+                );
                 self.head_history.push(HeadTerminalTombstone {
                     repo: repo.clone(),
                     number,

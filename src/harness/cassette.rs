@@ -475,7 +475,7 @@ struct QueryReplayTree<'a> {
 }
 
 impl<'a> QueryReplayTree<'a> {
-    fn new(inner: &'a dyn crate::ports::tree::TreeReader, _expected: &[RecordedQuery]) -> Self {
+    fn new(inner: &'a dyn crate::ports::tree::TreeReader) -> Self {
         Self { inner }
     }
 
@@ -706,7 +706,7 @@ impl Model for Cassette {
             ));
         };
 
-        let replay_tree = QueryReplayTree::new(tree, &context.queries);
+        let replay_tree = QueryReplayTree::new(tree);
         for query in &context.queries {
             replay_tree.reissue(query).await.map_err(|_| {
                 self.record_miss();

@@ -473,7 +473,7 @@ impl ReviewSchedulerState {
         for request in requests {
             let initial_check = request.head_sha.as_ref().map(|head_sha| ReviewCheckRecord {
                 head_sha: head_sha.clone(),
-                external_id: format!("tinysweeper:{}:{}", request.id.0, head_sha),
+                external_id: queued_check_external_id(&request.id, head_sha),
                 check_id: None,
                 stage: ReviewCheckStage::Queued,
                 owner_generation: None,
@@ -1005,6 +1005,17 @@ impl ReviewSchedulerState {
             }));
         true
     }
+}
+
+fn queued_check_external_id(job: &ReviewJobId, head_sha: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(format!("{}\0{head_sha}", job.0).as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("tinysweeper:review:{hex}")
 }
 
 fn new_uncoalesced_count(records: &[ScheduledReview], requests: &[ReviewRequest]) -> usize {

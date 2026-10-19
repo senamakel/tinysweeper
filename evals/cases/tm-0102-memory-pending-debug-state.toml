@@ -2,6 +2,7 @@ schema = 1
 id = "tm-0102-memory-pending-debug-state"
 title = "Historical miss: Derived Debug on MemoryPendingStore exposes bearer OAuth state keys while sign-ins are pending; report safe metadata only."
 fixture = "../fixtures/tm-0102-memory-pending-debug-state.json"
+lanes = ["critique"]
 labels = ["recall", "historical-miss", "external-review", "rust"]
 exhaustive = false
 
@@ -20,6 +21,7 @@ labelled_by = "enamakel"
 labelled_on = "2026-10-19"
 
 [[expected]]
+# Fix regression: crates/tinymcp/src/registry/oauth/pending_tests.rs::the_memory_stores_debug_output_never_shows_a_state
 id = "E1"
 path = "crates/tinymcp/src/registry/oauth/pending.rs"
 lines = [142, 142]

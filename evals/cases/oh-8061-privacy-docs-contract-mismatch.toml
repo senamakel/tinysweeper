@@ -2,6 +2,7 @@ schema = 1
 id = "oh-8061-privacy-docs-contract-mismatch"
 title = "Historical miss: The newly documented blocking behavior conflicted with unchanged public privacy-mode and capability descriptions that still promised speech uploads."
 fixture = "../fixtures/oh-8061-privacy-docs-contract-mismatch.json"
+lanes = ["critique"]
 labels = ["recall", "historical-miss", "external-review", "rust"]
 exhaustive = false
 
@@ -20,6 +21,7 @@ labelled_by = "enamakel"
 labelled_on = "2026-10-19"
 
 [[expected]]
+# Fix regression: crates/openhuman-core/src/platform/about_app/catalog_tests.rs::speech_recognition_description_explains_local_only_blocking
 id = "E1"
 path = "crates/openhuman-core/src/voice/README.md"
 lines = [418, 418]

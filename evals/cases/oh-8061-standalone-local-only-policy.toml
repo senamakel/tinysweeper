@@ -2,6 +2,7 @@ schema = 1
 id = "oh-8061-standalone-local-only-policy"
 title = "Historical miss: Standalone voice startup failed to install persisted local-only policy before worker requests, allowing hosted STT upload."
 fixture = "../fixtures/oh-8061-standalone-local-only-policy.json"
+lanes = ["critique"]
 labels = ["recall", "historical-miss", "external-review", "rust"]
 exhaustive = false
 
@@ -20,6 +21,7 @@ labelled_by = "enamakel"
 labelled_on = "2026-10-19"
 
 [[expected]]
+# Fix regression: crates/openhuman-core/src/voice/server/singleton_tests.rs::standalone_saved_privacy_blocks_uploads_on_worker_threads
 id = "E1"
 path = "crates/openhuman-core/src/voice/egress.rs"
 lines = [32, 32]

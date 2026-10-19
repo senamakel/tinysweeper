@@ -160,11 +160,28 @@ pub struct ChangeMap {
 impl ChangeMap {
     /// Whether at least four changed, non-test symbols make a diagram useful.
     pub fn worth_drawing(&self) -> bool {
-        self.changed()
-            .filter(|component| is_diagram_symbol(component))
-            .count()
+        let drawable: BTreeSet<usize> = self
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, component)| is_diagram_symbol(component))
+            .map(|(index, _)| index)
+            .collect();
+        let changed: BTreeSet<&str> = self
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(index, component)| {
+                drawable.contains(index) && component.role == Role::Changed
+            })
+            .map(|(_, component)| component.name.as_str())
+            .collect();
+        changed.len()
             >= 4
-            && !self.links.is_empty()
+            && self
+                .links
+                .iter()
+                .any(|link| drawable.contains(&link.from) && drawable.contains(&link.to))
     }
 
     /// The behaviours the change edits.
@@ -190,6 +207,14 @@ pub(crate) fn is_diagram_symbol(component: &Component) -> bool {
         return false;
     }
     let symbol = symbol.to_ascii_lowercase();
+    if symbol
+        .split("::")
+        .any(|part| part == "tests" || part.starts_with("test_"))
+        || symbol.ends_with("_test")
+        || symbol.ends_with("_tests")
+    {
+        return false;
+    }
     !matches!(
         symbol.as_str(),
         "call"

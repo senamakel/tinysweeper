@@ -814,6 +814,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_review_request_uses_its_custom_reviewer_effort() {
+        let model = MockModel::new().then(json!({
+            "summary": "No security findings.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let mut config = config();
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
+
+        run_with(model, &config, &diffs(), &[]).await;
+
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[tokio::test]
     async fn adaptive_requests_keep_path_rules_and_redaction_guidance() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![

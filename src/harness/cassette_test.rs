@@ -364,7 +364,7 @@ async fn recording_cassette_review_reports_the_physical_path_it_uses() {
     let inner = Arc::new(ReviewBudgetProbe::default());
     let completed = inner.completed.clone();
     let cassette = Arc::new(Cassette::record(inner.clone(), dir.path()));
-    let physical_events = Arc::new(ModelEventCounter::default());
+    let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
     let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
     let policy = crate::config::types::LookupPolicy::default();
 
@@ -521,7 +521,7 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
         inner: MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]),
         lookups: AtomicUsize::new(0),
     };
-    let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
+    let physical_events = Arc::new(ModelEventCounter::default());
     let request = ModelRequest {
         model: "b".into(),
         messages: vec![

@@ -6876,6 +6876,10 @@ mod tests {
 
     #[tokio::test]
     async fn headless_review_delivery_is_durable_when_status_metadata_is_unavailable() {
+        use crate::forge::{MockForge, types::PullRequest};
+        use crate::forge::types::CheckRunStatus;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
         let mut held = Vec::new();
         for _ in 0..MAX_CONCURRENT_REVIEWS {
@@ -6884,8 +6888,27 @@ mod tests {
         assert_eq!(permits.available_permits(), 0);
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
-        let unavailable: QueueStatusClientFactory = Arc::new(|_| {
-            async { Err(Error::Forge("simulated status metadata outage".into())) }.boxed()
+        let forge = MockForge::new().with_pull_request(
+            PullRequest { number: 78, head_sha: "live-head-b".into(), ..PullRequest::default() },
+            vec![],
+            vec![],
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry_forge = forge.clone();
+        let retry_attempts = attempts.clone();
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = retry_forge.clone();
+            let attempts = retry_attempts.clone();
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::Forge("simulated status metadata outage".into()));
+                }
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
         });
         let action = Action::Review {
             repo: "owner/repo".into(),
@@ -6900,7 +6923,7 @@ mod tests {
             &action,
             "headless-metadata-outage",
             "issue_comment",
-            unavailable,
+            status_client.clone(),
         )
         .await
         .expect("metadata failure leaves the webhook accepted");
@@ -6911,6 +6934,19 @@ mod tests {
         assert_eq!(durable.unfinished[0].accepted_ids[0].0, "webhook:headless-metadata-outage");
         assert_eq!(durable.unfinished[0].request.head_sha, None);
         assert!(durable.unfinished[0].status_reconcile_reserved);
+        assert_eq!(permits.available_permits(), 0);
+
+        publish_pending_queue_checks_at(
+            &store,
+            status_client,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("metadata and queued status retry independently of reviews");
+        let queued = forge.checks().remove(status::CHECK_NAME)
+            .expect("resolved metadata produces a queued check");
+        assert_eq!(queued.head_sha, "live-head-b");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
         assert_eq!(permits.available_permits(), 0);
         drop(held);
     }

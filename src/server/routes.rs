@@ -2015,23 +2015,22 @@ impl OwnedModel {
     }
 
     async fn check_owner(&self) -> Result<()> {
-        if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
-            || self
-                .owner_until
-                .as_ref()
-                .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
-        {
+        if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
         }
-        if !self
+        let should_continue = self
             .jobs
             .should_continue(&self.owned, unix_time_ms())
-            .await?
-        {
-            if self.jobs.owns(&self.owned, unix_time_ms()).await? {
-                return Err(Error::ReviewSuperseded);
-            }
+            .await?;
+        if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
+        }
+        if !should_continue {
+            let owns = self.jobs.owns(&self.owned, unix_time_ms()).await?;
+            if !self.local_owner_valid() || !owns {
+                return Err(Error::ReviewOwnershipLost);
+            }
+            return Err(Error::ReviewSuperseded);
         }
         Ok(())
     }

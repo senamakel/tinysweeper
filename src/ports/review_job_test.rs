@@ -23,6 +23,348 @@ fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
 }
 
 #[tokio::test]
+async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 14);
+    first.repo = "org/repo".into();
+    first.number = 7;
+    first.head_sha = Some("head-a".into());
+    let mut second = first.clone();
+    second.id = ReviewJobId("push-b".into());
+    second.delivery = Some("push-b".into());
+    second.head_sha = Some("head-b".into());
+
+    assert_eq!(
+        store.admit_batch(vec![first]).await.unwrap(),
+        Admission::Admitted
+    );
+    assert_eq!(
+        store.admit_batch(vec![second]).await.unwrap(),
+        Admission::Admitted
+    );
+
+    assert_eq!(
+        store.unfinished(),
+        1,
+        "one pending incremental review per PR"
+    );
+    let claimed = store.claim_next("worker", 20).await.unwrap().unwrap();
+    assert_eq!(claimed.request.head_sha.as_deref(), Some("head-b"));
+    assert_eq!(
+        claimed.accepted_ids.len(),
+        2,
+        "both ACKed delivery IDs remain reserved"
+    );
+}
+
+#[tokio::test]
+async fn a_burst_of_incremental_pushes_runs_only_the_last_queued_head() {
+    let store = MockReviewJobStore::default();
+    let mut requests = (0..3)
+        .map(|index| {
+            let mut item = request(&format!("push-{index}"), 14 + index);
+            item.repo = "org/repo".into();
+            item.number = 7;
+            item.head_sha = Some(format!("head-{index}"));
+            item
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        store.admit_batch(vec![requests.remove(0)]).await.unwrap(),
+        Admission::Admitted
+    );
+    assert_eq!(
+        store.admit_batch(vec![requests.remove(0)]).await.unwrap(),
+        Admission::Admitted
+    );
+    assert_eq!(
+        store.admit_batch(vec![requests.remove(0)]).await.unwrap(),
+        Admission::Admitted
+    );
+
+    let latest = store.claim_next("worker", 20).await.unwrap().unwrap();
+    assert_eq!(latest.request.head_sha.as_deref(), Some("head-2"));
+    assert_eq!(latest.accepted_ids.len(), 3);
+}
+
+#[tokio::test]
+async fn an_out_of_order_older_head_hint_yields_without_stealing_the_owner() {
+    let store = MockReviewJobStore::default();
+    let mut newer = request("push-b", 14);
+    newer.repo = "org/repo".into();
+    newer.number = 7;
+    newer.head_sha = Some("head-b".into());
+    store.admit_batch(vec![newer.clone()]).await.unwrap();
+    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+
+    let mut delayed = newer;
+    delayed.id = ReviewJobId("push-a-delayed".into());
+    delayed.delivery = Some("push-a-delayed".into());
+    delayed.head_sha = Some("head-a".into());
+    store.admit_batch(vec![delayed]).await.unwrap();
+
+    assert!(
+        store.owns(&active, 21).await.unwrap(),
+        "a hint cannot steal durable ownership"
+    );
+    assert!(!store.should_continue(&active, 21).await.unwrap());
+    assert_eq!(store.unfinished(), 1);
+    assert!(store.defer_yield(&active, 22).await.unwrap());
+    let resumed = store.claim_next("worker-2", 23).await.unwrap().unwrap();
+    assert_eq!(resumed.request.head_sha.as_deref(), Some("head-a"));
+    assert_eq!(resumed.accepted_ids.len(), 2);
+}
+
+#[tokio::test]
+async fn delayed_old_hint_yields_but_confirming_the_live_head_keeps_its_paid_budget() {
+    let store = MockReviewJobStore::default();
+    let mut newer = request("push-b", 14);
+    newer.repo = "org/repo".into();
+    newer.number = 7;
+    newer.head_sha = Some("head-b".into());
+    store.admit_batch(vec![newer.clone()]).await.unwrap();
+    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+    assert!(store.confirm_head(&active, "head-b", 21).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&active, 22).await.unwrap(),
+        super::PaidStart::Started
+    );
+
+    let mut delayed = newer;
+    delayed.id = ReviewJobId("push-a-delayed".into());
+    delayed.delivery = Some("push-a-delayed".into());
+    delayed.head_sha = Some("head-a".into());
+    store.admit_batch(vec![delayed]).await.unwrap();
+    assert!(!store.should_continue(&active, 23).await.unwrap());
+    assert!(store.defer_yield(&active, 24).await.unwrap());
+
+    let resumed = store.claim_next("worker-2", 25).await.unwrap().unwrap();
+    assert!(store.confirm_head(&resumed, "head-b", 26).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&resumed, 27).await.unwrap(),
+        super::PaidStart::Started
+    );
+    assert_eq!(
+        store.snapshot_for_test().incremental_heads[0].paid_attempts,
+        2,
+        "a stale webhook hint cannot refill the actual head's budget"
+    );
+}
+
+#[tokio::test]
+async fn full_manual_review_is_not_yielded_by_incremental_pushes() {
+    let store = MockReviewJobStore::default();
+    let mut full = request("manual-full", 14);
+    full.repo = "org/repo".into();
+    full.number = 7;
+    full.mode = ReviewJobMode::Full;
+    full.head_sha = Some("head-a".into());
+    store.admit_batch(vec![full.clone()]).await.unwrap();
+    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+
+    let mut incremental = full;
+    incremental.id = ReviewJobId("push-b".into());
+    incremental.delivery = Some("push-b".into());
+    incremental.mode = ReviewJobMode::Incremental;
+    incremental.head_sha = Some("head-b".into());
+    store.admit_batch(vec![incremental]).await.unwrap();
+
+    assert!(store.should_continue(&active, 21).await.unwrap());
+    assert_eq!(store.unfinished(), 2);
+}
+
+#[tokio::test]
+async fn a_deadline_is_terminal_for_the_confirmed_head_across_delivery_ids() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 1);
+    first.repo = "org/repo".into();
+    first.number = 7;
+    first.head_sha = Some("head-a".into());
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let timed_out = store.claim_next("worker", 2).await.unwrap().unwrap();
+    assert!(store.confirm_head(&timed_out, "head-a", 3).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&timed_out, 4).await.unwrap(),
+        super::PaidStart::Started
+    );
+    assert!(store.finish_deadline(&timed_out, 5).await.unwrap());
+
+    first.id = ReviewJobId("push-a-redelivery".into());
+    first.delivery = Some("push-a-redelivery".into());
+    first.accepted_at_ms = 6;
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let retry = store.claim_next("worker-2", 7).await.unwrap().unwrap();
+    assert!(store.confirm_head(&retry, "head-a", 8).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&retry, 9).await.unwrap(),
+        super::PaidStart::Exhausted
+    );
+    assert!(
+        store
+            .finish(&retry, TerminalOutcome::Exhausted, 9, 9)
+            .await
+            .unwrap()
+    );
+
+    first.id = ReviewJobId("push-b".into());
+    first.delivery = Some("push-b".into());
+    first.head_sha = Some("head-b".into());
+    first.accepted_at_ms = 10;
+    store.admit_batch(vec![first]).await.unwrap();
+    let new_head = store.claim_next("worker-3", 11).await.unwrap().unwrap();
+    assert!(store.confirm_head(&new_head, "head-b", 12).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&new_head, 13).await.unwrap(),
+        super::PaidStart::Started
+    );
+}
+
+#[tokio::test]
+async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolution() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 1);
+    first.repo = "org/repo".into();
+    first.number = 7;
+    first.head_sha = Some("head-a".into());
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let timed_out = store.claim_next("worker", 2).await.unwrap().unwrap();
+    assert!(store.confirm_head(&timed_out, "head-a", 3).await.unwrap());
+
+    first.id = ReviewJobId("push-b".into());
+    first.delivery = Some("push-b".into());
+    first.head_sha = Some("head-b-hint".into());
+    first.accepted_at_ms = 4;
+    store.admit_batch(vec![first]).await.unwrap();
+
+    assert!(store.finish_deadline(&timed_out, 5).await.unwrap());
+    assert_eq!(
+        store.unfinished(),
+        1,
+        "both delivery IDs stay attached to recoverable work"
+    );
+    let resumed = store.claim_next("worker-2", 6).await.unwrap().unwrap();
+    assert!(store.confirm_head(&resumed, "head-a", 7).await.unwrap());
+    assert!(store.head_is_terminal(&resumed, 8).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&resumed, 9).await.unwrap(),
+        super::PaidStart::Exhausted
+    );
+
+    // The webhook hint is not proof of advancement. Only resolving a different
+    // Forge head clears the prior head's marker and makes new paid work eligible.
+    assert!(store.confirm_head(&resumed, "head-b", 10).await.unwrap());
+    assert!(!store.head_is_terminal(&resumed, 11).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&resumed, 12).await.unwrap(),
+        super::PaidStart::Started
+    );
+}
+
+#[tokio::test]
+async fn paid_starts_require_a_head_confirmed_from_the_live_forge_read() {
+    let store = MockReviewJobStore::default();
+    store.admit_batch(vec![request("push-a", 1)]).await.unwrap();
+    let owned = store.claim_next("worker", 2).await.unwrap().unwrap();
+
+    assert_eq!(
+        store.begin_paid(&owned, 3).await.unwrap(),
+        super::PaidStart::OwnershipLost,
+        "the request SHA is an untrusted hint until the worker confirms the live head"
+    );
+    assert!(store.confirm_head(&owned, "actual-head", 4).await.unwrap());
+    assert_eq!(
+        store.begin_paid(&owned, 5).await.unwrap(),
+        super::PaidStart::Started
+    );
+}
+
+#[test]
+fn legacy_paid_attempts_remain_consumed_when_the_live_head_is_first_confirmed() {
+    let mut state: ReviewSchedulerState = serde_json::from_value(serde_json::json!({
+        "revision": 0,
+        "unfinished": [{
+            "request": {
+                "id": "legacy-delivery",
+                "repo": "org/repo",
+                "number": 7,
+                "author": "contributor",
+                "installation": 1,
+                "head_sha": "untrusted-old-hint",
+                "delivery": "legacy-delivery",
+                "event": "pull_request",
+                "mode": "incremental",
+                "accepted_at_ms": 1
+            },
+            "owner": null,
+            "generation": 0,
+            "owner_until_ms": 0,
+            "not_before_ms": 0,
+            "paid_attempts": 5
+        }],
+        "terminal": []
+    }))
+    .expect("pre-supersession scheduler records deserialize with defaults");
+    state.normalize_legacy_records();
+    let owned = state.claim_next("recovered-worker", 10).unwrap();
+    assert!(state.confirm_head(&owned, "actual-live-head", 11));
+    assert_eq!(
+        state.begin_paid(&owned, 12),
+        super::PaidStart::Exhausted,
+        "the first authoritative SHA cannot grant five extra starts to a legacy job"
+    );
+    assert_eq!(state.incremental_heads[0].paid_attempts, 5);
+}
+
+#[tokio::test]
+async fn head_history_transitions_consume_reserved_capacity_without_overflow() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 1);
+    first.head_sha = Some("head-a".into());
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let owner = store.claim_next("worker-a", 2).await.unwrap().unwrap();
+    assert!(store.confirm_head(&owner, "head-a", 3).await.unwrap());
+    assert!(
+        store
+            .finish(&owner, TerminalOutcome::Published, 4, 4)
+            .await
+            .unwrap()
+    );
+
+    first.id = ReviewJobId("push-b".into());
+    first.delivery = Some("push-b".into());
+    first.head_sha = Some("head-b".into());
+    first.accepted_at_ms = 5;
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let state = store.snapshot_for_test();
+    let padding = MAX_TERMINAL_REVIEW_RESERVATIONS - state.reserved_capacity();
+    let mut state = state;
+    state
+        .terminal
+        .extend((0..padding).map(|index| ReviewTombstone {
+            id: ReviewJobId(format!("padding-{index}")),
+            outcome: TerminalOutcome::Exhausted,
+            expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
+        }));
+    assert_eq!(state.reserved_capacity(), MAX_TERMINAL_REVIEW_RESERVATIONS);
+    store.replace_state_for_test(state);
+
+    first.id = ReviewJobId("push-c".into());
+    first.delivery = Some("push-c".into());
+    assert_eq!(
+        store.admit_batch(vec![first]).await.unwrap(),
+        Admission::Full
+    );
+
+    let owner = store.claim_next("worker-b", 6).await.unwrap().unwrap();
+    assert!(store.confirm_head(&owner, "head-b", 7).await.unwrap());
+    assert_eq!(
+        store.snapshot_for_test().reserved_capacity(),
+        MAX_TERMINAL_REVIEW_RESERVATIONS,
+        "the appended terminal-head record consumes its prior reservation"
+    );
+}
+
+#[tokio::test]
 async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() {
     let store = MockReviewJobStore::default();
     assert_eq!(
@@ -59,12 +401,27 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
 async fn whole_manual_batch_is_rejected_without_partial_admission() {
     let store = MockReviewJobStore::default();
     let full = (0..MAX_UNFINISHED_REVIEWS)
-        .map(|index| request(&format!("job-{index}"), 1))
+        .map(|index| {
+            let mut manual = request(&format!("job-{index}"), 1);
+            manual.mode = ReviewJobMode::Full;
+            manual
+        })
         .collect::<Vec<_>>();
     assert_eq!(store.admit_batch(full).await.unwrap(), Admission::Admitted);
     assert_eq!(
         store
-            .admit_batch(vec![request("manual-a", 2), request("manual-b", 2)])
+            .admit_batch(vec![
+                {
+                    let mut manual = request("manual-a", 2);
+                    manual.mode = ReviewJobMode::Full;
+                    manual
+                },
+                {
+                    let mut manual = request("manual-b", 2);
+                    manual.mode = ReviewJobMode::Full;
+                    manual
+                },
+            ])
             .await
             .unwrap(),
         Admission::Full
@@ -131,7 +488,11 @@ async fn live_lease_contention_defers_without_converting_it_to_a_success() {
 async fn running_claims_are_bounded_across_process_owners() {
     let store = MockReviewJobStore::default();
     let jobs = (0..=MAX_RUNNING_REVIEWS)
-        .map(|index| request(&format!("delivery-{index}"), 1))
+        .map(|index| {
+            let mut item = request(&format!("delivery-{index}"), 1);
+            item.number = 7 + index as u64;
+            item
+        })
         .collect();
     assert_eq!(store.admit_batch(jobs).await.unwrap(), Admission::Admitted);
     for index in 0..MAX_RUNNING_REVIEWS {

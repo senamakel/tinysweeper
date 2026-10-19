@@ -67,7 +67,7 @@ pub(crate) struct Record {
     pub(crate) phases_ms: BTreeMap<String, u64>,
     /// Accumulated duration per review lane.
     pub(crate) lanes_ms: BTreeMap<String, u64>,
-    /// Physical model attempts, plus one for pre-dispatch refusals.
+    /// Physical model dispatches; pre-dispatch refusals are counted separately.
     pub(crate) calls_attempted: u64,
     /// Provider calls returning a response, including truncated or invalid output.
     pub(crate) calls_succeeded: u64,

@@ -291,9 +291,10 @@ mod tests {
             .enumerate()
             .map(|(index, path)| ChangedFile {
                 path: path.clone(),
-                additions: u64::from(index == 0),
-                deletions: u64::from(index == 0),
-                patch: (path != "src/zz_test.rs").then_some("untrusted patch text".into()),
+                additions: if index == 0 { 1 } else { 0 },
+                deletions: if index == 0 { 1 } else { 0 },
+                patch: (path.as_str() != "src/zz_test.rs")
+                    .then_some("untrusted patch text".into()),
                 ..ChangedFile::default()
             })
             .collect::<Vec<_>>();
@@ -449,7 +450,10 @@ mod tests {
     }
 
     #[test]
-    fn large_mode_ranks_scanner_prior_and_sensitive_paths_ahead_of_large_docs() {
+    fn supplied_host_risk_flags_rank_ahead_of_large_docs() {
+        // This injects precomputed risk flags. Deriving them from scanner
+        // results, prior anchors, sensitive paths and source text remains
+        // outside this source-only scaffold.
         let config = Config::default();
         let files = [
             ChangedFile {

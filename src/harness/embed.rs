@@ -1876,12 +1876,15 @@ mod tests {
         use crate::ports::model::Model;
 
         let (mut model, gateway, mut request) = admission_fixture().await;
-        request.reasoning_effort = Some("high".into());
+        // The fixture's configured global effort is high. A low request-level
+        // override makes this fail if the adapter silently falls back to that
+        // global setting.
+        request.reasoning_effort = Some("low".into());
         model.complete(request).await.expect("completion succeeds");
 
         let requests = gateway.requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0]["reasoning"]["effort"], json!("high"));
+        assert_eq!(requests[0]["reasoning"]["effort"], json!("low"));
     }
 
     #[tokio::test]

@@ -3019,6 +3019,27 @@ async fn confirmed_head_is_terminal(
     jobs.head_is_terminal(owned, unix_time_ms()).await
 }
 
+/// Run the actual review continuation only for a nonterminal confirmed head.
+/// Keeping this gate around the production continuation makes delayed webhook
+/// behavior testable with the same model and Forge ports used by the worker.
+async fn run_if_confirmed_head_needs_review<F, Fut>(
+    jobs: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+    mode: Mode,
+    review: F,
+) -> Result<InnerReview>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<InnerReview>>,
+{
+    if let Some(owned) = owned
+        && confirmed_head_is_terminal(jobs, owned, mode).await?
+    {
+        return Ok(InnerReview::Complete(None));
+    }
+    review().await
+}
+
 fn review_lease_holder(run: &Run) -> String {
     run.owned.as_ref().map_or_else(
         || "server".to_owned(),
@@ -3109,16 +3130,11 @@ impl ReviewRun<'_> {
         }
         run.check_work(state).await?;
 
-        // A delayed or out-of-order webhook can point at a head that has
-        // already completed while this worker was fetching the live PR. The
-        // authoritative head was just confirmed under the durable owner; stop
-        // here so that hint cannot reopen status or spend another model call.
-        if let Some(owned) = &run.owned
-            && confirmed_head_is_terminal(state.review_jobs.as_ref(), owned, run.mode).await?
-        {
-            return Ok(InnerReview::Complete(None));
-        }
-
+        run_if_confirmed_head_needs_review(
+            state.review_jobs.as_ref(),
+            run.owned.as_ref(),
+            run.mode,
+            || async {
         // A manual review deliberately takes a lease of its own: the operator asked
         // for this run *because* the ordinary one already happened, so sharing the
         // webhook path's key would make the button a silent no-op.
@@ -3330,6 +3346,9 @@ impl ReviewRun<'_> {
                 changes_requested,
                 coverage,
             ))))
+            },
+        )
+        .await
             },
         )
         .await

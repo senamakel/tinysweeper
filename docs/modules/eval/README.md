@@ -117,6 +117,23 @@ A stricter gate finds fewer things without the reviewer having got worse, so
 `eval report --baseline` refuses that comparison rather than letting somebody
 read it as a regression. `--allow-config-drift` makes it anyway, and says so.
 
+## Historical miss cases are labels, not replay results
+
+The corpus includes five externally verified misses from the original
+reviewed heads of `tinymcp#102`, `openhuman#8061`, and `openhuman#8076`. Each
+expectation is anchored to the changed hunk from the external review and cites
+the follow-up fix. These historical zero-finding reviews establish why the
+labels are valid; they are not outputs from the current TinySweeper pipeline.
+The cases have no cassettes yet, so the corpus does not claim a hit rate or
+recall percentage for them.
+
+Their original PR bodies and comments are omitted: the available PR bodies
+contain later fix explanations, and the exact review-time snapshots were not
+retained. The frozen changed-file patches and commit ranges are pinned to the
+original reviewed heads. Any new recording must remain distinct from the
+historical miss evidence and must use the reviewed head's source tree for
+lookups.
+
 ## A failed review scores zero, not nothing
 
 A case whose review errors is scored with every required expectation missed,

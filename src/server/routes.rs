@@ -4141,8 +4141,17 @@ mod tests {
         let mut request = queued_test_review(7);
         request.head_sha = Some("head-a-delayed".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        let newer = store.claim_next("newer-worker", now).await.unwrap().unwrap();
-        assert!(store.confirm_head(&newer, "head-b-live", now + 1).await.unwrap());
+        let newer = store
+            .claim_next("newer-worker", now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&newer, "head-b-live", now + 1)
+                .await
+                .unwrap()
+        );
         assert_eq!(
             store.begin_paid(&newer, now + 2).await.unwrap(),
             PaidStart::Started

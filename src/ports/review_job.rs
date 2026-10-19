@@ -822,6 +822,11 @@ impl ReviewSchedulerState {
                 .flatten()
             {
                 record.accepted_ids.push(request.id.clone());
+                if request.head_sha.is_none() && record.request.head_sha.is_some() {
+                    // A headless comment must not erase an already accepted
+                    // advisory head or its queued check identity.
+                    continue;
+                }
                 record.latest_head_hint = request.head_sha.clone();
                 let new_head = request.head_sha.clone();
                 let is_unowned_head_change = record.owner.is_none()
@@ -838,6 +843,9 @@ impl ReviewSchedulerState {
                 record.head_history_reservations =
                     Some(record.head_history_reservations.unwrap_or_default() + 1);
                 record.status_reconcile_reserved = true;
+                record.metadata_resolution_pending = request.head_sha.is_none();
+                record.metadata_claim_generation = record.metadata_claim_generation.saturating_add(1);
+                record.metadata_claim_until_ms = 0;
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
                         record.yield_requested = true;
@@ -851,6 +859,8 @@ impl ReviewSchedulerState {
                 self.retired_checks.extend(detached_checks);
                 continue;
             }
+            let metadata_resolution_pending = request.mode == ReviewJobMode::Incremental
+                && request.head_sha.is_none();
             self.unfinished.push(ScheduledReview {
                 enqueued_at_ms: request.accepted_at_ms,
                 accepted_ids: vec![request.id.clone()],
@@ -867,6 +877,9 @@ impl ReviewSchedulerState {
                 yield_requested: false,
                 review_checks: initial_check.into_iter().collect(),
                 status_reconcile_reserved: true,
+                metadata_resolution_pending,
+                metadata_claim_generation: 0,
+                metadata_claim_until_ms: 0,
             });
         }
         Admission::Admitted
@@ -958,6 +971,7 @@ impl ReviewSchedulerState {
         let record = self.unfinished.iter_mut().find(|record| {
             record.not_before_ms <= now_ms
                 && (record.owner.is_none() || record.owner_until_ms <= now_ms)
+                && !record.metadata_resolution_pending
                 && (record.review_checks.is_empty()
                     || record.request.head_sha.as_deref().is_none_or(|head| {
                         record.review_checks.iter().any(|check| {

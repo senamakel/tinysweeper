@@ -443,13 +443,10 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
 async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads() {
     use crate::harness::fake_gateway::{FakeGateway, Reply};
     use crate::harness::mock::execution_test_support::execution_control;
-    use crate::harness::provider_routing::ProviderRouting;
-    use crate::lanes::large_pr::ReviewMode;
     use crate::ports::model::{Model, ModelRequest};
     use crate::ports::model_execution::ModelExecutionRefusal;
     use crate::ports::tree::MockTree;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::time::Instant;
 
     let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
     let gateway = FakeGateway::start(vec![
@@ -479,7 +476,7 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     config.agentic_reviewers = true;
     config.base_url = gateway.base_url.clone();
     config.fallback = vec!["fallback".into()];
-    config.provider = ProviderRouting {
+    config.provider = crate::config::types::ProviderRouting {
         order: vec!["pinned-provider".into()],
         allow_fallbacks: false,
         last_resort_unpinned: true,
@@ -497,19 +494,9 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     }
     let mut gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
     gateway_model.budget = Some(crate::harness::budget::ledger(10.0));
-    let started_at = Instant::now();
-    let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
-        crate::app::review_execution::ReviewExecutionOptions {
-            started_at,
-            hard_deadline: started_at + std::time::Duration::from_secs(60),
-            mode: ReviewMode::Large,
-            max_calls: Some(1),
-            soft_deadline_percent: 80,
-            drain_seconds: 30,
-        },
-    ));
-    let (_execution, control) = execution_control(1);
-    let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), tempfile::tempdir().unwrap()));
+    let (execution, control) = execution_control(1);
+    let dir = tempfile::tempdir().expect("temporary cassette directory");
+    let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), dir.path()));
     let model: Arc<dyn Model> = cassette.clone();
     let model = model
         .with_execution_control(control)

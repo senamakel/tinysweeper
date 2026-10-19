@@ -119,7 +119,10 @@ pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparatio
         };
     }
 
-    let forced: Vec<&str> = scanner.iter().map(|finding| finding.path.as_str()).collect();
+    let forced: Vec<&str> = scanner
+        .iter()
+        .map(|finding| finding.path.as_str())
+        .collect();
     let fresh: Vec<FileDiff> =
         crate::evidence::replay::unreviewed(input.reviewed_evidence, input.diffs)
             .into_iter()
@@ -129,9 +132,7 @@ pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparatio
     let replayed: Vec<FileDiff> = input
         .diffs
         .iter()
-        .filter(|diff| {
-            !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str())
-        })
+        .filter(|diff| !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str()))
         .cloned()
         .collect();
     let mut covered_without_model = triage(&replayed, &forced).review;
@@ -231,7 +232,7 @@ impl Lane for Security {
         let scanner = prepared.scanner;
         let groups = prepared.groups;
         let mut covered_without_model = prepared.covered_without_model;
-        let mut mechanical_verified = prepared.mechanical_verified;
+        let mechanical_verified = prepared.mechanical_verified;
         let mechanical = prepared.mechanical;
         let triage_skipped = prepared.triage_skipped;
         let review_paths_empty = prepared.review_paths_empty;
@@ -297,10 +298,10 @@ impl Lane for Security {
         // Folded in once rather than per file: `llm` is shared across the
         // fan-out, so per-file would multiply the bill by the file count.
         outcome.spend.merge(llm.spend());
-        outcome.summary.push_str(&skip_note(&triaged.skipped));
+        outcome.summary.push_str(&skip_note(&triage_skipped));
         if let Some(sub) = &mechanical {
             outcome.summary = format!("{} {}", outcome.summary.trim(), mechanical::note(sub));
-            if triaged.review.is_empty() {
+            if review_paths_empty {
                 outcome.skipped = None;
             }
         }

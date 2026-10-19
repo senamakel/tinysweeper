@@ -133,8 +133,7 @@ pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
         .iter()
         .filter(|diff| {
             mechanical.as_ref().is_none_or(|substitution| {
-                !substitution.verified.contains(&diff.path)
-                    || Some(&diff.path) == sample.as_ref()
+                !substitution.verified.contains(&diff.path) || Some(&diff.path) == sample.as_ref()
             })
         })
         .map(|diff| diff.path.clone())

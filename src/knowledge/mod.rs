@@ -56,7 +56,8 @@ pub struct PreparedKnowledge {
 /// Read pinned documents and prepare the bounded instruction-file list.
 ///
 /// This is the no-model-call half of [`gather`]. Repository instruction
-/// contents remain unread until [`extract`] runs after dispatch admission.
+/// contents remain unread until [`extract_prepared`] runs after dispatch
+/// admission.
 pub async fn prepare(
     config: &Config,
     repo: &RepoId,
@@ -88,7 +89,7 @@ pub async fn prepare(
 }
 
 /// Extract the prepared repository instructions through the paid model port.
-pub async fn extract(
+pub async fn extract_prepared(
     mut prepared: PreparedKnowledge,
     forge: &dyn ForgeRead,
     model: &Arc<dyn Model>,
@@ -131,7 +132,7 @@ pub async fn gather(
     store: Option<&dyn KnowledgeStore>,
 ) -> (ReviewKnowledge, Usage) {
     let prepared = prepare(config, repo, changed_paths, store).await;
-    extract(prepared, forge, model, config, repo, head_sha).await
+    extract_prepared(prepared, forge, model, config, repo, head_sha).await
 }
 
 #[cfg(test)]

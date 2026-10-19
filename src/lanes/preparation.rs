@@ -7,8 +7,8 @@
 use crate::config::types::Config;
 use crate::evidence::diff::FileDiff;
 use crate::forge::types::PullRequest;
-use crate::lanes::grouping::{self, FileGroup, GroupBounds};
 use crate::lanes::LaneOutcome;
+use crate::lanes::grouping::{self, FileGroup, GroupBounds};
 use crate::scan::types::{Finding as ScanFinding, ScanKind};
 
 /// The host-derived inputs needed to decide which groups a lane can review.

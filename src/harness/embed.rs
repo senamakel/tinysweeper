@@ -1184,8 +1184,13 @@ mod tests {
             model
                 .review(request, &tree, &policy)
                 .with_subscriber(dispatch)
-                .instrument(tracing::info_span!("review", repo = "owner/repo", pr = 7,
-                    head_sha = "abc123", mode = "Incremental")),
+                .instrument(tracing::info_span!(
+                    "review",
+                    repo = "owner/repo",
+                    pr = 7,
+                    head_sha = "abc123",
+                    mode = "Incremental"
+                )),
         )
         .await
         .expect("agentic review completes");
@@ -1681,6 +1686,7 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .without_time()
             .with_ansi(false)
+            .with_current_span(true)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
         let response = crate::ports::model::with_model_call_observer(calls.clone(), {

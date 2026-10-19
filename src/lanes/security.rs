@@ -42,6 +42,7 @@ use crate::harness::schema;
 use crate::lanes::fanout::{FileReview, per_unit};
 use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
+use crate::lanes::preparation::LanePreparationInput;
 use crate::lanes::triage::triage;
 use crate::lanes::{
     Anchoring, Lane, LaneInput, LaneOutcome, aggregate_reviewer_responses, reviewer_responses,
@@ -64,6 +65,155 @@ impl Security {
     /// Build the lane over `model`.
     pub fn new(model: Arc<dyn Model>) -> Self {
         Self { model }
+    }
+}
+
+/// The model-free part of preparing one security lane.
+pub(crate) struct SecurityPreparation<'a> {
+    /// An early content/draft skip, if this lane has no scanner work either.
+    pub(crate) skipped: Option<LaneOutcome>,
+    /// The deterministic findings this lane must adjudicate and republish.
+    pub(crate) scanner: Vec<&'a ScanFinding>,
+    /// Groups in the exact triage order the existing security runner reviews.
+    pub(crate) groups: Vec<FileGroup>,
+    /// Previously reviewed paths proven without a current model response.
+    pub(crate) covered_without_model: Vec<String>,
+    /// A deterministic substitution proved by the changed lines, if any.
+    pub(crate) mechanical: Option<mechanical::Substitution>,
+    /// Paths verified mechanically without sending them to a model.
+    pub(crate) mechanical_verified: Vec<String>,
+    /// Paths intentionally skipped by security triage, with their reasons.
+    pub(crate) triage_skipped: Vec<(String, &'static str)>,
+    /// Whether triage left no paths for a model response.
+    pub(crate) review_paths_empty: bool,
+}
+
+/// Prepare security groups without constructing prompts or calling a model.
+pub(crate) fn prepare<'a>(input: LanePreparationInput<'a>) -> SecurityPreparation<'a> {
+    let scanner = input.scanner_findings_of(&ADJUDICATES);
+    if !input.has_reviewable_content() && scanner.is_empty() {
+        return SecurityPreparation {
+            skipped: Some(LaneOutcome::skipped(
+                "No added or modified lines to review.",
+            )),
+            scanner,
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            mechanical_verified: Vec::new(),
+            triage_skipped: Vec::new(),
+            review_paths_empty: true,
+        };
+    }
+
+    if let Some(skipped) = input.skip_as_draft() {
+        return SecurityPreparation {
+            skipped: Some(skipped),
+            scanner,
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            mechanical_verified: Vec::new(),
+            triage_skipped: Vec::new(),
+            review_paths_empty: true,
+        };
+    }
+
+    let forced: Vec<&str> = scanner.iter().map(|finding| finding.path.as_str()).collect();
+    let fresh: Vec<FileDiff> =
+        crate::evidence::replay::unreviewed(input.reviewed_evidence, input.diffs)
+            .into_iter()
+            .cloned()
+            .collect();
+    let fresh_paths: Vec<&str> = fresh.iter().map(|diff| diff.path.as_str()).collect();
+    let replayed: Vec<FileDiff> = input
+        .diffs
+        .iter()
+        .filter(|diff| {
+            !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str())
+        })
+        .cloned()
+        .collect();
+    let mut covered_without_model = triage(&replayed, &forced).review;
+    let forced_back: Vec<FileDiff> = input
+        .diffs
+        .iter()
+        .filter(|diff| forced.contains(&diff.path.as_str()))
+        .filter(|diff| !fresh.iter().any(|fresh| fresh.path == diff.path))
+        .cloned()
+        .collect();
+    let mut considered = fresh;
+    considered.extend(forced_back);
+    let mut triaged = triage(&considered, &forced);
+
+    let mechanical = mechanical::detect(&considered.iter().collect::<Vec<_>>());
+    let candidate_paths = triaged.review.clone();
+    let mut mechanical_verified = Vec::new();
+    if let Some(substitution) = &mechanical {
+        triaged.review.retain(|path| {
+            forced.contains(&path.as_str()) || !substitution.verified.contains(path)
+        });
+        mechanical_verified.extend(
+            substitution
+                .verified
+                .iter()
+                .filter(|path| {
+                    candidate_paths.contains(path)
+                        && !triaged.review.contains(path)
+                        && !forced.contains(&path.as_str())
+                })
+                .cloned(),
+        );
+    }
+
+    if triaged.review.is_empty()
+        && scanner.is_empty()
+        && covered_without_model.is_empty()
+        && mechanical_verified.is_empty()
+    {
+        return SecurityPreparation {
+            skipped: Some(LaneOutcome::skipped(format!(
+                "No changed file has any attack surface.{}",
+                skip_note(&triaged.skipped)
+            ))),
+            scanner,
+            groups: Vec::new(),
+            covered_without_model,
+            mechanical,
+            mechanical_verified,
+            triage_skipped: triaged.skipped,
+            review_paths_empty: true,
+        };
+    }
+
+    let groups = if input.config.grouping.enabled {
+        input.group(
+            &triaged.review,
+            &GroupBounds {
+                max_files: input.config.grouping.max_files,
+                max_hunk_chars: input.config.grouping.max_hunk_chars,
+            },
+        )
+    } else {
+        triaged
+            .review
+            .iter()
+            .map(|path| FileGroup {
+                label: path.clone(),
+                paths: vec![path.clone()],
+            })
+            .collect()
+    };
+
+    SecurityPreparation {
+        skipped: None,
+        scanner,
+        groups,
+        covered_without_model,
+        mechanical,
+        mechanical_verified,
+        triage_skipped: triaged.skipped,
+        review_paths_empty: triaged.review.is_empty(),
     }
 }
 

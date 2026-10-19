@@ -245,21 +245,13 @@ impl Lane for Critique {
         // it per file would multiply the bill by the file count.
         let mut outcome = outcome.into_outcome();
         outcome.context_degraded = input.retrieval_status.is_degraded();
-        if let Some(sub) = &mechanical {
-            covered_without_model.extend(
-                sub.verified
-                    .iter()
-                    .filter(|path| Some(*path) != sample)
-                    .cloned(),
-            );
-        }
         outcome.include_reviewed_paths(covered_without_model);
         outcome.spend.merge(llm.spend());
         if let Some(sub) = &mechanical {
             outcome.summary = format!("{} {}", outcome.summary.trim(), mechanical::note(sub));
             // Every file was the rename: a real verdict, reached without a
             // model, and the outcome must say so rather than read as skipped.
-            if paths.is_empty() {
+            if paths_empty {
                 outcome.skipped = None;
             }
         }

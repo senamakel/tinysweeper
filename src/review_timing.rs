@@ -250,6 +250,48 @@ pub(crate) async fn measure_lane_under<F: Future>(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pass_yield_keys_are_bounded_to_known_lanes_and_configured_passes() {
+        let timing = ReviewTiming::new("owner/repo", 7, "Incremental");
+        for lane in crate::config::types::LaneId::ALL {
+            for pass in 1..=4 {
+                timing.record_pass_yield(lane, pass, 1, 1);
+            }
+        }
+
+        let record = timing.snapshot();
+        assert_eq!(record.pass_yields.len(), crate::config::types::LaneId::ALL.len() * 3);
+        assert!(!record.pass_yields.contains_key("critique:4"));
+        assert_eq!(record.pass_yields["critique:1"].groups, 1);
+    }
+
+    #[test]
+    fn pass_yield_totals_saturate_instead_of_overflowing() {
+        let timing = ReviewTiming::new("owner/repo", 7, "Incremental");
+        timing.record_pass_yield(
+            crate::config::types::LaneId::Critique,
+            1,
+            usize::MAX,
+            usize::MAX,
+        );
+        timing.record_pass_yield(
+            crate::config::types::LaneId::Critique,
+            1,
+            usize::MAX,
+            usize::MAX,
+        );
+
+        let totals = timing.snapshot().pass_yields["critique:1"];
+        assert_eq!(totals.groups, 2);
+        assert_eq!(totals.candidates, u64::MAX);
+        assert_eq!(totals.survivors, u64::MAX);
+    }
+}
+
 impl Drop for Inner {
     fn drop(&mut self) {
         let r = self.record.get_mut().expect("review timing lock");

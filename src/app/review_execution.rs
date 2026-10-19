@@ -8,10 +8,11 @@
 
 #![cfg(test)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::lanes::large_pr::ReviewMode;
@@ -63,6 +64,7 @@ struct ExecutionInner {
     max_calls: Option<usize>,
     drain_seconds: u64,
     _now: Arc<dyn Fn() -> Instant + Send + Sync>,
+    availability_generation: watch::Sender<u64>,
     state: Mutex<ExecutionState>,
 }
 
@@ -87,6 +89,7 @@ impl ReviewExecution {
             .saturating_duration_since(options.started_at);
         let soft_deadline =
             options.started_at + window.mul_f64(f64::from(options.soft_deadline_percent) / 100.0);
+        let (availability_generation, _) = watch::channel(0);
         Self {
             inner: Arc::new(ExecutionInner {
                 started_at: options.started_at,
@@ -96,6 +99,7 @@ impl ReviewExecution {
                 max_calls: options.max_calls,
                 drain_seconds: options.drain_seconds,
                 _now: now,
+                availability_generation,
                 state: Mutex::new(ExecutionState {
                     committed_calls: 0,
                     reserved_calls: 0,
@@ -156,41 +160,98 @@ impl ModelExecutionControl for ReviewExecution {
     async fn acquire(
         &self,
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
-        // Source-preparation scaffold: this creates a reservation but does not
-        // yet enforce the stored call ceiling or absolute soft deadline. The
-        // corresponding tests intentionally capture those missing behaviors.
-        let mut state = lock(&self.inner.state);
-        state.reserved_calls = state.reserved_calls.saturating_add(1);
-        drop(state);
-        Ok(Box::new(ReviewDispatchPermit {
-            inner: Arc::clone(&self.inner),
-            committed: AtomicBool::new(false),
-        }))
+        let mut availability = self.inner.availability_generation.subscribe();
+        loop {
+            let changed = availability.changed();
+            tokio::pin!(changed);
+
+            {
+                let mut state = lock(&self.inner.state);
+                if (self.inner._now)() >= self.inner.soft_deadline {
+                    return Err(ModelExecutionRefusal::SoftDeadline);
+                }
+
+                if self
+                    .inner
+                    .max_calls
+                    .is_some_and(|limit| state.committed_calls >= limit)
+                {
+                    return Err(ModelExecutionRefusal::CallLimit);
+                }
+
+                let capacity_is_reserved = self.inner.max_calls.is_some_and(|limit| {
+                    state.committed_calls.saturating_add(state.reserved_calls) >= limit
+                });
+                if !capacity_is_reserved {
+                    state.reserved_calls = state.reserved_calls.saturating_add(1);
+                    return Ok(Box::new(ReviewDispatchPermit {
+                        inner: Arc::clone(&self.inner),
+                        state: AtomicU8::new(PERMIT_RESERVED),
+                    }));
+                }
+            }
+
+            tokio::select! {
+                _ = &mut changed => {}
+                _ = tokio::time::sleep_until(self.inner.soft_deadline) => {}
+            }
+        }
     }
 }
 
+const PERMIT_RESERVED: u8 = 0;
+const PERMIT_COMMITTED: u8 = 1;
+const PERMIT_REFUSED: u8 = 2;
+const PERMIT_RELEASED: u8 = 3;
+
 struct ReviewDispatchPermit {
     inner: Arc<ExecutionInner>,
-    committed: AtomicBool,
+    state: AtomicU8,
 }
 
 impl ModelExecutionPermit for ReviewDispatchPermit {
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
-        if self.committed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        match self.state.load(Ordering::Acquire) {
+            PERMIT_COMMITTED => return Ok(()),
+            PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
+            PERMIT_RESERVED => {}
+            _ => return Err(ModelExecutionRefusal::SoftDeadline),
         }
+
         let mut state = lock(&self.inner.state);
+        match self.state.load(Ordering::Acquire) {
+            PERMIT_COMMITTED => return Ok(()),
+            PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
+            PERMIT_RESERVED => {}
+            _ => return Err(ModelExecutionRefusal::SoftDeadline),
+        }
+
+        if (self.inner._now)() >= self.inner.soft_deadline {
+            self.state.store(PERMIT_REFUSED, Ordering::Release);
+            return Err(ModelExecutionRefusal::SoftDeadline);
+        }
+
         state.reserved_calls = state.reserved_calls.saturating_sub(1);
         state.committed_calls = state.committed_calls.saturating_add(1);
+        self.state.store(PERMIT_COMMITTED, Ordering::Release);
+        drop(state);
+        self.inner
+            .availability_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
         Ok(())
     }
 }
 
 impl Drop for ReviewDispatchPermit {
     fn drop(&mut self) {
-        if !self.committed.load(Ordering::Acquire) {
+        if self.state.load(Ordering::Acquire) != PERMIT_COMMITTED {
             let mut state = lock(&self.inner.state);
             state.reserved_calls = state.reserved_calls.saturating_sub(1);
+            self.state.store(PERMIT_RELEASED, Ordering::Release);
+            drop(state);
+            self.inner
+                .availability_generation
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
         }
     }
 }

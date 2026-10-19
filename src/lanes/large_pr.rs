@@ -135,23 +135,64 @@ pub fn plan(
     };
 
     if mode == ReviewMode::Large {
+        let changed_lines_by_path = changed_files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.as_str(),
+                    file.additions.saturating_add(file.deletions),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         candidates.sort_by(|left, right| {
             right
                 .risk
                 .cmp(&left.risk)
+                .then_with(|| {
+                    group_changed_lines(right, &changed_lines_by_path)
+                        .cmp(&group_changed_lines(left, &changed_lines_by_path))
+                })
                 .then_with(|| left.group.label.cmp(&right.group.label))
                 .then_with(|| lane_order(left.lane).cmp(&lane_order(right.lane)))
         });
+
+        let omitted = candidates.iter().skip(policy.max_groups).fold(
+            BTreeMap::<LaneId, Vec<String>>::new(),
+            |mut omitted, candidate| {
+                omitted
+                    .entry(candidate.lane)
+                    .or_default()
+                    .extend(candidate.group.paths.iter().cloned());
+                omitted
+            },
+        );
+        candidates.truncate(policy.max_groups);
+
+        return ReviewPlan {
+            mode,
+            estimate,
+            selected: candidates,
+            omitted,
+        };
     }
 
-    // Source-preparation scaffold: keep every eligible group until the
-    // selected-set behavior has been compiled and observed red.
     ReviewPlan {
         mode,
         estimate,
         selected: candidates,
         omitted: BTreeMap::new(),
     }
+}
+
+fn group_changed_lines(group: &PlannedGroup, changed_lines_by_path: &BTreeMap<&str, u64>) -> u64 {
+    group.group.paths.iter().fold(0u64, |total, path| {
+        total.saturating_add(
+            changed_lines_by_path
+                .get(path.as_str())
+                .copied()
+                .unwrap_or_default(),
+        )
+    })
 }
 
 fn lane_order(lane: LaneId) -> u8 {

@@ -2624,14 +2624,8 @@ mod tests {
                 "src/lanes/critique.rs",
                 "@@ -1,1 +1,2 @@ fn review() {\n x\n+y\n",
             ),
-            parse_file_patch(
-                "src/app/run.rs",
-                "@@ -1,1 +1,2 @@ fn run() {\n x\n+y\n",
-            ),
-            parse_file_patch(
-                "src/app/parse.rs",
-                "@@ -1,1 +1,2 @@ fn parse() {\n x\n+y\n",
-            ),
+            parse_file_patch("src/app/run.rs", "@@ -1,1 +1,2 @@ fn run() {\n x\n+y\n"),
+            parse_file_patch("src/app/parse.rs", "@@ -1,1 +1,2 @@ fn parse() {\n x\n+y\n"),
             parse_file_patch(
                 "src/app/dispatch.rs",
                 "@@ -1,1 +1,2 @@ fn dispatch() {\n x\n+y\n",

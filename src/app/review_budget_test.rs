@@ -64,7 +64,7 @@ fn forge() -> MockForge {
             number: 7,
             title: "feat: a large change".into(),
             body: "A large change.".into(),
-            head_sha: "sha-one".into(),
+            head_sha: "abcdef1234567890".into(),
             ..PullRequest::default()
         },
     );
@@ -169,10 +169,14 @@ async fn thirty_findings_over_three_passes_post_the_budget_and_list_the_rest() {
     let hub = crate::summary::render(&config, &proposal);
     for finding in &overflow {
         let line = finding.line.expect("placed");
-        // Paths are rendered as code spans, preserving their ordinary dots.
+        // The location remains a pinned link even when the finding overflows.
         let title = &finding.title;
-        let location = format!("`src/large.rs:{line}`");
-        let start = hub.find(title).unwrap_or_else(|| panic!("missing {title}:\n{hub}"));
+        let location = format!(
+            "[`src/large.rs:{line}`](https://github.com/tinyhumansai/tinysweeper/blob/abcdef1234567890/src/large.rs#L{line})"
+        );
+        let start = hub
+            .find(title)
+            .unwrap_or_else(|| panic!("missing {title}:\n{hub}"));
         assert!(
             hub[start..].contains(&location),
             "missing {location} after {title}:\n{hub}"
@@ -199,7 +203,7 @@ async fn open_findings_from_an_earlier_push_spend_the_same_budget() {
 
     // A new push, thirty brand-new findings. Five conversations are already
     // open, so none of them is posted inline — all thirty are listed.
-    forge.push(7, "sha-two", vec![large_file()]);
+    forge.push(7, "fedcba0987654321", vec![large_file()]);
     let second = review(&forge, Arc::new(three_passes(100, 0)), &config, &repo(), 7)
         .await
         .expect("reviews");
@@ -245,7 +249,7 @@ async fn a_resolved_conversation_frees_its_slot() {
         .collect();
     assert_eq!(threads.len(), 5, "every posted conversation is listed");
     let forge = {
-        forge.push(7, "sha-two", vec![large_file()]);
+        forge.push(7, "fedcba0987654321", vec![large_file()]);
         forge.with_review_threads(7, threads)
     };
 
@@ -270,7 +274,7 @@ async fn a_critical_finding_is_posted_even_when_the_budget_is_spent() {
         .expect("applies");
     assert_eq!(posted(&forge).len(), 5);
 
-    forge.push(7, "sha-two", vec![large_file()]);
+    forge.push(7, "fedcba0987654321", vec![large_file()]);
     let second = review(&forge, Arc::new(three_passes(100, 1)), &config, &repo(), 7)
         .await
         .expect("reviews");

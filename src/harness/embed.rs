@@ -74,8 +74,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
 #[derive(Clone)]
 pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
-    // Reserved for the review-root binding; child scopes must retain it even
-    // while their existing per-scope ledgers remain independent.
+    // Shared across this review and every lane child derived from it.
     review_budget: Option<openhuman_embed::budget::Budget>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
     output_history: crate::harness::budget::OutputHistory,
@@ -949,9 +948,21 @@ impl Model for GatewayModel {
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
         let mut model = self.clone();
-        model.budget = Some(crate::harness::budget::ledger(budget_usd));
+        model.budget = Some(match &self.review_budget {
+            Some(root) => crate::harness::budget::child_ledger(root, budget_usd),
+            None => crate::harness::budget::ledger(budget_usd),
+        });
         model.review_budget = self.review_budget.clone();
-        // Clones share atomic reservation capacity; a fresh scope is isolated.
+        // Bound scopes debit both this lane cap and the review root. Unbound
+        // legacy scopes remain independent and preserve their prior behavior.
+        Some(Arc::new(model))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        let root = crate::harness::budget::ledger(limit_usd).wait_for_capacity();
+        let mut model = self.clone();
+        model.budget = Some(root.clone());
+        model.review_budget = Some(root);
         Some(Arc::new(model))
     }
 
@@ -1901,7 +1912,7 @@ mod tests {
         };
         let (gateway, release) = FakeGateway::start_paused(vec![reply(), reply(), reply()]).await;
         model.base_url = gateway.base_url.clone();
-        let root_budget = crate::harness::budget::ledger(1.0);
+        let root_budget = crate::harness::budget::ledger(1.0).wait_for_capacity();
         model.budget = Some(root_budget.clone());
         model.review_budget = Some(root_budget.clone());
         let held = root_budget

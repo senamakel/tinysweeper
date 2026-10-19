@@ -67,6 +67,19 @@ impl Model for ReviewBudgetProbe {
         })
     }
 
+    async fn review(
+        &self,
+        _request: ModelRequest,
+        _tree: &dyn crate::ports::tree::TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        Ok(ModelResponse {
+            value: answer(),
+            model: "review-budget-probe-logical-review".into(),
+            usage: Usage::default(),
+        })
+    }
+
     fn complete_reports_physical_calls(&self) -> bool {
         true
     }

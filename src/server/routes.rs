@@ -3575,7 +3575,7 @@ impl ReviewRun<'_> {
         // The live head whose exact lease is now held is the revision passed
         // into context construction, even for a stateless request that had no
         // webhook SHA. This lets the app recheck for a move during that fetch.
-        let mut run = Run {
+        let run = Run {
             expected_head: Some(pull_request.head_sha.clone()),
             ..run.clone()
         };
@@ -6876,7 +6876,9 @@ mod tests {
 
     #[tokio::test]
     async fn triage_work_runs_while_every_review_permit_is_occupied() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use crate::forge::MockForge;
+        use crate::forge::types::Issue;
+        use crate::harness::MockModel;
 
         let review_pool = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
         let mut review_permits = Vec::new();
@@ -6886,19 +6888,60 @@ mod tests {
         assert_eq!(review_pool.available_permits(), 0);
 
         let triage_pool = Arc::new(Semaphore::new(2));
-        let triage_ran = Arc::new(AtomicBool::new(false));
-        let observed = triage_ran.clone();
-        tokio::time::timeout(
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let forge = MockForge::new().with_issue(Issue {
+            number: 7,
+            title: "The editor crashes while saving".into(),
+            body: "Saving a large file crashes the editor.".into(),
+            author: "reporter".into(),
+            open: true,
+            age_days: 90,
+            quiet_days: 90,
+            ..Issue::default()
+        });
+        let model = MockModel::always(serde_json::json!({
+            "priority": "p1",
+            "summary": "The editor crashes while saving."
+        }));
+        let config = Config {
+            issues: crate::config::types::Issues {
+                enabled: true,
+                comment: false,
+                apply_labels: true,
+                max_labels: 3,
+                dedupe: false,
+                ..crate::config::types::Issues::default()
+            },
+            ..Config::default()
+        };
+        let plan = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            run_triage_job(&review_pool, &triage_pool, || async move {
-                observed.store(true, Ordering::SeqCst);
-                Ok(())
+            run_triage_job(&review_pool, &triage_pool, || async {
+                let outcome = crate::issues::triage(
+                    &forge,
+                    Arc::new(model.clone()),
+                    &config,
+                    &repo,
+                    7,
+                    &[],
+                )
+                .await?;
+                crate::issues::apply_plan(&forge, &repo, &outcome.plan).await?;
+                Ok(outcome.plan)
             }),
         )
         .await
         .expect("triage is not queued behind reviews")
-        .expect("triage permit acquired");
-        assert!(triage_ran.load(Ordering::SeqCst), "the triage work body ran");
+        .expect("triage permit acquired and applied");
+        assert!(!plan.add_labels.is_empty(), "the real triage planner chose a label");
+        assert_eq!(model.requests().len(), 1, "triage called the model");
+        let updated = crate::ports::forge::ForgeRead::issue(&forge, &repo, 7)
+            .await
+            .expect("triaged issue is readable");
+        assert!(
+            plan.add_labels.iter().all(|label| updated.labels.contains(label)),
+            "the deterministic triage plan was applied"
+        );
         assert_eq!(review_pool.available_permits(), 0);
         drop(review_permits);
     }

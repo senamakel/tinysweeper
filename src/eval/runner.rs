@@ -164,20 +164,17 @@ pub async fn run(
             .tree
             .as_ref()
             .filter(|_| options.record)
-            .map(|path| {
-                crate::ports::tree::DirTree::new(path)
-                    .at_revision(&case.fixture.pull_request.head_sha)
-            });
+            // A path supplied on disk is not proof that its contents are the
+            // fixture's head. Leave the reader's revision unknown; callers
+            // that verify a checkout can provide a reader with a real pin.
+            .map(|path| crate::ports::tree::DirTree::new(path));
         let recorded = crate::ports::tree::MockTree::from_recorded(case.fixture.lookups.clone());
         let recording = dir_tree
             .as_ref()
             .map(|dir| crate::ports::tree::RecordingTree::new(dir as &dyn TreeReader));
         let tree: &dyn TreeReader = match &recording {
             Some(recording) => recording,
-            None => &CaseRevisionTree {
-                inner: &recorded,
-                revision: case.fixture.pull_request.head_sha.clone(),
-            },
+            None => &recorded,
         };
         let outcome = review_case(case, &with_lanes(&config, case), cassette.clone(), tree).await;
         let wall = started.elapsed();
@@ -277,39 +274,6 @@ async fn review_case(
         Some(tree),
     )
     .await
-}
-
-/// Gives both live and replay trees the immutable revision the fixture names.
-/// Replay fixtures do not carry a checkout, but the review still validates that
-/// repository evidence belongs to the pull request head under evaluation.
-struct CaseRevisionTree<'a> {
-    inner: &'a dyn TreeReader,
-    revision: String,
-}
-
-#[async_trait::async_trait]
-impl TreeReader for CaseRevisionTree<'_> {
-    async fn lookup(
-        &self,
-        lookup: &crate::ports::tree::Lookup,
-    ) -> Result<crate::ports::tree::Found> {
-        self.inner.lookup(lookup).await
-    }
-
-    async fn explore(
-        &self,
-        query: &crate::ports::tree::TreeQuery,
-    ) -> Result<crate::ports::tree::Found> {
-        self.inner.explore(query).await
-    }
-
-    fn describe(&self) -> String {
-        self.inner.describe()
-    }
-
-    fn revision(&self) -> Option<String> {
-        Some(self.revision.clone())
-    }
 }
 
 /// The configuration a corpus run is allowed to use.

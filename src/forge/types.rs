@@ -390,6 +390,19 @@ pub struct CheckImage {
 /// rejected check reads as "the bot did not run".
 pub const MAX_CHECK_IMAGES: usize = 8;
 
+/// Explicit status for a check run that has not concluded yet.
+///
+/// `None` on [`CheckRun`] preserves the established `in_progress` wire
+/// behavior; queued review admission is the only flow that sets `Queued`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckRunStatus {
+    /// GitHub has accepted the work, but no review permit is available yet.
+    Queued,
+    /// A worker has started the check.
+    InProgress,
+}
+
 /// A check run to publish.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
@@ -414,6 +427,12 @@ pub struct CheckRun {
     /// `None` owes the same commit a terminal conclusion afterwards. Leaving
     /// one pending is not a cosmetic bug: it stalls the merge gate forever.
     pub conclusion: Option<CheckConclusion>,
+    /// Pending check status override; absent retains the legacy in-progress default.
+    #[serde(default)]
+    pub status: Option<CheckRunStatus>,
+    /// Stable recovery key for a check whose publish response may be lost.
+    #[serde(default)]
+    pub external_id: Option<String>,
     /// One-line title shown in the checks list.
     pub title: String,
     /// The markdown summary.

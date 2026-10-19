@@ -194,6 +194,9 @@ fn check_payload(check: &CheckRun) -> serde_json::Value {
         "name": check.name,
         "output": { "title": check.title, "summary": summary },
     });
+    if let Some(external_id) = &check.external_id {
+        body["external_id"] = serde_json::json!(external_id);
+    }
 
     // Only when there is something to attach: an empty `images` array is
     // accepted by the API, but it is one more thing for a strict schema to
@@ -231,7 +234,12 @@ fn check_payload(check: &CheckRun) -> serde_json::Value {
                 CheckConclusion::Skipped => "skipped",
             });
         }
-        None => body["status"] = serde_json::json!("in_progress"),
+        None => {
+            body["status"] = serde_json::json!(match check.status {
+                Some(crate::forge::types::CheckRunStatus::Queued) => "queued",
+                Some(crate::forge::types::CheckRunStatus::InProgress) | None => "in_progress",
+            });
+        }
     }
 
     body

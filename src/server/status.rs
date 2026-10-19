@@ -121,6 +121,24 @@ pub fn in_progress(head_sha: &str) -> CheckRun {
     }
 }
 
+/// The check published for an accepted review before it has a review permit.
+///
+/// The pinned head and deterministic external ID let the durable scheduler
+/// recover the same check after a process restart. This helper does not grant
+/// review ownership or authorize any paid work.
+pub fn queued(head_sha: &str, reviews_ahead: usize, external_id: &str) -> CheckRun {
+    CheckRun {
+        name: CHECK_NAME.to_string(),
+        head_sha: head_sha.to_string(),
+        conclusion: None,
+        status: Some(crate::forge::types::CheckRunStatus::Queued),
+        external_id: Some(external_id.to_string()),
+        title: format!("Queued — {reviews_ahead} reviews ahead"),
+        summary: "tinysweeper accepted this pull request for review. It is waiting for a review permit; no review work has started yet.".into(),
+        images: vec![],
+    }
+}
+
 /// The check published when the lanes have run.
 ///
 /// `Success` reports that the review *completed*, not that the code passed —

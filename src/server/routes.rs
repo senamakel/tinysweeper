@@ -6625,6 +6625,81 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_queued_status_is_retried_from_durable_state_without_review_capacity() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.expect("review slot"));
+        }
+        assert_eq!(permits.available_permits(), 0);
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        let status_forge = forge.clone();
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let status_forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(status_forge.clone()),
+                    write: Arc::new(status_forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 44,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-retry-status",
+                "pull_request",
+                status_client.clone(),
+            )
+            .await
+            .expect("status failure does not undo durable acceptance"),
+            Some(Admission::Admitted)
+        );
+        assert!(forge.checks().is_empty());
+        let original_external_id = store.snapshot_for_test().unfinished[0].review_checks[0]
+            .external_id
+            .clone();
+
+        // This is the periodic retry path, independent of webhook redelivery
+        // and review permits. Advancing the clock expires only the bounded
+        // status-write claim; it does not create a new job or check identity.
+        publish_pending_queue_checks_at(
+            &store,
+            status_client,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("retry publishes queued check");
+        assert_eq!(permits.available_permits(), 0);
+        let check = forge
+            .checks()
+            .get(status::CHECK_NAME)
+            .cloned()
+            .expect("status retry publishes without a new delivery");
+        assert_eq!(check.status, Some(CheckRunStatus::Queued));
+        assert_eq!(check.external_id.as_deref(), Some(original_external_id.as_str()));
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].check_id,
+            Some(1)
+        );
+        drop(held);
+    }
+
     #[test]
     fn manual_full_reviews_have_a_distinct_claim_key() {
         assert_ne!(

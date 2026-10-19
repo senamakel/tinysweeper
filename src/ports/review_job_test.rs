@@ -381,6 +381,60 @@ fn live_head_reconciliation_defers_atomically_at_status_capacity() {
 }
 
 #[test]
+fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
+    let mut state = ReviewSchedulerState::default();
+    let mut known = request("rebind-capacity", 10);
+    known.head_sha = Some("head-a".into());
+    let mut headless = request("headless-reserved-capacity", 11);
+    headless.head_sha = None;
+    assert_eq!(state.admit_batch(vec![known], 10), Admission::Admitted);
+    assert_eq!(state.admit_batch(vec![headless], 10), Admission::Admitted);
+
+    let base = state.unfinished[0].review_checks[0].clone();
+    state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS - 4)
+        .map(|index| {
+            let mut check = base.clone();
+            check.head_sha = format!("padding-{index}");
+            check.external_id = format!("padding-id-{index}");
+            super::RetiredReviewCheck {
+                repo: "owner/repo".into(),
+                installation: 1,
+                check,
+            }
+        })
+        .collect();
+    assert_eq!(
+        state.retired_checks.len()
+            + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
+            + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
+            + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count(),
+        super::MAX_REVIEW_STATUS_RECORDS,
+    );
+
+    let queued_a = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert_eq!(queued_a.check.head_sha, "head-a");
+    assert!(state.record_queued_check_id(&queued_a, 90, 11));
+    let owner = state.claim_next("owner", 12).unwrap();
+    let super::ReconciledReviewCheck::Pending(check_b) = state.reconcile_live_check(&owner, "head-b", 13) else {
+        panic!("first live rebind consumes its reserved slot");
+    };
+    let queued_b = state.claim_pending_checks(13, 2)
+        .into_iter()
+        .find(|claim| !claim.retired && claim.check.external_id == check_b.external_id)
+        .unwrap();
+    assert!(state.record_queued_check_id(&queued_b, 91, 14));
+
+    assert_eq!(
+        state.reconcile_live_check(&owner, "head-c", 15),
+        super::ReconciledReviewCheck::CapacityDeferred,
+        "a second rebind cannot spend the unresolved headless job's reserved status slot",
+    );
+    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
+    assert!(state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-b"));
+    assert!(!state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-c"));
+}
+
+#[test]
 fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
     let mut state = ReviewSchedulerState::default();
     assert_eq!(state.admit_batch(vec![request("same-check", 10)], 10), Admission::Admitted);

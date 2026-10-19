@@ -80,8 +80,6 @@ pub(crate) struct CritiquePreparation {
     pub(crate) covered_without_model: Vec<String>,
     /// A deterministic substitution proved by the changed lines, if any.
     pub(crate) mechanical: Option<mechanical::Substitution>,
-    /// The one verified path still sent as the mechanical sample.
-    pub(crate) sample: Option<String>,
     /// Whether every fresh path was verified mechanically.
     pub(crate) paths_empty: bool,
 }
@@ -96,7 +94,6 @@ pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
             groups: Vec::new(),
             covered_without_model: Vec::new(),
             mechanical: None,
-            sample: None,
             paths_empty: true,
         };
     }
@@ -107,7 +104,6 @@ pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
             groups: Vec::new(),
             covered_without_model: Vec::new(),
             mechanical: None,
-            sample: None,
             paths_empty: true,
         };
     }
@@ -125,6 +121,8 @@ pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
         .map(|diff| diff.path.clone())
         .collect();
 
+    // A mechanical rename is verified, not read. Keep one verified file as a
+    // sample: uniformity proves the same substitution, not that it is harmless.
     let mechanical = mechanical::detect(&fresh);
     let sample = mechanical
         .as_ref()
@@ -172,7 +170,6 @@ pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
         groups,
         covered_without_model,
         mechanical,
-        sample,
         paths_empty: paths.is_empty(),
     }
 }
@@ -192,7 +189,6 @@ impl Lane for Critique {
         let groups = prepared.groups;
         let mut covered_without_model = prepared.covered_without_model;
         let mechanical = prepared.mechanical;
-        let sample = prepared.sample;
         let paths_empty = prepared.paths_empty;
 
         // One capability for the whole lane, so the pull-request budget is

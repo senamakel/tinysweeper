@@ -20,17 +20,6 @@ use crate::ports::model_execution::{
     ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
 };
 
-/// Why an execution scope stopped admitting additional review work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReviewStopReason {
-    /// Large-mode candidate selection left no more model groups to review.
-    LargePrLimit,
-    /// The review-wide physical dispatch count was exhausted.
-    CallLimit,
-    /// The absolute soft deadline stopped new work.
-    SoftDeadline,
-}
-
 /// Absolute review window and the operator limits applied to it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReviewExecutionOptions {
@@ -55,8 +44,6 @@ pub(crate) struct ReviewExecutionSnapshot {
     pub committed_calls: usize,
     /// Acquisitions that have not yet reached a provider invocation.
     pub reserved_calls: usize,
-    /// The stop reason selected by execution policy, when known.
-    pub stop_reason: Option<ReviewStopReason>,
     /// Terminal physical usage received by this review scope.
     pub physical_usage: Usage,
 }
@@ -65,7 +52,6 @@ pub(crate) struct ReviewExecutionSnapshot {
 struct ExecutionState {
     committed_calls: usize,
     reserved_calls: usize,
-    stop_reason: Option<ReviewStopReason>,
     physical_usage: Usage,
 }
 
@@ -113,7 +99,6 @@ impl ReviewExecution {
                 state: Mutex::new(ExecutionState {
                     committed_calls: 0,
                     reserved_calls: 0,
-                    stop_reason: None,
                     physical_usage: Usage::default(),
                 }),
             }),
@@ -161,7 +146,6 @@ impl ReviewExecution {
         ReviewExecutionSnapshot {
             committed_calls: state.committed_calls,
             reserved_calls: state.reserved_calls,
-            stop_reason: state.stop_reason,
             physical_usage: state.physical_usage,
         }
     }
@@ -221,16 +205,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::ports::model_execution::ModelExecutionControl;
-
-    #[test]
-    fn stop_reasons_keep_partial_completion_causes_distinct() {
-        assert_ne!(ReviewStopReason::LargePrLimit, ReviewStopReason::CallLimit);
-        assert_ne!(ReviewStopReason::CallLimit, ReviewStopReason::SoftDeadline);
-        assert_ne!(
-            ReviewStopReason::LargePrLimit,
-            ReviewStopReason::SoftDeadline
-        );
-    }
 
     fn options(
         mode: ReviewMode,

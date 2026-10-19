@@ -302,11 +302,28 @@ impl openhuman_embed::budget::PhysicalDispatchAdmission for GatewayExecutionAdmi
 }
 
 impl openhuman_embed::budget::PhysicalDispatchPermit for GatewayExecutionPermit {
-    fn mark_dispatched(
-        &self,
-    ) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
+    fn mark_dispatched(&self) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
         self.0.mark_dispatched().map_err(dispatch_refusal)
     }
+}
+
+fn add_completion_usage(
+    total: &mut openhuman_embed::complete::CompletionUsage,
+    cost_usd: &mut Option<f64>,
+    usage: &openhuman_embed::complete::CompletionUsage,
+) {
+    total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+    total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+    total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
+    total.reasoning_tokens = total
+        .reasoning_tokens
+        .saturating_add(usage.reasoning_tokens);
+    *cost_usd = match (*cost_usd, usage.cost_usd) {
+        (Some(total), Some(charge)) if charge.is_finite() && charge >= 0.0 => {
+            Some((total + charge).min(f64::MAX))
+        }
+        _ => None,
+    };
 }
 
 fn execution_refusal_error(
@@ -320,26 +337,10 @@ fn execution_refusal_error(
         _ => return None,
     };
 
-    let mut input_tokens = 0_u64;
-    let mut output_tokens = 0_u64;
-    let mut cached_tokens = 0_u64;
-    let mut reasoning_tokens = 0_u64;
+    let mut total = openhuman_embed::complete::CompletionUsage::default();
     let mut cost_usd = Some(0.0_f64);
     let mut had_usage = false;
     let mut missing_usage = false;
-    let mut append_usage = |usage: &openhuman_embed::complete::CompletionUsage| {
-        had_usage = true;
-        input_tokens = input_tokens.saturating_add(usage.input_tokens);
-        output_tokens = output_tokens.saturating_add(usage.output_tokens);
-        cached_tokens = cached_tokens.saturating_add(usage.cached_tokens);
-        reasoning_tokens = reasoning_tokens.saturating_add(usage.reasoning_tokens);
-        cost_usd = match (cost_usd, usage.cost_usd) {
-            (Some(total), Some(charge)) if charge.is_finite() && charge >= 0.0 => {
-                Some((total + charge).min(f64::MAX))
-            }
-            _ => None,
-        };
-    };
 
     // The ladder's final attempt is a refusal placeholder for this same rung;
     // the typed CoreError carries its preceding paid repair usage separately.
@@ -349,7 +350,8 @@ fn execution_refusal_error(
         .take(error.attempts.len().saturating_sub(1))
     {
         if let Some(usage) = &attempt.usage {
-            append_usage(usage);
+            had_usage = true;
+            add_completion_usage(&mut total, &mut cost_usd, usage);
         } else {
             // A prior rung may have reached a provider without returning usage.
             missing_usage = true;
@@ -357,17 +359,17 @@ fn execution_refusal_error(
         }
     }
     if let Some(usage) = current_usage {
-        append_usage(usage);
+        had_usage = true;
+        add_completion_usage(&mut total, &mut cost_usd, usage);
     }
-    drop(append_usage);
 
     let has_physical_calls = counts.calls_attempted > 0;
     let usage = has_physical_calls.then(|| {
         Box::new(Usage {
-            input_tokens,
-            output_tokens,
-            reasoning_tokens,
-            cached_tokens,
+            input_tokens: total.input_tokens,
+            output_tokens: total.output_tokens,
+            reasoning_tokens: total.reasoning_tokens,
+            cached_tokens: total.cached_tokens,
             calls_attempted: counts.calls_attempted,
             calls_succeeded: counts.calls_succeeded,
             calls_refused: counts.calls_refused,
@@ -378,10 +380,8 @@ fn execution_refusal_error(
             ..Usage::default()
         })
     });
-    let accounting_complete = has_physical_calls
-        && had_usage
-        && !missing_usage
-        && cost_usd.is_some();
+    let accounting_complete =
+        has_physical_calls && had_usage && !missing_usage && cost_usd.is_some();
 
     Some(Error::ModelExecutionRefused {
         refusal,
@@ -431,8 +431,10 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         let provider_responded = matches!(outcome.status, PhysicalDispatchStatus::Succeeded);
-        self.counts
-            .record(provider_responded, outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused));
+        self.counts.record(
+            provider_responded,
+            outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused),
+        );
         let accounting = Usage {
             input_tokens: usage.map_or(0, |usage| usage.input_tokens),
             output_tokens: usage.map_or(0, |usage| usage.output_tokens),
@@ -843,6 +845,9 @@ impl GatewayModel {
                         settled_cost_usd = Option::<f64>::None, failed = true, "model attempt settlement");
                 }
             }
+            if let Some(refusal) = execution_refusal_error(&error, physical_counts.snapshot()) {
+                return refusal;
+            }
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
             // owner error instead of being interpreted from message text.
@@ -1161,6 +1166,15 @@ impl Model for GatewayModel {
         Some(Arc::new(model))
     }
 
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        let mut model = self.clone();
+        model.execution_control = Some(control);
+        Some(Arc::new(model))
+    }
+
     async fn review(
         &self,
         request: ModelRequest,
@@ -1245,6 +1259,33 @@ impl Model for GatewayModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_admission_reasons_keep_their_neutral_meaning() {
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use openhuman_embed::budget::DispatchRefusalReason;
+
+        for (neutral, embed) in [
+            (
+                ModelExecutionRefusal::CallLimit,
+                DispatchRefusalReason::CallLimit,
+            ),
+            (
+                ModelExecutionRefusal::SoftDeadline,
+                DispatchRefusalReason::Deadline,
+            ),
+            (
+                ModelExecutionRefusal::Cancelled,
+                DispatchRefusalReason::Cancelled,
+            ),
+        ] {
+            assert_eq!(
+                model_execution_refusal(openhuman_embed::budget::DispatchRefusal::new(embed)),
+                neutral
+            );
+            assert_eq!(dispatch_refusal(neutral).reason(), embed);
+        }
+    }
 
     #[derive(Clone)]
     struct LogBytes(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -1922,7 +1963,7 @@ mod tests {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         use crate::lanes::large_pr::ReviewMode;
         use crate::ports::model::Model;
-        use crate::ports::model_execution::ModelExecutionControl;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
         use tokio::time::Instant;
 
         let (mut model, _, request) = admission_fixture().await;
@@ -1958,12 +1999,14 @@ mod tests {
             },
         ));
         let control: Arc<dyn ModelExecutionControl> = execution.clone();
-        // Keep this fixture executable against the pre-integration adapter.
-        // Once GatewayModel forwards controls, this takes that enforced model;
-        // before then it exercises the old unrestricted provider path.
         let model = model
             .with_execution_control(control)
-            .unwrap_or_else(|| Arc::new(model));
+            .expect("the gateway preserves review execution control");
+        let model = model
+            .with_review_budget(10.0)
+            .expect("the gateway preserves the review budget root")
+            .scoped_budget(10.0)
+            .expect("the lane scope remains bound to review controls");
         let calls = Arc::new(RecordedModelCalls::default());
 
         let result =
@@ -1976,6 +2019,13 @@ mod tests {
             "the malformed paid response cannot trigger a second provider request"
         );
         let refusal = result.expect_err("the one-call review ceiling refuses the repair dispatch");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
         let usage = refusal
             .usage()
             .expect("the refusal retains the first provider's paid usage");
@@ -1984,6 +2034,7 @@ mod tests {
         assert_eq!(usage.calls_attempted, 1);
         assert_eq!(usage.calls_succeeded, 1);
         assert_eq!(usage.cost_usd, 0.125);
+        assert_eq!(refusal.usage_accounting_complete(), Some(true));
         let calls = calls.0.lock().unwrap();
         assert_eq!(calls.len(), 1, "the actual paid dispatch is observed once");
         assert_eq!(calls[0].0.cost_usd, 0.125);

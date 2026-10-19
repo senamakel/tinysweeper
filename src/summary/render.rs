@@ -99,8 +99,10 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
             "The review found no actionable issues.".to_string()
         } else if executive.is_empty() {
             "No actionable findings were reported in the available review results.".to_string()
+        } else if contains_run_diagnostics(executive) {
+            "No actionable findings were reported in the available review results.".to_string()
         } else {
-            first_sentence(executive).to_string()
+            bounded_sentence(executive, 50)
         };
         let _ = writeln!(body, "{}\n", prose(&sentence));
     }
@@ -239,7 +241,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             let _ = write!(
                 out,
                 "; not reviewed: {}",
-                code_list(coverage.unreviewed.iter().map(String::as_str))
+                bounded_paths(&coverage.unreviewed, 2)
             );
         }
         out.push_str(".  \n");
@@ -247,7 +249,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
         let _ = writeln!(
             out,
             "**Coverage:** File coverage is unavailable; not reviewed: {}.",
-            code_list(proposal.unreviewed.iter().map(String::as_str))
+            bounded_paths(&proposal.unreviewed, 2)
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");
@@ -539,18 +541,21 @@ fn render_finding(
     );
     let _ = writeln!(
         out,
-        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:** {}",
+        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:**",
         severity(finding.severity),
         if finding.late { " · late" } else { "" },
         prose(&finding.title),
         citation,
-        prose(&concise(&finding.body)),
-        finding
-            .suggestion
-            .as_deref()
-            .map(crate::markdown::code_block)
-            .unwrap_or_else(|| "No concrete fix was supplied.".to_string())
+        prose(&concise(&finding.body))
     );
+    if let Some(suggestion) = &finding.suggestion {
+        let block = crate::markdown::code_block(suggestion);
+        for line in block.lines() {
+            let _ = writeln!(out, "  {line}");
+        }
+    } else {
+        out.push_str("  No concrete fix was supplied.\n");
+    }
 }
 
 fn before_merge(out: &mut String, proposal: &Proposal) {

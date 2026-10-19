@@ -1922,7 +1922,7 @@ mod tests {
             .clone();
 
         let barrier = Arc::new(tokio::sync::Barrier::new(4));
-        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (first_poll_tx, mut first_poll_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut calls = tokio::task::JoinSet::new();
         for (caller, request) in [
             (first, request.clone()),
@@ -1930,20 +1930,52 @@ mod tests {
             (root, request),
         ] {
             let barrier = Arc::clone(&barrier);
-            let started_tx = started_tx.clone();
+            let first_poll_tx = first_poll_tx.clone();
             calls.spawn(async move {
-                started_tx.send(()).expect("test receiver");
                 barrier.wait().await;
-                caller.complete(request).await
+                let mut completion = Box::pin(caller.complete(request));
+                let first_poll = std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(std::future::Future::poll(completion.as_mut(), cx))
+                })
+                .await;
+                let was_pending = matches!(&first_poll, std::task::Poll::Pending);
+                first_poll_tx.send(was_pending).expect("test receiver");
+                match first_poll {
+                    std::task::Poll::Pending => completion.await,
+                    std::task::Poll::Ready(result) => result,
+                }
             });
         }
-        drop(started_tx);
-        for _ in 0..3 {
-            started_rx.recv().await.expect("model call task started");
-        }
+        drop(first_poll_tx);
         barrier.wait().await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let first_polls = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut states = Vec::with_capacity(3);
+            for _ in 0..3 {
+                states.push(first_poll_rx.recv().await.expect("model call first poll"));
+            }
+            states
+        })
+        .await;
+        let pending_first_polls = first_polls
+            .as_ref()
+            .map(|states| states.iter().filter(|pending| **pending).count())
+            .unwrap_or_default();
+
+        // A first Pending poll alone could still be stuck before the HTTP
+        // boundary. Observe the actual fake-provider request while the root
+        // reservation is held; the two intentionally fresh child ledgers are
+        // the positive control for this leak detector.
+        let leaked_http_under_hold = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !gateway.requests().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
         let writes_while_root_is_reserved = gateway.requests().len();
 
         // Always release the fixture before asserting so an expected failure
@@ -1963,11 +1995,13 @@ mod tests {
         let successful_calls = results.iter().filter(|result| result.is_ok()).count();
         assert_eq!(
             (
+                pending_first_polls,
+                leaked_http_under_hold,
                 writes_while_root_is_reserved,
                 successful_calls,
                 gateway.requests().len(),
             ),
-            (0, 3, 3),
+            (3, false, 0, 3, 3),
             "all three callers must wait on the shared review root and dispatch after release"
         );
         for result in results {

@@ -2885,7 +2885,6 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_pending_observed_dispatch_counts_no_terminal_call() {
-        use crate::ports::model_execution::ModelExecutionControl;
         use std::future::Future;
         use std::task::Poll;
         use std::time::Duration;

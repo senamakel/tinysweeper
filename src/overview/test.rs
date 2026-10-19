@@ -139,9 +139,24 @@ fn mermaid_requires_four_changed_behaviours_before_drawing() {
             },
         ],
         links: vec![
-            Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 1, to: 2, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 2, to: 3, relation: FlowRelation::Calls, weight: 1 },
+            Link {
+                from: 0,
+                to: 1,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 1,
+                to: 2,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 2,
+                to: 3,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
         ],
         files: 4,
         additions: 0,
@@ -224,18 +239,40 @@ fn calls_uses_implementations_and_tests_are_named_on_arrows() {
     }
     let walk = Neighbourhood { nodes, edges };
     let map = build(&diffs, &[], GraphView::Walked(&walk), &limits());
-    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Calls));
-    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Uses));
-    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Implements));
-    assert!(map.links.iter().any(|link| link.relation == FlowRelation::Tests));
+    assert!(
+        map.links
+            .iter()
+            .any(|link| link.relation == FlowRelation::Calls)
+    );
+    assert!(
+        map.links
+            .iter()
+            .any(|link| link.relation == FlowRelation::Uses)
+    );
+    assert!(
+        map.links
+            .iter()
+            .any(|link| link.relation == FlowRelation::Implements)
+    );
+    assert!(
+        map.links
+            .iter()
+            .any(|link| link.relation == FlowRelation::Tests)
+    );
     assert!(mermaid::flowchart(&map).is_none());
 }
 
 #[test]
 fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
     let component = |name: &str, role| Component {
-        name: name.into(), role, files: 1, additions: 1, deletions: 0,
-        findings: 0, worst: None, paths: vec![],
+        name: name.into(),
+        role,
+        files: 1,
+        additions: 1,
+        deletions: 0,
+        findings: 0,
+        worst: None,
+        paths: vec![],
     };
     let map = ChangeMap {
         components: vec![
@@ -249,15 +286,53 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
             component("tests/api.rs#works", Role::Impacted),
         ],
         links: vec![
-            Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 1, to: 2, relation: FlowRelation::Uses, weight: 1 },
-            Link { from: 2, to: 3, relation: FlowRelation::Implements, weight: 1 },
-            Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 5, to: 0, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 6, to: 0, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 7, to: 0, relation: FlowRelation::Tests, weight: 1 },
+            Link {
+                from: 0,
+                to: 1,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 1,
+                to: 2,
+                relation: FlowRelation::Uses,
+                weight: 1,
+            },
+            Link {
+                from: 2,
+                to: 3,
+                relation: FlowRelation::Implements,
+                weight: 1,
+            },
+            Link {
+                from: 4,
+                to: 0,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 5,
+                to: 0,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 6,
+                to: 0,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 7,
+                to: 0,
+                relation: FlowRelation::Tests,
+                weight: 1,
+            },
         ],
-        files: 6, additions: 6, deletions: 0, folded: 0,
+        files: 6,
+        additions: 6,
+        deletions: 0,
+        folded: 0,
         graph: GraphStatus::Walked { nodes: 8 },
     };
 
@@ -275,8 +350,14 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
 #[test]
 fn filtered_only_links_do_not_leave_a_disconnected_diagram() {
     let component = |name: &str, role| Component {
-        name: name.into(), role, files: 1, additions: 1, deletions: 0,
-        findings: 0, worst: None, paths: vec![],
+        name: name.into(),
+        role,
+        files: 1,
+        additions: 1,
+        deletions: 0,
+        findings: 0,
+        worst: None,
+        paths: vec![],
     };
     let map = ChangeMap {
         components: vec![
@@ -286,8 +367,16 @@ fn filtered_only_links_do_not_leave_a_disconnected_diagram() {
             component("src/d.rs#delta", Role::Changed),
             component("src/lib.rs#tests::assert_valid", Role::Impacted),
         ],
-        links: vec![Link { from: 4, to: 0, relation: FlowRelation::Tests, weight: 1 }],
-        files: 4, additions: 4, deletions: 0, folded: 0,
+        links: vec![Link {
+            from: 4,
+            to: 0,
+            relation: FlowRelation::Tests,
+            weight: 1,
+        }],
+        files: 4,
+        additions: 4,
+        deletions: 0,
+        folded: 0,
         graph: GraphStatus::Walked { nodes: 5 },
     };
 
@@ -297,8 +386,14 @@ fn filtered_only_links_do_not_leave_a_disconnected_diagram() {
 #[test]
 fn test_and_keyword_symbols_do_not_count_toward_the_four_symbol_threshold() {
     let component = |name: &str| Component {
-        name: name.into(), role: Role::Changed, files: 1, additions: 1, deletions: 0,
-        findings: 0, worst: None, paths: vec![],
+        name: name.into(),
+        role: Role::Changed,
+        files: 1,
+        additions: 1,
+        deletions: 0,
+        findings: 0,
+        worst: None,
+        paths: vec![],
     };
     let map = ChangeMap {
         components: vec![
@@ -310,13 +405,41 @@ fn test_and_keyword_symbols_do_not_count_toward_the_four_symbol_threshold() {
             component("src/lib.rs#json"),
         ],
         links: vec![
-            Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 1, to: 2, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 2, to: 3, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 3, to: 4, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 4, to: 5, relation: FlowRelation::Calls, weight: 1 },
+            Link {
+                from: 0,
+                to: 1,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 1,
+                to: 2,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 2,
+                to: 3,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 3,
+                to: 4,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
+            Link {
+                from: 4,
+                to: 5,
+                relation: FlowRelation::Calls,
+                weight: 1,
+            },
         ],
-        files: 6, additions: 6, deletions: 0, folded: 0,
+        files: 6,
+        additions: 6,
+        deletions: 0,
+        folded: 0,
         graph: GraphStatus::Walked { nodes: 6 },
     };
 

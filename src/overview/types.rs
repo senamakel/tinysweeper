@@ -176,8 +176,7 @@ impl ChangeMap {
             })
             .map(|(_, component)| component.name.as_str())
             .collect();
-        changed.len()
-            >= 4
+        changed.len() >= 4
             && self
                 .links
                 .iter()

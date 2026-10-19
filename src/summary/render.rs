@@ -1344,8 +1344,15 @@ mod tests {
         let rendered = render(&Config::default(), &proposal);
         let visible = rendered.split("<details").next().expect("public summary");
 
-        assert!(visible.len() <= 800, "{} chars outside details", visible.len());
-        assert!(rendered.contains("additional unreviewed files"), "{rendered}");
+        assert!(
+            visible.len() <= 800,
+            "{} chars outside details",
+            visible.len()
+        );
+        assert!(
+            rendered.contains("additional unreviewed files"),
+            "{rendered}"
+        );
         assert!(rendered.contains("src/23/"), "{rendered}");
     }
 
@@ -1369,12 +1376,16 @@ mod tests {
             },
             "models": ["ladder/reviewer"],
             "prior_findings": [], "cost_usd": 0.0, "cached_tokens": 0
-        })).expect("proposal");
+        }))
+        .expect("proposal");
         let rendered = render(&Config::default(), &proposal);
         let visible = rendered.split("<details").next().expect("public summary");
 
         for term in ["cache chain", "index is behind", "ladder/", "per evidence"] {
-            assert!(!visible.contains(term), "{term} leaked outside details: {visible}");
+            assert!(
+                !visible.contains(term),
+                "{term} leaked outside details: {visible}"
+            );
         }
         assert!(rendered.contains("cache chain restarted"), "{rendered}");
         assert!(rendered.contains("index is behind"), "{rendered}");

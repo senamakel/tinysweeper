@@ -139,6 +139,13 @@ impl ReviewExecution {
         self.inner.max_calls
     }
 
+    /// Test-only no-op scaffold for the compiled Large-mode cap regressions.
+    ///
+    /// Replace this body with monotonic cap tightening when runtime planning
+    /// calls it after selecting Large mode; until then, the new tests expose
+    /// the missing behavior as assertion failures rather than compile errors.
+    pub(crate) fn restrict_to_large(&self, _max_calls: usize) {}
+
     /// Record a terminal physical call event independently of timing spans.
     pub(crate) fn record_physical_usage(&self, usage: Usage) {
         lock(&self.inner.state).physical_usage.add(usage);
@@ -755,6 +762,91 @@ mod tests {
             execution.soft_deadline(),
             started_at + Duration::from_secs(720)
         );
+    }
+
+    #[tokio::test]
+    async fn tightening_a_normal_scope_refuses_a_held_reservation_at_the_new_cap() {
+        let started_at = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started_at,
+            started_at + Duration::from_secs(100),
+        )));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let spent = control.acquire().await.expect("normal scope is uncapped");
+        spent.mark_dispatched().expect("first normal dispatch");
+        let held = control.acquire().await.expect("second normal reservation");
+
+        execution.restrict_to_large(1);
+
+        assert_eq!(
+            held.mark_dispatched(),
+            Err(ModelExecutionRefusal::CallLimit)
+        );
+        assert_eq!(
+            held.mark_dispatched(),
+            Err(ModelExecutionRefusal::CallLimit),
+            "refusal classification remains stable on repeat"
+        );
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 1);
+
+        drop(held);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn a_large_cap_tightens_a_spent_normal_scope_and_never_later_grows() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        for _ in 0..2 {
+            let permit = execution.acquire().await.expect("normal scope is uncapped");
+            permit.mark_dispatched().expect("normal dispatch");
+        }
+
+        execution.restrict_to_large(2);
+        assert_eq!(execution.max_calls(), Some(2));
+        assert_eq!(
+            execution.acquire().await.err(),
+            Some(ModelExecutionRefusal::CallLimit)
+        );
+
+        execution.restrict_to_large(48);
+        assert_eq!(execution.max_calls(), Some(2));
+        assert_eq!(
+            execution.acquire().await.err(),
+            Some(ModelExecutionRefusal::CallLimit),
+            "a later, larger Large-mode policy cannot refund or raise the cap"
+        );
+        assert_eq!(execution.snapshot().committed_calls, 2);
+    }
+
+    #[tokio::test]
+    async fn normal_scope_without_large_restriction_remains_uncapped() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+
+        for _ in 0..4 {
+            let permit = execution.acquire().await.expect("normal scope is uncapped");
+            permit.mark_dispatched().expect("normal dispatch");
+        }
+
+        assert_eq!(execution.max_calls(), None);
+        assert_eq!(execution.snapshot().committed_calls, 4);
     }
 
     #[test]

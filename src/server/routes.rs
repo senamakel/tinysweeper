@@ -4151,6 +4151,10 @@ mod tests {
                 .await
                 .unwrap()
         );
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published)
+        );
 
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
@@ -4166,6 +4170,10 @@ mod tests {
                 .confirm_head(&delayed, "head-b-live", 16)
                 .await
                 .unwrap()
+        );
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published)
         );
 
         let forge = MockForge::new();

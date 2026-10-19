@@ -568,7 +568,8 @@ impl ReviewSchedulerState {
             return Admission::Full;
         }
         let status_records = self.retired_checks.len()
-            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>();
+            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
+            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count();
         let additional_status_records = requests.iter().filter(|request| {
             let existing = (request.mode == ReviewJobMode::Incremental).then(|| {
                 self.unfinished.iter().find(|record| {
@@ -583,7 +584,7 @@ impl ReviewSchedulerState {
                 (None, _) => true,
             }
         }).count();
-        let future_status_slots = requests.iter().filter(|request| request.head_sha.is_none()).count();
+        let future_status_slots = requests.len();
         if status_records + additional_status_records + future_status_slots > MAX_REVIEW_STATUS_RECORDS {
             return Admission::Full;
         }
@@ -672,6 +673,7 @@ impl ReviewSchedulerState {
                 }
                 record.head_history_reservations =
                     Some(record.head_history_reservations.unwrap_or_default() + 1);
+                record.status_reconcile_reserved = true;
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
                         record.yield_requested = true;
@@ -700,6 +702,7 @@ impl ReviewSchedulerState {
                 paid_attempts: 0,
                 yield_requested: false,
                 review_checks: initial_check.into_iter().collect(),
+                status_reconcile_reserved: true,
             });
         }
         Admission::Admitted
@@ -741,7 +744,7 @@ impl ReviewSchedulerState {
             + self
                 .unfinished
                 .iter()
-                .filter(|record| record.review_checks.is_empty())
+                .filter(|record| record.status_reconcile_reserved)
                 .count()
             + self
                 .unfinished
@@ -985,8 +988,12 @@ impl ReviewSchedulerState {
             .iter()
             .any(|check| check.head_sha == head_sha);
         let status_count = self.retired_checks.len()
-            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>();
-        if !has_check && status_count >= MAX_REVIEW_STATUS_RECORDS {
+            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
+            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count();
+        if !has_check
+            && !self.unfinished[index].status_reconcile_reserved
+            && status_count >= MAX_REVIEW_STATUS_RECORDS
+        {
             return ReconciledReviewCheck::CapacityDeferred;
         }
         if !self.confirm_head(owned, head_sha, now_ms) {
@@ -998,6 +1005,7 @@ impl ReviewSchedulerState {
         let check = if let Some(existing) = record.review_checks.iter().find(|check| check.head_sha == head_sha) {
             existing.clone()
         } else {
+            record.status_reconcile_reserved = false;
             let check = ReviewCheckRecord {
                 head_sha: head_sha.to_owned(),
                 external_id: queued_check_external_id(&record.request.id, head_sha),

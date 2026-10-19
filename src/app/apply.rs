@@ -2943,6 +2943,10 @@ mod tests {
         assert!(body.contains("The transaction commits each event once"));
         assert!(body.contains("The test fixture maps the empty-state case"));
         assert!(!body.contains("The commit reviewer found no issues"));
+        assert!(
+            body.contains("Pull request purpose (title): Enforce speech privacy."),
+            "{body}"
+        );
         assert!(opening.starts_with("**Verdict:** Incomplete"), "{opening}");
         assert!(body.contains("**Lane gaps:**"), "{body}");
         assert!(body.contains("reviewers did not respond"), "{body}");

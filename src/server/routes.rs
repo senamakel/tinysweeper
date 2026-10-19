@@ -222,6 +222,7 @@ struct ReviewJob {
     expected_head: Option<String>,
     queued_at: tokio::time::Instant,
     owned: Option<OwnedReview>,
+    queue_check: Option<crate::ports::review_job::ReviewCheckRecord>,
 }
 
 enum WorkerDisposition {
@@ -1017,6 +1018,7 @@ async fn run_owned_review(
         expected_head: request.head_sha.clone(),
         queued_at,
         owned: Some(owned.clone()),
+        queue_check: owned.review_check.clone(),
     };
     let disposition = handle_review(
         state,
@@ -1289,6 +1291,7 @@ async fn dispatch(
                     expected_head: head_sha,
                     queued_at: queued_at.unwrap_or_else(tokio::time::Instant::now),
                     owned: None,
+                    queue_check: None,
                 },
                 review_permit,
                 None,
@@ -2797,6 +2800,7 @@ async fn handle_review(
         expected_head,
         queued_at,
         owned,
+        queue_check,
     } = job;
     let timing = crate::review_timing::ReviewTiming::new(repo.clone(), number, format!("{mode:?}"));
     timing.record(|record| record.queue_wait_ms = queued_at.elapsed().as_millis() as u64);

@@ -231,6 +231,24 @@ fn resolving_a_headless_status_does_not_consume_unreserved_status_capacity() {
     );
 }
 
+#[test]
+fn stale_headless_metadata_cannot_replace_a_newer_accepted_head() {
+    let mut state = ReviewSchedulerState::default();
+    let mut headless = request("headless-stale-a", 10);
+    headless.head_sha = None;
+    assert_eq!(state.admit_batch(vec![headless], 10), Admission::Admitted);
+    let pending = state.claim_pending_metadata(11, 1).pop().unwrap();
+
+    let mut newer = request("headless-stale-b", 12);
+    newer.head_sha = Some("head-b".into());
+    assert_eq!(state.admit_batch(vec![newer], 12), Admission::Admitted);
+    assert!(!state.resolve_pending_metadata(&pending, "stale-head-a", true, false, 13));
+    let job = &state.unfinished[0];
+    assert_eq!(job.request.head_sha.as_deref(), Some("head-b"));
+    assert!(job.review_checks.iter().any(|check| check.head_sha == "head-b"));
+    assert!(!job.metadata_resolution_pending);
+}
+
 #[tokio::test]
 async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_failed() {
     let store = MockReviewJobStore::default();

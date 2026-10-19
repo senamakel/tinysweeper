@@ -6970,6 +6970,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn headless_metadata_read_failure_retries_without_redelivery() {
+        use crate::forge::{MockForge, types::PullRequest};
+        use crate::forge::types::CheckRunStatus;
+
+        let review_pool = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(review_pool.clone().acquire_owned().await.expect("review permit"));
+        }
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 79,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+        assert_eq!(
+            admit_webhook_review(&store, &action, "metadata-read-fails", "issue_comment", factory.clone())
+                .await.expect("metadata outage does not undo durable acceptance"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(store.snapshot_for_test().unfinished.len(), 1);
+        assert!(forge.writes().is_empty());
+
+        forge.replace_pull_request(PullRequest {
+            number: 79,
+            head_sha: "recovered-head".into(),
+            ..PullRequest::default()
+        });
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        ).await.expect("metadata retry publishes accepted status");
+        let queued = forge.checks().remove(status::CHECK_NAME).expect("queued check exists");
+        assert_eq!(queued.head_sha, "recovered-head");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+        assert_eq!(review_pool.available_permits(), 0);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn closed_and_draft_headless_deliveries_write_nothing_and_allow_a_fresh_delivery() {
+        use crate::forge::{MockForge, types::PullRequest};
+        use crate::forge::types::CheckRunStatus;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new()
+            .with_pull_request(PullRequest {
+                number: 80,
+                open: false,
+                head_sha: "closed-head".into(),
+                ..PullRequest::default()
+            }, vec![], vec![])
+            .with_pull_request(PullRequest {
+                number: 81,
+                draft: true,
+                head_sha: "draft-head".into(),
+                ..PullRequest::default()
+            }, vec![], vec![]);
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients { read: Arc::new(forge.clone()), write: Arc::new(forge) })
+            }.boxed()
+        });
+        let action = |number| Action::Review {
+            repo: "owner/repo".into(),
+            number,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+        for (number, delivery) in [(80, "closed-delivery"), (81, "draft-delivery")] {
+            assert_eq!(
+                admit_webhook_review(&store, &action(number), delivery, "issue_comment", factory.clone())
+                    .await.expect("accepted then resolved by metadata worker"),
+                Some(Admission::Admitted)
+            );
+        }
+        assert!(store.snapshot_for_test().unfinished.is_empty());
+        assert!(forge.writes().is_empty(), "closed/draft metadata must not publish checks");
+
+        for (number, head) in [(80, "reopened-head"), (81, "ready-head")] {
+            forge.replace_pull_request(PullRequest {
+                number,
+                open: true,
+                draft: false,
+                head_sha: head.into(),
+                ..PullRequest::default()
+            });
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(number),
+                    &format!("new-delivery-{number}"),
+                    "issue_comment",
+                    factory.clone(),
+                )
+                .await.expect("new delivery after eligibility changes"),
+                Some(Admission::Admitted)
+            );
+        }
+        let queued = forge.writes().into_iter().filter_map(|write| match write {
+            crate::forge::Write::Check(check) if check.status == Some(CheckRunStatus::Queued) => Some(check.head_sha),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert!(queued.contains(&"reopened-head".to_string()));
+        assert!(queued.contains(&"ready-head".to_string()));
+    }
+
+    #[tokio::test]
     async fn superseded_check_without_recovered_id_gets_terminal_status_and_releases_outbox() {
         use crate::forge::MockForge;
         use crate::forge::types::CheckConclusion;

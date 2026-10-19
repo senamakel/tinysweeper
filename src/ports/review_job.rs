@@ -724,7 +724,8 @@ impl ReviewSchedulerState {
         }
         let status_records = self.retired_checks.len()
             + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
-            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count();
+            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count()
+            + self.unfinished.iter().filter(|record| record.metadata_resolution_pending).count();
         let additional_status_records = requests.iter().filter(|request| {
             let existing = (request.mode == ReviewJobMode::Incremental).then(|| {
                 self.unfinished.iter().find(|record| {
@@ -735,7 +736,8 @@ impl ReviewSchedulerState {
             }).flatten();
             match (existing, request.head_sha.as_deref()) {
                 (Some(record), Some(head)) => !record.review_checks.iter().any(|check| check.head_sha == head),
-                (Some(_), None) | (None, None) => false,
+                (Some(_), None) => false,
+                (None, None) => true,
                 (None, Some(_)) => true,
             }
         }).count();

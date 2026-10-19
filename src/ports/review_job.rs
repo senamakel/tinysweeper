@@ -330,7 +330,7 @@ impl ReviewSchedulerState {
             if Some(check.head_sha.as_str()) == keep_head {
                 keep.push(check);
             } else if check.stage != ReviewCheckStage::Completed
-                && (check.published || check.check_id.is_some() || check.write_generation > 0)
+                && (check.published || check.check_id.is_some() || check.post_attempted)
             {
                 let mut check = check;
                 check.write_generation = check.write_generation.saturating_add(1);
@@ -655,6 +655,7 @@ impl ReviewSchedulerState {
                 stage: ReviewCheckStage::Queued,
                 owner_generation: None,
                 published: false,
+                post_attempted: false,
                 write_claim_until_ms: 0,
                 write_generation: 0,
             });
@@ -1026,6 +1027,7 @@ impl ReviewSchedulerState {
                 stage: ReviewCheckStage::Queued,
                 owner_generation: Some(owned.generation),
                 published: false,
+            post_attempted: false,
                 write_claim_until_ms: 0,
                 write_generation: 0,
             };
@@ -1286,7 +1288,7 @@ impl ReviewSchedulerState {
                 || check.stage == ReviewCheckStage::Queued;
             if !superseded_or_never_started
                 || check.stage == ReviewCheckStage::Completed
-                || (!check.published && check.check_id.is_none() && check.write_generation == 0)
+                || (!check.published && check.check_id.is_none() && !check.post_attempted)
             {
                 continue;
             }

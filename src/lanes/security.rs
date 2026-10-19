@@ -224,126 +224,17 @@ impl Lane for Security {
     }
 
     async fn run(&self, input: LaneInput<'_>) -> Result<LaneOutcome> {
-        let scanner = input.scanner_findings_of(&ADJUDICATES);
-
-        // A scanner finding is reason enough to run even when nothing else is
-        // reviewable: a workflow whose only change is a widened permission
-        // still has to be reported.
-        if !input.has_reviewable_content() && scanner.is_empty() {
-            return Ok(LaneOutcome::skipped(
-                "No added or modified lines to review.",
-            ));
-        }
-
-        if let Some(skipped) = input.skip_as_draft() {
+        let prepared = prepare(input.preparation());
+        if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }
-
-        // Files this lane has already seen, unchanged since. Dropped before
-        // triage, not after: the cheapest call is the one not made, and this
-        // lane spends one call per file, so re-reviewing an untouched file on
-        // every push is the single largest avoidable cost in a review.
-        //
-        // Distinct from replaying evidence into the cacheable prefix, which is
-        // what `critique` does. That only pays when the provider honours the
-        // cache; this pays always.
-        let fresh: Vec<crate::evidence::diff::FileDiff> =
-            crate::evidence::replay::unreviewed(input.reviewed_evidence, input.diffs)
-                .into_iter()
-                .cloned()
-                .collect();
-
-        // Deterministic triage before any token is spent: drop the files that
-        // cannot carry a vulnerability, and review what is left riskiest first
-        // so an exhausted budget was spent on the files that mattered.
-        //
-        // A scanner match forces its file back in even when unchanged: a
-        // committed key is reported every time until it is gone, and "we
-        // mentioned it last push" is not a reason to stop.
-        let forced: Vec<&str> = scanner.iter().map(|f| f.path.as_str()).collect();
-        let fresh_paths: Vec<&str> = fresh.iter().map(|diff| diff.path.as_str()).collect();
-        let replayed: Vec<crate::evidence::diff::FileDiff> = input
-            .diffs
-            .iter()
-            .filter(|diff| {
-                !diff.changed_lines.is_empty() && !fresh_paths.contains(&diff.path.as_str())
-            })
-            .cloned()
-            .collect();
-        // Replay proves the previous lane saw these unchanged paths, but only
-        // if security triage still considers them in scope. Prose, lockfiles
-        // and generated outputs remain deliberately outside this lane's count.
-        let mut covered_without_model = triage(&replayed, &forced).review;
-        let forced_back: Vec<crate::evidence::diff::FileDiff> = input
-            .diffs
-            .iter()
-            .filter(|d| forced.contains(&d.path.as_str()))
-            .filter(|d| !fresh.iter().any(|f| f.path == d.path))
-            .cloned()
-            .collect();
-        let mut considered = fresh;
-        considered.extend(forced_back);
-
-        let mut triaged = triage(&considered, &forced);
-
-        // A mechanical rename is verified, not read, here as in `critique`:
-        // a substitution proven line for line cannot reach a sink the line
-        // did not already reach. A file a scanner flagged stays in whatever
-        // its diff looks like — the match is the reason it is reviewed.
-        let mechanical = mechanical::detect(&considered.iter().collect::<Vec<_>>());
-        let candidate_paths = triaged.review.clone();
-        let mut mechanical_verified = Vec::new();
-        if let Some(sub) = &mechanical {
-            triaged
-                .review
-                .retain(|path| forced.contains(&path.as_str()) || !sub.verified.contains(path));
-            mechanical_verified.extend(
-                sub.verified
-                    .iter()
-                    .filter(|path| {
-                        candidate_paths.contains(path)
-                            && !triaged.review.contains(path)
-                            && !forced.contains(&path.as_str())
-                    })
-                    .cloned(),
-            );
-        }
-
-        if triaged.review.is_empty()
-            && scanner.is_empty()
-            && covered_without_model.is_empty()
-            && mechanical_verified.is_empty()
-        {
-            return Ok(LaneOutcome::skipped(format!(
-                "No changed file has any attack surface.{}",
-                skip_note(&triaged.skipped)
-            )));
-        }
-
-        // No model call: groups related changed files so a bug spanning them
-        // is visible to one reviewer instead of hidden by the isolation
-        // clause each ungrouped conversation is given — see
-        // `lanes::grouping`. Off, or a component too large to bet on, falls
-        // back to exactly the singleton fan-out this lane ran before
-        // grouping existed.
-        let groups: Vec<FileGroup> = if input.config.grouping.enabled {
-            input.group(
-                &triaged.review,
-                &GroupBounds {
-                    max_files: input.config.grouping.max_files,
-                    max_hunk_chars: input.config.grouping.max_hunk_chars,
-                },
-            )
-        } else {
-            triaged
-                .review
-                .iter()
-                .map(|path| FileGroup {
-                    label: path.clone(),
-                    paths: vec![path.clone()],
-                })
-                .collect()
-        };
+        let scanner = prepared.scanner;
+        let groups = prepared.groups;
+        let mut covered_without_model = prepared.covered_without_model;
+        let mut mechanical_verified = prepared.mechanical_verified;
+        let mechanical = prepared.mechanical;
+        let triage_skipped = prepared.triage_skipped;
+        let review_paths_empty = prepared.review_paths_empty;
 
         // One capability for the whole lane, so the pull-request budget holds
         // across every file and every reviewer at once — which is what lets the

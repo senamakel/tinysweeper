@@ -629,6 +629,8 @@ pub async fn settle_e2e(
                     VERSION,
                     true,
                 ),
+                status: None,
+                external_id: None,
                 images: vec![],
             },
         )

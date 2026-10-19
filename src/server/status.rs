@@ -117,6 +117,16 @@ pub fn in_progress(head_sha: &str) -> CheckRun {
                   on the code, and it will conclude either way — including if the review \
                   fails, which it will say explicitly rather than disappearing."
             .to_string(),
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }
@@ -135,6 +145,20 @@ pub fn queued(head_sha: &str, reviews_ahead: usize, external_id: &str) -> CheckR
         external_id: Some(external_id.to_string()),
         title: format!("Queued — {reviews_ahead} reviews ahead"),
         summary: "tinysweeper accepted this pull request for review. It is waiting for a review permit; no review work has started yet.".into(),
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }
@@ -215,6 +239,16 @@ pub fn completed(
              tinysweeper ran, nothing more — each lane publishes its own check with its \
              own verdict, and those are what gate the merge."
         ),
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }
@@ -241,6 +275,16 @@ pub fn not_reviewed(head_sha: &str) -> CheckRun {
                   Nothing is wrong with the code, and nothing was checked. Use the \
                   repository's **Manual review** workflow to review it anyway."
             .to_string(),
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }

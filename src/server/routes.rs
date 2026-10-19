@@ -819,7 +819,7 @@ async fn publish_pending_queue_checks(
     jobs: &dyn ReviewJobStore,
     factory: QueueStatusClientFactory,
 ) -> Result<()> {
-    publish_pending_queue_checks_at(jobs, factory, unix_time_ms()).await
+    publish_pending_queue_checks_with_clock(jobs, factory, unix_time_ms).await
 }
 
 async fn publish_pending_queue_checks_at(
@@ -827,18 +827,29 @@ async fn publish_pending_queue_checks_at(
     factory: QueueStatusClientFactory,
     now_ms: i64,
 ) -> Result<()> {
-    let pending_metadata = jobs.claim_pending_metadata(now_ms, 16).await?;
+    publish_pending_queue_checks_with_clock(jobs, factory, || now_ms).await
+}
+
+async fn publish_pending_queue_checks_with_clock<F>(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+    now: F,
+) -> Result<()>
+where
+    F: Fn() -> i64 + Copy + Send + Sync,
+{
     let mut first_error = None;
-    for pending in pending_metadata {
-        let attempt = async {
-            if !jobs.metadata_claim_current(&pending, unix_time_ms()).await? {
+    for _ in 0..QUEUE_STATUS_DRAIN_BATCH {
+        let Some(pending) = jobs.claim_pending_metadata(now(), 1).await?.pop() else { break; };
+        let attempt = tokio::time::timeout(QUEUE_STATUS_OPERATION_TIMEOUT, async {
+            if !jobs.metadata_claim_current(&pending, now()).await? {
                 return Ok::<(), Error>(());
             }
             let clients = factory(pending.installation).await?;
             let repo = RepoId::parse(&pending.repo)
                 .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
             let metadata = clients.read.pull_request_metadata(&repo, pending.number).await?;
-            if !jobs.metadata_claim_current(&pending, unix_time_ms()).await? {
+            if !jobs.metadata_claim_current(&pending, now()).await? {
                 return Ok(());
             }
             let _ = jobs.resolve_pending_metadata(
@@ -846,21 +857,22 @@ async fn publish_pending_queue_checks_at(
                 &metadata.head_sha,
                 metadata.open,
                 metadata.draft,
-                unix_time_ms(),
+                now(),
             ).await?;
             Ok(())
-        }.await;
+        }).await;
+        let attempt = match attempt {
+            Ok(result) => result,
+            Err(_) => Err(Error::Forge("queued review metadata operation exceeded its deadline".into())),
+        };
         if let Err(err) = attempt {
             first_error.get_or_insert(err);
         }
     }
-    let pending = jobs.claim_pending_checks(now_ms, 16).await?;
-    if pending.is_empty() {
-        return first_error.map_or(Ok(()), Err);
-    }
-    for check in pending {
-        let attempt = async {
-            if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+    for _ in 0..QUEUE_STATUS_DRAIN_BATCH {
+        let Some(check) = jobs.claim_pending_checks(now(), 1).await?.pop() else { break; };
+        let attempt = tokio::time::timeout(QUEUE_STATUS_OPERATION_TIMEOUT, async {
+            if !jobs.queued_check_claim_current(&check, now()).await? {
                 return Ok::<(), Error>(());
             }
             let clients = factory(check.installation).await?;
@@ -875,15 +887,15 @@ async fn publish_pending_queue_checks_at(
                         .await?,
                 };
                 if let Some(check_id) = check_id {
-                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
                         return Ok(());
                     }
                     if check.check.check_id.is_none()
-                        && !jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?
+                        && !jobs.record_queued_check_id(&check, check_id, now()).await?
                     {
                         return Ok(());
                     }
-                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
                         return Ok(());
                     }
                     crate::app::apply::retire_queued_review_status(
@@ -892,17 +904,17 @@ async fn publish_pending_queue_checks_at(
                 } else {
                     // The exact head/external ID was not found. Publish a
                     // terminal status directly, never another queued run.
-                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
                         return Ok(());
                     }
                     let check_id = crate::app::apply::publish_superseded_review_status(
                         clients.write.as_ref(), &repo, &check.check.head_sha, &check.check.external_id,
                     ).await?;
-                    if !jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await? {
+                    if !jobs.record_queued_check_id(&check, check_id, now()).await? {
                         return Ok(());
                     }
                 }
-                let _ = jobs.complete_retired_check(&check, unix_time_ms()).await?;
+                let _ = jobs.complete_retired_check(&check, now()).await?;
             } else {
                 let check_id = match clients
                     .read
@@ -911,13 +923,13 @@ async fn publish_pending_queue_checks_at(
                 {
                     Some(id) => id,
                     None => {
-                        if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        if !jobs.queued_check_claim_current(&check, now()).await? {
                             return Ok(());
                         }
-                        if !jobs.mark_queue_post_attempted(&check, unix_time_ms()).await? {
+                        if !jobs.mark_queue_post_attempted(&check, now()).await? {
                             return Ok(());
                         }
-                        if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        if !jobs.queued_check_claim_current(&check, now()).await? {
                             return Ok(());
                         }
                         crate::app::apply::publish_queued_review_status(
@@ -930,12 +942,15 @@ async fn publish_pending_queue_checks_at(
                     }
                 };
                 let _ = jobs
-                    .record_queued_check_id(&check, check_id, unix_time_ms())
+                    .record_queued_check_id(&check, check_id, now())
                     .await?;
             }
             Ok::<(), Error>(())
-        }
-        .await;
+        }).await;
+        let attempt = match attempt {
+            Ok(result) => result,
+            Err(_) => Err(Error::Forge("queued review status operation exceeded its deadline".into())),
+        };
         if let Err(err) = attempt {
             first_error.get_or_insert(err);
         }
@@ -948,6 +963,9 @@ async fn publish_pending_queue_checks_at(
 type QueueStatusClientFactory = Arc<
     dyn Fn(u64) -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send + Sync,
 >;
+
+const QUEUE_STATUS_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+const QUEUE_STATUS_DRAIN_BATCH: usize = 16;
 
 struct QueueStatusClients {
     read: Arc<dyn crate::ports::forge::ForgeRead>,
@@ -7093,6 +7111,96 @@ mod tests {
         }).collect::<Vec<_>>();
         assert!(queued.contains(&"reopened-head".to_string()));
         assert!(queued.contains(&"ready-head".to_string()));
+    }
+
+    #[tokio::test]
+    async fn slow_successful_metadata_lookup_keeps_its_status_claim_valid() {
+        use crate::forge::{MockForge, types::PullRequest};
+        use crate::forge::types::CheckRunStatus;
+        use crate::ports::review_job::{ReviewJobId, ReviewJobMode, ReviewRequest};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        store.admit_batch(vec![ReviewRequest {
+            id: ReviewJobId("slow-metadata".into()),
+            repo: "owner/repo".into(),
+            number: 82,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+            delivery: Some("slow-metadata".into()),
+            event: "issue_comment".into(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: 10,
+        }]).await.expect("headless acceptance is durable");
+        let forge = MockForge::new().with_pull_request(PullRequest {
+            number: 82,
+            head_sha: "slow-live-head".into(),
+            ..PullRequest::default()
+        }, vec![], vec![]);
+        let clock_ms = Arc::new(AtomicI64::new(100));
+        let client_forge = forge.clone();
+        let client_clock = clock_ms.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            let clock = client_clock.clone();
+            async move {
+                // Model a successful token+metadata operation that took 45s.
+                clock.fetch_add(45_000, Ordering::SeqCst);
+                Ok(QueueStatusClients { read: Arc::new(forge.clone()), write: Arc::new(forge) })
+            }
+            .boxed()
+        });
+        let clock = clock_ms.clone();
+        publish_pending_queue_checks_with_clock(&store, factory, move || clock.load(Ordering::SeqCst))
+            .await.expect("slow status operation stays within its bounded claim");
+        let queued = forge.checks().remove(status::CHECK_NAME)
+            .expect("slow metadata response still produces the check");
+        assert_eq!(queued.head_sha, "slow-live-head");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+    }
+
+    #[tokio::test]
+    async fn status_drain_claims_later_items_after_prior_network_operations() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+        use crate::ports::review_job::{ReviewJobId, ReviewJobMode, ReviewRequest};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let requests = (0..QUEUE_STATUS_DRAIN_BATCH).map(|index| ReviewRequest {
+            id: ReviewJobId(format!("slow-status-{index}")),
+            repo: "owner/repo".into(),
+            number: 100 + index as u64,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(format!("head-{index}")),
+            delivery: Some(format!("slow-status-{index}")),
+            event: "pull_request".into(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: index as i64,
+        }).collect();
+        assert_eq!(store.admit_batch(requests).await.expect("batch accepted"), Admission::Admitted);
+        let forge = MockForge::new();
+        let clock_ms = Arc::new(AtomicI64::new(100));
+        let client_forge = forge.clone();
+        let client_clock = clock_ms.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            let clock = client_clock.clone();
+            async move {
+                clock.fetch_add(45_000, Ordering::SeqCst);
+                Ok(QueueStatusClients { read: Arc::new(forge.clone()), write: Arc::new(forge) })
+            }.boxed()
+        });
+        let clock = clock_ms.clone();
+        publish_pending_queue_checks_with_clock(&store, factory, move || clock.load(Ordering::SeqCst))
+            .await.expect("bounded status drain succeeds");
+        let queued = forge.writes().into_iter().filter(|write| matches!(
+            write,
+            crate::forge::Write::Check(check) if check.status == Some(CheckRunStatus::Queued)
+        )).count();
+        assert_eq!(queued, QUEUE_STATUS_DRAIN_BATCH, "each item receives a fresh claim");
     }
 
     #[tokio::test]

@@ -6883,7 +6883,7 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_review_publishes_queued_status_before_a_permit_is_available() {
-        use crate::forge::{MockForge, RepoId};
+        use crate::forge::MockForge;
         use crate::forge::types::CheckRunStatus;
 
         let permits = Semaphore::new(0);
@@ -7469,7 +7469,7 @@ mod tests {
 
         let writes = forge.writes();
         let repo = RepoId::parse("owner/repo").unwrap();
-        let external_id = retired.check.external_id.as_deref().unwrap();
+        let external_id = retired.check.external_id.as_str();
         let recovered_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
             &forge,
             &repo,

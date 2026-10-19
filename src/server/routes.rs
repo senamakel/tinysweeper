@@ -188,6 +188,8 @@ struct AppState {
     /// Bounds concurrent indexing separately from concurrent reviewing: a
     /// delivery burst must not turn into a burst of full indexes.
     index_permits: Arc<Semaphore>,
+    /// Issue triage has a separate operator-sized pool and cannot consume review slots.
+    triage_permits: Arc<Semaphore>,
     /// One lock per UI preview session ever seen, so two `step` calls for the
     /// same session (the hands retrying a dropped response, or two flows
     /// racing) serialise their load-modify-save instead of one overwriting
@@ -252,6 +254,8 @@ pub async fn serve_with_model_factory(
     factory: Arc<dyn ModelFactory>,
 ) -> Result<()> {
     let bind = config.bind.clone();
+    let review_concurrency = config.config.server.review_concurrency;
+    let triage_concurrency = config.config.server.triage_concurrency;
     let models = ResolvedModels::resolve(factory.as_ref(), &config.config).await?;
 
     // The boot assertion. `$vectorSearch` and `$rankFusion` are stages a stock
@@ -307,7 +311,7 @@ pub async fn serve_with_model_factory(
         models,
         knowledge: knowledge.clone(),
         auth: Arc::new(auth),
-        permits: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
+        permits: Arc::new(Semaphore::new(review_concurrency)),
         review_jobs,
         review_owner: Arc::from(format!(
             "{}-{}",
@@ -318,6 +322,7 @@ pub async fn serve_with_model_factory(
         review_queue,
         index: index.clone(),
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
+        triage_permits: Arc::new(Semaphore::new(triage_concurrency)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
@@ -1446,7 +1451,7 @@ async fn triage_inner(
         RepoId::parse(repo).ok_or_else(|| Error::Forge(format!("`{repo}` is not owner/name")))?;
 
     let permit = state
-        .permits
+        .triage_permits
         .clone()
         .acquire_owned()
         .await

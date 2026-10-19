@@ -129,18 +129,6 @@ pub async fn publish(
         }),
         status: None,
         external_id: None,
-        status: None,
-        external_id: None,
-        status: None,
-        external_id: None,
-        status: None,
-        external_id: None,
-        status: None,
-        external_id: None,
-        status: None,
-        external_id: None,
-        status: None,
-        external_id: None,
         images: render::check_images(gallery),
     };
     let check_id = match existing_check_id {

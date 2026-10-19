@@ -2715,7 +2715,11 @@ mod tests {
             .expect("review succeeds");
 
         assert_eq!(
-            proposal.lanes.iter().map(|lane| lane.lane).collect::<Vec<_>>(),
+            proposal
+                .lanes
+                .iter()
+                .map(|lane| lane.lane)
+                .collect::<Vec<_>>(),
             vec![LaneId::Critique, LaneId::Security]
         );
     }

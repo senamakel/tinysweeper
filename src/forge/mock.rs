@@ -528,6 +528,21 @@ impl MockForge {
 
 #[async_trait]
 impl ForgeRead for MockForge {
+    async fn pull_request_metadata(
+        &self,
+        repo: &RepoId,
+        number: u64,
+    ) -> Result<crate::forge::types::PullRequestMetadata> {
+        let pull_request = self.pull_request(repo, number).await?;
+        Ok(crate::forge::types::PullRequestMetadata {
+            number: pull_request.number,
+            author: pull_request.author,
+            head_sha: pull_request.head_sha,
+            open: pull_request.open,
+            draft: pull_request.draft,
+        })
+    }
+
     async fn pull_request(&self, _repo: &RepoId, number: u64) -> Result<PullRequest> {
         if let Some(read) = self
             .pull_request_reads

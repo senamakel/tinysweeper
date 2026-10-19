@@ -2765,6 +2765,7 @@ mod tests {
                 messages: vec![],
                 schema: json!({}),
                 schema_name: "answer".into(),
+                reasoning_effort: None,
                 max_tokens: 8,
             })
             .await;
@@ -2812,6 +2813,7 @@ mod tests {
             messages: vec![crate::ports::model::Message::user("Review this.")],
             schema: json!({"type":"object"}),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -2909,6 +2911,7 @@ mod tests {
             messages: vec![Message::user("Review this evidence.")],
             schema: json!({"type":"object"}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let mut running = Box::pin(model.review(request, &tree, &policy));
@@ -2988,6 +2991,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let running = observed
@@ -3093,6 +3097,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         observed

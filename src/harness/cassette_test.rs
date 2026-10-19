@@ -14,6 +14,7 @@ fn request(model: &str, prompt: &str) -> ModelRequest {
         messages: vec![Message::system("instructions"), Message::user(prompt)],
         schema: json!({"type": "object"}),
         schema_name: "tinysweeper_critique".into(),
+        reasoning_effort: None,
         max_tokens: 8000,
     }
 }

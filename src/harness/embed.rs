@@ -1129,6 +1129,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -1239,6 +1240,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -1344,6 +1346,7 @@ mod tests {
             ],
             schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         (model, gateway, request)
@@ -1443,6 +1446,7 @@ mod tests {
             messages: vec![Message::system("Review."), Message::user("Review source.")],
             schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn reviewed() {}")]);
@@ -1986,6 +1990,7 @@ mod tests {
             messages: vec![],
             schema: json!({"type": "object"}),
             schema_name: "tinysweeper_critique".into(),
+            reasoning_effort: None,
             max_tokens,
         }
     }

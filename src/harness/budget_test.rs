@@ -242,6 +242,7 @@ async fn budget_reported_five_cent_review_spend_does_not_exhaust_admission() {
         messages: vec![Message::user("code".repeat(18_000))],
         schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 64_000,
     };
     let mut reported = 0.0;

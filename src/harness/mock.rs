@@ -315,6 +315,7 @@ mod tests {
             messages: vec![Message::system("rules"), Message::user("diff")],
             schema: json!({}),
             schema_name: "lane".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         }
     }

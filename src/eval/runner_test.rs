@@ -735,6 +735,7 @@ async fn failed_case_marks_unreported_model_charges_unknown() {
         messages: vec![],
         schema: json!({}),
         schema_name: "test".into(),
+        reasoning_effort: None,
         max_tokens: 10,
     };
     assert!(cassette.complete(request).await.is_err());

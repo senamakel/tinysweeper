@@ -207,6 +207,7 @@ pub async fn generate_with_input(
         messages,
         schema: schema(),
         schema_name: "review_summary".into(),
+        reasoning_effort: None,
         max_tokens: config.models.max_tokens.min(4_000),
     };
 

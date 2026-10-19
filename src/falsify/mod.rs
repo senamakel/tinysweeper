@@ -119,6 +119,7 @@ impl<'a> Falsifier<'a> {
                 types::json_schema()
             },
             schema_name: "tinysweeper_falsify".into(),
+            reasoning_effort: None,
             max_tokens: self.config.models.max_tokens,
         };
 

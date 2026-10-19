@@ -57,6 +57,7 @@ fn request(model: &str) -> ModelRequest {
         ],
         schema: crate::harness::schema::json_schema(),
         schema_name: "tinysweeper_critique".into(),
+        reasoning_effort: None,
         max_tokens: 1000,
     }
 }

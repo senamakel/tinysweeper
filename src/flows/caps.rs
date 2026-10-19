@@ -157,6 +157,7 @@ impl ModelCapability {
             ],
             schema: schema.clone(),
             schema_name: call.schema_name.clone(),
+            reasoning_effort: None,
             max_tokens: self.models.max_tokens,
         };
         let response = match repository {
@@ -372,6 +373,7 @@ mod tests {
                 messages: vec![],
                 schema: json!({}),
                 schema_name: "test".into(),
+                reasoning_effort: None,
                 max_tokens: 1,
             })
             .await

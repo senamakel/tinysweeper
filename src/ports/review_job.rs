@@ -408,6 +408,27 @@ impl ReviewSchedulerState {
         true
     }
 
+    /// Check the current owner, exact head, and check identity before a status transition.
+    pub fn check_transition_current(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        now_ms: i64,
+    ) -> bool {
+        self.unfinished.iter().any(|job| {
+            owns(job, owned)
+                && job.owner_until_ms > now_ms
+                && job.request.head_sha.as_deref() == Some(head_sha)
+                && job.review_checks.iter().any(|check| {
+                    check.head_sha == head_sha
+                        && check.check_id == Some(check_id)
+                        && check.owner_generation == Some(owned.generation)
+                        && check.stage == ReviewCheckStage::Queued
+                })
+        })
+    }
+
     /// Atomically admit a whole batch in memory before the Mongo CAS persists it.
     pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>, now_ms: i64) -> Admission {
         if requests.is_empty() {
@@ -1099,6 +1120,15 @@ pub trait ReviewJobStore: Send + Sync {
         head_sha: &str,
         check_id: u64,
         stage: ReviewCheckStage,
+        now_ms: i64,
+    ) -> Result<bool>;
+
+    /// Verify a queued-to-in-progress mutation is still owned and bound to this head.
+    async fn check_transition_current(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
         now_ms: i64,
     ) -> Result<bool>;
 

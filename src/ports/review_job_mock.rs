@@ -123,6 +123,16 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").set_check_stage(owned, head_sha, check_id, stage, now_ms))
     }
 
+    async fn check_transition_current(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        check_id: u64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.state.lock().expect("state").check_transition_current(owned, head_sha, check_id, now_ms))
+    }
+
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
     }

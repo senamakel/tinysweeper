@@ -4084,13 +4084,14 @@ mod tests {
         use serde_json::json;
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now = unix_time_ms();
         let mut first = queued_test_review(73);
         first.repo = "owner/repo".into();
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
-        let owned = store.claim_next("old-worker", 100).await.unwrap().unwrap();
-        assert!(store.confirm_head(&owned, "head-a", 101).await.unwrap());
+        let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
         let model = MockModel::silent();
         let guarded = OwnedModel {
@@ -4244,13 +4245,14 @@ mod tests {
         }
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now = unix_time_ms();
         let mut first = queued_test_review(74);
         first.repo = "owner/repo".into();
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
-        let owned = store.claim_next("old-worker", 100).await.unwrap().unwrap();
-        assert!(store.confirm_head(&owned, "head-a", 101).await.unwrap());
+        let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
         let permits = Arc::new(Semaphore::new(
             crate::ports::review_job::MAX_RUNNING_REVIEWS,

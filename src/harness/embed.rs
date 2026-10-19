@@ -43,7 +43,7 @@ struct AgenticOutputObserver {
 
 impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
     fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
-        if let openhuman_embed::observe::TurnObservation::Model {
+        if let openhuman_embed::observe::TurnObservation::ModelDispatch {
             usage: Some(usage), ..
         } = event
         {
@@ -157,17 +157,24 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
     fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
         use openhuman_embed::observe::TurnObservation;
 
-        if let TurnObservation::Model {
+        if let TurnObservation::ModelDispatch {
             requested_model,
             answered_model,
             finish_reason,
             duration_ms,
-            failed,
+            status,
+            refused,
             usage,
             ..
         } = event
         {
-            let provider_responded = usage.is_some() || finish_reason.is_some() || !failed;
+            let provider_responded = matches!(
+                status,
+                openhuman_embed::PhysicalDispatchStatus::Succeeded
+                    | openhuman_embed::PhysicalDispatchStatus::Refused
+            );
+            let was_refused = *refused
+                || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             let observed_usage = Usage {
                 input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
@@ -179,6 +186,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                     .unwrap_or_default(),
                 calls_attempted: 1,
                 calls_succeeded: u64::from(provider_responded),
+                calls_refused: u64::from(was_refused),
                 calls_errored: u64::from(!provider_responded),
                 ..Usage::default()
             };
@@ -190,7 +198,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 self.span.in_scope(|| {
                     tracing::info!(target: "tinysweeper::model", model,
                         latency_ms = *duration_ms, succeeded = provider_responded,
-                        completion_valid = !failed,
+                        completion_valid = finish_reason.is_some(),
                         input_tokens = observed_usage.input_tokens,
                         output_tokens = observed_usage.output_tokens,
                         reasoning_tokens = observed_usage.reasoning_tokens,
@@ -202,7 +210,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 observer.completed(
                     observed_usage,
                     provider_responded,
-                    false,
+                    was_refused,
                     std::time::Duration::from_millis(*duration_ms),
                 );
             }
@@ -215,6 +223,96 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
     fn on_turn(&self, trace: &openhuman_embed::observe::TurnTrace<'_>) {
         if let Some(downstream) = &self.downstream {
             downstream.on_turn(trace);
+        }
+    }
+}
+
+struct PhysicalModelObserver {
+    lane: String,
+    output_cap: u32,
+    history: crate::harness::budget::OutputHistory,
+    timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+struct PhysicalModelTerminal {
+    lane: String,
+    output_cap: u32,
+    history: crate::harness::budget::OutputHistory,
+    timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserver {
+    fn on_start(
+        &self,
+        _metadata: &openhuman_embed::complete::PhysicalDispatchMetadata,
+    ) -> Box<dyn openhuman_embed::complete::PhysicalDispatchTerminal> {
+        Box::new(PhysicalModelTerminal {
+            lane: self.lane.clone(),
+            output_cap: self.output_cap,
+            history: self.history.clone(),
+            timing: self.timing.clone(),
+            dispatch: self.dispatch.clone(),
+            span: self.span.clone(),
+        })
+    }
+}
+
+impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTerminal {
+    fn on_terminal(self: Box<Self>, outcome: openhuman_embed::complete::PhysicalDispatchOutcome) {
+        use openhuman_embed::complete::PhysicalDispatchStatus;
+
+        let usage = outcome.usage.as_ref();
+        if let Some(usage) = usage {
+            let model = outcome.answered_model.as_deref().unwrap_or("unknown");
+            self.history.record(&self.lane, model, usage.output_tokens, self.output_cap);
+        }
+        let provider_responded = matches!(
+            outcome.status,
+            PhysicalDispatchStatus::Succeeded | PhysicalDispatchStatus::Refused
+        );
+        let accounting = Usage {
+            input_tokens: usage.map_or(0, |usage| usage.input_tokens),
+            output_tokens: usage.map_or(0, |usage| usage.output_tokens),
+            reasoning_tokens: usage.map_or(0, |usage| usage.reasoning_tokens),
+            cached_tokens: usage.map_or(0, |usage| usage.cached_tokens),
+            cost_usd: usage
+                .and_then(|usage| usage.cost_usd)
+                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                .unwrap_or_default(),
+            calls_attempted: 1,
+            calls_succeeded: u64::from(provider_responded),
+            calls_refused: u64::from(outcome.refused),
+            calls_errored: u64::from(!provider_responded),
+            ..Usage::default()
+        };
+        let model = outcome
+            .answered_model
+            .as_deref()
+            .or(outcome.usage.as_ref().and_then(|_| None))
+            .unwrap_or("unknown");
+        tracing::dispatcher::with_default(&self.dispatch, || {
+            self.span.in_scope(|| {
+                tracing::info!(target: "tinysweeper::model", model, lane = %self.lane,
+                    latency_ms = outcome.duration.as_millis() as u64,
+                    succeeded = provider_responded, refused = outcome.refused,
+                    input_tokens = accounting.input_tokens,
+                    output_tokens = accounting.output_tokens,
+                    reasoning_tokens = accounting.reasoning_tokens,
+                    cached_tokens = accounting.cached_tokens,
+                    "model call");
+            });
+        });
+        if let Some(observer) = self.timing {
+            observer.completed(
+                accounting,
+                provider_responded,
+                outcome.refused,
+                outcome.duration,
+            );
         }
     }
 }

@@ -64,6 +64,9 @@ fn queued_check_identity_keeps_head_and_stage_separate_from_paid_head_state() {
         check_id: Some(17),
         stage: super::ReviewCheckStage::Queued,
         owner_generation: None,
+        published: false,
+        write_claim_until_ms: 0,
+        write_generation: 0,
     };
     let encoded = serde_json::to_value(&record).unwrap();
     let recovered: super::ReviewCheckRecord = serde_json::from_value(encoded).unwrap();

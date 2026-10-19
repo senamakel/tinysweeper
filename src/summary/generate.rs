@@ -1042,6 +1042,7 @@ mod tests {
             conclusion,
             summary: summary.into(),
             completed: !models.is_empty(),
+            context_degraded: false,
             findings: vec![],
             noted: vec![],
             resolved: vec![],

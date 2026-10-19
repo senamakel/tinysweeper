@@ -89,6 +89,7 @@ fn proposal(findings: Vec<Finding>) -> Proposal {
             completed: true,
             findings,
             noted: Vec::new(),
+            context_degraded: false,
             resolved: vec![],
             pending: vec![],
             skipped: None,

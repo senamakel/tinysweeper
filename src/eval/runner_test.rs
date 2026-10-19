@@ -94,7 +94,7 @@ fn config() -> Config {
 
 #[test]
 fn replay_tree_exposes_the_fixture_head_revision() {
-    let recorded = crate::ports::tree::MockTree::from_recorded(Vec::new());
+    let recorded = crate::ports::tree::MockTree::from_recorded(Default::default());
     let head = "b".repeat(40);
     let tree = CaseRevisionTree {
         inner: &recorded,

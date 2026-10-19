@@ -1228,6 +1228,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_queued_review_check_can_be_updated_by_its_original_run_id() {
+        let forge = MockForge::new();
+        let id = forge
+            .publish_check(
+                &repo(),
+                crate::server::status::queued("abc123", 2, "review:job-7:abc123"),
+            )
+            .await
+            .expect("queued run is published");
+        forge
+            .update_check(&repo(), id, crate::server::status::in_progress("abc123"))
+            .await
+            .expect("same run moves to in-progress");
+        forge
+            .update_check(
+                &repo(),
+                id,
+                crate::server::status::completed(
+                    "abc123",
+                    0,
+                    false,
+                    crate::server::status::ReviewCoverage::default(),
+                ),
+            )
+            .await
+            .expect("same run completes");
+
+        assert_eq!(
+            forge.writes(),
+            vec![
+                Write::Check(crate::server::status::queued(
+                    "abc123",
+                    2,
+                    "review:job-7:abc123",
+                )),
+                Write::CheckUpdate {
+                    check_id: id,
+                    check: crate::server::status::in_progress("abc123"),
+                },
+                Write::CheckUpdate {
+                    check_id: id,
+                    check: crate::server::status::completed(
+                        "abc123",
+                        0,
+                        false,
+                        crate::server::status::ReviewCoverage::default(),
+                    ),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn a_created_comment_becomes_readable() {
         let forge = MockForge::new();
         let id = forge.create_comment(&repo(), 7, "hello").await.expect("id");

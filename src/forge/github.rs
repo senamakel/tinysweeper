@@ -15,7 +15,7 @@ use crate::evidence::diff::truncate_patch;
 use crate::forge::types::{
     ChangedFile, CheckConclusion, CheckRun, CheckStatus, Commit, FileStatus, Issue, IssueComment,
     MAX_CHECK_IMAGES, OwnReview, PullRequest, RepoId, ReviewComment, ReviewEvent, ReviewThread,
-    ReviewVerdict, ThreadComment, TreeListing,
+    PullRequestMetadata, ReviewVerdict, ThreadComment, TreeListing,
 };
 use crate::ports::forge::{ForgeRead, ForgeWrite};
 
@@ -658,6 +658,27 @@ fn pull_request_from(
         // allowed, where one that read too high would allow a close on a pull
         // request somebody commented on this morning.
         quiet_days: days_since(pr.updated_at.map(|at| at.timestamp())),
+    }
+}
+
+/// Keep queue admission independent from approval and review-context reads.
+fn pull_request_metadata_from(
+    pr: octocrab::models::pulls::PullRequest,
+    _repo: &RepoId,
+) -> PullRequestMetadata {
+    PullRequestMetadata {
+        number: pr.number,
+        author: pr
+            .user
+            .as_ref()
+            .map(|user| user.login.clone())
+            .unwrap_or_default(),
+        head_sha: pr.head.sha,
+        open: pr
+            .state
+            .map(|state| matches!(state, octocrab::models::IssueState::Open))
+            .unwrap_or(true),
+        draft: pr.draft.unwrap_or(false),
     }
 }
 

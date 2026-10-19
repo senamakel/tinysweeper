@@ -361,6 +361,21 @@ impl ReviewSchedulerState {
         true
     }
 
+    /// Verify a queued status claim immediately before an external read or write.
+    pub fn queued_check_claim_current(&self, pending: &PendingReviewCheck, now_ms: i64) -> bool {
+        self.unfinished.iter().any(|job| {
+            job.request.id == pending.request.id
+                && job.request.head_sha.as_deref() == Some(pending.check.head_sha.as_str())
+                && job.review_checks.iter().any(|check| {
+                    check.head_sha == pending.check.head_sha
+                        && check.external_id == pending.check.external_id
+                        && !check.published
+                        && check.write_generation == pending.check.write_generation
+                        && check.write_claim_until_ms > now_ms
+                })
+        })
+    }
+
     /// Atomically admit a whole batch in memory before the Mongo CAS persists it.
     pub fn admit_batch(&mut self, requests: Vec<ReviewRequest>, now_ms: i64) -> Admission {
         if requests.is_empty() {
@@ -1002,6 +1017,13 @@ pub trait ReviewJobStore: Send + Sync {
         &self,
         pending: &PendingReviewCheck,
         check_id: u64,
+        now_ms: i64,
+    ) -> Result<bool>;
+
+    /// Revalidate a status claim at an external-I/O boundary.
+    async fn queued_check_claim_current(
+        &self,
+        pending: &PendingReviewCheck,
         now_ms: i64,
     ) -> Result<bool>;
 

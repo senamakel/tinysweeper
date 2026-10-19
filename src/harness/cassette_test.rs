@@ -176,6 +176,59 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
     }
 }
 
+#[tokio::test]
+async fn recording_cassette_review_reports_the_physical_path_it_uses() {
+    let dir = tempfile::tempdir().expect("temporary cassette directory");
+    let inner = Arc::new(ReviewBudgetProbe::default());
+    let completed = inner.completed.clone();
+    let cassette = Arc::new(Cassette::record(inner.clone(), dir.path()));
+    let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
+    let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+    let policy = crate::config::types::LookupPolicy::default();
+
+    // The probe's own review is logical-only. Cassette has no review override,
+    // so the trait default routes it through Cassette::complete and the inner
+    // model's physical completion path.
+    let logical = crate::ports::model::with_model_call_observer(
+        physical_events.clone(),
+        inner.review(request("probe", "logical review"), &tree, &policy),
+    )
+    .await
+    .expect("the inner logical review succeeds");
+    assert_eq!(logical.usage.calls_attempted, 0);
+    assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        physical_events.0.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+
+    let recorded = crate::ports::model::with_model_call_observer(
+        physical_events.clone(),
+        cassette.review(request("probe", "recorded review"), &tree, &policy),
+    )
+    .await
+    .expect("recording review uses the inner physical completion");
+    assert_eq!(recorded.value, answer());
+    assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        physical_events.0.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the effective completion path emits one physical event"
+    );
+    assert_eq!(cassette.served(), 1);
+    assert_eq!(
+        cassette
+            .flush()
+            .expect("the review was recorded in the cassette"),
+        1
+    );
+    assert_eq!(
+        cassette.review_reports_physical_calls(),
+        cassette.complete_reports_physical_calls(),
+        "review defaults to the cassette's complete implementation"
+    );
+}
+
 fn request(model: &str, prompt: &str) -> ModelRequest {
     ModelRequest {
         model: model.to_string(),

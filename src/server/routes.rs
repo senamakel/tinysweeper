@@ -6630,6 +6630,21 @@ mod tests {
         }
     }
 
+    async fn publish_test_queued_statuses(store: &dyn ReviewJobStore, now_ms: i64) {
+        let pending = store
+            .claim_pending_checks(now_ms, QUEUE_STATUS_DRAIN_BATCH)
+            .await
+            .expect("test status claims succeed");
+        for (index, check) in pending.into_iter().enumerate() {
+            assert!(!check.retired, "fixture only publishes active queued checks");
+            assert!(store.mark_queue_post_attempted(&check, now_ms).await.unwrap());
+            assert!(store
+                .record_queued_check_id(&check, 90_000 + index as u64, now_ms)
+                .await
+                .unwrap());
+        }
+    }
+
     async fn confirm_test_head(store: &dyn ReviewJobStore, owned: &OwnedReview, now_ms: i64) {
         let head_sha = owned
             .request

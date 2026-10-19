@@ -822,6 +822,7 @@ async fn publish_pending_queue_checks(
     publish_pending_queue_checks_with_clock(jobs, factory, unix_time_ms).await
 }
 
+#[cfg(test)]
 async fn publish_pending_queue_checks_at(
     jobs: &dyn ReviewJobStore,
     factory: QueueStatusClientFactory,

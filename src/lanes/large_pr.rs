@@ -115,7 +115,9 @@ pub fn plan(
     let estimate = ReviewEstimate {
         files: changed_files.len(),
         changed_lines: changed_files.iter().fold(0u64, |total, file| {
-            total.saturating_add(file.additions).saturating_add(file.deletions)
+            total
+                .saturating_add(file.additions)
+                .saturating_add(file.deletions)
         }),
         groups: candidates.len(),
     };

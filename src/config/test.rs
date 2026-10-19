@@ -372,7 +372,10 @@ fn large_pr_limits_must_be_positive_and_deadline_percent_is_bounded() {
         "soft_deadline_percent",
         "drain_seconds",
     ] {
-        assert!(joined.contains(&format!("review.large_pr.{key}")), "{joined}");
+        assert!(
+            joined.contains(&format!("review.large_pr.{key}")),
+            "{joined}"
+        );
     }
 }
 

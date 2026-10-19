@@ -26,9 +26,9 @@ use crate::error::{Error, Result};
 
 pub use crate::config::merge::{Layer, Provenance};
 pub use crate::config::types::{
-    AutoMerge, Automation, Cache, Config, IssueClose, Issues, Labeler, Labels, LargePr, Lane,
-    LaneId, Mcp, MergeMethod, ModelRef, Models, PathInstruction, Paths, Review, Sentry, Severity, Stale,
-    Summary, SummarySection,
+    AutoMerge, Automation, Cache, Config, IssueClose, Issues, Labeler, Labels, Lane, LaneId,
+    LargePr, Mcp, MergeMethod, ModelRef, Models, PathInstruction, Paths, Review, Sentry, Severity,
+    Stale, Summary, SummarySection,
 };
 
 /// The built-in defaults, compiled in so a repository with no config at all

@@ -223,9 +223,7 @@ fn validate_large_pr(config: &Config, problems: &mut Vec<String>) {
         ("max_calls", policy.max_calls),
     ] {
         if value == 0 {
-            problems.push(format!(
-                "`review.large_pr.{key} = 0` must be positive"
-            ));
+            problems.push(format!("`review.large_pr.{key} = 0` must be positive"));
         }
     }
     if policy.changed_lines == 0 {

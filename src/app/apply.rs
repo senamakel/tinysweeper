@@ -2675,6 +2675,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_publishes_the_compact_hub_golden() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(crate::summary::ReviewSummary {
+            executive_summary: "The change adds a request guard.".into(),
+            file_coverage: Some(crate::summary::types::FileReviewCoverage {
+                reviewed: 2,
+                total: 3,
+                unreviewed: vec!["README.md".into()],
+            }),
+            ..crate::summary::ReviewSummary::default()
+        });
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let body = match &overview_comments(&forge)[0] {
+            Write::Comment { body, .. } => body.clone(),
+            write => panic!("expected new hub comment, got {write:?}"),
+        };
+        let public = body.split("<details").next().expect("public hub");
+        assert_eq!(
+            public,
+            format!(
+                "{}\n\n# Tiny Sweeper review\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
+                crate::summary::MARKER,
+                crate::markdown::code_span("README.md")
+            )
+        );
+        assert!(public.len() <= 800, "{} chars", public.len());
+    }
+
+    #[tokio::test]
     async fn mock_forge_publishes_only_citations_on_supplied_head_lines() {
         use crate::harness::mock::MockModel;
 

@@ -503,18 +503,21 @@ fn render_finding(
     );
     let _ = writeln!(
         out,
-        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:** {}",
+        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:**",
         severity(finding.severity),
         if finding.late { " · late" } else { "" },
         prose(&finding.title),
         citation,
-        prose(&concise(&finding.body)),
-        finding
-            .suggestion
-            .as_deref()
-            .map(crate::markdown::code_block)
-            .unwrap_or_else(|| "No concrete fix was supplied.".to_string())
+        prose(&concise(&finding.body))
     );
+    if let Some(suggestion) = &finding.suggestion {
+        let block = crate::markdown::code_block(suggestion);
+        for line in block.lines() {
+            let _ = writeln!(out, "  {line}");
+        }
+    } else {
+        out.push_str("  No concrete fix was supplied.\n");
+    }
 }
 
 fn before_merge(out: &mut String, proposal: &Proposal) {

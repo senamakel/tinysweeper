@@ -6,6 +6,8 @@
 //! remain intentionally unimplemented until the control behavior is compiled
 //! and observed red.
 
+#![cfg(test)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -219,6 +221,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::ports::model_execution::ModelExecutionControl;
+
+    #[test]
+    fn stop_reasons_keep_partial_completion_causes_distinct() {
+        assert_ne!(ReviewStopReason::LargePrLimit, ReviewStopReason::CallLimit);
+        assert_ne!(ReviewStopReason::CallLimit, ReviewStopReason::SoftDeadline);
+        assert_ne!(ReviewStopReason::LargePrLimit, ReviewStopReason::SoftDeadline);
+    }
 
     fn options(
         mode: ReviewMode,

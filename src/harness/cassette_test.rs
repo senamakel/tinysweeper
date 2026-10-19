@@ -113,6 +113,21 @@ impl crate::ports::model::ModelCallObserver for PhysicalEventCounter {
     }
 }
 
+#[derive(Default)]
+struct ModelEventCounter(std::sync::Mutex<Vec<Usage>>);
+
+impl crate::ports::model::ModelCallObserver for ModelEventCounter {
+    fn completed(
+        &self,
+        usage: Usage,
+        _succeeded: bool,
+        _refused: bool,
+        _latency: std::time::Duration,
+    ) {
+        self.0.lock().expect("model event lock").push(usage);
+    }
+}
+
 #[async_trait::async_trait]
 impl Model for ReviewBudgetProbe {
     async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
@@ -349,7 +364,7 @@ async fn recording_cassette_review_reports_the_physical_path_it_uses() {
     let inner = Arc::new(ReviewBudgetProbe::default());
     let completed = inner.completed.clone();
     let cassette = Arc::new(Cassette::record(inner.clone(), dir.path()));
-    let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
+    let physical_events = Arc::new(ModelEventCounter::default());
     let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
     let policy = crate::config::types::LookupPolicy::default();
 
@@ -548,7 +563,16 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     assert_eq!(usage.calls_succeeded, 1);
     assert_eq!(usage.cost_usd, 0.001);
     assert_eq!(refusal.usage_accounting_complete(), Some(true));
-    assert_eq!(physical_events.0.load(Ordering::Relaxed), 1);
+    let physical_events = physical_events.0.lock().expect("model event lock");
+    assert_eq!(physical_events.len(), 1);
+    assert_eq!(physical_events[0].input_tokens, 12);
+    assert_eq!(physical_events[0].output_tokens, 3);
+    assert_eq!(physical_events[0].calls_attempted, 1);
+    assert_eq!(physical_events[0].calls_succeeded, 1);
+    assert_eq!(physical_events[0].cost_usd, 0.001);
+    assert_eq!(cassette.spend().usage.input_tokens, 12);
+    assert_eq!(cassette.spend().usage.output_tokens, 3);
+    assert_eq!(cassette.cost_usd(), 0.001);
 }
 
 #[cfg(feature = "serve")]

@@ -4,6 +4,9 @@
 //! shape here is what lets the offline mock be a first-class implementation
 //! rather than a stub, and what keeps octocrab out of the default build.
 
+/// Stable name for the server review check, also used by adapter-only recovery.
+pub const REVIEW_CHECK_NAME: &str = "tinysweeper/review";
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

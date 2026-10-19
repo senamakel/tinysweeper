@@ -23,6 +23,7 @@ pub fn validate(config: &Config) -> Vec<String> {
     let mut problems = Vec::new();
 
     validate_version(config, &mut problems);
+    validate_server(config, &mut problems);
     validate_review(config, &mut problems);
     validate_paths(config, &mut problems);
     validate_models(config, &mut problems);
@@ -44,6 +45,21 @@ pub fn validate(config: &Config) -> Vec<String> {
     validate_preview(config, &mut problems);
 
     problems
+}
+
+
+fn validate_server(config: &Config, problems: &mut Vec<String>) {
+    let max = tokio::sync::Semaphore::MAX_PERMITS;
+    for (name, value) in [
+        ("review_concurrency", config.server.review_concurrency),
+        ("triage_concurrency", config.server.triage_concurrency),
+    ] {
+        if value == 0 || value > max {
+            problems.push(format!(
+                "`server.{name}` must be between 1 and {max} (got {value})"
+            ));
+        }
+    }
 }
 
 fn validate_mcp(config: &Config, problems: &mut Vec<String>) {

@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_prior_usage_does_not_flatten_execution_refusal() {
+    fn replacing_usage_preserves_execution_refusal_classification() {
         use crate::ports::model_execution::ModelExecutionRefusal;
 
         let err = Error::ModelExecutionRefused {
@@ -361,9 +361,9 @@ mod tests {
             }
         ));
         let usage = err.usage().unwrap();
-        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.output_tokens, 2);
-        assert_eq!(usage.cost_usd, 0.375);
+        assert_eq!(usage.cost_usd, 0.25);
         assert_eq!(err.usage_accounting_complete(), Some(true));
     }
 

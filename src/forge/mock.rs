@@ -632,8 +632,19 @@ impl ForgeRead for MockForge {
             .unwrap_or_default())
     }
 
-    async fn check_run_by_external_id(&self, _repo: &RepoId, sha: &str, external_id: &str) -> Result<Option<u64>> {
-        Ok(self.state.lock().expect("mock state lock").check_run_ids.get(&(sha.to_owned(), external_id.to_owned())).copied())
+    async fn check_run_by_external_id(
+        &self,
+        _repo: &RepoId,
+        sha: &str,
+        external_id: &str,
+    ) -> Result<Option<u64>> {
+        Ok(self
+            .state
+            .lock()
+            .expect("mock state lock")
+            .check_run_ids
+            .get(&(sha.to_owned(), external_id.to_owned()))
+            .copied())
     }
 
     async fn reviews(&self, _repo: &RepoId, number: u64) -> Result<Vec<ReviewVerdict>> {
@@ -783,12 +794,18 @@ impl ForgeWrite for MockForge {
         let mut failures = self.fail_check_publishes.lock().expect("mock failure lock");
         if *failures > 0 {
             *failures -= 1;
-            return Err(Error::Forge("simulated check-run publication failure".into()));
+            return Err(Error::Forge(
+                "simulated check-run publication failure".into(),
+            ));
         }
         drop(failures);
         let id = self.allocate_id();
         if let Some(external_id) = check.external_id.as_ref() {
-            self.state.lock().expect("mock state lock").check_run_ids.insert((check.head_sha.clone(), external_id.clone()), id);
+            self.state
+                .lock()
+                .expect("mock state lock")
+                .check_run_ids
+                .insert((check.head_sha.clone(), external_id.clone()), id);
         }
         self.record(Write::Check(check));
         Ok(id)

@@ -337,7 +337,9 @@ pub async fn serve_with_model_factory(
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             poll.tick().await;
-            if let Err(err) = publish_pending_queue_checks(retry_jobs.as_ref(), retry_factory.clone()).await {
+            if let Err(err) =
+                publish_pending_queue_checks(retry_jobs.as_ref(), retry_factory.clone()).await
+            {
                 tracing::warn!(%err, "queued review status retry failed; durable claim will expire for retry");
             }
         }
@@ -687,7 +689,8 @@ async fn receive(
             }
             Err(err) => {
                 tracing::error!(%err, %author, "could not verify review trust before status admission");
-                return (StatusCode::SERVICE_UNAVAILABLE, "review trust unavailable").into_response();
+                return (StatusCode::SERVICE_UNAVAILABLE, "review trust unavailable")
+                    .into_response();
             }
             _ => {}
         }
@@ -787,28 +790,34 @@ async fn admit_webhook_review(
     let mut accepted_head = head_sha.clone();
     if accepted_head.is_none() {
         let metadata_clients = status_client(*installation).await?;
-        let metadata = metadata_clients.read.pull_request_metadata(
-            &RepoId::parse(repo).ok_or_else(|| Error::Forge("review action has an invalid repository".into()))?,
-            *number,
-        ).await?;
+        let metadata = metadata_clients
+            .read
+            .pull_request_metadata(
+                &RepoId::parse(repo).ok_or_else(|| {
+                    Error::Forge("review action has an invalid repository".into())
+                })?,
+                *number,
+            )
+            .await?;
         if !metadata.open || metadata.draft {
             return Ok(None);
         }
         accepted_head = Some(metadata.head_sha);
     }
-    let admission = jobs.admit_batch(vec![ReviewRequest {
-        id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
-        repo: repo.clone(),
-        number: *number,
-        author: author.clone(),
-        installation: *installation,
-        head_sha: accepted_head,
-        delivery: Some(delivery.to_owned()),
-        event: event.to_owned(),
-        mode: ReviewJobMode::Incremental,
-        accepted_at_ms: unix_time_ms(),
-    }])
-    .await?;
+    let admission = jobs
+        .admit_batch(vec![ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
+            repo: repo.clone(),
+            number: *number,
+            author: author.clone(),
+            installation: *installation,
+            head_sha: accepted_head,
+            delivery: Some(delivery.to_owned()),
+            event: event.to_owned(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: unix_time_ms(),
+        }])
+        .await?;
     if matches!(admission, Admission::Admitted | Admission::Duplicate) {
         // This deterministic write is the narrow #19 exception: it reports
         // trusted accepted work only. No review context, lease, budget, index,
@@ -825,20 +834,41 @@ async fn publish_pending_queue_checks(
     factory: QueueStatusClientFactory,
 ) -> Result<()> {
     let pending = jobs.claim_pending_checks(unix_time_ms(), 16).await?;
-    if pending.is_empty() { return Ok(()); }
+    if pending.is_empty() {
+        return Ok(());
+    }
     let mut first_error = None;
     for check in pending {
         let attempt = async {
             let clients = factory(check.request.installation).await?;
             let repo = RepoId::parse(&check.request.repo)
                 .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
-            let check_id = match clients.read.check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id).await? {
+            let check_id = match clients
+                .read
+                .check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id)
+                .await?
+            {
                 Some(id) => id,
-                None => clients.write.publish_check(&repo, status::queued(&check.check.head_sha, check.reviews_ahead, &check.check.external_id)).await?,
+                None => {
+                    clients
+                        .write
+                        .publish_check(
+                            &repo,
+                            status::queued(
+                                &check.check.head_sha,
+                                check.reviews_ahead,
+                                &check.check.external_id,
+                            ),
+                        )
+                        .await?
+                }
             };
-            let _ = jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?;
+            let _ = jobs
+                .record_queued_check_id(&check, check_id, unix_time_ms())
+                .await?;
             Ok::<(), Error>(())
-        }.await;
+        }
+        .await;
         if let Err(err) = attempt {
             first_error.get_or_insert(err);
         }
@@ -848,8 +878,9 @@ async fn publish_pending_queue_checks(
 
 /// Lazily mint a status-only GitHub client after admission policy allows its
 /// first use. The factory itself performs no token exchange or forge request.
-type QueueStatusClientFactory =
-    Arc<dyn Fn(u64) -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send + Sync>;
+type QueueStatusClientFactory = Arc<
+    dyn Fn(u64) -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send + Sync,
+>;
 
 struct QueueStatusClients {
     read: Arc<dyn crate::ports::forge::ForgeRead>,
@@ -6542,7 +6573,13 @@ mod tests {
         let status_forge = forge.clone();
         let status_client: QueueStatusClientFactory = Arc::new(move |_| {
             let status_forge = status_forge.clone();
-            async move { Ok(QueueStatusClients { read: Arc::new(status_forge.clone()), write: Arc::new(status_forge) }) }.boxed()
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(status_forge.clone()),
+                    write: Arc::new(status_forge),
+                })
+            }
+            .boxed()
         });
         let action = Action::Review {
             repo: "owner/repo".into(),

@@ -277,36 +277,76 @@ pub struct ReviewSchedulerState {
 impl ReviewSchedulerState {
     /// Claim a bounded batch of queued-check publications without claiming review work.
     pub fn claim_pending_checks(&mut self, now_ms: i64, limit: usize) -> Vec<PendingReviewCheck> {
-        let mut ordered = self.unfinished.iter().enumerate()
+        let mut ordered = self
+            .unfinished
+            .iter()
+            .enumerate()
             .map(|(index, job)| (index, job.enqueued_at_ms, job.request.id.0.clone()))
             .collect::<Vec<_>>();
         ordered.sort_by_key(|(_, accepted_at, id)| (*accepted_at, id.clone()));
         let eligible = ordered
             .iter()
-            .filter(|(index, _, _)| self.unfinished[*index].request.head_sha.is_some() || !self.unfinished[*index].review_checks.is_empty())
+            .filter(|(index, _, _)| {
+                self.unfinished[*index].request.head_sha.is_some()
+                    || !self.unfinished[*index].review_checks.is_empty()
+            })
             .map(|(index, _, _)| self.unfinished[*index].request.id.clone())
             .collect::<Vec<_>>();
         let mut claims = Vec::new();
         for (index, _, _) in ordered {
-            if claims.len() >= limit { break; }
-            let Some(check_index) = self.unfinished[index].review_checks.iter().position(|check|
-                !check.published && check.write_claim_until_ms <= now_ms
-            ) else { continue; };
+            if claims.len() >= limit {
+                break;
+            }
+            let Some(check_index) = self.unfinished[index]
+                .review_checks
+                .iter()
+                .position(|check| !check.published && check.write_claim_until_ms <= now_ms)
+            else {
+                continue;
+            };
             let check = &mut self.unfinished[index].review_checks[check_index];
             check.write_generation = check.write_generation.saturating_add(1);
             check.write_claim_until_ms = now_ms.saturating_add(30_000);
             let check = check.clone();
-            let reviews_ahead = eligible.iter().position(|id| *id == self.unfinished[index].request.id).unwrap_or(0);
-            claims.push(PendingReviewCheck { request: self.unfinished[index].request.clone(), check, reviews_ahead });
+            let reviews_ahead = eligible
+                .iter()
+                .position(|id| *id == self.unfinished[index].request.id)
+                .unwrap_or(0);
+            claims.push(PendingReviewCheck {
+                request: self.unfinished[index].request.clone(),
+                check,
+                reviews_ahead,
+            });
         }
         claims
     }
 
     /// Persist the GitHub check ID only while the same queued identity and write claim remain current.
-    pub fn record_queued_check_id(&mut self, pending: &PendingReviewCheck, check_id: u64, now_ms: i64) -> bool {
-        let Some(job) = self.unfinished.iter_mut().find(|job| job.request.id == pending.request.id) else { return false; };
-        let Some(check) = job.review_checks.iter_mut().find(|check| check.head_sha == pending.check.head_sha && check.external_id == pending.check.external_id) else { return false; };
-        if check.published || check.write_generation != pending.check.write_generation || check.write_claim_until_ms <= now_ms { return false; }
+    pub fn record_queued_check_id(
+        &mut self,
+        pending: &PendingReviewCheck,
+        check_id: u64,
+        now_ms: i64,
+    ) -> bool {
+        let Some(job) = self
+            .unfinished
+            .iter_mut()
+            .find(|job| job.request.id == pending.request.id)
+        else {
+            return false;
+        };
+        let Some(check) = job.review_checks.iter_mut().find(|check| {
+            check.head_sha == pending.check.head_sha
+                && check.external_id == pending.check.external_id
+        }) else {
+            return false;
+        };
+        if check.published
+            || check.write_generation != pending.check.write_generation
+            || check.write_claim_until_ms <= now_ms
+        {
+            return false;
+        }
         check.check_id = Some(check_id);
         check.published = true;
         check.write_claim_until_ms = 0;
@@ -400,7 +440,11 @@ impl ReviewSchedulerState {
                 record.accepted_ids.push(request.id.clone());
                 record.latest_head_hint = request.head_sha.clone();
                 if let Some(check) = initial_check {
-                    if !record.review_checks.iter().any(|existing| existing.head_sha == check.head_sha) {
+                    if !record
+                        .review_checks
+                        .iter()
+                        .any(|existing| existing.head_sha == check.head_sha)
+                    {
                         record.review_checks.push(check);
                     }
                 }
@@ -939,10 +983,19 @@ pub trait ReviewJobStore: Send + Sync {
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission>;
 
     /// Claim queued-check publication work independently from review permits and owners.
-    async fn claim_pending_checks(&self, now_ms: i64, limit: usize) -> Result<Vec<PendingReviewCheck>>;
+    async fn claim_pending_checks(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<PendingReviewCheck>>;
 
     /// Record an acknowledged queued check only if its durable write claim is still current.
-    async fn record_queued_check_id(&self, pending: &PendingReviewCheck, check_id: u64, now_ms: i64) -> Result<bool>;
+    async fn record_queued_check_id(
+        &self,
+        pending: &PendingReviewCheck,
+        check_id: u64,
+        now_ms: i64,
+    ) -> Result<bool>;
 
     /// Claim one eligible request if fewer than four are running globally.
     /// The implementation must never take an unexpired foreign owner.

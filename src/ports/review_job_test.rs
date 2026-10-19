@@ -102,6 +102,108 @@ fn queued_status_claims_cannot_publish_or_adopt_a_superseded_head() {
 }
 
 #[test]
+fn unowned_coalescing_detaches_the_old_queued_check_until_terminal_ack() {
+    let mut state = ReviewSchedulerState::default();
+    let mut first = request("status-head-a", 10);
+    first.head_sha = Some("head-a".into());
+    assert_eq!(state.admit_batch(vec![first], 10), Admission::Admitted);
+    let old = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&old, 41, 11));
+
+    let mut next = request("status-head-b", 12);
+    next.head_sha = Some("head-b".into());
+    assert_eq!(state.admit_batch(vec![next], 12), Admission::Admitted);
+    assert_eq!(state.retired_checks.len(), 1);
+    assert_eq!(state.retired_checks[0].check.check_id, Some(41));
+    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
+
+    let claims = state.claim_pending_checks(12, 2);
+    let active = claims.iter().find(|claim| !claim.retired).unwrap();
+    let retired = claims.iter().find(|claim| claim.retired).unwrap();
+    assert_eq!(active.check.head_sha, "head-b");
+    assert_eq!(retired.check.head_sha, "head-a");
+    assert!(state.record_queued_check_id(active, 42, 13));
+    assert!(state.complete_retired_check(retired, 13));
+    assert!(state.retired_checks.is_empty());
+}
+
+#[test]
+fn owned_advisory_head_does_not_retire_the_current_check_until_yield() {
+    let mut state = ReviewSchedulerState::default();
+    let mut first = request("owned-status-a", 10);
+    first.head_sha = Some("head-a".into());
+    state.admit_batch(vec![first], 10);
+    let pending = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&pending, 51, 11));
+    let owner = state.claim_next("owner-a", 12).unwrap();
+
+    let mut next = request("owned-status-b", 13);
+    next.head_sha = Some("head-b".into());
+    state.admit_batch(vec![next], 13);
+    assert!(state.retired_checks.is_empty(), "an advisory push cannot retire a live owner's check");
+    assert!(state.unfinished[0].review_checks.iter().any(|check| check.head_sha == "head-a"));
+
+    assert!(state.defer_yield(&owner, 14));
+    assert_eq!(state.retired_checks.len(), 1);
+    assert_eq!(state.retired_checks[0].check.check_id, Some(51));
+    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-b"));
+}
+
+#[test]
+fn live_head_reconciliation_requeues_a_new_check_without_spending_paid_authority() {
+    let mut state = ReviewSchedulerState::default();
+    let mut first = request("live-reconcile", 10);
+    first.head_sha = Some("hint-a".into());
+    state.admit_batch(vec![first], 10);
+    let queued = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&queued, 61, 11));
+    let owner = state.claim_next("owner", 12).unwrap();
+
+    let result = state.reconcile_live_check(&owner, "live-b", 13);
+    let super::ReconciledReviewCheck::Pending(live_check) = result else {
+        panic!("new live head must retain a queued status intent");
+    };
+    assert_eq!(live_check.head_sha, "live-b");
+    assert_eq!(state.retired_checks[0].check.check_id, Some(61));
+    assert_eq!(state.incremental_heads[0].head_sha, "live-b");
+    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("live-b"));
+
+    let pending = state.claim_pending_checks(13, 2);
+    let active = pending.iter().find(|claim| !claim.retired).unwrap();
+    assert_eq!(active.check.external_id, live_check.external_id);
+    assert!(state.record_queued_check_id(active, 62, 14));
+    assert!(state.defer(&owner, 15, 15));
+    let resumed = state.claim_next("replacement", 16).unwrap();
+    assert_eq!(resumed.request.head_sha.as_deref(), Some("live-b"));
+    assert_eq!(resumed.review_check.unwrap().check_id, Some(62));
+}
+
+#[test]
+fn live_head_reconciliation_defers_atomically_at_status_capacity() {
+    let mut state = ReviewSchedulerState::default();
+    let mut first = request("status-capacity", 10);
+    first.head_sha = Some("head-a".into());
+    state.admit_batch(vec![first], 10);
+    let pending = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&pending, 71, 11));
+    let base_check = state.unfinished[0].review_checks[0].clone();
+    state.unfinished[0].review_checks.extend((0..super::MAX_REVIEW_STATUS_RECORDS - 1).map(|index| {
+        let mut check = base_check.clone();
+        check.head_sha = format!("padding-{index}");
+        check.external_id = format!("padding-id-{index}");
+        check
+    }));
+    let owner = state.claim_next("owner", 12).unwrap();
+    let before = state.incremental_heads.clone();
+    assert_eq!(
+        state.reconcile_live_check(&owner, "head-b", 13),
+        super::ReconciledReviewCheck::CapacityDeferred,
+    );
+    assert_eq!(state.unfinished[0].request.head_sha.as_deref(), Some("head-a"));
+    assert_eq!(state.incremental_heads, before, "capacity failure cannot change paid-head authority");
+}
+
+#[test]
 fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
     let mut state = ReviewSchedulerState::default();
     assert_eq!(state.admit_batch(vec![request("same-check", 10)], 10), Admission::Admitted);

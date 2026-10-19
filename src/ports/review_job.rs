@@ -312,26 +312,6 @@ pub struct ReviewSchedulerState {
 }
 
 impl ReviewSchedulerState {
-    fn retire_check(&mut self, repo: &str, installation: u64, mut check: ReviewCheckRecord) {
-        if check.stage == ReviewCheckStage::Completed
-            || (!check.published && check.check_id.is_none() && check.write_generation == 0)
-            || self.retired_checks.iter().any(|entry| {
-                entry.check.external_id == check.external_id
-            })
-        {
-            return;
-        }
-        // Invalidate any queued POST claim before moving this check to the
-        // detached terminal-status outbox.
-        check.write_generation = check.write_generation.saturating_add(1);
-        check.write_claim_until_ms = 0;
-        self.retired_checks.push(RetiredReviewCheck {
-            repo: repo.to_owned(),
-            installation,
-            check,
-        });
-    }
-
     fn detach_checks_except(record: &mut ScheduledReview, keep_head: Option<&str>) -> Vec<RetiredReviewCheck> {
         let mut keep = Vec::new();
         let mut retired = Vec::new();

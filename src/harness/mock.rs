@@ -9,6 +9,7 @@
 //! structure — including the cache-prefix discipline, which is otherwise
 //! invisible until a bill arrives.
 
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,9 +17,12 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
+use crate::ports::model_execution::{
+    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+};
 
 /// A model that answers from a queue of canned responses.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MockModel {
     responses: Arc<Mutex<Vec<Result<Value>>>>,
     requests: Arc<Mutex<Vec<ModelRequest>>>,
@@ -27,6 +31,21 @@ pub struct MockModel {
     /// When set, the panel's own rounds are answered from their `schema_name`
     /// rather than from the queue — see [`MockModel::panel`].
     panel: Option<Arc<PanelAnswers>>,
+    /// Optional review-wide guard checked before this mock records a request.
+    execution_control: Option<Arc<dyn ModelExecutionControl>>,
+}
+
+impl fmt::Debug for MockModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MockModel")
+            .field("responses", &self.responses)
+            .field("requests", &self.requests)
+            .field("usage", &self.usage)
+            .field("answers_as", &self.answers_as)
+            .field("panel", &self.panel)
+            .field("execution_control_bound", &self.execution_control.is_some())
+            .finish()
+    }
 }
 
 /// Schema names that belong to a lane's own stages rather than to a panel
@@ -64,6 +83,7 @@ impl MockModel {
             usage: Usage::default(),
             answers_as: None,
             panel: None,
+            execution_control: None,
         }
         .repeating(value)
     }
@@ -212,6 +232,10 @@ impl MockModel {
 #[async_trait]
 impl Model for MockModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let permit = match &self.execution_control {
+            Some(control) => Some(control.acquire().await.map_err(execution_refusal_error)?),
+            None => None,
+        };
         let model = self
             .answers_as
             .clone()
@@ -270,6 +294,9 @@ impl Model for MockModel {
             };
 
             if let Some(value) = canned {
+                if let Some(permit) = &permit {
+                    permit.mark_dispatched().map_err(execution_refusal_error)?;
+                }
                 self.requests.lock().expect("mock model lock").push(request);
                 return Ok(ModelResponse {
                     value,
@@ -279,6 +306,9 @@ impl Model for MockModel {
             }
         }
 
+        if let Some(permit) = &permit {
+            permit.mark_dispatched().map_err(execution_refusal_error)?;
+        }
         self.requests.lock().expect("mock model lock").push(request);
 
         let queued = {
@@ -301,6 +331,23 @@ impl Model for MockModel {
                 "MockModel ran out of queued responses; queue one with `.then(…)`".into(),
             )),
         }
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        let mut scoped = self.clone();
+        scoped.execution_control = Some(control);
+        Some(Arc::new(scoped))
+    }
+}
+
+fn execution_refusal_error(refusal: ModelExecutionRefusal) -> Error {
+    Error::ModelExecutionRefused {
+        refusal,
+        usage: None,
+        accounting_complete: true,
     }
 }
 

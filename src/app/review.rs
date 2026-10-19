@@ -238,6 +238,18 @@ impl Model for ObservedModel {
             }) as Arc<dyn Model>
         })
     }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        self.inner.with_execution_control(control).map(|inner| {
+            Arc::new(Self {
+                inner,
+                timing: self.timing.clone(),
+            }) as Arc<dyn Model>
+        })
+    }
 }
 
 /// The schema version `review` writes.

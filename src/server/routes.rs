@@ -2448,6 +2448,15 @@ impl Model for OwnedModel {
             .with_review_budget(limit_usd)
             .map(|inner| self.wrap(inner))
     }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_execution_control(control)
+            .map(|inner| self.wrap(inner))
+    }
 }
 
 impl Run {

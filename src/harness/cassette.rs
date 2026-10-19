@@ -391,6 +391,16 @@ impl Model for Cassette {
             .with_review_budget(limit_usd)
             .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
     }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        self.inner
+            .as_ref()?
+            .with_execution_control(control)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
+    }
 }
 
 /// Rebuild a response from a recorded take.

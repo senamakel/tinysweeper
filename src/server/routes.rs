@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 use crate::forge::{PullRequest, RepoId};
 use crate::index::mongo::MongoIndex;
 use crate::ports::forge::ForgeRead as _;
+use crate::ports::forge::ForgeWrite;
 use crate::ports::knowledge::KnowledgeStore;
 use crate::ports::model::{Model, ModelRequest, ModelResponse};
 use crate::ports::model_factory::ModelFactory;
@@ -724,6 +725,7 @@ async fn admit_webhook_review(
     action: &Action,
     delivery: &str,
     event: &str,
+    _status_client: QueueStatusClientFactory,
 ) -> Result<Admission> {
     let Action::Review {
         repo,
@@ -753,6 +755,26 @@ async fn admit_webhook_review(
         accepted_at_ms: unix_time_ms(),
     }])
     .await
+}
+
+/// Lazily mint a status-only GitHub client after admission policy allows its
+/// first use. The factory itself performs no token exchange or forge request.
+type QueueStatusClientFactory = Box<
+    dyn FnOnce() -> futures::future::BoxFuture<'static, Result<Arc<dyn ForgeWrite>>> + Send,
+>;
+
+fn github_queue_status_client(
+    auth: Arc<AppAuth>,
+    installation: u64,
+) -> QueueStatusClientFactory {
+    Box::new(move || {
+        async move {
+            let token = auth.installation_token(installation).await?;
+            let client = crate::forge::github::GitHubWrite::new(&token)?;
+            Ok(Arc::new(client) as Arc<dyn ForgeWrite>)
+        }
+        .boxed()
+    })
 }
 
 fn unix_time_ms() -> i64 {

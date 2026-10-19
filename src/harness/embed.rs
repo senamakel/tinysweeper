@@ -19,7 +19,9 @@ use openhuman_embed::Route;
 use openhuman_embed::complete::{
     ChatMessage, Completer, CompletionObserver, CompletionRequest, CompletionTrace, ResponseFormat,
 };
-use openhuman_embed::routing::{CompletionLadder, CompletionRung, TruncationRetry};
+use openhuman_embed::routing::{
+    CompletionAttempt, CompletionLadder, CompletionRung, TruncationRetry,
+};
 use serde_json::json;
 
 use crate::config::types::{Models, ProviderRouting, StructuredOutput};
@@ -29,6 +31,41 @@ use crate::ports::model::{
     Message as CrateMessage, Model, ModelRequest, ModelResponse, Role, Usage,
 };
 
+/// Records usage for each physical agentic dispatch while forwarding optional
+/// turn telemetry without capturing request or response content.
+struct AgenticOutputObserver {
+    history: crate::harness::budget::OutputHistory,
+    lane: String,
+    model: String,
+    output_cap: u32,
+    downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
+}
+
+impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
+    fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
+        if let openhuman_embed::observe::TurnObservation::Model {
+            usage: Some(usage), ..
+        } = event
+        {
+            self.history.record(
+                &self.lane,
+                &self.model,
+                usage.output_tokens,
+                self.output_cap,
+            );
+        }
+        if let Some(downstream) = &self.downstream {
+            downstream.on_event(event);
+        }
+    }
+
+    fn on_turn(&self, trace: &openhuman_embed::observe::TurnTrace<'_>) {
+        if let Some(downstream) = &self.downstream {
+            downstream.on_turn(trace);
+        }
+    }
+}
+
 /// A model reached through an OpenAI-compatible gateway.
 ///
 /// `Debug` is written by hand rather than derived: deriving it would print the
@@ -37,6 +74,7 @@ use crate::ports::model::{
 pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
+    output_history: crate::harness::budget::OutputHistory,
     agentic_reviewers: bool,
     api_key: String,
     base_url: String,
@@ -282,6 +320,20 @@ fn answered_model(raw: Option<&serde_json::Value>) -> Option<&str> {
     (!model.is_empty()).then_some(model)
 }
 
+/// Keep the output estimator trained on every billed physical attempt,
+/// including partial structured replies that caused a retry or refusal.
+fn record_output_attempts(
+    history: &crate::harness::budget::OutputHistory,
+    lane: &str,
+    attempts: &[CompletionAttempt],
+) {
+    for attempt in attempts {
+        if let (Some(usage), Some(cap)) = (&attempt.usage, attempt.max_tokens) {
+            history.record(lane, &attempt.requested_model, usage.output_tokens, cap);
+        }
+    }
+}
+
 /// One crate message as the completion API wants it.
 ///
 /// Images ride on user messages only: the OpenAI-compatible format has no
@@ -350,6 +402,7 @@ impl GatewayModel {
             api_key,
             budget: None,
             budget_prices: models.budget_prices.clone(),
+            output_history: Default::default(),
             agentic_reviewers: models.agentic_reviewers,
             base_url: models.base_url.clone(),
             fallbacks: models.fallback.clone(),
@@ -449,15 +502,16 @@ impl GatewayModel {
             let mut bound = completion.clone();
             bound.model = model.to_owned();
             bound.provider_options = options.clone();
-            // Every dispatch reserves the largest possible output on this
-            // route. Smaller attempts retain their original wire caps; the
-            // shared ledger settles their reported spend after each response.
+            // Price expected output from recent observations, but preserve the
+            // largest retry rung as the physical Embed safety ceiling.
             bound.max_tokens = (base != 0).then(|| *truncation_ladder(base).last().unwrap());
-            completer = completer.budget(crate::harness::budget::call(
+            completer = completer.budget(crate::harness::budget::call_with_history(
                 ledger,
                 &bound,
                 0,
                 &self.budget_prices,
+                &request.schema_name,
+                &self.output_history,
             )?);
         }
         let rung = CompletionRung::new(completer, model)
@@ -489,10 +543,47 @@ impl GatewayModel {
         }
         let call_started = std::time::Instant::now();
         let result = ladder.complete(completion).await.map_err(|error| {
+            record_output_attempts(
+                &self.output_history,
+                &request.schema_name,
+                &error.attempts,
+            );
+            for attempt in &error.attempts {
+                let model = attempt
+                    .answered_model
+                    .as_deref()
+                    .unwrap_or(&attempt.requested_model);
+                if let Some(usage) = &attempt.usage {
+                    let reported = usage.cost_usd;
+                    let settled = reported.unwrap_or_else(|| {
+                        pricing::completion_cost(
+                            model,
+                            usage.input_tokens,
+                            usage.cached_tokens,
+                            usage.output_tokens,
+                        )
+                    });
+                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                        input_tokens = usage.input_tokens, cached_tokens = usage.cached_tokens,
+                        output_tokens = usage.output_tokens, reported_cost_usd = reported,
+                        settled_cost_usd = settled, failed = true, "model call");
+                } else {
+                    tracing::info!(model, lane = %request.schema_name, cap = attempt.max_tokens,
+                        settled_cost_usd = Option::<f64>::None, failed = true, "model call");
+                }
+            }
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
             // owner error instead of being interpreted from message text.
-            let refusal = if let Some(attempt) = error.attempts.last()
+            let refusal = if let openhuman_embed::CoreError::BudgetExceeded { source, .. } = &error.last_error {
+                let committed = source.snapshot.spent.cost_micros
+                    .saturating_add(source.snapshot.reserved.cost_micros);
+                Error::Budget {
+                    spent: committed as f64 / 1_000_000.0,
+                    limit: source.limits.cost_micros.unwrap_or_default() as f64 / 1_000_000.0,
+                    usage: None,
+                }
+            } else if let Some(attempt) = error.attempts.last()
                 && matches!(attempt.finish_reason.as_deref(), Some("length" | "max_tokens" | "MAX_TOKENS"))
             {
                 let model = &attempt.requested_model;
@@ -566,6 +657,7 @@ impl GatewayModel {
                     cost_usd,
             })
         })?;
+        record_output_attempts(&self.output_history, &request.schema_name, &result.attempts);
         let response = result.response;
         let attempts = result.attempts.len() as u64;
         let answered = response
@@ -585,7 +677,7 @@ impl GatewayModel {
             // structured repair dispatches. The last raw response contains only
             // its own bill, so preferring it would hide earlier paid attempts.
             let reported = usage.cost_usd;
-            cost += reported.unwrap_or_else(|| {
+            let settled = reported.unwrap_or_else(|| {
                 pricing::completion_cost(
                     model,
                     usage.input_tokens,
@@ -593,6 +685,7 @@ impl GatewayModel {
                     usage.output_tokens,
                 )
             });
+            cost += settled;
             log_model_attempt(
                 model,
                 attempt.max_tokens,
@@ -681,13 +774,15 @@ impl GatewayModel {
             .budget
             .as_ref()
             .map(|ledger| {
-                crate::harness::budget::call(
+                crate::harness::budget::call_with_history(
                     ledger,
                     &completion,
                     (policy.max_chars as u64)
                         .saturating_mul(12)
                         .saturating_add(32768),
                     &self.budget_prices,
+                    &request.schema_name,
+                    &self.output_history,
                 )
             })
             .transpose()?;
@@ -702,6 +797,13 @@ impl GatewayModel {
             timing: crate::ports::model::current_model_call_observer(),
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
+        });
+        let observer = Arc::new(AgenticOutputObserver {
+            history: self.output_history.clone(),
+            lane: request.schema_name.clone(),
+            model: model.to_owned(),
+            output_cap: request.max_tokens,
+            downstream: Some(observer),
         });
         crate::harness::agentic::review_accounted(
             request,
@@ -1234,6 +1336,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn budget_capacity_refusal_is_typed_and_does_not_wait_for_a_live_call() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let (gateway, release) = FakeGateway::start_paused(vec![Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+        )])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        let ledger = crate::harness::budget::ledger(0.01);
+        model.budget = Some(ledger.clone());
+        let model = Arc::new(model);
+        let first_model = model.clone();
+        let first_request = request.clone();
+        let first = tokio::spawn(async move { first_model.complete(first_request).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("first call reached the paused gateway");
+
+        let refusal = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            model.complete(request),
+        )
+        .await
+        .expect("capacity refusal must fail fast")
+        .expect_err("live reservation leaves insufficient capacity");
+        assert!(matches!(refusal, Error::Budget { .. }), "{refusal:?}");
+        assert_eq!(gateway.requests().len(), 1, "refused call never dispatches");
+
+        release.add_permits(1);
+        first.await.unwrap().expect("first call settles");
+        assert_eq!(ledger.snapshot().spent.cost_micros, 2_100);
+        assert!(ledger.snapshot().spent.cost_micros < 7_500);
+        assert_eq!(ledger.snapshot().reserved.cost_micros, 0);
+    }
+
+    #[tokio::test]
+    async fn agentic_model_events_train_per_dispatch_output_history_without_langfuse() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::{Message, Model};
+        use crate::ports::tree::MockTree;
+        use serde_json::json;
+
+        let tool_call = |output_tokens| Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,
+                    "tool_calls":[{"id":"read","type":"function","function":{
+                        "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
+                    }}]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":5,"completion_tokens":output_tokens,"cost":0.001}
+            }),
+        };
+        let answer = |output_tokens| {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":output_tokens,"cost":0.001}),
+            )
+        };
+        let gateway =
+            FakeGateway::start(vec![tool_call(2), answer(3), tool_call(11), answer(17)]).await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.budget_prices.insert(
+            "b".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 0.0,
+                cached: 0.0,
+                output: 150.0,
+            },
+        );
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.budget = Some(crate::harness::budget::ledger(1.0));
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![Message::system("Review."), Message::user("Review source.")],
+            schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn reviewed() {}")]);
+        let policy = crate::config::types::LookupPolicy::default();
+
+        model
+            .review(request.clone(), &tree, &policy)
+            .await
+            .expect("first agentic review");
+        assert_eq!(
+            model.output_history.p90("review", "b", 128),
+            3,
+            "the first turn contributes two individual physical output observations"
+        );
+        assert_eq!(
+            model.output_history.p90("another_lane", "b", 128),
+            16,
+            "output history is isolated by schema name"
+        );
+        assert_eq!(
+            model.output_history.p90("review", "another_model", 128),
+            16,
+            "output history is isolated by effective route"
+        );
+
+        model
+            .review(request, &tree, &policy)
+            .await
+            .expect("second agentic review");
+        assert_eq!(
+            model.output_history.p90("review", "b", 128),
+            17,
+            "p90 uses per-dispatch outputs rather than a terminal turn aggregate"
+        );
+        assert_eq!(gateway.requests().len(), 4);
+    }
+
+    #[tokio::test]
     async fn strict_schema_requires_every_declared_field_on_the_actual_wire() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         let (mut model, _, mut request) = admission_fixture().await;
@@ -1482,7 +1715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_queued_completion_does_not_hold_admission_or_dispatch() {
+    async fn live_capacity_refusal_is_fast_typed_and_does_not_dispatch() {
         let (model, gateway, request) = admission_fixture().await;
         let ledger = model.budget.as_ref().unwrap();
         let held = ledger
@@ -1491,18 +1724,15 @@ mod tests {
                 cost_micros: 1_000_000,
             })
             .unwrap();
-        let waiting_model = model.clone();
-        let waiting_request = request.clone();
-        let waiting = tokio::spawn(async move { waiting_model.complete(waiting_request).await });
-        tokio::task::yield_now().await;
-        assert!(!waiting.is_finished());
-        waiting.abort();
-        assert!(waiting.await.unwrap_err().is_cancelled());
+        let refusal = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            model.complete(request.clone()),
+        )
+        .await
+        .expect("live capacity refusal must not wait")
+        .expect_err("the live reservation leaves no capacity");
+        assert!(matches!(refusal, Error::Budget { .. }), "{refusal:?}");
         assert!(gateway.requests().is_empty());
-        assert!(
-            ledger.refusal().is_none(),
-            "temporary waiting must not poison the shared ledger"
-        );
         assert_eq!(ledger.snapshot().reserved.cost_micros, 1_000_000);
         assert_eq!(
             ledger.snapshot().spent.cost_micros,
@@ -1517,7 +1747,7 @@ mod tests {
             model.review(request, &tree, &policy),
         )
         .await
-        .expect("non-agentic review waits only for physical capacity")
+        .expect("the next review runs after the reservation settles")
         .expect("next completion succeeds");
         assert_eq!(response.value["summary"], "checked");
         assert_eq!(gateway.requests().len(), 1);
@@ -1720,6 +1950,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),
@@ -1766,6 +1997,7 @@ mod tests {
         let mut gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),
@@ -1879,6 +2111,7 @@ mod tests {
             request_timeout_ms: 120_000,
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
         };
         let rendered = format!("{model:?}");
         assert!(!rendered.contains("sk-secret-value"), "{rendered}");
@@ -1932,6 +2165,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             budget_prices: Default::default(),
+            output_history: Default::default(),
             agentic_reviewers: false,
             api_key: "unused".into(),
             base_url: models.base_url.clone(),

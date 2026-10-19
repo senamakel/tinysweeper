@@ -245,6 +245,8 @@ impl MockState {
 #[derive(Debug, Clone, Default)]
 pub struct MockForge {
     state: Arc<Mutex<MockState>>,
+    pull_request_reads:
+        Arc<Mutex<std::collections::BTreeMap<u64, std::collections::VecDeque<PullRequest>>>>,
     writes: Arc<Mutex<Vec<Write>>>,
     next_id: Arc<Mutex<u64>>,
     /// When true, every write is dropped rather than recorded as applied.
@@ -290,6 +292,27 @@ impl MockForge {
             state.files.insert(number, files);
             state.commits.insert(number, commits);
         }
+        self
+    }
+
+    /// Replace a pull request after a queued action has captured its number.
+    ///
+    /// This models state changing between webhook admission and worker start.
+    pub fn replace_pull_request(&self, pull_request: PullRequest) {
+        self.state
+            .lock()
+            .expect("mock state lock")
+            .pull_requests
+            .insert(pull_request.number, pull_request);
+    }
+
+    /// Serve successive pull request snapshots, then keep serving the last.
+    /// Useful for proving a head move during a multi-call context read.
+    pub fn with_pull_request_reads(self, number: u64, reads: Vec<PullRequest>) -> Self {
+        self.pull_request_reads
+            .lock()
+            .expect("mock pull request read lock")
+            .insert(number, reads.into());
         self
     }
 
@@ -506,6 +529,21 @@ impl MockForge {
 #[async_trait]
 impl ForgeRead for MockForge {
     async fn pull_request(&self, _repo: &RepoId, number: u64) -> Result<PullRequest> {
+        if let Some(read) = self
+            .pull_request_reads
+            .lock()
+            .expect("mock pull request read lock")
+            .get_mut(&number)
+            .and_then(|reads| {
+                let read = reads.pop_front();
+                if let Some(last) = reads.back().cloned().or(read.clone()) {
+                    reads.push_back(last);
+                }
+                read
+            })
+        {
+            return Ok(read);
+        }
         let state = self.state.lock().expect("mock state lock");
         state
             .pull_requests

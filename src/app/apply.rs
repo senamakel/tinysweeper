@@ -17,6 +17,17 @@ use crate::ports::forge::{ForgeRead, ForgeWrite};
 use crate::ports::review_state::ReviewStateStore;
 use crate::{MARKER_PREFIX, VERSION};
 
+/// Whether a review proposal was published against the live pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDisposition {
+    /// The review was published (or was already present for this exact head).
+    Published,
+    /// The pull request head changed before publication.
+    Superseded,
+    /// The pull request was closed or merged before publication.
+    Closed,
+}
+
 /// A fully decided MCP issue creation.
 #[cfg(feature = "serve")]
 pub struct McpIssuePlan {
@@ -95,6 +106,14 @@ pub async fn apply(
     // Re-validate against live state. The review ran minutes ago in another
     // job, and the world moves.
     let live = read.pull_request(&repo, proposal.number).await?;
+    if !live.open || live.merged {
+        tracing::info!(
+            number = proposal.number,
+            merged = live.merged,
+            "pull request is closed; not publishing the review"
+        );
+        return Ok(ApplyDisposition::Closed);
+    }
     if live.head_sha != proposal.head_sha {
         tracing::info!(
             reviewed = %proposal.head_sha,
@@ -122,7 +141,7 @@ pub async fn apply(
                     name: lane.check_name.clone(),
                     head_sha: proposal.head_sha.clone(),
                     conclusion: Some(lane.conclusion),
-                    title: title_for(lane.findings.len(), &lane.summary, lane.coverage.as_ref()),
+                    title: title_for(lane.findings.len(), lane.coverage.as_ref()),
                     summary: render_lane_summary(lane),
                     images: vec![],
                 },
@@ -610,7 +629,7 @@ pub async fn settle_e2e(
                     }
                     _ => "End-to-end jobs concluded".into(),
                 },
-                summary: crate::findings::render::lane_summary(
+                summary: crate::findings::render::settled_lane_summary(
                     &settled.summary,
                     &[],
                     VERSION,
@@ -636,44 +655,18 @@ pub async fn settle_e2e(
     Ok(E2eSettlement::Published(settled.conclusion))
 }
 
-/// `text` as a Markdown code span that `text` cannot break out of.
-///
-/// Paths here are the contributor's: a filename with a backtick would close
-/// the span and write Markdown into a review the bot signs. The span is
-/// fenced with one more backtick than the longest run inside, which is how
-/// CommonMark spells a literal backtick, and control characters — a newline
-/// ends a span — are dropped.
-fn code_span(text: &str) -> String {
-    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-    let longest = clean.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-    let fence = "`".repeat(longest + 1);
-    if clean.contains('`') {
-        // A space each side is what lets a span begin or end with a backtick;
-        // CommonMark strips exactly one from each end.
-        format!("{fence} {clean} {fence}")
-    } else {
-        format!("{fence}{clean}{fence}")
-    }
-}
-
-fn title_for(
-    findings: usize,
-    summary: &str,
-    coverage: Option<&crate::lanes::FileCoverage>,
-) -> String {
+/// Build a short check title from deterministic counts, never model prose.
+fn title_for(findings: usize, coverage: Option<&crate::lanes::FileCoverage>) -> String {
+    let finding_title = match findings {
+        1 => "1 finding".to_string(),
+        count => format!("{count} findings"),
+    };
     if let Some(coverage) = coverage {
         let reviewed = coverage.reviewed.len();
-        let total = reviewed + coverage.unanswered.len();
-        return format!(
-            "Reviewed {reviewed} of {total} files — {} not reviewed",
-            total.saturating_sub(reviewed)
-        );
+        let total = reviewed.saturating_add(coverage.unanswered.len());
+        return format!("{finding_title} · {reviewed}/{total} files");
     }
-    match findings {
-        0 => summary.chars().take(80).collect(),
-        1 => "1 finding".into(),
-        n => format!("{n} findings"),
-    }
+    finding_title
 }
 
 /// The rendered summary, for tests in sibling modules.
@@ -702,9 +695,12 @@ fn render_lane_summary(lane: &crate::app::review::LaneProposal) -> String {
         );
         for finding in lane.noted.iter().filter(|finding| !finding.grouped) {
             out.push_str(&format!(
-                "- `{}`{} — {} {}\n",
-                finding.path,
-                finding.line.map(|l| format!(":{l}")).unwrap_or_default(),
+                "- {} — {} {}\n",
+                crate::markdown::code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+                )),
                 crate::findings::render::escape_cell(&finding.title),
                 crate::findings::render::confidence_badge(finding.confidence),
             ));
@@ -819,7 +815,7 @@ fn review_body(
                  is not an approval: {}{}.",
                 shown
                     .iter()
-                    .map(|name| code_span(name))
+                    .map(|name| crate::markdown::code_span(name))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if more > 0 {
@@ -837,8 +833,11 @@ fn review_body(
         body.push_str("\n\n### Findings not posted inline\n");
         for finding in unanchored {
             body.push_str(&format!(
-                "\n- **{}** (`{}`): {}\n\n  {}\n",
-                finding.title, finding.path, finding.rule, finding.body
+                "\n- **{}** ({}): {}\n\n  {}\n",
+                crate::markdown::prose(&finding.title),
+                crate::markdown::code_span(&finding.path),
+                crate::markdown::prose(&finding.rule),
+                crate::markdown::prose(&finding.body)
             ));
         }
     }
@@ -854,16 +853,18 @@ fn review_body(
             "\n\n### Over the comment budget\n\nNot posted inline; listed here so none is lost.\n",
         );
         for finding in over {
-            let line = finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default();
             body.push_str(&format!(
-                "\n- **{}** {} (`{}{}`)",
+                "\n- **{}** {} ({})",
                 finding.severity,
-                crate::summary::render::md(&finding.title),
-                crate::summary::render::md(&finding.path),
-                line
+                crate::markdown::prose(&finding.title),
+                crate::markdown::code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                ))
             ));
         }
         body.push('\n');
@@ -970,7 +971,7 @@ fn inline_comments(proposal: &Proposal, files: &[ChangedFile]) -> Vec<ReviewComm
                         finding.confidence
                     ),
                     crate::findings::render::escape_emphasis(&finding.title),
-                    finding.body,
+                    crate::markdown::prose(&finding.body),
                     suggestion,
                     crate::findings::render::rule_line(&finding.rule),
                     alias_marker(finding),
@@ -1008,18 +1009,33 @@ mod tests {
     use crate::forge::{MockForge, MockState, Write};
 
     #[test]
+    fn check_titles_are_count_based_and_never_truncate_model_prose() {
+        assert_eq!(title_for(2, None), "2 findings");
+        assert_eq!(title_for(1, None), "1 finding");
+        assert_eq!(title_for(0, None), "0 findings");
+        let title = title_for(usize::MAX, None);
+        assert!(title.len() <= 80, "{} chars: {title}", title.len());
+        assert!(!title.contains("summary"));
+    }
+
+    #[test]
     fn a_partial_lane_title_reports_file_coverage() {
-        assert_eq!(
-            title_for(
-                0,
-                "Reviewed.",
-                Some(&crate::lanes::FileCoverage {
-                    reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
-                    unanswered: vec!["src/8.rs".into(), "src/9.rs".into()],
-                }),
-            ),
-            "Reviewed 8 of 10 files — 2 not reviewed"
-        );
+        let coverage = crate::lanes::FileCoverage {
+            reviewed: (0..8).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec!["src/8.rs".into(), "src/9.rs".into()],
+        };
+        assert_eq!(title_for(2, Some(&coverage)), "2 findings · 8/10 files");
+    }
+
+    #[test]
+    fn lane_titles_report_full_coverage_even_without_findings() {
+        let coverage = crate::lanes::FileCoverage {
+            reviewed: (0..10).map(|n| format!("src/{n}.rs")).collect(),
+            unanswered: vec![],
+        };
+        let title = title_for(0, Some(&coverage));
+        assert_eq!(title, "0 findings · 10/10 files");
+        assert!(title.len() <= 80);
     }
 
     #[cfg(feature = "serve")]
@@ -1126,7 +1142,9 @@ mod tests {
                     e2e: Some(Watch {
                         head_sha: "abc123".into(),
                         jobs: vec!["playwright".into()],
-                        summary: "Coverage looks complete.".into(),
+                        summary:
+                            "Coverage looks complete. [click](https://evil.example) @user <script> `hostile` | value"
+                                .into(),
                         failed: false,
                         generation: "gen-1".into(),
                     }),
@@ -1167,6 +1185,11 @@ mod tests {
             "{}",
             check.summary
         );
+        assert!(!check.summary.contains("[click](https://evil.example)"));
+        assert!(!check.summary.contains("https://evil.example"));
+        assert!(!check.summary.contains("@user"));
+        assert!(!check.summary.contains("<script>"));
+        assert!(!check.summary.contains("`hostile`"));
 
         // The watch is cleared, so the next completion event does nothing.
         let forge = MockForge::with_state(state);
@@ -1431,7 +1454,7 @@ mod tests {
 
         assert!(body.contains("### Over the comment budget"), "{body}");
         assert!(body.contains("Over budget finding"), "{body}");
-        assert!(body.contains("src/main\\.rs:2"), "{body}");
+        assert!(body.contains("`src/main.rs:2`"), "{body}");
     }
 
     fn finding() -> Finding {
@@ -1500,12 +1523,37 @@ mod tests {
         let checks = forge.checks();
         assert_eq!(
             checks["tinysweeper/critique"].title,
-            "Reviewed 8 of 10 files — 2 not reviewed"
+            "0 findings · 8/10 files"
         );
         assert_eq!(
             checks["tinysweeper/critique"].conclusion,
             Some(CheckConclusion::Neutral)
         );
+    }
+
+    #[tokio::test]
+    async fn a_closed_or_merged_pull_request_is_not_published_after_review() {
+        for (open, merged) in [(false, false), (false, true)] {
+            let forge = forge("abc123");
+            forge.replace_pull_request(PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                open,
+                merged,
+                ..PullRequest::default()
+            });
+
+            let disposition = apply(&forge, &forge, &config(), &proposal("abc123", vec![]), None)
+                .await
+                .expect("closed pull requests are declined without publishing");
+
+            assert_eq!(disposition, ApplyDisposition::Closed);
+
+            assert!(
+                forge.writes().is_empty(),
+                "closed state open={open} merged={merged} must not publish a review"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1681,6 +1729,79 @@ mod tests {
             "{:#?}",
             forge.writes()
         );
+    }
+
+    #[tokio::test]
+    async fn mock_forge_finding_rows_keep_backslash_pipe_paths_in_one_cell() {
+        let forge = forge("abc123");
+        let findings = (1..=3)
+            .map(|backslashes| {
+                let mut item = finding();
+                item.path = format!(
+                    "src/a{}|b.rs [click](https://evil.example)",
+                    "\\".repeat(backslashes)
+                );
+                item.title = format!("Path {backslashes}");
+                item.line = None;
+                item
+            })
+            .collect();
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", findings),
+            None,
+        )
+        .await
+        .expect("applies");
+
+        let summary = forge
+            .checks()
+            .remove("tinysweeper/critique")
+            .expect("critique check")
+            .summary;
+        for count in 1..=3 {
+            let row = summary
+                .lines()
+                .find(|line| line.contains(&format!("Path {count}")))
+                .expect("finding row");
+            assert_eq!(row.split(" | ").count(), 3, "{row}");
+            assert!(row.contains(&format!("{}\\|", "\\".repeat(count))), "{row}");
+            assert!(row.contains("[click](https://evil.example)"), "{row}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_forge_review_body_keeps_adversarial_text_inert() {
+        let forge = forge("abc123");
+        let mut hostile = finding();
+        hostile.line = None;
+        hostile.title = "@maintainer <img src=x> [click](https://evil.example)".into();
+        hostile.body = "<script>alert(1)</script> @user [link](https://evil.example) https://a.b/[click](https://evil.example) @maintainer `code` **bold** |\\path".into();
+
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", vec![hostile]),
+            None,
+        )
+        .await
+        .expect("applies");
+
+        let (body, _) = review_of(&forge).expect("review published to the mock forge");
+        assert!(!body.contains("@maintainer"), "{body}");
+        assert!(!body.contains("<img src=x>"), "{body}");
+        assert!(!body.contains("[click](https://evil.example)"), "{body}");
+        assert!(!body.contains("<script>"), "{body}");
+        assert!(!body.contains("[link](https://evil.example)"), "{body}");
+        assert!(!body.contains("https://evil.example"), "{body}");
+        assert!(!body.contains("https://a.b"), "{body}");
+        assert!(!body.contains("[click]("), "{body}");
+        assert!(!body.contains("@maintainer"), "{body}");
+        assert!(!body.contains("`code`"), "{body}");
+        assert!(!body.contains("**bold**"), "{body}");
     }
 
     #[tokio::test]
@@ -2274,9 +2395,9 @@ mod tests {
 
     #[test]
     fn a_contributor_path_cannot_break_out_of_its_code_span() {
-        assert_eq!(code_span("src/lib.rs"), "`src/lib.rs`");
+        assert_eq!(crate::markdown::code_span("src/lib.rs"), "`src/lib.rs`");
         let hostile = "x`.rs` **bold**\n# heading";
-        let rendered = code_span(hostile);
+        let rendered = crate::markdown::code_span(hostile);
         assert!(rendered.starts_with("`` "), "{rendered}");
         assert!(!rendered.contains('\n'), "{rendered}");
         assert!(rendered.ends_with(" ``"), "{rendered}");
@@ -2556,6 +2677,91 @@ mod tests {
         assert_eq!(posted.len(), 1, "{posted:#?}");
         assert!(
             matches!(&posted[0], Write::Comment { body, .. } if body.contains("```mermaid")),
+            "{posted:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_forge_publishes_only_citations_on_supplied_head_lines() {
+        use crate::harness::mock::MockModel;
+
+        let forge = forge("abc123");
+        let config = config();
+        let model = MockModel::new().then(serde_json::json!({
+            "executive_summary": "The change adds a parser guard.",
+            "changes": "The parser now checks its boundary.",
+            "features": [
+                {
+                    "kind": "addition",
+                    "name": "Unsupported line",
+                    "impact": "This line is outside the supplied diff.",
+                    "citations": ["src/main.rs:999999"]
+                },
+                {
+                    "kind": "addition",
+                    "name": "Supported line",
+                    "impact": "This line was added in the reviewed diff.",
+                    "citations": ["src/main.rs:2"]
+                }
+            ],
+            "tests": [],
+            "positive_observations": {}
+        }));
+        let diffs = [parse_file_patch(
+            "src/main.rs",
+            "@@ -1,1 +1,2 @@\n fn main() {}\n+let i = 0;\n",
+        )];
+        let pull_request = PullRequest {
+            number: 7,
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        };
+        let (summary, _, _) =
+            crate::summary::generate(&model, &config, &pull_request, &diffs, &[], None, &[]).await;
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(summary);
+
+        apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        assert_eq!(posted.len(), 1, "{posted:#?}");
+        let Write::Comment { body, .. } = &posted[0] else {
+            panic!("hub comment was not posted: {posted:#?}");
+        };
+        assert!(body.contains("Supported line"), "{body}");
+        assert!(body.contains("blob/abc123/src/main.rs#L2"), "{body}");
+        assert!(!body.contains("Unsupported line"), "{body}");
+        assert!(!body.contains("#L999999"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn mock_forge_hub_links_a_citation_to_the_reviewed_sha() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(crate::summary::ReviewSummary {
+            features: vec![crate::summary::Feature {
+                kind: crate::summary::FeatureKind::Addition,
+                name: "Saved value".into(),
+                impact: "A persisted field.".into(),
+                citations: vec!["src/savings_store.rs:42".into()],
+            }],
+            ..Default::default()
+        });
+
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        assert_eq!(posted.len(), 1, "{posted:#?}");
+        assert!(
+            matches!(
+                &posted[0],
+                Write::Comment { body, .. }
+                    if body.contains("[`src/savings_store.rs:42`](https://github.com/tinyhumansai/tinysweeper/blob/abc123/src/savings_store.rs#L42)")
+            ),
             "{posted:#?}"
         );
     }

@@ -653,6 +653,7 @@ async fn place(
             return Err(crate::error::Error::Budget {
                 spent: spend.cost_usd(),
                 limit: config.models.budget_usd_per_pr,
+                usage: None,
             });
         }
 

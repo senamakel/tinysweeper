@@ -126,7 +126,8 @@ pub async fn generate(
         return (summary, spend, transcript);
     };
 
-    let supported = |citations: &[String]| citations_supported(citations, &paths, &symbols_by_path);
+    let supported =
+        |citations: &[String]| citations_supported(citations, &paths, diffs, &symbols_by_path);
     generated.features = generated
         .features
         .into_iter()
@@ -336,12 +337,32 @@ fn claims_execution(text: &str) -> bool {
 fn citations_supported(
     citations: &[String],
     paths: &BTreeSet<String>,
+    diffs: &[FileDiff],
     symbols_by_path: &BTreeMap<String, BTreeSet<String>>,
 ) -> bool {
     !citations.is_empty()
         && citations.iter().all(|citation| {
             if paths.contains(citation) {
                 return true;
+            }
+            if let Some((path, line)) = citation.rsplit_once(':')
+                && paths.contains(path)
+                && let Ok(line) = line.parse::<u32>()
+                && line > 0
+            {
+                return diffs.iter().any(|diff| {
+                    diff.path == path
+                        && diff.hunks.iter().any(|hunk| {
+                            hunk.lines.iter().any(|diff_line| {
+                                diff_line.new_line == Some(u64::from(line))
+                                    && matches!(
+                                        diff_line.kind,
+                                        crate::evidence::diff::LineKind::Added
+                                            | crate::evidence::diff::LineKind::Context
+                                    )
+                            })
+                        })
+                });
             }
             let Some((path, symbol)) = citation.split_once('#') else {
                 return false;
@@ -403,26 +424,64 @@ mod tests {
     use crate::harness::mock::MockModel;
 
     #[test]
-    fn citations_require_an_exact_path_symbol_pair() {
-        let paths = BTreeSet::from(["src/lib.rs".to_string()]);
+    fn citations_require_exact_paths_symbols_and_observed_head_lines() {
+        let diffs = [
+            crate::evidence::diff::parse_file_patch(
+                "src/lib.rs",
+                "@@ -41,2 +41,2 @@ fn review()\n context\n-removed\n+added\n",
+            ),
+            crate::evidence::diff::parse_file_patch("src/deleted.rs", "@@ -10,1 +9,0 @@\n-gone\n"),
+            FileDiff {
+                path: "src/no-hunk.rs".into(),
+                ..FileDiff::default()
+            },
+        ];
+        let paths = diffs.iter().map(|diff| diff.path.clone()).collect();
         let by_path = BTreeMap::from([(
             "src/lib.rs".to_string(),
-            BTreeSet::from(["pub fn review()".to_string()]),
+            BTreeSet::from(["fn review()".to_string()]),
         )]);
 
         assert!(citations_supported(
-            &["src/lib.rs#pub fn review()".into()],
+            &["src/lib.rs#fn review()".into()],
             &paths,
+            &diffs,
+            &by_path
+        ));
+        assert!(citations_supported(
+            &["src/lib.rs:41".into(), "src/lib.rs:42".into()],
+            &paths,
+            &diffs,
+            &by_path
+        ));
+        assert!(!citations_supported(
+            &["src/lib.rs:999999".into()],
+            &paths,
+            &diffs,
+            &by_path
+        ));
+        assert!(!citations_supported(
+            &["src/deleted.rs:9".into()],
+            &paths,
+            &diffs,
+            &by_path
+        ));
+        assert!(!citations_supported(
+            &["src/no-hunk.rs:1".into()],
+            &paths,
+            &diffs,
             &by_path
         ));
         assert!(!citations_supported(
             &["src/lib.rs#nonexistent".into()],
             &paths,
+            &diffs,
             &by_path
         ));
         assert!(!citations_supported(
-            &["pub fn review()".into()],
+            &["fn review()".into()],
             &paths,
+            &diffs,
             &by_path
         ));
     }

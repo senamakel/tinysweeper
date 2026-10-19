@@ -10,7 +10,9 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::lanes::large_pr::ReviewMode;
-use crate::ports::model::{Model, Usage};
+use crate::ports::model::Model;
+#[cfg(test)]
+use crate::ports::model::Usage;
 use crate::ports::model_execution::{
     ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
 };

@@ -164,14 +164,20 @@ pub async fn run(
             .tree
             .as_ref()
             .filter(|_| options.record)
-            .map(crate::ports::tree::DirTree::new);
+            .map(|path| {
+                crate::ports::tree::DirTree::new(path)
+                    .at_revision(&case.fixture.pull_request.head_sha)
+            });
         let recorded = crate::ports::tree::MockTree::from_recorded(case.fixture.lookups.clone());
         let recording = dir_tree
             .as_ref()
             .map(|dir| crate::ports::tree::RecordingTree::new(dir as &dyn TreeReader));
         let tree: &dyn TreeReader = match &recording {
             Some(recording) => recording,
-            None => &recorded,
+            None => &CaseRevisionTree {
+                inner: &recorded,
+                revision: case.fixture.pull_request.head_sha.clone(),
+            },
         };
         let outcome = review_case(case, &with_lanes(&config, case), cassette.clone(), tree).await;
         let wall = started.elapsed();

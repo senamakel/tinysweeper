@@ -7479,6 +7479,28 @@ mod tests {
         .await
         .unwrap()
         .expect("the accepted terminal POST is found by its external identity");
+        let queued_b = writes
+            .iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "lost-b"
+                        && check.status == Some(CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("B has its own queued check");
+        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "lost-b",
+            queued_b.external_id.as_deref().expect("queued B identity"),
+        )
+        .await
+        .unwrap()
+        .expect("the queued B check is discoverable");
+        assert_ne!(recovered_id, queued_b_id, "A recovery cannot adopt B's check");
         let terminal_posts = writes.iter().filter(|write| matches!(
             write,
             crate::forge::Write::Check(check)

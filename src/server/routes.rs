@@ -1658,8 +1658,8 @@ async fn triage_inner(
 }
 
 fn triage_permit_pool(review_pool: &Arc<Semaphore>, triage_pool: &Arc<Semaphore>) -> Arc<Semaphore> {
-    let _ = triage_pool;
-    review_pool.clone()
+    let _ = review_pool;
+    triage_pool.clone()
 }
 
 async fn run_triage_job<T, F, Fut>(

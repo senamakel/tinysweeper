@@ -42,12 +42,19 @@ struct AgenticOutputObserver {
 impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
     fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
         if let openhuman_embed::observe::TurnObservation::ModelDispatch {
-            usage: Some(usage), ..
+            requested_model,
+            answered_model,
+            usage: Some(usage),
+            ..
         } = event
         {
+            let model = answered_model
+                .as_deref()
+                .or(requested_model.as_deref())
+                .unwrap_or(&self.model);
             self.history.record(
                 &self.lane,
-                &self.model,
+                model,
                 usage.output_tokens,
                 self.output_cap,
             );

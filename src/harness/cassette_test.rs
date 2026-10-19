@@ -246,6 +246,22 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
     let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
     assert!(method_player.complete(request).await.is_err());
     assert_eq!(method_player.strict_misses(), 1);
+
+    struct SameRevisionDifferentSource;
+    #[async_trait::async_trait]
+    impl TreeReader for SameRevisionDifferentSource {
+        async fn lookup(&self, _: &Lookup) -> Result<Found> { Ok(Found::NotFound) }
+        async fn explore(&self, _: &TreeQuery) -> Result<Found> { Ok(Found::NotFound) }
+        fn describe(&self) -> String { "/different/absolute/archive".into() }
+        fn revision(&self) -> Option<String> { Some("a".repeat(40)) }
+    }
+    let source_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(source_player
+        .review(request("test/review-only", "inspect this change"), &SameRevisionDifferentSource, &policy)
+        .await
+        .is_err());
+    assert_eq!(source_player.strict_misses(), 1);
+    assert_eq!(source_player.cost_usd(), 0.0);
 }
 
 struct ScopedQuotaModel {

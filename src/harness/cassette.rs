@@ -72,6 +72,8 @@ pub struct Take {
 /// Stable repository context needed to replay a review without calling a live model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewContext {
+    /// Effective lookup limits and feature flags for this review.
+    pub policy: crate::config::types::LookupPolicy,
     /// The tree revision when the provider call was recorded, when known.
     pub revision: Option<String>,
     /// Repository operations completed during this review, in completion order.
@@ -601,10 +603,16 @@ impl Model for Cassette {
 
         // Loose: fall back to call order, which survives a cosmetic edit.
         match self.ordered.get(cursor) {
-            Some(take) => {
+            Some(take) if take.review_context.is_none() => {
                 state.loose_hits += 1;
                 state.spend.record(&take.model_answered, take.usage);
                 Ok(replayed(take))
+            }
+            Some(_) => {
+                state.misses += 1;
+                Err(Error::Model(
+                    "cassette method mismatch: completion cannot replay a repository-aware review".into(),
+                ))
             }
             None => Err(Error::Model(format!(
                 "cassette in {} is exhausted: the run made {} calls, the recording holds {}",
@@ -641,6 +649,7 @@ impl Model for Cassette {
                 &request,
                 &response,
                 Some(ReviewContext {
+                    policy: policy.clone(),
                     revision,
                     queries: traced.recorded(),
                 }),

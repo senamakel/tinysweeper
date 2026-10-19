@@ -6776,9 +6776,9 @@ mod tests {
         let triage_pool = Arc::new(Semaphore::new(2));
         let triage_ran = Arc::new(AtomicBool::new(false));
         let observed = triage_ran.clone();
+        let selected = triage_permit_pool(&review_pool, &triage_pool);
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            let selected = triage_permit_pool(&review_pool, &triage_pool);
             with_triage_permit(&selected, || async move {
                 observed.store(true, Ordering::SeqCst);
                 Ok(())

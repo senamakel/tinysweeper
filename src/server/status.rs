@@ -16,12 +16,14 @@
 //!
 //! ## One check, three states
 //!
-//! `tinysweeper/review` is created in-progress when the delivery is accepted,
-//! and the same run — by id, never a second POST — is concluded afterwards:
+//! `tinysweeper/review` is created queued when the delivery is accepted,
+//! transitioned in-place when a review permit is acquired, and concluded by
+//! the same run — by id, never a second POST:
 //!
 //! | State | Conclusion | Meaning |
 //! |---|---|---|
-//! | in progress | `None` | accepted, lanes running |
+//! | queued | `None` | accepted, waiting for a review permit |
+//! | in progress | `None` | permit acquired, lanes may run |
 //! | concluded | `Success` | the lanes ran and the review did not request changes |
 //! | concluded | `Neutral` | the lanes ran and the review requested changes |
 //! | concluded | `ActionRequired` | the review could not run — see [`failure`] |

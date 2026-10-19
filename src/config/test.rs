@@ -1729,3 +1729,13 @@ fn removed_memory_configuration_is_rejected_instead_of_silently_ignored() {
             .is_none()
     );
 }
+
+#[test]
+fn server_pool_sizes_must_fit_semaphore_bounds() {
+    let mut config = parse("version = 1\n");
+    config.server.review_concurrency = 0;
+    config.server.triage_concurrency = tokio::sync::Semaphore::MAX_PERMITS + 1;
+    let problems = validate::validate(&config).join("\n");
+    assert!(problems.contains("server.review_concurrency"), "{problems}");
+    assert!(problems.contains("server.triage_concurrency"), "{problems}");
+}

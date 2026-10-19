@@ -1240,7 +1240,16 @@ mod tests {
         let mut config = models();
         config.agentic_reviewers = true;
         config.base_url = gateway.base_url.clone();
-        let model = GatewayModel::with_key(&config, "fixture".into());
+        config.budget_prices.insert(
+            "b".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 0.0,
+                cached: 0.0,
+                output: 100.0,
+            },
+        );
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.budget = Some(crate::harness::budget::ledger(1.0));
         let request = ModelRequest {
             model: "b".into(),
             messages: vec![

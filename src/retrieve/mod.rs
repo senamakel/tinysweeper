@@ -88,6 +88,7 @@ impl<'a> Retriever<'a> {
             embedder,
             index,
             graph: None,
+                pass_yield_observer: None,
             manifest: None,
         }
     }

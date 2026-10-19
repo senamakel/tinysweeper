@@ -1034,6 +1034,7 @@ fn helper() {
                 e2e: None,
                 tree,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs")
@@ -1064,6 +1065,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -1677,6 +1679,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -1770,6 +1773,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -2612,6 +2616,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2673,6 +2678,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2733,6 +2739,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2783,6 +2790,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("the failure is isolated, not propagated");
@@ -2925,6 +2933,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");

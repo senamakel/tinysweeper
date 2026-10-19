@@ -1127,6 +1127,9 @@ pub(crate) async fn review_with_tree_observed_at_head(
                 e2e: e2e_evidence.as_ref(),
                 tree: Some(tree),
                 graph: graph_for_lanes,
+                pass_yield_observer: timing.as_ref().map(|timing| {
+                    timing as &dyn crate::lanes::PassYieldObserver
+                }),
             }),
         )
         .await?;
@@ -3160,6 +3163,7 @@ mod tests {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("deterministic scanner completes");

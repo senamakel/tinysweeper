@@ -714,11 +714,6 @@ impl ReviewSchedulerState {
         now_ms: i64,
         completed_at_ms: i64,
     ) -> bool {
-        if self.unfinished.iter().any(|record| {
-            owns(record, owned) && record.owner_until_ms > now_ms && record.yield_requested
-        }) {
-            return self.finish_with_yield(owned, outcome, now_ms);
-        }
         let Some(index) = self.unfinished.iter().position(|record| {
             owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
         }) else {

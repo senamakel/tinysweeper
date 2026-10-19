@@ -223,14 +223,16 @@ fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
         write_claim_until_ms: 0,
         write_generation: 1,
     };
-    let mut state = ReviewSchedulerState::default();
-    state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS)
-        .map(|_| super::RetiredReviewCheck {
-            repo: "r".repeat(super::REVIEW_JOB_FIELD_LIMIT),
-            installation: 1,
-            check: check.clone(),
-        })
-        .collect();
+    let mut state = ReviewSchedulerState {
+        retired_checks: (0..super::MAX_REVIEW_STATUS_RECORDS)
+            .map(|_| super::RetiredReviewCheck {
+                repo: "r".repeat(super::REVIEW_JOB_FIELD_LIMIT),
+                installation: 1,
+                check: check.clone(),
+            })
+            .collect(),
+        ..ReviewSchedulerState::default()
+    };
     let encoded = bson::serialize_to_vec(&state).expect("bounded scheduler serializes");
     assert!(encoded.len() < 2 * 1024 * 1024, "{} bytes", encoded.len());
     let mut extra = request("overflow-status", 1);

@@ -7789,10 +7789,7 @@ mod tests {
             .expect("A remains durably accepted"),
             Some(Admission::Admitted)
         );
-        assert_eq!(
-            store.snapshot_for_test().unfinished[0].review_checks[0].post_attempted,
-            true
-        );
+        assert!(store.snapshot_for_test().unfinished[0].review_checks[0].post_attempted);
         assert_eq!(
             admit_webhook_review(
                 &store,

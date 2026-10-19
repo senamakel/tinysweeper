@@ -414,19 +414,20 @@ struct ConcurrentScopedModel {
 #[async_trait::async_trait]
 impl Model for ConcurrentScopedModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if request
             .messages
             .last()
             .is_some_and(|message| message.content == "fail")
         {
-            return Err(crate::error::Error::Model("scoped refusal".into()).with_usage(Usage {
-                input_tokens: 50,
-                output_tokens: 7,
-                cost_usd: 0.005,
-                ..Default::default()
-            }));
+            return Err(
+                crate::error::Error::Model("scoped refusal".into()).with_usage(Usage {
+                    input_tokens: 50,
+                    output_tokens: 7,
+                    cost_usd: 0.005,
+                    ..Default::default()
+                }),
+            );
         }
         Ok(ModelResponse {
             value: answer(),

@@ -162,8 +162,11 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
     let corpus = load(corpus_dir.path()).expect("loads corpus");
     let source = tempfile::tempdir().expect("source tree");
     std::fs::create_dir_all(source.path().join("src")).expect("source directory");
-    std::fs::write(source.path().join("src/lib.rs"), "fn from_another_revision() {}\n")
-        .expect("source file");
+    std::fs::write(
+        source.path().join("src/lib.rs"),
+        "fn from_another_revision() {}\n",
+    )
+    .expect("source file");
     let history = Arc::new(std::sync::Mutex::new(Vec::new()));
     let falsification_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut config = config();
@@ -207,8 +210,8 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
     let cassette_dir = recorded_corpus.cases[0].cassette_dir(corpus_dir.path());
     let mut found_falsification_take = false;
     for entry in std::fs::read_dir(cassette_dir).expect("cassette directory") {
-        let raw = std::fs::read_to_string(entry.expect("cassette entry").path())
-            .expect("cassette take");
+        let raw =
+            std::fs::read_to_string(entry.expect("cassette entry").path()).expect("cassette take");
         let take: crate::harness::cassette::Take =
             serde_json::from_str(&raw).expect("valid cassette take");
         if take.schema_name == "tinysweeper_falsify" {
@@ -216,7 +219,10 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
             found_falsification_take = true;
         }
     }
-    assert!(found_falsification_take, "the actual falsification response is recorded");
+    assert!(
+        found_falsification_take,
+        "the actual falsification response is recorded"
+    );
 
     let replay_out = corpus_dir.path().join("runs/replay");
     let replay = run(
@@ -230,7 +236,11 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
     )
     .await
     .expect("strict replay is offline");
-    assert!(replay.scores[0].error.is_none(), "all review and falsification keys replay: {:?}", replay.scores[0]);
+    assert!(
+        replay.scores[0].error.is_none(),
+        "all review and falsification keys replay: {:?}",
+        replay.scores[0]
+    );
 }
 
 /// A model that reports the real defect on the added line.

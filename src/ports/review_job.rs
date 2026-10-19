@@ -885,14 +885,13 @@ impl ReviewSchedulerState {
                 let new_head = request.head_sha.clone();
                 let is_unowned_head_change =
                     record.owner.is_none() && record.request.head_sha != request.head_sha;
-                if let Some(check) = initial_check {
-                    if !record
+                if let Some(check) = initial_check
+                    && !record
                         .review_checks
                         .iter()
                         .any(|existing| existing.head_sha == check.head_sha)
-                    {
-                        record.review_checks.push(check);
-                    }
+                {
+                    record.review_checks.push(check);
                 }
                 record.head_history_reservations =
                     Some(record.head_history_reservations.unwrap_or_default() + 1);

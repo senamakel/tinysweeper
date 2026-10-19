@@ -197,7 +197,7 @@ async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_fai
     // not acknowledge the published review either. Paid review work still ran
     // and reached Published, so cleanup must not replace its check with the
     // detached queue check's NotReviewed conclusion.
-    let pending = store.claim_pending_checks(10).await.unwrap().pop().unwrap();
+    let pending = store.claim_pending_checks(10, 1).await.unwrap().pop().unwrap();
     assert!(store.record_queued_check_id(&pending, 77, 11).await.unwrap());
     let owned = store.claim_next("review-worker", 12).await.unwrap().unwrap();
     assert_eq!(owned.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);

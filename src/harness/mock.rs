@@ -17,9 +17,7 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
-use crate::ports::model_execution::{
-    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
-};
+use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
 
 /// A model that answers from a queue of canned responses.
 #[derive(Clone, Default)]

@@ -1365,55 +1365,55 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn a_queued_review_check_can_be_updated_by_its_original_run_id() {
         let forge = MockForge::new();
+        let queued = CheckRun {
+            name: "tinysweeper/review".into(),
+            head_sha: "abc123".into(),
+            conclusion: None,
+            title: "Queued".into(),
+            summary: "accepted".into(),
+            status: Some(crate::forge::types::CheckRunStatus::Queued),
+            external_id: Some("review:job-7:abc123".into()),
+            images: vec![],
+        };
+        let in_progress = CheckRun {
+            status: None,
+            title: "Reviewing".into(),
+            summary: "running".into(),
+            ..queued.clone()
+        };
+        let completed = CheckRun {
+            conclusion: Some(CheckConclusion::Success),
+            title: "Reviewed".into(),
+            summary: "done".into(),
+            ..in_progress.clone()
+        };
         let id = forge
-            .publish_check(
-                &repo(),
-                crate::server::status::queued("abc123", 2, "review:job-7:abc123"),
-            )
+            .publish_check(&repo(), queued.clone())
             .await
             .expect("queued run is published");
         forge
-            .update_check(&repo(), id, crate::server::status::in_progress("abc123"))
+            .update_check(&repo(), id, in_progress.clone())
             .await
             .expect("same run moves to in-progress");
         forge
-            .update_check(
-                &repo(),
-                id,
-                crate::server::status::completed(
-                    "abc123",
-                    0,
-                    false,
-                    crate::server::status::ReviewCoverage::default(),
-                ),
-            )
+            .update_check(&repo(), id, completed.clone())
             .await
             .expect("same run completes");
 
         assert_eq!(
             forge.writes(),
             vec![
-                Write::Check(crate::server::status::queued(
-                    "abc123",
-                    2,
-                    "review:job-7:abc123",
-                )),
+                Write::Check(queued),
                 Write::CheckUpdate {
                     check_id: id,
-                    check: crate::server::status::in_progress("abc123"),
+                    check: in_progress
                 },
                 Write::CheckUpdate {
                     check_id: id,
-                    check: crate::server::status::completed(
-                        "abc123",
-                        0,
-                        false,
-                        crate::server::status::ReviewCoverage::default(),
-                    ),
+                    check: completed
                 },
             ]
         );

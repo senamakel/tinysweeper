@@ -1300,6 +1300,7 @@ mod tests {
         assert!(calls[0].3 > Duration::ZERO);
         assert_eq!(calls[1].0.input_tokens, 0);
         assert_eq!(calls[1].0.output_tokens, 0);
+        assert_eq!(calls[1].0.cost_usd, 0.0);
         assert_eq!(calls[1].0.calls_attempted, 1);
         assert_eq!(calls[1].0.calls_succeeded, 0);
         assert_eq!(calls[1].0.calls_refused, 0);

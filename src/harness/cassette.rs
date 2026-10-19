@@ -102,7 +102,7 @@ pub struct Cassette {
     takes: BTreeMap<String, Take>,
     /// Every take in file order, for the loose fallback.
     ordered: Vec<Take>,
-    state: Mutex<Playback>,
+    state: Arc<Mutex<Playback>>,
     record_prompts: bool,
 }
 
@@ -153,7 +153,7 @@ impl Cassette {
             mode: Mode::Record,
             takes: BTreeMap::new(),
             ordered: Vec::new(),
-            state: Mutex::new(Playback::default()),
+            state: Arc::new(Mutex::new(Playback::default())),
             record_prompts: false,
         }
     }
@@ -172,7 +172,7 @@ impl Cassette {
             mode,
             takes,
             ordered,
-            state: Mutex::new(Playback::default()),
+            state: Arc::new(Mutex::new(Playback::default())),
             record_prompts: false,
         })
     }
@@ -253,6 +253,20 @@ impl Cassette {
             std::fs::write(&path, json).map_err(|err| Error::path(&path, err))?;
         }
         Ok(recorded.len())
+    }
+
+    /// Rebuild this recorder around a scoped inner model while retaining its
+    /// recording cursor, takes, and output policy.
+    fn with_inner(&self, inner: Arc<dyn Model>) -> Self {
+        Self {
+            inner: Some(inner),
+            dir: self.dir.clone(),
+            mode: self.mode,
+            takes: self.takes.clone(),
+            ordered: self.ordered.clone(),
+            state: self.state.clone(),
+            record_prompts: self.record_prompts,
+        }
     }
 }
 
@@ -350,6 +364,32 @@ impl Model for Cassette {
                 self.ordered.len(),
             ))),
         }
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.complete_reports_physical_calls())
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.review_reports_physical_calls())
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .as_ref()?
+            .scoped_budget(budget_usd)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .as_ref()?
+            .with_review_budget(limit_usd)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
     }
 }
 

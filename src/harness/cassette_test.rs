@@ -37,7 +37,7 @@ impl Model for ReviewBudgetProbe {
 
         if let Some(remaining) = &self.remaining
             && remaining
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     count.checked_sub(1)
                 })
                 .is_err()
@@ -137,11 +137,12 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
         .await
         .expect("the first response fits the review root");
         assert_eq!(first.value, answer());
-        assert!(matches!(
-            lane.complete(request("probe", "second paid response"))
-                .await,
-            Err(Error::Budget { .. })
-        ));
+        let second = crate::ports::model::with_model_call_observer(
+            physical_events.clone(),
+            lane.complete(request("probe", "second paid response")),
+        )
+        .await;
+        assert!(matches!(second, Err(Error::Budget { .. })));
         assert_eq!(completed.load(Ordering::Relaxed), 1);
         assert_eq!(physical_events.0.load(Ordering::Relaxed), 1);
         assert_eq!(cassette.served(), 1);

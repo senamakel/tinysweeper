@@ -2442,6 +2442,12 @@ impl Model for OwnedModel {
             .scoped_budget(budget_usd)
             .map(|inner| self.wrap(inner))
     }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_review_budget(limit_usd)
+            .map(|inner| self.wrap(inner))
+    }
 }
 
 impl Run {
@@ -4653,7 +4659,7 @@ mod tests {
 
             if let Some(remaining) = &self.remaining
                 && remaining
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                         count.checked_sub(1)
                     })
                     .is_err()

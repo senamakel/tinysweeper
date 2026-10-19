@@ -229,6 +229,15 @@ impl Model for ObservedModel {
             }) as Arc<dyn Model>
         })
     }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner.with_review_budget(limit_usd).map(|inner| {
+            Arc::new(Self {
+                inner,
+                timing: self.timing.clone(),
+            }) as Arc<dyn Model>
+        })
+    }
 }
 
 /// The schema version `review` writes.
@@ -2589,7 +2598,7 @@ mod tests {
 
             if let Some(remaining) = &self.remaining
                 && remaining
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                         count.checked_sub(1)
                     })
                     .is_err()

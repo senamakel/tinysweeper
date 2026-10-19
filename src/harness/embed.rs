@@ -52,12 +52,8 @@ impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
                 .as_deref()
                 .or(requested_model.as_deref())
                 .unwrap_or(&self.model);
-            self.history.record(
-                &self.lane,
-                model,
-                usage.output_tokens,
-                self.output_cap,
-            );
+            self.history
+                .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         if let Some(downstream) = &self.downstream {
             downstream.on_event(event);
@@ -125,6 +121,10 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             ..
         } = event
         {
+            let model = answered_model
+                .as_deref()
+                .or(requested_model.as_deref())
+                .unwrap_or("unknown");
             let provider_responded =
                 matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
@@ -134,20 +134,25 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
                 reasoning_tokens: usage.as_ref().map_or(0, |usage| usage.reasoning_tokens),
                 cached_tokens: usage.as_ref().map_or(0, |usage| usage.cached_tokens),
-                cost_usd: usage
-                    .as_ref()
-                    .and_then(|usage| usage.cost_usd)
-                    .unwrap_or_default(),
+                cost_usd: usage.as_ref().map_or(0.0, |usage| {
+                    usage
+                        .cost_usd
+                        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                        .unwrap_or_else(|| {
+                            crate::harness::pricing::completion_cost(
+                                model,
+                                usage.input_tokens,
+                                usage.cached_tokens,
+                                usage.output_tokens,
+                            )
+                        })
+                }),
                 calls_attempted: 1,
                 calls_succeeded: u64::from(provider_responded),
                 calls_refused: u64::from(was_refused),
                 calls_errored: u64::from(!provider_responded),
                 ..Usage::default()
             };
-            let model = answered_model
-                .as_deref()
-                .or(requested_model.as_deref())
-                .unwrap_or("unknown");
             let correlation = self
                 .timing
                 .as_ref()
@@ -164,6 +169,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                         output_tokens = observed_usage.output_tokens,
                         reasoning_tokens = observed_usage.reasoning_tokens,
                         cached_tokens = observed_usage.cached_tokens,
+                        cost_usd = observed_usage.cost_usd,
                         "model call");
                 });
             });
@@ -284,6 +290,7 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                     output_tokens = accounting.output_tokens,
                     reasoning_tokens = accounting.reasoning_tokens,
                     cached_tokens = accounting.cached_tokens,
+                    cost_usd = accounting.cost_usd,
                     "model call");
             });
         });

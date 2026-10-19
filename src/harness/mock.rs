@@ -542,15 +542,15 @@ pub(crate) mod execution_test_support {
                 Some(control) => Some(control.acquire().await.map_err(Self::refusal)?),
                 None => None,
             };
-            if let Some(permit) = &_permit {
-                permit.mark_dispatched().map_err(Self::refusal)?;
-            }
             if !Self::consume(&self.review_remaining) || !Self::consume(&self.lane_remaining) {
                 return Err(Error::Budget {
                     spent: 1.0,
                     limit: 1.0,
                     usage: None,
                 });
+            }
+            if let Some(permit) = &_permit {
+                permit.mark_dispatched().map_err(Self::refusal)?;
             }
             let response = self.model.complete(request).await?;
             if let Some(observer) = crate::ports::model::current_model_call_observer() {

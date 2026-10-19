@@ -12,6 +12,7 @@ use crate::lanes::grouping::{self, FileGroup, GroupBounds};
 use crate::scan::types::{Finding as ScanFinding, ScanKind};
 
 /// The host-derived inputs needed to decide which groups a lane can review.
+#[derive(Clone, Copy)]
 pub(crate) struct LanePreparationInput<'a> {
     /// Review policy that controls draft handling and file grouping.
     pub(crate) config: &'a Config,

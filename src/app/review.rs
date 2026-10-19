@@ -1072,6 +1072,84 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let mut lanes = Vec::new();
     let mut spend = Spend::default();
 
+    // Read-only host context is enough to build lane candidates. Keep this
+    // graph walk and pinned-knowledge lookup ahead of extraction/retrieval so
+    // large-mode admission can refuse before the first paid operation.
+    let changed_neighbourhood = crate::review_timing::measure(timing.as_ref(), "graph", async {
+        if changed_neighbourhood_is_needed(config) {
+            walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
+        } else {
+            None
+        }
+    })
+    .await;
+    let graph_for_lanes = changed_neighbourhood.as_ref().and_then(|w| w.as_ref().ok());
+    let prepared_knowledge = crate::knowledge::prepare(
+        config,
+        repo,
+        &context
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>(),
+        knowledge,
+    )
+    .await;
+    let preparation_input = crate::lanes::preparation::LanePreparationInput {
+        config,
+        pull_request: &context.pull_request,
+        diffs: &diffs,
+        scan_findings: &scan_findings,
+        reviewed_evidence: &reviewed_evidence,
+        graph: graph_for_lanes,
+    };
+    let enabled_lanes = config.enabled_lanes();
+    let critique_prepared = enabled_lanes
+        .contains(&LaneId::Critique)
+        .then(|| crate::lanes::critique::prepare(preparation_input));
+    let security_prepared = enabled_lanes
+        .contains(&LaneId::Security)
+        .then(|| crate::lanes::security::prepare(preparation_input));
+    let mut candidates = Vec::new();
+    if let Some(prepared) = &critique_prepared {
+        candidates.extend(large_review_candidates(
+            LaneId::Critique,
+            &prepared.groups,
+            &context.files,
+            &diffs,
+            &scan_findings,
+            &prior,
+        ));
+    }
+    if let Some(prepared) = &security_prepared {
+        candidates.extend(large_review_candidates(
+            LaneId::Security,
+            &prepared.groups,
+            &context.files,
+            &diffs,
+            &scan_findings,
+            &prior,
+        ));
+    }
+    let plan = crate::lanes::large_pr::plan(config, &context.files, &diffs, candidates);
+    let execution_scope = execution.execution();
+    if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
+        execution_scope.restrict_to_large(config.review.large_pr.max_calls);
+        if !execution
+            .model_binding()
+            .is_some_and(|binding| binding.execution_control_bound)
+        {
+            return Err(Error::ReviewExecutionUnavailable);
+        }
+    }
+    let mut run_config = config.clone();
+    if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
+        run_config.review.passes = 1;
+        run_config.council.enabled = false;
+        run_config.council.subagents = false;
+    }
+    let config = &run_config;
+
     // What the reviewer knows before it reads the diff: curated documents from
     // the knowledge store, and rules extracted from the repository's own
     // instruction files at *this* head commit. The extraction is sandboxed and
@@ -1080,17 +1158,13 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let (knowledge, knowledge_usage) = crate::review_timing::measure(
         timing.as_ref(),
         "knowledge",
-        crate::knowledge::gather(
+        crate::knowledge::extract_prepared(
+            prepared_knowledge,
             forge,
             &model,
             config,
             repo,
             &context.pull_request.head_sha,
-            &diffs
-                .iter()
-                .map(|diff| diff.path.clone())
-                .collect::<Vec<_>>(),
-            knowledge,
         ),
     )
     .await;
@@ -1154,23 +1228,6 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             usage: None,
         });
     }
-
-    // Walked once, ahead of the lane loop, and reused by `change_map` below:
-    // both want the same neighbourhood of the changed files, and a second walk
-    // would be a second round trip to the graph store for an answer already in
-    // hand. Only asked for when something wants it — see
-    // `changed_neighbourhood_is_needed` — so a deployment with both off, or a
-    // tests-only review with neither `critique` nor `security` enabled, costs
-    // no query it never needed.
-    let changed_neighbourhood = crate::review_timing::measure(timing.as_ref(), "graph", async {
-        if changed_neighbourhood_is_needed(config) {
-            walk_changed_neighbourhood(config, retrieval, repo, &diffs).await
-        } else {
-            None
-        }
-    })
-    .await;
-    let graph_for_lanes = changed_neighbourhood.as_ref().and_then(|w| w.as_ref().ok());
 
     // What the `e2e` lane needs beyond the diff, read at the head commit and
     // only when the lane is on: the tree, the e2e workflows, the check runs.

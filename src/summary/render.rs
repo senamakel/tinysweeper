@@ -95,8 +95,10 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
         coverage_line(&mut body, proposal, &summary);
         lane_gaps(&mut body, proposal);
         let executive = summary.executive_summary.trim();
-        let sentence = if executive.is_empty() {
+        let sentence = if executive.is_empty() && proposal.complete() {
             "The review found no actionable issues."
+        } else if executive.is_empty() {
+            "No actionable findings were reported in the available review results."
         } else {
             first_sentence(executive)
         };
@@ -399,7 +401,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
         .flat_map(|lane| lane.noted.iter().filter(|finding| !finding.grouped))
         .collect();
     if !noted.is_empty() {
-        out.push_str("\n**Lower-confidence notes**\n");
+        out.push_str("\n**Advisory notes**\n");
         for finding in noted {
             render_finding(out, finding, proposal);
         }
@@ -448,8 +450,9 @@ fn render_finding(
     );
     let _ = writeln!(
         out,
-        "- **{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:** {}",
+        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:** {}",
         severity(finding.severity),
+        if finding.late { " · late" } else { "" },
         prose(&finding.title),
         citation,
         prose(&concise(&finding.body)),

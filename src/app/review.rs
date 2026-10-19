@@ -2688,6 +2688,88 @@ mod tests {
         assert_observed_review_root_survives_scope_order(true).await;
     }
 
+    #[tokio::test]
+    async fn observed_model_preserves_dispatch_control_across_budget_binding_orders() {
+        use crate::harness::mock::execution_test_support::{
+            DispatchProbe, execution_control,
+        };
+        use crate::ports::model::Message;
+        use crate::ports::model_execution::ModelExecutionRefusal;
+
+        for scope_first in [false, true] {
+            for control_first in [false, true] {
+                let mock = MockModel::new()
+                    .then(json!({"summary":"first"}))
+                    .then(json!({"summary":"must be refused"}))
+                    .with_usage(Usage {
+                        input_tokens: 2,
+                        output_tokens: 1,
+                        calls_attempted: 1,
+                        calls_succeeded: 1,
+                        cost_usd: 1.0,
+                        ..Usage::default()
+                    });
+                let timing = crate::review_timing::ReviewTiming::new(
+                    "owner/repo",
+                    7,
+                    "Large",
+                );
+                let observed: Arc<dyn Model> = Arc::new(ObservedModel {
+                    inner: Arc::new(DispatchProbe::new(mock.clone())),
+                    timing: timing.clone(),
+                });
+                let (execution, control) = execution_control(1);
+                let scoped = if scope_first {
+                    observed
+                        .scoped_budget(8.0)
+                        .expect("the probe creates a lane scope")
+                } else {
+                    observed
+                };
+                let root = if control_first {
+                    let controlled = scoped
+                        .with_execution_control(control)
+                        .unwrap_or_else(|| scoped.clone());
+                    controlled
+                        .with_review_budget(10.0)
+                        .expect("the probe binds a review budget")
+                } else {
+                    let budgeted = scoped
+                        .with_review_budget(10.0)
+                        .expect("the probe binds a review budget");
+                    budgeted
+                        .with_execution_control(control)
+                        .unwrap_or(budgeted)
+                };
+                let lane = root
+                    .scoped_budget(8.0)
+                    .expect("scoped observed model retains both review bindings");
+                let request = || ModelRequest {
+                    model: "probe".into(),
+                    messages: vec![Message::user("model request")],
+                    schema: json!({"type":"object"}),
+                    schema_name: "observed-dispatch-control".into(),
+                    max_tokens: 16,
+                };
+
+                assert!(root.complete(request()).await.is_ok());
+                assert!(matches!(
+                    lane.complete(request()).await,
+                    Err(Error::ModelExecutionRefused {
+                        refusal: ModelExecutionRefusal::CallLimit,
+                        ..
+                    })
+                ));
+                assert_eq!(mock.calls(), 1, "the denied request never reaches the mock");
+                assert_eq!(execution.snapshot().committed_calls, 1);
+                let record = timing.snapshot();
+                assert_eq!(record.calls_succeeded, 1);
+                assert_eq!(record.usage.input_tokens, 2);
+                assert_eq!(record.usage.cost_usd, 1.0);
+            }
+        }
+    }
+
     #[test]
     fn maintainer_disputed_findings_keep_their_status_in_prompt_annotations() {
         let title = "Reject the stale caller contract".to_string();

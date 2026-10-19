@@ -4783,6 +4783,93 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn owned_model_preserves_dispatch_control_and_lease_across_rescoping() {
+        use crate::harness::mock::execution_test_support::{
+            DispatchProbe, execution_control,
+        };
+        use crate::ports::model::Message;
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use std::sync::atomic::Ordering;
+
+        for scope_first in [false, true] {
+            for control_first in [false, true] {
+                let (mut guarded, store, mut original, _) = owned_review_budget_probe().await;
+                let mock = MockModel::new()
+                    .then(json!({"summary":"first"}))
+                    .then(json!({"summary":"must be refused"}))
+                    .with_usage(crate::ports::model::Usage {
+                        input_tokens: 2,
+                        output_tokens: 1,
+                        calls_attempted: 1,
+                        calls_succeeded: 1,
+                        cost_usd: 1.0,
+                        ..Default::default()
+                    });
+                guarded.inner = Arc::new(DispatchProbe::new(mock.clone()));
+                let model: Arc<dyn Model> = Arc::new(guarded);
+                let (execution, control) = execution_control(1);
+                let scoped = if scope_first {
+                    model
+                        .scoped_budget(8.0)
+                        .expect("owned wrapper creates a lane scope")
+                } else {
+                    model
+                };
+                let root = if control_first {
+                    let controlled = scoped
+                        .with_execution_control(control)
+                        .unwrap_or_else(|| scoped.clone());
+                    controlled
+                        .with_review_budget(10.0)
+                        .expect("owned wrapper binds a review budget")
+                } else {
+                    let budgeted = scoped
+                        .with_review_budget(10.0)
+                        .expect("owned wrapper binds a review budget");
+                    budgeted
+                        .with_execution_control(control)
+                        .unwrap_or(budgeted)
+                };
+                let lane = root
+                    .scoped_budget(8.0)
+                    .expect("scoped owned model retains control and ownership");
+                let model_request = || ModelRequest {
+                    model: "probe".into(),
+                    messages: vec![Message::user("review the leased head")],
+                    schema: json!({"type":"object"}),
+                    schema_name: "owned-dispatch-control".into(),
+                    max_tokens: 16,
+                };
+
+                assert!(root.complete(model_request()).await.is_ok());
+                assert!(matches!(
+                    lane.complete(model_request()).await,
+                    Err(Error::ModelExecutionRefused {
+                        refusal: ModelExecutionRefusal::CallLimit,
+                        ..
+                    })
+                ));
+                assert_eq!(mock.calls(), 1, "refusal occurs before the provider probe");
+                assert_eq!(execution.snapshot().committed_calls, 1);
+
+                original.id = crate::ports::review_job::ReviewJobId(
+                    format!("new-head-delivery-{scope_first}-{control_first}"),
+                );
+                original.delivery = Some(format!("new-head-delivery-{scope_first}-{control_first}"));
+                original.head_sha = Some("head-b".into());
+                store.admit_batch(vec![original.clone()]).await.unwrap();
+                assert!(matches!(
+                    lane.complete(model_request()).await,
+                    Err(Error::ReviewSuperseded)
+                ));
+                assert_eq!(mock.calls(), 1);
+                assert_eq!(store.get(&original.id).await.unwrap().unwrap().head_sha, Some("head-b".into()));
+                let _ = Ordering::Relaxed;
+            }
+        }
+    }
+
     struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
 
     impl std::io::Write for TimingLogWriter {

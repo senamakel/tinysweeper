@@ -384,6 +384,70 @@ mod tests {
             "the request is unchanged"
         );
     }
+
+    #[tokio::test]
+    async fn mock_execution_ceiling_refuses_before_recording_or_consuming_the_next_answer() {
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use execution_test_support::execution_control;
+
+        let mock = MockModel::new()
+            .then(json!({"summary":"first"}))
+            .then(json!({"summary":"still queued"}));
+        let (_, control) = execution_control(1);
+        let controlled = mock
+            .with_execution_control(control)
+            .unwrap_or_else(|| Arc::new(mock.clone()));
+
+        assert_eq!(controlled.complete(request()).await.unwrap().value["summary"], "first");
+        assert!(matches!(
+            controlled.complete(request()).await,
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 1, "refusal precedes request recording");
+
+        let (_, replacement_control) = execution_control(1);
+        let rebound = mock
+            .with_execution_control(replacement_control)
+            .unwrap_or_else(|| Arc::new(mock.clone()));
+        assert_eq!(
+            rebound.complete(request()).await.unwrap().value["summary"],
+            "still queued",
+            "refusal leaves the canned answer available"
+        );
+        assert_eq!(mock.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_mock_control_does_not_consume_the_first_canned_answer() {
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use execution_test_support::execution_control;
+
+        let mock = MockModel::new().then(json!({"summary":"first"}));
+        let (execution, control) = execution_control(1);
+        execution.cancel();
+        let controlled = mock
+            .with_execution_control(control)
+            .unwrap_or_else(|| Arc::new(mock.clone()));
+
+        assert!(matches!(
+            controlled.complete(request()).await,
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::Cancelled,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 0);
+
+        let (_, replacement_control) = execution_control(1);
+        let rebound = mock
+            .with_execution_control(replacement_control)
+            .unwrap_or_else(|| Arc::new(mock.clone()));
+        assert_eq!(rebound.complete(request()).await.unwrap().value["summary"], "first");
+        assert_eq!(mock.calls(), 1);
+    }
 }
 
 /// Shared physical-dispatch fixture for decorator regression tests.

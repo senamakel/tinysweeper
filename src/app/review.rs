@@ -144,9 +144,7 @@ impl ObservedModel {
         })
         .await;
         pending.completed = true;
-        let observed_calls = observer
-            .observed
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let observed_calls = observer.observed.load(std::sync::atomic::Ordering::Relaxed);
         let execution_refusal = result.as_ref().err().and_then(|error| match error {
             Error::ModelExecutionRefused { refusal, .. } => Some(*refusal),
             _ => None,
@@ -190,43 +188,43 @@ impl ObservedModel {
             }
             if observed_calls == 0 && !physical {
                 match &result {
-                Ok(response) => self.timing.record(|r| {
-                    let usage = response.usage;
-                    if usage.calls_attempted > 0 {
-                        r.calls_attempted += usage.calls_attempted;
-                        r.calls_succeeded += usage.calls_succeeded;
-                        r.calls_refused += usage.calls_refused;
-                        r.calls_errored += usage.calls_errored;
-                    } else {
-                        r.calls_attempted += 1;
-                        r.calls_succeeded += 1;
-                    }
-                    r.usage.add(response.usage);
-                }),
-                Err(error) => self.timing.record(|r| {
-                    if let Some(usage) = error.usage()
-                        && (usage.calls_attempted > 0
-                            || usage.calls_succeeded > 0
-                            || usage.calls_refused > 0
-                            || usage.calls_errored > 0)
-                    {
-                        r.calls_attempted += usage.calls_attempted;
-                        r.calls_succeeded += usage.calls_succeeded;
-                        r.calls_refused += usage.calls_refused;
-                        r.calls_errored += usage.calls_errored;
-                    } else if matches!(error, Error::Budget { .. }) {
-                        r.calls_refused += 1;
-                    } else if error.to_string().to_lowercase().contains("refus") {
-                        r.calls_attempted += 1;
-                        r.calls_refused += 1;
-                    } else {
-                        r.calls_attempted += 1;
-                        r.calls_errored += 1;
-                    }
-                    if let Some(usage) = error.usage() {
-                        r.usage.add(usage);
-                    }
-                }),
+                    Ok(response) => self.timing.record(|r| {
+                        let usage = response.usage;
+                        if usage.calls_attempted > 0 {
+                            r.calls_attempted += usage.calls_attempted;
+                            r.calls_succeeded += usage.calls_succeeded;
+                            r.calls_refused += usage.calls_refused;
+                            r.calls_errored += usage.calls_errored;
+                        } else {
+                            r.calls_attempted += 1;
+                            r.calls_succeeded += 1;
+                        }
+                        r.usage.add(response.usage);
+                    }),
+                    Err(error) => self.timing.record(|r| {
+                        if let Some(usage) = error.usage()
+                            && (usage.calls_attempted > 0
+                                || usage.calls_succeeded > 0
+                                || usage.calls_refused > 0
+                                || usage.calls_errored > 0)
+                        {
+                            r.calls_attempted += usage.calls_attempted;
+                            r.calls_succeeded += usage.calls_succeeded;
+                            r.calls_refused += usage.calls_refused;
+                            r.calls_errored += usage.calls_errored;
+                        } else if matches!(error, Error::Budget { .. }) {
+                            r.calls_refused += 1;
+                        } else if error.to_string().to_lowercase().contains("refus") {
+                            r.calls_attempted += 1;
+                            r.calls_refused += 1;
+                        } else {
+                            r.calls_attempted += 1;
+                            r.calls_errored += 1;
+                        }
+                        if let Some(usage) = error.usage() {
+                            r.usage.add(usage);
+                        }
+                    }),
                 }
             }
         }

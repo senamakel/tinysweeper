@@ -416,24 +416,22 @@ mod tests {
 
     #[derive(Clone)]
     struct BindingProbe {
+        model: Arc<dyn Model>,
         budget_hooks: Arc<std::sync::atomic::AtomicUsize>,
         control_hooks: Arc<std::sync::atomic::AtomicUsize>,
-        control: Option<Arc<dyn ModelExecutionControl>>,
     }
 
     #[async_trait::async_trait]
     impl Model for BindingProbe {
         fn complete_reports_physical_calls(&self) -> bool {
-            self.control.is_some()
+            self.model.complete_reports_physical_calls()
         }
 
         async fn complete(
             &self,
-            _request: crate::ports::model::ModelRequest,
+            request: crate::ports::model::ModelRequest,
         ) -> crate::error::Result<crate::ports::model::ModelResponse> {
-            Err(crate::error::Error::Model(
-                "binding probe is not callable".into(),
-            ))
+            self.model.complete(request).await
         }
 
         fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn Model>> {
@@ -448,10 +446,7 @@ mod tests {
         ) -> Option<Arc<dyn Model>> {
             self.control_hooks
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Some(Arc::new(Self {
-                control: Some(control),
-                ..self.clone()
-            }))
+            self.model.with_execution_control(control)
         }
     }
 
@@ -499,29 +494,30 @@ mod tests {
             .expect("the initial normal scope admits work")
             .mark_dispatched()
             .expect("the initial dispatch commits");
+        execution.restrict_to_large(1);
 
+        let mock = crate::harness::mock::MockModel::silent();
         let budget_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let control_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let first_base: Arc<dyn Model> = Arc::new(BindingProbe {
+            model: Arc::new(mock.clone()),
             budget_hooks: Arc::clone(&budget_hooks),
             control_hooks: Arc::clone(&control_hooks),
-            control: None,
         });
         let first = context.bind_model(Arc::clone(&first_base), 2.0).clone();
 
         let other_budget_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let other_control_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let second_base: Arc<dyn Model> = Arc::new(BindingProbe {
+            model: Arc::new(crate::harness::mock::MockModel::silent()),
             budget_hooks: Arc::clone(&other_budget_hooks),
             control_hooks: Arc::clone(&other_control_hooks),
-            control: None,
         });
         let second = context.bind_model(second_base, 100.0).clone();
 
         assert!(Arc::ptr_eq(&first.model, &second.model));
         assert!(first.review_budget_bound);
         assert!(first.execution_control_bound);
-        assert!(first.model.complete_reports_physical_calls());
         assert_eq!(budget_hooks.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(control_hooks.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(
@@ -532,6 +528,23 @@ mod tests {
             other_control_hooks.load(std::sync::atomic::Ordering::Relaxed),
             0
         );
+        assert!(matches!(
+            first
+                .model
+                .complete(crate::ports::model::ModelRequest {
+                    model: "mock".into(),
+                    messages: vec![crate::ports::model::Message::user("must be refused")],
+                    schema: serde_json::json!({"type":"object"}),
+                    schema_name: "review-binding-cap".into(),
+                    max_tokens: 8,
+                })
+                .await,
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 0, "refusal precedes mock request recording");
         assert_eq!(execution.snapshot().committed_calls, 1);
     }
 

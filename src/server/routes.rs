@@ -4177,7 +4177,7 @@ mod tests {
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let mut request = queued_test_review(75);
         request.head_sha = Some("head-a".into());
-        store.admit_batch(vec![request]).await.unwrap();
+        store.admit_batch(vec![request.clone()]).await.unwrap();
         let now = unix_time_ms();
         let owned = store
             .claim_next("slow-store-worker", now)

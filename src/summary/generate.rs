@@ -401,6 +401,7 @@ pub fn deterministic_with_paths(
         ..ReviewSummary::default()
     });
     summary.surface = classify(diffs);
+    summary.file_coverage = file_coverage(full_pr_paths, lanes);
     summary.cache_chain_restarted = false;
     summary.updated_at_epoch = now_epoch();
     summary.history.push(ReviewPass {
@@ -419,6 +420,52 @@ pub fn deterministic_with_paths(
     summary.purpose_title = normalized_purpose_title(pull_request);
     summary.executive_summary = purpose_opening(pull_request, &summary.executive_summary);
     summary
+}
+
+fn file_coverage(
+    full_pr_paths: &[String],
+    lanes: &[LaneProposal],
+) -> Option<crate::summary::types::FileReviewCoverage> {
+    let paths: BTreeSet<&str> = full_pr_paths.iter().map(String::as_str).collect();
+    if paths.is_empty() {
+        return None;
+    }
+
+    let mut reviewed = BTreeSet::new();
+    let mut has_evidence = false;
+    for lane in lanes {
+        if lane.skipped.is_some() {
+            continue;
+        }
+        if let Some(coverage) = &lane.coverage {
+            has_evidence = true;
+            let unanswered: BTreeSet<&str> = coverage
+                .unanswered
+                .iter()
+                .chain(lane.unanswered.iter())
+                .map(String::as_str)
+                .collect();
+            reviewed.extend(
+                coverage
+                    .reviewed
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|path| paths.contains(path) && !unanswered.contains(path)),
+            );
+        }
+    }
+    if !has_evidence {
+        return None;
+    }
+
+    Some(crate::summary::types::FileReviewCoverage {
+        reviewed: reviewed.len(),
+        total: paths.len(),
+        unreviewed: paths
+            .difference(&reviewed)
+            .map(|path| (*path).to_string())
+            .collect(),
+    })
 }
 
 fn normalized_purpose_title(pull_request: &PullRequest) -> Option<String> {
@@ -2488,5 +2535,87 @@ mod tests {
         assert!(summary.updated_at_epoch > 0);
         assert_eq!(summary.history[0].head_sha, "empty-head");
         assert_eq!(summary.surface, ChangeSurface::default());
+    }
+
+    #[test]
+    fn deterministic_summary_counts_only_paths_with_review_evidence() {
+        let lanes = [lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Success,
+            "Reviewed",
+            &["model"],
+            &["src/missing.rs"],
+            Some(crate::lanes::FileCoverage {
+                reviewed: vec!["src/reviewed.rs".into()],
+                unanswered: vec!["src/missing.rs".into()],
+            }),
+        )];
+        let full_paths = vec![
+            "src/reviewed.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        let diffs = [FileDiff {
+            path: "src/reviewed.rs".into(),
+            ..FileDiff::default()
+        }];
+
+        let summary = deterministic_with_paths(
+            &Config::default(),
+            &PullRequest::default(),
+            &diffs,
+            &full_paths,
+            &lanes,
+            None,
+        );
+
+        let coverage = summary.file_coverage.expect("known lane coverage");
+        assert_eq!(coverage.reviewed, 1);
+        assert_eq!(coverage.total, 3);
+        assert_eq!(coverage.unreviewed, ["README.md", "src/missing.rs"]);
+    }
+
+    #[test]
+    fn completed_whole_pull_request_lanes_do_not_prove_every_path_was_reviewed() {
+        let mut critique = lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Neutral,
+            "No reviewer produced a usable response.",
+            &[],
+            &[&LaneId::Critique.check_name()],
+            None,
+        );
+        critique.skipped = Some("No reviewer response".into());
+        let lanes = [
+            lane(
+                LaneId::Description,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed.",
+                &["model"],
+                &[],
+                None,
+            ),
+            lane(
+                LaneId::Commits,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed.",
+                &["model"],
+                &[],
+                None,
+            ),
+            critique,
+        ];
+        let full_paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+
+        let summary = deterministic_with_paths(
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &full_paths,
+            &lanes,
+            None,
+        );
+
+        assert!(summary.file_coverage.is_none());
     }
 }

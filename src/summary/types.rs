@@ -51,6 +51,9 @@ pub struct ReviewSummary {
     pub positive_observations: BTreeMap<LaneId, Vec<String>>,
     /// Deterministically classified changed files.
     pub surface: ChangeSurface,
+    /// Per-file review coverage from completed lane evidence and the forge's
+    /// full changed-path list. Missing on legacy summaries without that proof.
+    pub file_coverage: Option<FileReviewCoverage>,
     /// Recent review passes, oldest first.
     pub history: Vec<ReviewPass>,
     /// Whether the stored cache conversation had to restart at this pass.
@@ -61,6 +64,18 @@ pub struct ReviewSummary {
     pub omitted_tests: usize,
     /// Update time as seconds since the Unix epoch.
     pub updated_at_epoch: u64,
+}
+
+/// The number of pull-request files covered by at least one completed lane.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileReviewCoverage {
+    /// Files covered by at least one completed review lane.
+    pub reviewed: usize,
+    /// Total changed paths supplied by the forge.
+    pub total: usize,
+    /// Changed paths no completed lane covered.
+    pub unreviewed: Vec<String>,
 }
 
 /// One generated behavior claim.

@@ -9,6 +9,6 @@ pub use generate::{
 };
 pub use render::{LEGACY_MARKER, MARKER, failed, in_progress, render};
 pub use types::{
-    ChangeSurface, Feature, FeatureKind, ReviewPass, ReviewSummary, SummaryDiffstat,
-    SummaryTranscriptTurn, TestCoverage,
+    ChangeSurface, Feature, FeatureKind, FileReviewCoverage, ReviewPass, ReviewSummary,
+    SummaryDiffstat, SummaryTranscriptTurn, TestCoverage,
 };

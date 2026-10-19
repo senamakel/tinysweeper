@@ -580,12 +580,21 @@ impl ReviewSchedulerState {
             }).flatten();
             match (existing, request.head_sha.as_deref()) {
                 (Some(record), Some(head)) => !record.review_checks.iter().any(|check| check.head_sha == head),
-                (Some(_), None) => false,
-                (None, _) => true,
+                (Some(_), None) | (None, None) => false,
+                (None, Some(_)) => true,
             }
         }).count();
-        let future_status_slots = requests.len();
-        if status_records + additional_status_records + future_status_slots > MAX_REVIEW_STATUS_RECORDS {
+        let new_jobs = new_uncoalesced_count(&self.unfinished, &requests);
+        let replenished_reservations = requests.iter().filter(|request| {
+            request.mode == ReviewJobMode::Incremental
+                && self.unfinished.iter().any(|record| {
+                    record.request.mode == ReviewJobMode::Incremental
+                        && record.request.repo == request.repo
+                        && record.request.number == request.number
+                        && !record.status_reconcile_reserved
+                })
+        }).count();
+        if status_records + additional_status_records + new_jobs + replenished_reservations > MAX_REVIEW_STATUS_RECORDS {
             return Admission::Full;
         }
         let already = requests
@@ -600,7 +609,6 @@ impl ReviewSchedulerState {
         if already == requests.len() {
             return Admission::Duplicate;
         }
-        let new_jobs = new_uncoalesced_count(&self.unfinished, &requests);
         let pending_prs = self
             .unfinished
             .iter()

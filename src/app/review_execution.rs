@@ -90,8 +90,8 @@ impl ReviewExecution {
         let window = options
             .hard_deadline
             .saturating_duration_since(options.started_at);
-        let soft_deadline = options.started_at
-            + window.mul_f64(f64::from(options.soft_deadline_percent) / 100.0);
+        let soft_deadline =
+            options.started_at + window.mul_f64(f64::from(options.soft_deadline_percent) / 100.0);
         Self {
             inner: Arc::new(ExecutionInner {
                 started_at: options.started_at,
@@ -202,7 +202,9 @@ impl Drop for ReviewDispatchPermit {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -258,21 +260,14 @@ mod tests {
     async fn acquisition_uses_the_absolute_soft_deadline_from_review_start() {
         let started_at = Instant::now() - Duration::from_secs(85);
         let hard_deadline = started_at + Duration::from_secs(100);
-        let execution = ReviewExecution::new(options(
-            ReviewMode::Normal,
-            None,
-            started_at,
-            hard_deadline,
-        ));
+        let execution =
+            ReviewExecution::new(options(ReviewMode::Normal, None, started_at, hard_deadline));
 
         assert!(execution.soft_deadline() < Instant::now());
         assert!(execution.hard_deadline() > Instant::now());
         assert_eq!(execution.started_at(), started_at);
         assert_eq!(
-            execution
-                .acquire()
-                .await
-                .err(),
+            execution.acquire().await.err(),
             Some(ModelExecutionRefusal::SoftDeadline)
         );
     }
@@ -357,7 +352,10 @@ mod tests {
         assert_eq!(execution.mode(), ReviewMode::Large);
         assert_eq!(execution.max_calls(), Some(48));
         assert_eq!(execution.drain_seconds(), 30);
-        assert_eq!(execution.soft_deadline(), started_at + Duration::from_secs(720));
+        assert_eq!(
+            execution.soft_deadline(),
+            started_at + Duration::from_secs(720)
+        );
     }
 
     #[test]

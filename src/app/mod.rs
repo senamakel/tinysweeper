@@ -6,8 +6,8 @@
 pub mod apply;
 pub mod doctor;
 pub mod local;
-pub(crate) mod review_execution;
 pub mod review;
+pub(crate) mod review_execution;
 
 pub use crate::app::apply::apply;
 pub use crate::app::doctor::{check, doctor};

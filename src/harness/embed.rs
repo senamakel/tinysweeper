@@ -840,7 +840,7 @@ impl GatewayModel {
             },
         );
         completion.max_tokens = Some(request.max_tokens);
-        completion.provider_options = provider_options(&self.reasoning_effort, routing);
+        completion.provider_options = provider_options(self.effort_for(&request), routing);
         let budget = self
             .budget
             .as_ref()
@@ -881,7 +881,7 @@ impl GatewayModel {
             tree,
             policy,
             provider,
-            provider_options(&self.reasoning_effort, routing),
+            provider_options(self.effort_for(&request), routing),
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
                 lookup_budget: lookup_budget.clone(),

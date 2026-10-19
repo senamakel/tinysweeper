@@ -57,6 +57,14 @@ fn the_key_covers_everything_that_can_change_an_answer() {
         key(&other_ceiling),
         "a model that runs out of tokens answers differently"
     );
+
+    let mut other_effort = base.clone();
+    other_effort.reasoning_effort = Some("low".into());
+    assert_ne!(
+        key(&base),
+        key(&other_effort),
+        "a role-specific reasoning override changes the model request"
+    );
 }
 
 #[test]

@@ -16,8 +16,8 @@
 //!
 //! # A key miss is loud on purpose
 //!
-//! The cassette key covers the model id, the schema name, the token ceiling and
-//! every message. So any change to a prompt invalidates every cassette that
+//! The cassette key covers the model id, the schema name, the token ceiling,
+//! an explicit per-request reasoning override, and every message. So any change to a prompt invalidates every cassette that
 //! prompt produced — and that is the *point*. A scoring run that silently fell
 //! back to a stale recording would report the old prompt's quality under the new
 //! prompt's name, which is worse than no measurement at all. Strict replay says
@@ -380,6 +380,11 @@ pub fn key(request: &ModelRequest) -> String {
     hasher.update(b"\0");
     hasher.update(request.schema_name.as_bytes());
     hasher.update(b"\0");
+    if let Some(effort) = &request.reasoning_effort {
+        hasher.update(b"reasoning-effort\0");
+        hasher.update(effort.as_bytes());
+        hasher.update(b"\0");
+    }
     // The schema is the output contract, not just its name a provider wants:
     // two responses with the same name but different properties are different
     // answers. `serde_json`'s key ordering is a feature flag, not a property:

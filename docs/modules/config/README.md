@@ -87,6 +87,16 @@ in milliseconds (default `120000`). It applies independently to each route,
 allowing a transport timeout to fall back without disabling the whole-review
 deadline or cancellation. Agent reviewers retain their separate turn deadline.
 
+`models.reasoning_effort` is the fallback used by ordinary requests with no
+override, and `off` is a global kill switch. The operator can set independent
+`models.reviewer_reasoning_effort`, `models.falsify_reasoning_effort`, and
+`models.summary_reasoning_effort` values for critique/security reviewers,
+finding verification, and generated summaries. Built-in defaults are
+`medium`, `low`, and `low`. A request carries its effective override explicitly
+through retries and fallbacks, and cassette identity includes that value.
+These settings affect model cost, so repository configuration cannot override
+them.
+
 ## Review budget admission
 
 Every review lane reserves spend against `models.budget_usd_per_pr`, including

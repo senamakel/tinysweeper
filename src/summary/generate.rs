@@ -1097,9 +1097,14 @@ mod tests {
                 cost_usd: 0.01,
                 ..Default::default()
             });
+        let config: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
         let (summary, spend, transcript) = generate(
             &model,
-            &Config::default(),
+            &config,
             &PullRequest {
                 body: "Purpose retained".into(),
                 ..PullRequest::default()
@@ -1135,6 +1140,12 @@ mod tests {
         assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
         assert_eq!(transcript.len(), 1);
         let request = model.requests();
+        assert!(
+            request
+                .iter()
+                .all(|request| request.reasoning_effort.as_deref() == Some("low")),
+            "both summary generation and its schema repair carry the summary effort"
+        );
         assert!(
             request[0].schema["properties"]["positive_observations"]["additionalProperties"]
                 == false

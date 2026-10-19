@@ -8,6 +8,112 @@ use super::*;
 use crate::harness::mock::MockModel;
 use crate::ports::model::Message;
 
+#[derive(Clone, Default)]
+struct ReviewBudgetProbe {
+    remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    completed: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Model for ReviewBudgetProbe {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        use std::sync::atomic::Ordering;
+
+        if let Some(remaining) = &self.remaining
+            && remaining
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                })
+                .is_err()
+        {
+            return Err(Error::Budget {
+                spent: 1.0,
+                limit: 1.0,
+                usage: None,
+            });
+        }
+        self.completed.fetch_add(1, Ordering::Relaxed);
+        Ok(ModelResponse {
+            value: answer(),
+            model: "review-budget-probe".into(),
+            usage: Usage {
+                input_tokens: 2,
+                output_tokens: 1,
+                calls_attempted: 1,
+                calls_succeeded: 1,
+                cost_usd: 0.25,
+                ..Usage::default()
+            },
+        })
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        true
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        false
+    }
+
+    fn scoped_budget(&self, _budget_usd: f64) -> Option<Arc<dyn Model>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        let calls = limit_usd.floor().max(0.0) as usize;
+        Some(Arc::new(Self {
+            remaining: Some(Arc::new(std::sync::atomic::AtomicUsize::new(calls))),
+            completed: self.completed.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn recording_cassette_preserves_review_root_and_recording_state_across_scopes() {
+    use std::sync::atomic::Ordering;
+
+    for bind_after_scope in [false, true] {
+        let dir = tempfile::tempdir().expect("temporary cassette directory");
+        let inner = Arc::new(ReviewBudgetProbe::default());
+        let completed = inner.completed.clone();
+        let cassette = Arc::new(Cassette::record(inner, dir.path()));
+        let model: Arc<dyn Model> = cassette.clone();
+        let root = if bind_after_scope {
+            model
+                .scoped_budget(8.0)
+                .expect("recording cassette forwards lane scopes")
+                .with_review_budget(1.0)
+                .expect("recording cassette forwards review binding")
+        } else {
+            model
+                .with_review_budget(1.0)
+                .expect("recording cassette forwards review binding")
+        };
+        let lane = root
+            .scoped_budget(8.0)
+            .expect("recording cassette retains the review root on lane rescope");
+        assert!(root.complete_reports_physical_calls());
+        assert!(!root.review_reports_physical_calls());
+
+        let first = root
+            .complete(request("probe", "first paid response"))
+            .await
+            .expect("the first response fits the review root");
+        assert_eq!(first.value, answer());
+        assert!(matches!(
+            lane.complete(request("probe", "second paid response")).await,
+            Err(Error::Budget { .. })
+        ));
+        assert_eq!(completed.load(Ordering::Relaxed), 1);
+        assert_eq!(cassette.served(), 1);
+        assert_eq!(cassette.spend().usage.input_tokens, 2);
+        assert_eq!(cassette.spend().usage.output_tokens, 1);
+        assert_eq!(cassette.cost_usd(), 0.25);
+        assert_eq!(cassette.flush().expect("the original recorder sees the take"), 1);
+        assert_eq!(load(dir.path()).expect("the recorded take remains readable").len(), 1);
+    }
+}
+
 fn request(model: &str, prompt: &str) -> ModelRequest {
     ModelRequest {
         model: model.to_string(),

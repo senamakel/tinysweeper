@@ -4640,6 +4640,139 @@ impl Previews for PreviewDispatch {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Default)]
+    struct ReviewBudgetProbe {
+        remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        completed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for ReviewBudgetProbe {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            use std::sync::atomic::Ordering;
+
+            if let Some(remaining) = &self.remaining
+                && remaining
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    })
+                    .is_err()
+            {
+                return Err(Error::Budget {
+                    spent: 1.0,
+                    limit: 1.0,
+                    usage: None,
+                });
+            }
+            self.completed.fetch_add(1, Ordering::Relaxed);
+            Ok(ModelResponse {
+                value: json!({"ok": true}),
+                model: "review-budget-probe".into(),
+                usage: crate::ports::model::Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    calls_attempted: 1,
+                    calls_succeeded: 1,
+                    cost_usd: 0.25,
+                    ..Default::default()
+                },
+            })
+        }
+
+        fn scoped_budget(&self, _budget_usd: f64) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(self.clone()))
+        }
+
+        fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            let calls = limit_usd.floor().max(0.0) as usize;
+            Some(Arc::new(Self {
+                remaining: Some(Arc::new(std::sync::atomic::AtomicUsize::new(calls))),
+                completed: self.completed.clone(),
+            }))
+        }
+    }
+
+    async fn owned_review_budget_probe() -> (
+        OwnedModel,
+        Arc<crate::ports::review_job_mock::MockReviewJobStore>,
+        ReviewRequest,
+        ReviewBudgetProbe,
+    ) {
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let mut request = queued_test_review(928);
+        request.repo = "owner/repo".into();
+        request.number = 7;
+        request.head_sha = Some("head-a".into());
+        store.admit_batch(vec![request.clone()]).await.unwrap();
+        let now = unix_time_ms();
+        seed_previously_published_queue_checks(&*store, now).await;
+        let owned = store.claim_next("review-budget-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", now).await.unwrap());
+
+        let probe = ReviewBudgetProbe::default();
+        let guarded = OwnedModel {
+            inner: Arc::new(probe.clone()),
+            jobs: store.clone(),
+            owned,
+            owner_lost: None,
+            owner_until: None,
+        };
+        (guarded, store, request, probe)
+    }
+
+    #[tokio::test]
+    async fn owned_model_preserves_review_budget_and_ownership_across_rescoping() {
+        use crate::ports::model::Message;
+        use std::sync::atomic::Ordering;
+
+        for bind_after_scope in [false, true] {
+            let (guarded, store, mut original, probe) = owned_review_budget_probe().await;
+            let model: Arc<dyn Model> = Arc::new(guarded);
+            let root = if bind_after_scope {
+                model
+                    .scoped_budget(8.0)
+                    .expect("owned wrapper forwards lane scopes")
+                    .with_review_budget(1.0)
+                    .expect("owned wrapper forwards review binding")
+            } else {
+                model
+                    .with_review_budget(1.0)
+                    .expect("owned wrapper forwards review binding")
+            };
+            let lane = root
+                .scoped_budget(8.0)
+                .expect("review-root scopes retain worker ownership");
+            let model_request = || ModelRequest {
+                model: "probe".into(),
+                messages: vec![Message::user("review the leased head")],
+                schema: json!({"type":"object"}),
+                schema_name: "review-root-probe".into(),
+                max_tokens: 16,
+            };
+
+            assert!(root.complete(model_request()).await.is_ok());
+            assert!(matches!(
+                lane.complete(model_request()).await,
+                Err(Error::Budget { .. })
+            ));
+            assert_eq!(probe.completed.load(Ordering::Relaxed), 1);
+
+            original.id = crate::ports::review_job::ReviewJobId("new-head-delivery".into());
+            original.delivery = Some("new-head-delivery".into());
+            original.head_sha = Some("head-b".into());
+            store.admit_batch(vec![original]).await.unwrap();
+            assert!(matches!(
+                lane.complete(model_request()).await,
+                Err(Error::ReviewSuperseded)
+            ));
+            assert_eq!(
+                probe.completed.load(Ordering::Relaxed),
+                1,
+                "the old lease cannot reach the provider after ownership changes"
+            );
+        }
+    }
+
     struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
 
     impl std::io::Write for TimingLogWriter {

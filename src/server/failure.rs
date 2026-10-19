@@ -306,7 +306,19 @@ mod tests {
             changed_lines: 1,
             max_lines: 50_000,
         }));
+        assert!(!is_transient(&Error::ReviewExecutionUnavailable));
         assert!(!is_transient(&Error::lane("critique", "no verdict")));
+    }
+
+    #[test]
+    fn unsupported_large_review_control_has_an_operator_specific_failure() {
+        let error = Error::ReviewExecutionUnavailable;
+        let check = check_run("abc123", &error);
+
+        assert_eq!(title_for(&error), "The review cannot enforce its large-review limits");
+        assert!(summary_for(&error).contains("physical-dispatch control"));
+        assert_eq!(check.conclusion, Some(CheckConclusion::ActionRequired));
+        assert!(!is_transient(&error));
     }
 
     #[test]

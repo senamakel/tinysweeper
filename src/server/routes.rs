@@ -2351,6 +2351,8 @@ struct Run {
     /// Fixed when the worker starts, not per attempt. Queue wait is measured
     /// separately and does not consume the execution deadline.
     deadline: tokio::time::Instant,
+    /// Shared physical and monetary model scope retained across retries.
+    execution: Arc<crate::app::review_execution::ReviewRunContext>,
     /// Revision admitted by the queue, retained across retries and all phases.
     expected_head: Option<String>,
     owned: Option<OwnedReview>,
@@ -3113,10 +3115,24 @@ async fn handle_review(
     // deadline would let three transient failures late in the run stretch a
     // single pull request to three times the budget, all under one check that
     // has said "reviewing" the entire time.
+    let started_at = tokio::time::Instant::now();
+    let deadline = started_at + REVIEW_DEADLINE;
+    let large_pr = &state.config.config.review.large_pr;
+    let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: deadline,
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: None,
+            soft_deadline_percent: large_pr.soft_deadline_percent,
+            drain_seconds: large_pr.drain_seconds,
+        },
+    ));
     let run = Run {
         mode,
         slot: slot.clone(),
-        deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+        deadline,
+        execution,
         timing: timing.clone(),
         expected_head,
         owned: owned.clone(),
@@ -4013,15 +4029,18 @@ async fn run_lanes(
     read_token: &str,
     run: &Run,
 ) -> Result<(Config, crate::app::Proposal)> {
+    let binding = run
+        .execution
+        .bind_model(state.models.text(), config.models.budget_usd_per_pr);
     let model = match &run.owned {
         Some(owned) => Arc::new(OwnedModel {
-            inner: state.models.text(),
+            inner: binding.model.clone(),
             jobs: state.review_jobs.clone(),
             owned: owned.clone(),
             owner_lost: run.owner_lost.clone(),
             owner_until: run.owner_until.clone(),
         }) as Arc<dyn Model>,
-        None => state.models.text(),
+        None => binding.model.clone(),
     };
 
     // The model runs against a read-only handle. The write token is minted by
@@ -4112,7 +4131,7 @@ async fn run_lanes(
                 .as_ref()
                 .map(|dir| dir as &dyn crate::ports::tree::TreeReader);
 
-            crate::app::review::review_with_tree_observed_at_head(
+            crate::app::review::review_with_tree_observed_at_head_in_run(
                 forge,
                 model,
                 config_ref.as_ref(),
@@ -4123,6 +4142,7 @@ async fn run_lanes(
                 retriever.as_ref(),
                 tree,
                 run.expected_head.as_deref(),
+                Arc::clone(&run.execution),
                 Some(run.timing.clone()),
             )
             .await

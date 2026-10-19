@@ -110,6 +110,11 @@ struct AgenticCallObserver {
     span: tracing::Span,
 }
 
+struct AgenticAttemptResources {
+    lookup_budget: Arc<crate::harness::agentic::LookupBudget>,
+    physical_counts: PhysicalDispatchCounts,
+}
+
 impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
     fn on_event(&self, event: &openhuman_embed::observe::TurnObservation) {
         use openhuman_embed::observe::TurnObservation;
@@ -1077,8 +1082,7 @@ impl GatewayModel {
         tree: &dyn crate::ports::tree::TreeReader,
         policy: &crate::config::types::LookupPolicy,
         routing: &ProviderRouting,
-        lookup_budget: &Arc<crate::harness::agentic::LookupBudget>,
-        physical_counts: &PhysicalDispatchCounts,
+        resources: AgenticAttemptResources,
     ) -> std::result::Result<ModelResponse, crate::harness::agentic::ReviewFailure> {
         let mut request = request.clone();
         request.model = model.to_owned();
@@ -1125,7 +1129,7 @@ impl GatewayModel {
         let observer = Arc::new(AgenticCallObserver {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
-            counts: physical_counts.clone(),
+            counts: resources.physical_counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
         });
@@ -1144,7 +1148,7 @@ impl GatewayModel {
             provider_options(&self.reasoning_effort, routing),
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
-                lookup_budget: lookup_budget.clone(),
+                lookup_budget: resources.lookup_budget,
                 dispatch_admission: self.execution_control.as_ref().map(|control| {
                     Arc::new(GatewayExecutionAdmission {
                         control: Arc::clone(control),
@@ -1266,8 +1270,10 @@ impl Model for GatewayModel {
                     tree,
                     policy,
                     &self.routing_for(model),
-                    &lookup_budget,
-                    &physical_counts,
+                    AgenticAttemptResources {
+                        lookup_budget: lookup_budget.clone(),
+                        physical_counts: physical_counts.clone(),
+                    },
                 )
                 .await
             {
@@ -1298,8 +1304,10 @@ impl Model for GatewayModel {
                     tree,
                     policy,
                     &ProviderRouting::unpinned(),
-                    &lookup_budget,
-                    &physical_counts,
+                    AgenticAttemptResources {
+                        lookup_budget: lookup_budget.clone(),
+                        physical_counts: physical_counts.clone(),
+                    },
                 )
                 .await
             {

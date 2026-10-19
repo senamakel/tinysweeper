@@ -1855,6 +1855,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_off_disables_reasoning_on_the_actual_request() {
+        use crate::ports::model::Model;
+
+        let (mut model, gateway, request) = admission_fixture().await;
+        model.reasoning_effort = "off".into();
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["reasoning"],
+            json!({"enabled": false}),
+            "the global off setting must survive request construction"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_request_effort_reaches_the_actual_gateway_request() {
+        use crate::ports::model::Model;
+
+        let (mut model, gateway, mut request) = admission_fixture().await;
+        request.reasoning_effort = Some("high".into());
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["reasoning"]["effort"], json!("high"));
+    }
+
+    #[tokio::test]
     async fn a_fresh_budget_scope_does_not_wait_for_its_parents_admission() {
         let (model, gateway, request) = admission_fixture().await;
         let _held = model

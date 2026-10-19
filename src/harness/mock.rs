@@ -402,8 +402,15 @@ mod tests {
             controlled.complete(request()).await.unwrap().value["summary"],
             "first"
         );
+        let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "fn example() {}")]);
         assert!(matches!(
-            controlled.complete(request()).await,
+            controlled
+                .review(
+                    request(),
+                    &tree,
+                    &crate::config::types::LookupPolicy::default(),
+                )
+                .await,
             Err(Error::ModelExecutionRefused {
                 refusal: ModelExecutionRefusal::CallLimit,
                 ..
@@ -434,9 +441,16 @@ mod tests {
         let controlled = mock
             .with_execution_control(control)
             .unwrap_or_else(|| Arc::new(mock.clone()));
+        let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "fn example() {}")]);
 
         assert!(matches!(
-            controlled.complete(request()).await,
+            controlled
+                .review(
+                    request(),
+                    &tree,
+                    &crate::config::types::LookupPolicy::default(),
+                )
+                .await,
             Err(Error::ModelExecutionRefused {
                 refusal: ModelExecutionRefusal::Cancelled,
                 ..

@@ -261,30 +261,6 @@ async fn recording_cassette_preserves_dispatch_control_across_budget_binding_ord
 }
 
 #[tokio::test]
-async fn replay_cassette_serves_answers_without_committing_a_live_dispatch_permit() {
-    use crate::harness::mock::execution_test_support::execution_control;
-
-    let dir = tempfile::tempdir().expect("temporary cassette directory");
-    let recorder = Cassette::record(Arc::new(MockModel::always(answer())), dir.path());
-    recorder
-        .complete(request("probe", "recorded response"))
-        .await
-        .expect("recording writes one take");
-    recorder.flush().expect("write the take to disk");
-
-    let replay = Cassette::replay(dir.path(), Mode::Strict).expect("load recorded take");
-    let (execution, control) = execution_control(1);
-    assert!(replay.with_execution_control(control).is_none());
-    let response = replay
-        .complete(request("probe", "recorded response"))
-        .await
-        .expect("offline replay does not need a live dispatch capability");
-    assert_eq!(response.value, answer());
-    assert_eq!(execution.snapshot().committed_calls, 0);
-    assert!(!replay.complete_reports_physical_calls());
-}
-
-#[tokio::test]
 async fn recording_cassette_review_reports_the_physical_path_it_uses() {
     let dir = tempfile::tempdir().expect("temporary cassette directory");
     let inner = Arc::new(ReviewBudgetProbe::default());

@@ -208,6 +208,60 @@ async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolut
 }
 
 #[tokio::test]
+async fn paid_starts_require_a_head_confirmed_from_the_live_forge_read() {
+    let store = MockReviewJobStore::default();
+    store.admit_batch(vec![request("push-a", 1)]).await.unwrap();
+    let owned = store.claim_next("worker", 2).await.unwrap().unwrap();
+
+    assert_eq!(
+        store.begin_paid(&owned, 3).await.unwrap(),
+        super::PaidStart::OwnershipLost,
+        "the request SHA is an untrusted hint until the worker confirms the live head"
+    );
+    assert!(store.confirm_head(&owned, "actual-head", 4).await.unwrap());
+    assert_eq!(store.begin_paid(&owned, 5).await.unwrap(), super::PaidStart::Started);
+}
+
+#[tokio::test]
+async fn head_history_transitions_consume_reserved_capacity_without_overflow() {
+    let store = MockReviewJobStore::default();
+    let mut first = request("push-a", 1);
+    first.head_sha = Some("head-a".into());
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let owner = store.claim_next("worker-a", 2).await.unwrap().unwrap();
+    assert!(store.confirm_head(&owner, "head-a", 3).await.unwrap());
+    assert!(store.finish(&owner, TerminalOutcome::Published, 4, 4).await.unwrap());
+
+    first.id = ReviewJobId("push-b".into());
+    first.delivery = Some("push-b".into());
+    first.head_sha = Some("head-b".into());
+    first.accepted_at_ms = 5;
+    store.admit_batch(vec![first.clone()]).await.unwrap();
+    let state = store.snapshot_for_test();
+    let padding = MAX_TERMINAL_REVIEW_RESERVATIONS - state.reserved_capacity();
+    let mut state = state;
+    state.terminal.extend((0..padding).map(|index| ReviewTombstone {
+        id: ReviewJobId(format!("padding-{index}")),
+        outcome: TerminalOutcome::Exhausted,
+        expires_at_ms: REVIEW_TOMBSTONE_TTL_MS * 2,
+    }));
+    assert_eq!(state.reserved_capacity(), MAX_TERMINAL_REVIEW_RESERVATIONS);
+    store.replace_state_for_test(state);
+
+    first.id = ReviewJobId("push-c".into());
+    first.delivery = Some("push-c".into());
+    assert_eq!(store.admit_batch(vec![first]).await.unwrap(), Admission::Full);
+
+    let owner = store.claim_next("worker-b", 6).await.unwrap().unwrap();
+    assert!(store.confirm_head(&owner, "head-b", 7).await.unwrap());
+    assert_eq!(
+        store.snapshot_for_test().reserved_capacity(),
+        MAX_TERMINAL_REVIEW_RESERVATIONS,
+        "the appended terminal-head record consumes its prior reservation"
+    );
+}
+
+#[tokio::test]
 async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() {
     let store = MockReviewJobStore::default();
     assert_eq!(

@@ -8,8 +8,9 @@ use crate::error::Result;
 
 /// Maximum accepted requests waiting or running across all server processes.
 pub const MAX_UNFINISHED_REVIEWS: usize = 260;
-/// Terminal IDs reserved for dedupe within the fixed eight-megabyte BSON cap.
-/// This bounds seven days of accepted work without evicting live tombstones.
+/// Delivery and head-state reservations within the fixed eight-megabyte BSON
+/// cap. Admission reserves dedupe IDs and future current/history head records
+/// together, without evicting live tombstones or terminal heads.
 pub const MAX_TERMINAL_REVIEW_RESERVATIONS: usize = 18_000;
 /// Maximum reviews that may be running across all server processes.
 pub const MAX_RUNNING_REVIEWS: usize = 4;
@@ -216,6 +217,7 @@ impl ReviewSchedulerState {
         }
         self.normalize_legacy_records();
         self.terminal.retain(|record| record.expires_at_ms > now_ms);
+        self.head_history.retain(|record| record.expires_at_ms > now_ms);
         let mut incoming = std::collections::HashSet::new();
         if requests
             .iter()
@@ -236,10 +238,6 @@ impl ReviewSchedulerState {
             return Admission::Duplicate;
         }
         let new_jobs = new_uncoalesced_count(&self.unfinished, &requests);
-        let incoming_incremental = requests
-            .iter()
-            .filter(|request| request.mode == ReviewJobMode::Incremental)
-            .count();
         let pending_prs = self
             .unfinished
             .iter()
@@ -258,28 +256,15 @@ impl ReviewSchedulerState {
             })
             .collect::<std::collections::HashSet<_>>()
             .len();
-        let pending_head_slots = pending_prs
+        let incoming_history_reservations = requests
             .iter()
-            .filter(|key| {
-                !self.incremental_heads.iter().any(|budget| {
-                    budget.repo == key.0 && budget.number == key.1
-                })
-            })
+            .filter(|request| request.mode == ReviewJobMode::Incremental)
             .count();
         if already != 0
             || self.unfinished.len() + new_jobs > MAX_UNFINISHED_REVIEWS
-            || self.terminal.len()
-                + accepted_id_count(&self.unfinished)
+            || self.reserved_capacity()
                 + requests.len()
-                + self.incremental_heads.len()
-                + self.head_history.len()
-                + self
-                    .unfinished
-                    .iter()
-                    .map(|record| record.head_history_reservations)
-                    .sum::<usize>()
-                + incoming_incremental
-                + pending_head_slots
+                + incoming_history_reservations
                 + new_prs_without_head
                 > MAX_TERMINAL_REVIEW_RESERVATIONS
         {
@@ -322,6 +307,48 @@ impl ReviewSchedulerState {
             });
         }
         Admission::Admitted
+    }
+
+    /// Count persisted records and all capacity promised to accepted work.
+    /// The reservation makes later live-head transitions fit without evicting
+    /// delivery tombstones or terminal-head history.
+    pub fn reserved_capacity(&self) -> usize {
+        let pending_prs = self
+            .unfinished
+            .iter()
+            .filter(|record| record.request.mode == ReviewJobMode::Incremental)
+            .map(|record| (record.request.repo.as_str(), record.request.number))
+            .collect::<std::collections::HashSet<_>>();
+        let pending_head_slots = pending_prs
+            .iter()
+            .filter(|(repo, number)| {
+                !self.incremental_heads.iter().any(|budget| {
+                    budget.repo.as_str() == *repo && budget.number == *number
+                })
+            })
+            .count();
+        self.terminal.len()
+            + self
+                .unfinished
+                .iter()
+                .map(|record| record.accepted_ids.len().max(1))
+                .sum::<usize>()
+            + self.incremental_heads.len()
+            + self.head_history.len()
+            + self
+                .unfinished
+                .iter()
+                .map(|record| {
+                    if record.request.mode == ReviewJobMode::Incremental {
+                        record
+                            .head_history_reservations
+                            .max(record.accepted_ids.len().max(1))
+                    } else {
+                        0
+                    }
+                })
+                .sum::<usize>()
+            + pending_head_slots
     }
 
     /// Fill fields added after the durable scheduler was first deployed.

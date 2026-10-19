@@ -146,17 +146,12 @@ impl ReviewJobStore for Store {
         state
             .terminal
             .retain(|record| record.expires_at_ms > now_ms);
+        state
+            .head_history
+            .retain(|record| record.expires_at_ms > now_ms);
         Ok(count > 0
             && state.unfinished.len() + count <= crate::ports::review_job::MAX_UNFINISHED_REVIEWS
-            && state.terminal.len()
-                + state
-                    .unfinished
-                    .iter()
-                    .map(|record| record.accepted_ids.len())
-                    .sum::<usize>()
-                + state.incremental_heads.len()
-                + state.head_history.len()
-                + count
+            && state.reserved_capacity() + count
                 <= crate::ports::review_job::MAX_TERMINAL_REVIEW_RESERVATIONS)
     }
 

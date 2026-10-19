@@ -49,16 +49,7 @@ impl ReviewJobStore for MockReviewJobStore {
         let state = self.state.lock().expect("state");
         Ok(count > 0
             && state.unfinished.len() + count <= MAX_UNFINISHED_REVIEWS
-            && state.terminal.len()
-                + state
-                    .unfinished
-                    .iter()
-                    .map(|record| record.accepted_ids.len())
-                    .sum::<usize>()
-                + state.incremental_heads.len()
-                + state.head_history.len()
-                + count
-                <= MAX_TERMINAL_REVIEW_RESERVATIONS)
+            && state.reserved_capacity() + count <= MAX_TERMINAL_REVIEW_RESERVATIONS)
     }
 
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission> {

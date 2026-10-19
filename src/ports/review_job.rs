@@ -374,6 +374,16 @@ impl ReviewSchedulerState {
             return Admission::Full;
         }
         for request in requests {
+            let initial_check = request.head_sha.as_ref().map(|head_sha| ReviewCheckRecord {
+                head_sha: head_sha.clone(),
+                external_id: format!("tinysweeper:{}:{}", request.id.0, head_sha),
+                check_id: None,
+                stage: ReviewCheckStage::Queued,
+                owner_generation: None,
+                published: false,
+                write_claim_until_ms: 0,
+                write_generation: 0,
+            });
             let coalesce = request.mode == ReviewJobMode::Incremental;
             if let Some(record) = coalesce
                 .then(|| {
@@ -387,6 +397,11 @@ impl ReviewSchedulerState {
             {
                 record.accepted_ids.push(request.id.clone());
                 record.latest_head_hint = request.head_sha.clone();
+                if let Some(check) = initial_check {
+                    if !record.review_checks.iter().any(|existing| existing.head_sha == check.head_sha) {
+                        record.review_checks.push(check);
+                    }
+                }
                 record.head_history_reservations =
                     Some(record.head_history_reservations.unwrap_or_default() + 1);
                 if record.owner.is_some() {
@@ -412,7 +427,7 @@ impl ReviewSchedulerState {
                 not_before_ms: 0,
                 paid_attempts: 0,
                 yield_requested: false,
-                review_checks: Vec::new(),
+                review_checks: initial_check.into_iter().collect(),
             });
         }
         Admission::Admitted
@@ -920,6 +935,12 @@ pub trait ReviewJobStore: Send + Sync {
     /// Atomically admit all requests or none, deduping against unfinished and
     /// unexpired terminal IDs in the same scheduler document.
     async fn admit_batch(&self, requests: Vec<ReviewRequest>) -> Result<Admission>;
+
+    /// Claim queued-check publication work independently from review permits and owners.
+    async fn claim_pending_checks(&self, now_ms: i64, limit: usize) -> Result<Vec<PendingReviewCheck>>;
+
+    /// Record an acknowledged queued check only if its durable write claim is still current.
+    async fn record_queued_check_id(&self, pending: &PendingReviewCheck, check_id: u64, now_ms: i64) -> Result<bool>;
 
     /// Claim one eligible request if fewer than four are running globally.
     /// The implementation must never take an unexpired foreign owner.

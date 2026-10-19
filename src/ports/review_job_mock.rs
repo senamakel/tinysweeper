@@ -79,6 +79,14 @@ impl ReviewJobStore for MockReviewJobStore {
             .admit_batch(requests, now_ms))
     }
 
+    async fn claim_pending_checks(&self, now_ms: i64, limit: usize) -> Result<Vec<crate::ports::review_job::PendingReviewCheck>> {
+        Ok(self.state.lock().expect("state").claim_pending_checks(now_ms, limit))
+    }
+
+    async fn record_queued_check_id(&self, pending: &crate::ports::review_job::PendingReviewCheck, check_id: u64, now_ms: i64) -> Result<bool> {
+        Ok(self.state.lock().expect("state").record_queued_check_id(pending, check_id, now_ms))
+    }
+
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
     }

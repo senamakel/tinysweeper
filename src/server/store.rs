@@ -165,6 +165,17 @@ impl ReviewJobStore for Store {
         .await
     }
 
+    async fn claim_pending_checks(&self, now_ms: i64, limit: usize) -> Result<Vec<crate::ports::review_job::PendingReviewCheck>> {
+        self.change_review_scheduler(move |state, now_ms| state.claim_pending_checks(now_ms, limit))
+            .await
+    }
+
+    async fn record_queued_check_id(&self, pending: &crate::ports::review_job::PendingReviewCheck, check_id: u64, now_ms: i64) -> Result<bool> {
+        let pending = pending.clone();
+        self.change_review_scheduler(move |state, now_ms| state.record_queued_check_id(&pending, check_id, now_ms))
+            .await
+    }
+
     async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
         self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))

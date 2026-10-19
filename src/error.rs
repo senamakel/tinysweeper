@@ -193,14 +193,12 @@ impl Error {
             }
             Self::ModelExecutionRefused {
                 refusal,
-                usage: prior,
+                usage: _,
                 accounting_complete,
             } => {
-                let mut combined = prior.map_or_else(crate::ports::model::Usage::default, |u| *u);
-                combined.add(usage);
                 return Self::ModelExecutionRefused {
                     refusal,
-                    usage: Some(Box::new(combined)),
+                    usage: Some(Box::new(usage)),
                     accounting_complete,
                 };
             }

@@ -222,16 +222,44 @@ struct PhysicalModelTerminal {
 #[derive(Clone, Default)]
 struct PhysicalDispatchCounts(Arc<std::sync::Mutex<PhysicalDispatchCountSnapshot>>);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct PhysicalDispatchCountSnapshot {
     calls_attempted: u64,
     calls_succeeded: u64,
     calls_refused: u64,
     calls_errored: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cached_tokens: u64,
+    known_cost_usd: f64,
+    accounting_complete: bool,
+}
+
+impl Default for PhysicalDispatchCountSnapshot {
+    fn default() -> Self {
+        Self {
+            calls_attempted: 0,
+            calls_succeeded: 0,
+            calls_refused: 0,
+            calls_errored: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cached_tokens: 0,
+            known_cost_usd: 0.0,
+            accounting_complete: true,
+        }
+    }
 }
 
 impl PhysicalDispatchCounts {
-    fn record(&self, succeeded: bool, refused: bool) {
+    fn record(
+        &self,
+        succeeded: bool,
+        refused: bool,
+        usage: Option<&openhuman_embed::complete::PhysicalDispatchUsage>,
+    ) {
         let mut counts = self
             .0
             .lock()
@@ -240,6 +268,24 @@ impl PhysicalDispatchCounts {
         counts.calls_succeeded = counts.calls_succeeded.saturating_add(u64::from(succeeded));
         counts.calls_refused = counts.calls_refused.saturating_add(u64::from(refused));
         counts.calls_errored = counts.calls_errored.saturating_add(u64::from(!succeeded));
+        let Some(usage) = usage else {
+            counts.accounting_complete = false;
+            return;
+        };
+        counts.input_tokens = counts.input_tokens.saturating_add(usage.input_tokens);
+        counts.output_tokens = counts.output_tokens.saturating_add(usage.output_tokens);
+        counts.reasoning_tokens = counts
+            .reasoning_tokens
+            .saturating_add(usage.reasoning_tokens);
+        counts.cached_tokens = counts.cached_tokens.saturating_add(usage.cached_tokens);
+        if let Some(cost) = usage
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            counts.known_cost_usd = (counts.known_cost_usd + cost).min(f64::MAX);
+        } else {
+            counts.accounting_complete = false;
+        }
     }
 
     fn snapshot(&self) -> PhysicalDispatchCountSnapshot {
@@ -307,81 +353,35 @@ impl openhuman_embed::budget::PhysicalDispatchPermit for GatewayExecutionPermit 
     }
 }
 
-fn add_completion_usage(
-    total: &mut openhuman_embed::complete::CompletionUsage,
-    cost_usd: &mut Option<f64>,
-    usage: &openhuman_embed::complete::CompletionUsage,
-) {
-    total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
-    total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
-    total.reasoning_tokens = total
-        .reasoning_tokens
-        .saturating_add(usage.reasoning_tokens);
-    *cost_usd = match (*cost_usd, usage.cost_usd) {
-        (Some(total), Some(charge)) if charge.is_finite() && charge >= 0.0 => {
-            Some((total + charge).min(f64::MAX))
-        }
-        _ => None,
-    };
-}
-
 fn execution_refusal_error(
     error: &openhuman_embed::routing::LadderError,
     counts: PhysicalDispatchCountSnapshot,
 ) -> Option<Error> {
-    let (refusal, current_usage) = match &error.last_error {
-        openhuman_embed::CoreError::DispatchAdmission { source, usage, .. } => {
-            (model_execution_refusal(*source), usage.as_ref())
+    let refusal = match &error.last_error {
+        openhuman_embed::CoreError::DispatchAdmission { source, .. } => {
+            model_execution_refusal(*source)
         }
         _ => return None,
     };
 
-    let mut total = openhuman_embed::complete::CompletionUsage::default();
-    let mut cost_usd = Some(0.0_f64);
-    let mut had_usage = false;
-    let mut missing_usage = false;
-
-    // The ladder's final attempt is a refusal placeholder for this same rung;
-    // the typed CoreError carries its preceding paid repair usage separately.
-    for attempt in error
-        .attempts
-        .iter()
-        .take(error.attempts.len().saturating_sub(1))
-    {
-        if let Some(usage) = &attempt.usage {
-            had_usage = true;
-            add_completion_usage(&mut total, &mut cost_usd, usage);
-        } else {
-            // A prior rung may have reached a provider without returning usage.
-            missing_usage = true;
-            cost_usd = None;
-        }
-    }
-    if let Some(usage) = current_usage {
-        had_usage = true;
-        add_completion_usage(&mut total, &mut cost_usd, usage);
-    }
-
     let has_physical_calls = counts.calls_attempted > 0;
     let usage = has_physical_calls.then(|| {
         Box::new(Usage {
-            input_tokens: total.input_tokens,
-            output_tokens: total.output_tokens,
-            reasoning_tokens: total.reasoning_tokens,
-            cached_tokens: total.cached_tokens,
+            input_tokens: counts.input_tokens,
+            output_tokens: counts.output_tokens,
+            reasoning_tokens: counts.reasoning_tokens,
+            cached_tokens: counts.cached_tokens,
             calls_attempted: counts.calls_attempted,
             calls_succeeded: counts.calls_succeeded,
             calls_refused: counts.calls_refused,
             calls_errored: counts.calls_errored,
-            // The adjacent availability marker distinguishes an unknown cost
-            // from a real zero charge without estimating a missing amount.
-            cost_usd: cost_usd.unwrap_or_default(),
+            // Preserve reported charges as a lower bound; the adjacent
+            // completeness marker distinguishes it from a full total.
+            cost_usd: counts.known_cost_usd,
             ..Usage::default()
         })
     });
-    let accounting_complete =
-        has_physical_calls && had_usage && !missing_usage && cost_usd.is_some();
+    let accounting_complete = has_physical_calls && counts.accounting_complete;
 
     Some(Error::ModelExecutionRefused {
         refusal,
@@ -434,6 +434,7 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
         self.counts.record(
             provider_responded,
             outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused),
+            usage,
         );
         let accounting = Usage {
             input_tokens: usage.map_or(0, |usage| usage.input_tokens),

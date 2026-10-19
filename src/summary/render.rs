@@ -1236,6 +1236,56 @@ mod tests {
     }
 
     #[test]
+    fn the_public_summary_stays_bounded_for_long_prose_and_many_unreviewed_paths() {
+        let long_paths: Vec<String> = (0..24)
+            .map(|index| format!("src/{index}/{}.rs", "deeply_nested_module".repeat(5)))
+            .collect();
+        let proposal = proposal(
+            ReviewSummary {
+                executive_summary: format!("{}.", "A long supported summary".repeat(60)),
+                ..ReviewSummary::default()
+            },
+            &[],
+        );
+        let mut proposal = proposal;
+        proposal.unreviewed = long_paths;
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        assert!(visible.len() <= 800, "{} chars outside details", visible.len());
+        assert!(rendered.contains("additional unreviewed files"), "{rendered}");
+        assert!(rendered.contains("src/23/"), "{rendered}");
+    }
+
+    #[test]
+    fn run_diagnostics_stay_inside_the_collapsed_block() {
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "critique", "check_name": "tinysweeper/critique",
+                "conclusion": "neutral", "summary": "The code index is behind.",
+                "findings": []
+            }],
+            "summary": {
+                "executive_summary": "The change updates the request handler.",
+                "cache_chain_restarted": true
+            },
+            "models": ["ladder/reviewer"],
+            "prior_findings": [], "cost_usd": 0.0, "cached_tokens": 0
+        })).expect("proposal");
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        for term in ["cache chain", "index is behind", "ladder/", "per evidence"] {
+            assert!(!visible.contains(term), "{term} leaked outside details: {visible}");
+        }
+        assert!(rendered.contains("cache chain restarted"), "{rendered}");
+        assert!(rendered.contains("index is behind"), "{rendered}");
+        assert!(rendered.contains("ladder/reviewer"), "{rendered}");
+    }
+
+    #[test]
     fn lane_gaps_are_not_rendered_as_unreviewed_file_paths() {
         let mut config = Config::default();
         config.summary.sections = vec![SummarySection::Findings];

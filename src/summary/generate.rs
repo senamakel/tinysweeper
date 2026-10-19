@@ -2578,4 +2578,48 @@ mod tests {
         assert_eq!(coverage.total, 3);
         assert_eq!(coverage.unreviewed, ["README.md", "src/missing.rs"]);
     }
+
+    #[test]
+    fn completed_whole_pull_request_lanes_do_not_prove_every_path_was_reviewed() {
+        let mut critique = lane(
+            LaneId::Critique,
+            crate::forge::types::CheckConclusion::Neutral,
+            "No reviewer produced a usable response.",
+            &[],
+            &[&LaneId::Critique.check_name()],
+            None,
+        );
+        critique.skipped = Some("No reviewer response".into());
+        let lanes = [
+            lane(
+                LaneId::Description,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed.",
+                &["model"],
+                &[],
+                None,
+            ),
+            lane(
+                LaneId::Commits,
+                crate::forge::types::CheckConclusion::Success,
+                "Reviewed.",
+                &["model"],
+                &[],
+                None,
+            ),
+            critique,
+        ];
+        let full_paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+
+        let summary = deterministic_with_paths(
+            &Config::default(),
+            &PullRequest::default(),
+            &[],
+            &full_paths,
+            &lanes,
+            None,
+        );
+
+        assert!(summary.file_coverage.is_none());
+    }
 }

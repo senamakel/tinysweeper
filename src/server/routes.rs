@@ -899,6 +899,7 @@ async fn record_owned_disposition(
 }
 
 async fn finalize_exhausted_review<CheckOwner, CheckOwnerFuture, Conclude, ConcludeFuture>(
+    _timing: &crate::review_timing::ReviewTiming,
     check_owner: CheckOwner,
     conclude: Conclude,
 ) -> WorkerDisposition
@@ -2615,6 +2616,7 @@ async fn handle_review(
             Ok(InnerReview::Exhausted) => {
                 drop(permit);
                 return finalize_exhausted_review(
+                    &timing,
                     || run.check_owner(&state),
                     || async { close_status(&state, &slot, Conclusion::NotReviewed).await },
                 )
@@ -4483,7 +4485,9 @@ mod tests {
         .expect("an exhausted budget is a normal terminal result");
         assert!(matches!(exhausted, InnerReview::Exhausted));
 
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
         let disposition = finalize_exhausted_review(
+            &timing,
             || async {
                 if store.owns(&owned, now_ms).await? {
                     Ok(())
@@ -4503,6 +4507,11 @@ mod tests {
             &disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
         ));
+        assert_eq!(
+            timing.snapshot().outcome,
+            "failure",
+            "exhausted retries are a terminal failure, not cancellation"
+        );
         assert!(matches!(
             record_owned_disposition(&store, &owned, disposition, now_ms).await,
             Some(Ok(true))

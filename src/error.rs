@@ -125,6 +125,13 @@ pub enum Error {
         max_lines: u64,
     },
 
+    /// The selected large-review policy cannot be enforced by the model port.
+    ///
+    /// This is deterministic and non-transient: retrying the same model
+    /// adapter cannot make its physical-dispatch capability appear.
+    #[error("large review requires a model with physical execution control")]
+    ReviewExecutionUnavailable,
+
     /// The pull request head changed after the server claimed a review lease.
     /// This is a clean skip: retry on the new head rather than reviewing it
     /// under a lease for a different revision.

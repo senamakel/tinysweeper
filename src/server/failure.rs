@@ -130,6 +130,7 @@ fn title_for(err: &Error) -> &'static str {
         Error::Budget { .. } => "The review ran out of budget",
         Error::Timeout { .. } => "The review ran out of time",
         Error::ReviewLimit { .. } => "The pull request is too large to review safely",
+        Error::ReviewExecutionUnavailable => "The review cannot enforce its large-review limits",
         Error::Config(_) | Error::ConfigNotFound(_) => "The review is misconfigured",
         _ => "The review could not run",
     }
@@ -171,6 +172,11 @@ fn summary_for(err: &Error) -> String {
              ceiling. Split it into smaller pull requests, or ask the tinysweeper operator to \
              raise `review.max_changed_files` or `review.max_changed_lines` if this change is \
              intentionally reviewable as one unit."
+        }
+        Error::ReviewExecutionUnavailable => {
+            "The configured model adapter does not expose the physical-dispatch control required \
+             by large-review mode. Configure a supported model gateway or disable large-review \
+             mode for this deployment."
         }
         _ => "Re-run the review once the underlying problem is fixed.",
     };

@@ -63,6 +63,19 @@ respect_agents_md = true
 # another model call, so this remains an operator-owned ceiling.
 passes = 3
 
+# Large pull requests get a bounded, risk-ranked review plan. These ceilings
+# belong to the operator and are deliberately absent from the remote-config
+# allow-list.
+[review.large_pr]
+enabled = true
+files = 30
+changed_lines = 2000
+groups = 24
+max_groups = 12
+max_calls = 48
+soft_deadline_percent = 80
+drain_seconds = 30
+
 # Block the merge button at this severity; "off" never blocks. A blocking review
 # has to be cleared by a human if it turns out to be wrong, so the floor sits at
 # the severity where that cost is worth paying — and the next clean review

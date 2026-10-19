@@ -14,6 +14,7 @@ pub mod description;
 pub mod e2e;
 pub mod fanout;
 pub mod grouping;
+pub mod large_pr;
 pub mod mechanical;
 pub mod security;
 pub mod tests;

@@ -26,8 +26,8 @@ use crate::error::{Error, Result};
 
 pub use crate::config::merge::{Layer, Provenance};
 pub use crate::config::types::{
-    AutoMerge, Automation, Cache, Config, IssueClose, Issues, Labeler, Labels, Lane, LaneId, Mcp,
-    MergeMethod, ModelRef, Models, PathInstruction, Paths, Review, Sentry, Severity, Stale,
+    AutoMerge, Automation, Cache, Config, IssueClose, Issues, Labeler, Labels, LargePr, Lane,
+    LaneId, Mcp, MergeMethod, ModelRef, Models, PathInstruction, Paths, Review, Sentry, Severity, Stale,
     Summary, SummarySection,
 };
 
@@ -335,6 +335,17 @@ fn known_keys(path: &str) -> Option<&'static [&'static str]> {
             "request_changes_at",
             "approve_when_clean",
             "passes",
+            "large_pr",
+        ]),
+        "review.large_pr" => Some(&[
+            "enabled",
+            "files",
+            "changed_lines",
+            "groups",
+            "max_groups",
+            "max_calls",
+            "soft_deadline_percent",
+            "drain_seconds",
         ]),
         "threads" => Some(&["resolve_fixed", "ask_model", "comment_on_resolve"]),
         "overview" => Some(&[

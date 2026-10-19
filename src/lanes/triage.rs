@@ -449,6 +449,45 @@ mod tests {
         parse_file_patch(path, &patch)
     }
 
+    fn removed_diff(path: &str, removed: &str) -> FileDiff {
+        let patch = format!("@@ -1 +0,0 @@\n-{removed}\n");
+        parse_file_patch(path, &patch)
+    }
+
+    #[test]
+    fn large_review_api_risk_covers_added_and_removed_public_declarations() {
+        let missing = [
+            ("src/lib.rs", "pub fn added_api() {}", false),
+            ("src/lib.rs", "pub struct RemovedApi;", true),
+            ("web/client.ts", "export const addedApi = true;", false),
+            (
+                "web/client.ts",
+                "export function removedApi() {}",
+                true,
+            ),
+            ("package.py", "__all__ = ['added_api']", false),
+            ("package.py", "__all__ = ['removed_api']", true),
+        ] {
+            let (path, declaration, removed) = missing;
+            let changed = if removed {
+                removed_diff(path, declaration)
+            } else {
+                diff(path, declaration)
+            };
+            assert!(large_review_signals(&changed).1,
+                "public API change should be prioritized: {path}: {declaration}");
+        }
+    }
+
+    #[test]
+    fn large_review_api_risk_covers_root_and_nested_schema_paths() {
+        let unprioritized = ["schema.json", "schemas/root.yaml", "src/schemas/openapi.yaml"]
+            .into_iter()
+            .filter(|path| !large_review_signals(&diff(path, "{ } ")).1)
+            .collect::<Vec<_>>();
+        assert!(unprioritized.is_empty(), "unprioritized schema paths: {unprioritized:?}");
+    }
+
     #[test]
     fn a_lockfile_is_not_worth_a_model_call() {
         let out = triage(&[diff("Cargo.lock", "serde = \"1\"")], &[]);

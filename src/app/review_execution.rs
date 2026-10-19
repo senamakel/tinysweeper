@@ -414,6 +414,45 @@ mod tests {
 
     use crate::ports::model_execution::ModelExecutionControl;
 
+    #[derive(Clone)]
+    struct BindingProbe {
+        budget_hooks: Arc<std::sync::atomic::AtomicUsize>,
+        control_hooks: Arc<std::sync::atomic::AtomicUsize>,
+        control: Option<Arc<dyn ModelExecutionControl>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for BindingProbe {
+        fn complete_reports_physical_calls(&self) -> bool {
+            self.control.is_some()
+        }
+
+        async fn complete(
+            &self,
+            _request: crate::ports::model::ModelRequest,
+        ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+            Err(crate::error::Error::Model("binding probe is not callable".into()))
+        }
+
+        fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn Model>> {
+            self.budget_hooks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(Arc::new(self.clone()))
+        }
+
+        fn with_execution_control(
+            &self,
+            control: Arc<dyn ModelExecutionControl>,
+        ) -> Option<Arc<dyn Model>> {
+            self.control_hooks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(Arc::new(Self {
+                control: Some(control),
+                ..self.clone()
+            }))
+        }
+    }
+
     struct LegacyOpaqueMockModel(crate::harness::mock::MockModel);
 
     #[async_trait::async_trait]
@@ -440,6 +479,58 @@ mod tests {
             soft_deadline_percent: 80,
             drain_seconds: 30,
         }
+    }
+
+    #[tokio::test]
+    async fn review_model_hooks_bind_once_without_resetting_execution_state() {
+        let started_at = Instant::now();
+        let context = ReviewRunContext::new(options(
+            ReviewMode::Normal,
+            None,
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let execution = context.execution();
+        execution
+            .acquire()
+            .await
+            .expect("the initial normal scope admits work")
+            .mark_dispatched()
+            .expect("the initial dispatch commits");
+
+        let budget_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let control_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_base: Arc<dyn Model> = Arc::new(BindingProbe {
+            budget_hooks: Arc::clone(&budget_hooks),
+            control_hooks: Arc::clone(&control_hooks),
+            control: None,
+        });
+        let first = context.bind_model(Arc::clone(&first_base), 2.0).clone();
+
+        let other_budget_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let other_control_hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let second_base: Arc<dyn Model> = Arc::new(BindingProbe {
+            budget_hooks: Arc::clone(&other_budget_hooks),
+            control_hooks: Arc::clone(&other_control_hooks),
+            control: None,
+        });
+        let second = context.bind_model(second_base, 100.0).clone();
+
+        assert!(Arc::ptr_eq(&first.model, &second.model));
+        assert!(first.review_budget_bound);
+        assert!(first.execution_control_bound);
+        assert!(first.model.complete_reports_physical_calls());
+        assert_eq!(budget_hooks.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(control_hooks.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            other_budget_hooks.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            other_control_hooks.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

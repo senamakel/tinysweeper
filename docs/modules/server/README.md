@@ -62,9 +62,10 @@ shutdown stops new claims and leaves unfinished jobs in Mongo for the next
 process. If shutdown lands while the initial status check is being opened, that
 accepted job is deferred and remains available to the next owner.
 
-Incremental jobs coalesce by repository and pull request. A newer delivery
-adds its ID to the existing reservation and asks an active owner to yield;
-queued hints collapse to one pending job. The running lease and global slot
+Incremental jobs coalesce by repository and pull request. A delivery with a
+different SHA hint adds its ID to the existing reservation and asks an active
+owner to yield; the hint is advisory and does not choose the review target.
+Queued hints collapse to one pending job. The running lease and global slot
 remain occupied until that owner acknowledges the yield or its lease expires,
 so a hint cannot free capacity while the old model call is still running. The
 replacement owner reads the authoritative live Forge head before paid work;
@@ -72,10 +73,12 @@ an older delayed event cannot make its SHA the review target. Each confirmed
 head has five durable paid-work starts across retries, owners, and restarts. A
 same-head deadline or other terminal result remains recorded until a live read
 confirms a different head; another delivery ID or webhook SHA hint cannot
-refill the budget. After the fifth start, recovery opens or resumes the status
-check, then concludes it as **Not reviewed** before recording the terminal
-outcome. No further index or model work runs for that exhausted head. Manual
-full reviews use a separate claim key and are not superseded by incremental
+refill the budget. Delivery IDs and terminal tombstones are deduped for seven
+days, while the current head's terminal marker remains until authoritative
+head change. After the fifth start, recovery opens or resumes the status check,
+then concludes it as **Not reviewed** before recording the terminal outcome.
+No further index or model work runs for that exhausted head. Manual full
+reviews use a separate claim key and are not superseded by incremental
 deliveries.
 
 All coalesced delivery IDs and per-head history consume reserved bounded-state

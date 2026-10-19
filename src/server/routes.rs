@@ -53,6 +53,7 @@ use crate::server::webhook::{self, Action, Payload};
 /// and rate limits rather than CPU. Keep it low: a repository-wide force-push
 /// delivers a burst, and an unbounded worker pool turns that into an unbounded
 /// bill.
+#[cfg(test)]
 const MAX_CONCURRENT_REVIEWS: usize = 4;
 /// Capacity of the bounded in-process channel of review wakeup hints. Durable
 /// accepted-job capacity lives in the review scheduler port.

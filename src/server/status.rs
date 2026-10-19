@@ -249,6 +249,7 @@ mod tests {
             completed: !reviewed.is_empty(),
             findings: vec![],
             noted: vec![],
+            context_degraded: false,
             resolved: vec![],
             pending: vec![],
             skipped: None,

@@ -209,6 +209,7 @@ impl FanOut {
         );
         LaneOutcome {
             summary,
+            context_degraded: false,
             completed,
             findings,
             resolved,

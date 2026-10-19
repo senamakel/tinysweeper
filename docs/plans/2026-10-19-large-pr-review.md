@@ -80,7 +80,9 @@ Current source constraints:
   unanswered paths. #233 adds host-derived summary coverage; whole-PR lanes
   must not imply they read every file. `Proposal.complete()` already rejects
   unreviewed/unanswered paths, and #225 keeps unanswered lanes Neutral.
-- The server's hard deadline is 900 seconds and includes checkout/setup. #223
+- The server's hard deadline is 900 seconds and includes checkout/setup. It
+  starts after a queued review receives a worker permit, so durable queue wait
+  is recorded separately and does not consume the active-review deadline. #223
   keeps authoritative-head hard timeouts terminal, never requeued from zero.
   The publishing deadline and lease fencing are separate and remain so.
 

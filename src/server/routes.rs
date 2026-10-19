@@ -5357,6 +5357,7 @@ mod tests {
         request_b.head_sha = Some("head-b".into());
         request_b.accepted_at_ms = now + 2;
         store.admit_batch(vec![request_b]).await.unwrap();
+        publish_test_queued_statuses(store.as_ref(), now + 2).await;
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(2), worker)
                 .await
@@ -5841,6 +5842,7 @@ mod tests {
             Admission::Admitted
         );
         publish_test_queued_statuses(&store, 2).await;
+        publish_test_queued_statuses(&store, 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -6087,6 +6089,7 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = queued_test_review(8);
         store.admit_batch(vec![request]).await.unwrap();
+        publish_test_queued_statuses(&store, 2).await;
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
             let owned = store
@@ -6197,6 +6200,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
+        publish_test_queued_statuses(&store, now_ms).await;
         let owned = store
             .claim_next("shutdown-owner", now_ms)
             .await
@@ -6256,6 +6260,7 @@ mod tests {
             .admit_batch(vec![queued_test_review(9)])
             .await
             .unwrap();
+        publish_test_queued_statuses(&store, 2).await;
         let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
         let stale_check_time = 3;
         let forge = MockForge::new();
@@ -6325,6 +6330,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        publish_test_queued_statuses(store.as_ref(), unix_time_ms()).await;
         let now = unix_time_ms();
         let owned = store
             .claim_next("first", now)

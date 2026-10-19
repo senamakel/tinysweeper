@@ -104,7 +104,10 @@ ordinary and agentic reviewers. A route's `max_tokens = 0` still means no output
 ceiling on the wire, but validation rejects it because admission requires a
 finite output cap. Set a positive cap or omit the route override to inherit
 `models.max_tokens`. With reasoning enabled, the existing 12000-token floor
-also applies.
+also applies to the operator's global and per-route ceilings; lowering effort
+does not bound reasoning-token use. The summary lane retains its existing
+4000-token request cap, so this validation does not promise that every
+individual request receives at least 12000 output tokens.
 
 `models.budget_prices` supplies operator-verified upper rates for gateway
 aliases, in USD per million tokens. Each bound must cover all providers and

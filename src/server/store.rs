@@ -187,6 +187,15 @@ impl ReviewJobStore for Store {
         .await
     }
 
+    async fn queued_check_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.queued_check_claim_current(pending, self.server_now_ms().await?))
+    }
+
     async fn claim_next(&self, owner: &str, _now_ms: i64) -> Result<Option<OwnedReview>> {
         let owner = owner.to_owned();
         self.change_review_scheduler(move |state, now_ms| state.claim_next(&owner, now_ms))

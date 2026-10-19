@@ -104,6 +104,14 @@ impl ReviewJobStore for MockReviewJobStore {
             .record_queued_check_id(pending, check_id, now_ms))
     }
 
+    async fn queued_check_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.state.lock().expect("state").queued_check_claim_current(pending, now_ms))
+    }
+
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>> {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
     }

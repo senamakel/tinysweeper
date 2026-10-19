@@ -848,6 +848,9 @@ async fn publish_pending_queue_checks_at(
     let mut first_error = None;
     for check in pending {
         let attempt = async {
+            if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                return Ok::<(), Error>(());
+            }
             let clients = factory(check.request.installation).await?;
             let repo = RepoId::parse(&check.request.repo)
                 .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
@@ -858,6 +861,9 @@ async fn publish_pending_queue_checks_at(
             {
                 Some(id) => id,
                 None => {
+                    if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                        return Ok(());
+                    }
                     clients
                         .write
                         .publish_check(
@@ -872,7 +878,7 @@ async fn publish_pending_queue_checks_at(
                 }
             };
             let _ = jobs
-                .record_queued_check_id(&check, check_id, now_ms)
+                .record_queued_check_id(&check, check_id, unix_time_ms())
                 .await?;
             Ok::<(), Error>(())
         }

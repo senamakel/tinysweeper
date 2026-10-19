@@ -132,10 +132,11 @@ about that lane on these fixtures, not a full review across all lanes.
 
 Their original PR bodies and comments are omitted: the available PR bodies
 contain later fix explanations, and the exact review-time snapshots were not
-retained. The frozen changed-file patches and commit ranges are pinned to the
-original reviewed heads. Any new recording must remain distinct from the
-historical miss evidence and must use the reviewed head's source tree for
-lookups.
+retained. The frozen changed-file patches, commit ranges and short read-only
+source lookups are pinned to the original reviewed heads. The lookup snippets
+show unmodified callers, providers and public descriptions that help falsify
+the findings. Any new recording must remain distinct from the historical miss
+evidence and must use the reviewed head's source tree for additional lookups.
 
 ## A failed review scores zero, not nothing
 

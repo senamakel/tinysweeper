@@ -126,8 +126,12 @@ full review across every lane.
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations
 and no exact original body/comment snapshot was available. The changed patches
-and commit ranges are frozen at each original review head. Keep this limitation
-visible when recording and interpreting new responses.
+and commit ranges are frozen at each original review head. The `lookups` in
+each fixture include short, read-only source ranges copied from that same head:
+unchanged callers/providers and the old privacy descriptions where the finding
+depends on them. These are evidence the reviewer could read, not edited diff
+content. Keep the missing PR body/comments visible when recording and
+interpreting new responses.
 
 **Clean pull requests.** A case with `exhaustive = true` and no expectations is
 how noise gets measured, and there are none yet. The obvious candidates —

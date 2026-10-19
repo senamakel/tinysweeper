@@ -1239,7 +1239,6 @@ pub(crate) async fn review_with_tree_observed_at_head(
                         .unwrap_or_default(),
                 )
             }
-            (summary, summary_spend, summary_transcript)
         })
         .await;
     spend.merge(summary_spend);

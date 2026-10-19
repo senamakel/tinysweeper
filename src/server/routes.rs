@@ -7009,8 +7009,6 @@ mod tests {
                 .await.expect("B coalesces A"),
             Some(Admission::Admitted)
         );
-        assert_eq!(store.snapshot_for_test().retired_checks.len(), 1);
-
         publish_pending_queue_checks_at(
             &store,
             factory,

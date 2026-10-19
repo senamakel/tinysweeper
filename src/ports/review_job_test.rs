@@ -28,7 +28,7 @@ async fn seed_published_queue_checks(store: &MockReviewJobStore, now_ms: i64) {
     static NEXT_FIXTURE_CHECK_ID: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(120_000);
     let pending = store
-        .claim_pending_checks(now_ms, super::QUEUE_STATUS_DRAIN_BATCH)
+        .claim_pending_checks(now_ms, super::MAX_REVIEW_STATUS_RECORDS)
         .await
         .expect("fixture status claims succeed");
     for check in pending {

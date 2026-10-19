@@ -327,7 +327,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            plan.selected[0].group.paths,
+            plan.selected[0]
+                .group
+                .paths
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             ["src/a_related.rs", "src/a_test.rs"]
         );
         let omitted_security = (7..20)

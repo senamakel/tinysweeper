@@ -4768,7 +4768,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_queued_push_burst_runs_and_publishes_only_the_confirmed_last_head() {
-        use crate::forge::{MockForge, RepoId};
+        use crate::forge::MockForge;
         use crate::harness::MockModel;
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest};
@@ -6406,6 +6406,44 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(1);
         sender.try_send(()).expect("first hint fits");
         assert!(sender.try_send(()).is_err());
+    }
+
+    #[tokio::test]
+    async fn accepted_review_publishes_queued_status_before_a_permit_is_available() {
+        use crate::forge::types::CheckRunStatus;
+        use crate::forge::{MockForge, RepoId};
+
+        let permits = Semaphore::new(0);
+        assert_eq!(permits.available_permits(), 0);
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 7,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+
+        // This is the same durable admission helper used by the webhook route.
+        // Queue status must be visible before a worker can acquire a review
+        // permit; otherwise a valid accepted request looks like no work exists.
+        assert_eq!(
+            admit_webhook_review(&store, &action, "delivery-queued", "pull_request")
+                .await
+                .expect("accepted durably"),
+            Admission::Admitted
+        );
+
+        let check = forge.checks().get(status::CHECK_NAME).cloned();
+        let check = check.expect("queued status appears before the permit is released");
+        assert_eq!(check.head_sha, "accepted-head");
+        assert_eq!(check.status, Some(CheckRunStatus::Queued));
+        assert_eq!(check.conclusion, None);
+        assert!(
+            check.external_id.is_some(),
+            "status identity is recoverable"
+        );
     }
 
     #[test]

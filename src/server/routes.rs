@@ -2006,24 +2006,31 @@ struct OwnedModel {
 }
 
 impl OwnedModel {
-    async fn check_owner(&self) -> Result<()> {
-        if self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
-            || self
+    fn local_owner_valid(&self) -> bool {
+        !self.owner_lost.as_ref().is_some_and(|lost| *lost.borrow())
+            && !self
                 .owner_until
                 .as_ref()
                 .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
-        {
+    }
+
+    async fn check_owner(&self) -> Result<()> {
+        if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
         }
-        if !self
+        let should_continue = self
             .jobs
             .should_continue(&self.owned, unix_time_ms())
-            .await?
-        {
-            if self.jobs.owns(&self.owned, unix_time_ms()).await? {
-                return Err(Error::ReviewSuperseded);
-            }
+            .await?;
+        if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
+        }
+        if !should_continue {
+            let owns = self.jobs.owns(&self.owned, unix_time_ms()).await?;
+            if !self.local_owner_valid() || !owns {
+                return Err(Error::ReviewOwnershipLost);
+            }
+            return Err(Error::ReviewSuperseded);
         }
         Ok(())
     }
@@ -2097,13 +2104,17 @@ impl Run {
 
     async fn check_work(&self, state: &AppState) -> Result<()> {
         self.check_owner(state).await?;
-        if let Some(owned) = &self.owned
-            && !state
+        if let Some(owned) = &self.owned {
+            let should_continue = state
                 .review_jobs
                 .should_continue(owned, unix_time_ms())
-                .await?
-        {
-            return Err(Error::ReviewSuperseded);
+                .await?;
+            if !self.local_owner_valid() {
+                return Err(Error::ReviewOwnershipLost);
+            }
+            if !should_continue {
+                return Err(Error::ReviewSuperseded);
+            }
         }
         Ok(())
     }
@@ -2635,9 +2646,19 @@ async fn handle_review(
                             .await
                             .unwrap_or(true)
                     {
-                        close_status(&state, &slot, Conclusion::NotReviewed).await;
+                        let published = findings.is_some();
+                        let conclusion = if published {
+                            review_conclusion(findings)
+                        } else {
+                            Conclusion::NotReviewed
+                        };
+                        close_status(&state, &slot, conclusion).await;
                         drop(permit);
-                        return WorkerDisposition::Yielded;
+                        return if published {
+                            WorkerDisposition::Terminal(TerminalOutcome::Published)
+                        } else {
+                            WorkerDisposition::Yielded
+                        };
                     }
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;

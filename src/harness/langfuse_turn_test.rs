@@ -45,7 +45,8 @@ fn model_observations_preserve_actual_model_and_cost_without_messages() {
 
 #[test]
 fn physical_dispatch_observations_keep_safe_usage_and_terminal_status() {
-    use openhuman_embed::observe::{PhysicalDispatchStatus, TurnObservation};
+    use openhuman_embed::observe::TurnObservation;
+    use openhuman_embed::PhysicalDispatchStatus;
 
     let event = TurnObservation::ModelDispatch {
         run_id: "run-1".into(),

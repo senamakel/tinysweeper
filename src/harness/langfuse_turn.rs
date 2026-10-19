@@ -60,7 +60,7 @@ fn observation(event: &TurnObservation) -> Value {
                     "id":id,"traceId":run_id,"name":"review model dispatch",
                     "startTime":iso(end.saturating_sub((*duration_ms).min(i64::MAX as u64) as i64)),"endTime":iso(end),
                     "model":answered_model.as_ref().or(requested_model.as_ref()),
-                    "level":if *refused || !matches!(status, openhuman_embed::observe::PhysicalDispatchStatus::Succeeded) {"ERROR"} else {"DEFAULT"},
+                    "level":if *refused || !matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded) {"ERROR"} else {"DEFAULT"},
                     "metadata":{"requestedModel":requested_model,"finishReason":finish_reason,
                         "status":format!("{status:?}"),"refused":refused,"durationMs":duration_ms},
                     "usage":usage.as_ref().map(|usage|json!({"input":usage.input_tokens,"output":usage.output_tokens,

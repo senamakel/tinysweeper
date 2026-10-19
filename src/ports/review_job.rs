@@ -98,6 +98,45 @@ pub struct OwnedReview {
     pub generation: u64,
 }
 
+/// Stage of the durable umbrella check associated with one pinned head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewCheckStage {
+    /// The accepted review is waiting for a review permit.
+    Queued,
+    /// A worker owns the review and has started it.
+    InProgress,
+    /// The review check has a terminal conclusion.
+    Completed,
+}
+
+/// Position in the durable eligible review order at a point in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewQueuePosition {
+    /// Eligible work that sorts before this request, including live owners.
+    pub reviews_ahead: usize,
+    /// Eligible work in the queue, including this request.
+    pub eligible_reviews: usize,
+}
+
+/// Persisted identity for a status check, kept separate from authoritative
+/// paid-head state so status metadata can never authorize model work.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewCheckRecord {
+    /// The exact commit this run reports on.
+    pub head_sha: String,
+    /// Stable key used to recover a POST after a process restart.
+    pub external_id: String,
+    /// GitHub's run ID, absent until the first successful ensure call.
+    #[serde(default)]
+    pub check_id: Option<u64>,
+    /// Last status successfully written to the forge.
+    pub stage: ReviewCheckStage,
+    /// Worker generation authorized to perform the latest transition.
+    #[serde(default)]
+    pub owner_generation: Option<u64>,
+}
+
 /// Terminal result retained as a dedupe tombstone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +158,9 @@ pub enum TerminalOutcome {
 pub struct ScheduledReview {
     /// Accepted request metadata.
     pub request: ReviewRequest,
+    /// Original durable order, preserved when incremental deliveries coalesce.
+    #[serde(default)]
+    pub enqueued_at_ms: i64,
     /// Every accepted delivery coalesced into this review and reserved for a
     /// terminal tombstone when the canonical work completes.
     #[serde(default)]
@@ -145,6 +187,9 @@ pub struct ScheduledReview {
     /// could create while resolving successive authoritative heads.
     #[serde(default)]
     pub head_history_reservations: Option<usize>,
+    /// Check identities for accepted heads; never used as paid-head authority.
+    #[serde(default)]
+    pub review_checks: Vec<ReviewCheckRecord>,
 }
 
 /// A completed ID retained to dedupe redeliveries for seven days.
@@ -298,6 +343,7 @@ impl ReviewSchedulerState {
                 continue;
             }
             self.unfinished.push(ScheduledReview {
+                enqueued_at_ms: request.accepted_at_ms,
                 accepted_ids: vec![request.id.clone()],
                 latest_head_hint: request.head_sha.clone(),
                 head_history_reservations: Some(usize::from(
@@ -310,6 +356,7 @@ impl ReviewSchedulerState {
                 not_before_ms: 0,
                 paid_attempts: 0,
                 yield_requested: false,
+                review_checks: Vec::new(),
             });
         }
         Admission::Admitted

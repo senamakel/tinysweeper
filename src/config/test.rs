@@ -61,6 +61,17 @@ fn parse(text: &str) -> Config {
 }
 
 #[test]
+fn server_pool_sizes_default_to_four_reviews_and_two_triage_jobs() {
+    let defaults = parse("version = 1");
+    assert_eq!(defaults.server.review_concurrency, 4);
+    assert_eq!(defaults.server.triage_concurrency, 2);
+
+    let custom = parse("version = 1\n[server]\nreview_concurrency = 7\ntriage_concurrency = 1\n");
+    assert_eq!(custom.server.review_concurrency, 7);
+    assert_eq!(custom.server.triage_concurrency, 1);
+}
+
+#[test]
 fn reasoning_with_too_small_a_budget_is_rejected() {
     // The production failure this exists to stop: reasoning and the answer are
     // drawn from one allowance, and at 8000 both configured models — the

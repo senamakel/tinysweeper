@@ -22,6 +22,62 @@ fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
     }
 }
 
+#[test]
+fn legacy_scheduled_reviews_deserialize_with_empty_status_identity() {
+    let mut state = ReviewSchedulerState::default();
+    state.admit_batch(vec![request("legacy", 42)], 42);
+    let mut document = serde_json::to_value(&state).unwrap();
+    let scheduled = document["unfinished"][0]
+        .as_object_mut()
+        .expect("scheduled review object");
+    scheduled.remove("enqueued_at_ms");
+    scheduled.remove("review_checks");
+
+    let recovered: ReviewSchedulerState = serde_json::from_value(document).unwrap();
+    let scheduled = &recovered.unfinished[0];
+    assert_eq!(scheduled.enqueued_at_ms, 0);
+    assert!(scheduled.review_checks.is_empty());
+}
+
+#[test]
+fn coalesced_deliveries_keep_the_original_durable_queue_order() {
+    let mut state = ReviewSchedulerState::default();
+    assert_eq!(
+        state.admit_batch(vec![request("first", 42)], 42),
+        Admission::Admitted
+    );
+    assert_eq!(
+        state.admit_batch(vec![request("newer-head", 99)], 99),
+        Admission::Admitted
+    );
+
+    assert_eq!(state.unfinished.len(), 1);
+    assert_eq!(state.unfinished[0].enqueued_at_ms, 42);
+    assert_eq!(state.unfinished[0].request.accepted_at_ms, 99);
+}
+
+#[test]
+fn queued_check_identity_keeps_head_and_stage_separate_from_paid_head_state() {
+    let record = super::ReviewCheckRecord {
+        head_sha: "queued-head".into(),
+        external_id: "review:job:queued-head".into(),
+        check_id: Some(17),
+        stage: super::ReviewCheckStage::Queued,
+        owner_generation: None,
+    };
+    let encoded = serde_json::to_value(&record).unwrap();
+    let recovered: super::ReviewCheckRecord = serde_json::from_value(encoded).unwrap();
+
+    assert_eq!(recovered.head_sha, "queued-head");
+    assert_eq!(recovered.check_id, Some(17));
+    assert_eq!(recovered.stage, super::ReviewCheckStage::Queued);
+    assert_eq!(recovered.owner_generation, None);
+    assert!(
+        !format!("{recovered:?}").contains("paid_attempts"),
+        "check identity remains separate from paid-head authority"
+    );
+}
+
 #[tokio::test]
 async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
     let store = MockReviewJobStore::default();

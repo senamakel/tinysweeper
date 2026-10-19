@@ -12,7 +12,8 @@ pub const MAX_UNFINISHED_REVIEWS: usize = 260;
 /// cap. Admission reserves dedupe IDs and future current/history head records
 /// together, without evicting live tombstones or terminal heads.
 pub const MAX_TERMINAL_REVIEW_RESERVATIONS: usize = 18_000;
-/// Maximum reviews that may be running across all server processes.
+/// Default maximum reviews running across all server processes; the server
+/// passes its operator-configured bound to `claim_next_with_limit`.
 pub const MAX_RUNNING_REVIEWS: usize = 4;
 /// Paid recovery starts allowed for one accepted review across process restarts.
 pub const MAX_REVIEW_PAID_ATTEMPTS: u32 = 5;
@@ -167,7 +168,8 @@ pub struct PendingReviewCheck {
     pub check: ReviewCheckRecord,
     /// Number of eligible earlier accepted jobs at claim time.
     pub reviews_ahead: usize,
-    /// True when this identity is detached and must be concluded, never created.
+    /// True when this identity is detached and needs a terminal status. If its
+    /// remote ID cannot be recovered, publish a terminal check directly.
     pub retired: bool,
 }
 

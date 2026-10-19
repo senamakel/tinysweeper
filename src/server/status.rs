@@ -18,7 +18,7 @@
 //!
 //! `tinysweeper/review` is created queued when the delivery is accepted,
 //! transitioned in-place when a review permit is acquired, and concluded by
-//! the same run — by id, never a second POST:
+//! the same run by ID during normal transitions:
 //!
 //! | State | Conclusion | Meaning |
 //! |---|---|---|
@@ -27,6 +27,10 @@
 //! | concluded | `Success` | the lanes ran and the review did not request changes |
 //! | concluded | `Neutral` | the lanes ran and the review requested changes |
 //! | concluded | `ActionRequired` | the review could not run — see [`failure`] |
+//!
+//! If a queued POST response is lost, the status worker first tries to recover
+//! its ID by external identity. GitHub does not enforce uniqueness for that
+//! identity, so retries cannot guarantee exactly-once remote creation.
 //!
 //! `Success` here is deliberately *not* a statement about the code. It means
 //! the review completed; whether the code is any good is what the lane checks

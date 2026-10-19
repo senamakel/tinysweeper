@@ -1482,7 +1482,18 @@ mod tests {
             last_resort_unpinned: true,
             unpinned_vendors: vec![],
         };
-        let model = GatewayModel::with_key(&config, "fixture".into());
+        for model in ["b", "fallback"] {
+            config.budget_prices.insert(
+                model.into(),
+                crate::config::types::BudgetPriceBound {
+                    input: 0.0,
+                    cached: 0.0,
+                    output: 100.0,
+                },
+            );
+        }
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.budget = Some(crate::harness::budget::ledger(10.0));
         let started_at = Instant::now();
         let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
             crate::app::review_execution::ReviewExecutionOptions {
@@ -1564,7 +1575,11 @@ mod tests {
         assert_eq!(usage.calls_succeeded, 1);
         assert_eq!(usage.cost_usd, 0.001);
         let calls = calls.0.lock().unwrap();
-        assert_eq!(calls.len(), 1, "the admitted provider event is observed once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "the admitted provider event is observed once"
+        );
         assert_eq!(calls[0].0.input_tokens, 12);
         assert_eq!(calls[0].0.output_tokens, 3);
         assert_eq!(calls[0].0.cost_usd, 0.001);

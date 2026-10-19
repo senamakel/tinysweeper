@@ -16,6 +16,7 @@ pub mod fanout;
 pub mod grouping;
 pub mod large_pr;
 pub mod mechanical;
+pub(crate) mod preparation;
 pub mod security;
 pub mod tests;
 pub mod triage;
@@ -145,12 +146,12 @@ impl<'a> LaneInput<'a> {
 
     /// Whether any file has a reviewable diff at all.
     pub fn has_reviewable_content(&self) -> bool {
-        self.diffs.iter().any(|d| !d.changed_lines.is_empty())
+        self.preparation().has_reviewable_content()
     }
 
     /// Every changed path, for selecting the path rules that apply.
     pub fn changed_paths(&self) -> Vec<String> {
-        self.diffs.iter().map(|d| d.path.clone()).collect()
+        self.preparation().changed_paths()
     }
 
     /// The scanner findings of the given kinds.
@@ -159,10 +160,7 @@ impl<'a> LaneInput<'a> {
     /// lanes discussing the same scanner match is the double-reporting this
     /// whole design exists to avoid.
     pub fn scanner_findings_of(&self, kinds: &[ScanKind]) -> Vec<&ScanFinding> {
-        self.scan_findings
-            .iter()
-            .filter(|f| kinds.contains(&f.kind))
-            .collect()
+        self.preparation().scanner_findings_of(kinds)
     }
 
     /// Group `paths` deterministically under `bounds`, using this input's own
@@ -172,16 +170,24 @@ impl<'a> LaneInput<'a> {
         paths: &[String],
         bounds: &crate::lanes::grouping::GroupBounds,
     ) -> Vec<crate::lanes::grouping::FileGroup> {
-        crate::lanes::grouping::group(paths, self.diffs, self.graph, bounds)
+        self.preparation().group(paths, bounds)
     }
 
     /// Whether the pull request should be skipped as an unreviewed draft.
     pub fn skip_as_draft(&self) -> Option<LaneOutcome> {
-        (self.pull_request.draft && !self.config.review.draft_prs).then(|| {
-            LaneOutcome::skipped(
-                "Draft pull request; set `review.draft_prs = true` to review drafts.",
-            )
-        })
+        self.preparation().skip_as_draft()
+    }
+
+    /// Borrow the evidence needed to prepare a lane without model work.
+    pub(crate) fn preparation(&self) -> crate::lanes::preparation::LanePreparationInput<'_> {
+        crate::lanes::preparation::LanePreparationInput {
+            config: self.config,
+            pull_request: self.pull_request,
+            diffs: self.diffs,
+            scan_findings: self.scan_findings,
+            reviewed_evidence: self.reviewed_evidence,
+            graph: self.graph,
+        }
     }
 }
 

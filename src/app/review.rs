@@ -2767,6 +2767,7 @@ mod tests {
         let mut config = Config::default().models;
         config.base_url = gateway.base_url.clone();
         config.fallback.clear();
+        config.agentic_reviewers = true;
         config.budget_prices.insert(
             "deep".into(),
             crate::config::types::BudgetPriceBound {
@@ -2784,14 +2785,16 @@ mod tests {
             timing: timing.clone(),
         };
 
-        let result = model
-            .complete(crate::ports::model::ModelRequest {
+        let request = crate::ports::model::ModelRequest {
                 model: "deep".into(),
                 messages: vec![crate::ports::model::Message::user("Review this.")],
                 schema: json!({"type":"object"}),
                 schema_name: "critique".into(),
                 max_tokens: 32,
-            })
+            };
+        let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let result = model
+            .review(request, &tree, &crate::config::types::LookupPolicy::default())
             .await;
 
         assert!(matches!(result, Err(Error::Budget { .. })));

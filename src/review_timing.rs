@@ -9,6 +9,17 @@ use tracing::Span;
 
 use crate::ports::model::Usage;
 
+/// Aggregated completed-pass yields with no group identifiers or content.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PassYield {
+    /// Groups that completed this pass.
+    pub(crate) groups: u64,
+    /// Candidate findings before falsification.
+    pub(crate) candidates: u64,
+    /// Findings remaining after falsification.
+    pub(crate) survivors: u64,
+}
+
 /// Stable phase keys included in every terminal timing record.
 #[cfg(any(feature = "serve", test))]
 pub(crate) const PHASES: &[&str] = &[
@@ -77,6 +88,8 @@ pub(crate) struct Record {
     pub(crate) calls_errored: u64,
     /// Aggregated tokens and cost retained by model adapters.
     pub(crate) usage: Usage,
+    /// Bounded yield totals keyed by stable lane id and pass number.
+    pub(crate) pass_yields: BTreeMap<String, PassYield>,
     /// Files changed in the pull request.
     pub(crate) files_total: usize,
     /// Files without any known unanswered coverage.
@@ -165,6 +178,26 @@ impl ReviewTiming {
         }
     }
 
+    /// Add one completed group-pass yield to the bounded terminal aggregate.
+    fn record_pass_yield(
+        &self,
+        lane: crate::config::types::LaneId,
+        pass: u8,
+        candidates: usize,
+        survivors: usize,
+    ) {
+        if !(1..=3).contains(&pass) {
+            return;
+        }
+        self.record(|record| {
+            let key = format!("{}:{pass}", lane.as_str());
+            let yield_totals = record.pass_yields.entry(key).or_default();
+            yield_totals.groups += 1;
+            yield_totals.candidates += candidates as u64;
+            yield_totals.survivors += survivors as u64;
+        });
+    }
+
     /// Clone the current record for assertions or intermediate reporting.
     pub(crate) fn snapshot(&self) -> Record {
         self.0.record.lock().expect("review timing lock").clone()
@@ -229,8 +262,21 @@ impl Drop for Inner {
             calls_refused = r.calls_refused, calls_errored = r.calls_errored,
             input_tokens = r.usage.input_tokens, output_tokens = r.usage.output_tokens,
             reasoning_tokens = r.usage.reasoning_tokens, cached_tokens = r.usage.cached_tokens,
+            pass_yields = %serde_json::to_string(&r.pass_yields).unwrap_or_default(),
             files_total = r.files_total, files_answered = r.files_answered,
             files_unanswered = r.files_unanswered, "review timing");
+    }
+}
+
+impl crate::lanes::PassYieldObserver for ReviewTiming {
+    fn record_pass_yield(
+        &self,
+        lane: crate::config::types::LaneId,
+        pass: u8,
+        candidates: usize,
+        survivors: usize,
+    ) {
+        ReviewTiming::record_pass_yield(self, lane, pass, candidates, survivors);
     }
 }
 

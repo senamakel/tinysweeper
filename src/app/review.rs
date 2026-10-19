@@ -2620,6 +2620,7 @@ mod tests {
                 Err(Error::Budget {
                     spent: 1.0,
                     limit: 1.0,
+                    usage: None,
                 })
             }
         }

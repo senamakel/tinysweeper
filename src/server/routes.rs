@@ -2189,6 +2189,7 @@ struct ReviewStatus {
     head_sha: String,
     installation: u64,
     stage: crate::ports::review_job::ReviewCheckStage,
+    owned: Option<OwnedReview>,
     /// Durable review-hub comment opened alongside the status check.
     hub_comment_id: Option<u64>,
     /// Last completed body, retained if this pass fails.
@@ -2502,6 +2503,15 @@ async fn open_status(
             .await;
             match transitioned {
                 Ok(()) => {
+                    if let Some(owned) = &existing.owned {
+                        let _ = state.review_jobs.set_check_stage(
+                            owned,
+                            &existing.head_sha,
+                            existing.check_id,
+                            crate::ports::review_job::ReviewCheckStage::InProgress,
+                            unix_time_ms(),
+                        ).await;
+                    }
                     if let Some(status) = slot.lock().expect("status slot").as_mut() {
                         status.stage = crate::ports::review_job::ReviewCheckStage::InProgress;
                     }
@@ -2529,6 +2539,7 @@ async fn open_status(
                 head_sha: head_sha.to_string(),
                 installation,
                 stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+                owned: None,
                 hub_comment_id: None,
                 prior_hub_body: None,
             });
@@ -2614,7 +2625,8 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         }
     };
 
-    if let Err(err) = write.update_check(&open.repo, open.check_id, check).await {
+    let concluded = write.update_check(&open.repo, open.check_id, check).await;
+    if let Err(err) = concluded {
         // Worth an error rather than a warning: the check is now stuck
         // in-progress, and a pending check refuses auto-merge on this commit
         // until somebody pushes again.
@@ -2622,6 +2634,14 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             %err, repo = %open.repo, check_id = open.check_id,
             "could not conclude the in-progress check; it will block auto-merge until the next push"
         );
+    } else if let Some(owned) = &open.owned {
+        let _ = state.review_jobs.set_check_stage(
+            owned,
+            &open.head_sha,
+            open.check_id,
+            crate::ports::review_job::ReviewCheckStage::Completed,
+            unix_time_ms(),
+        ).await;
     }
     if let (Some(comment_id), Some(body)) = (open.hub_comment_id, hub_body)
         && let Err(err) = write.update_comment(&open.repo, comment_id, &body).await
@@ -2833,6 +2853,7 @@ async fn handle_review(
             head_sha: check.head_sha.clone(),
             installation,
             stage: check.stage,
+            owned: owned.clone(),
             hub_comment_id: None,
             prior_hub_body: None,
         })

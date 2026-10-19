@@ -291,8 +291,17 @@ impl ReviewSchedulerState {
         let eligible = ordered
             .iter()
             .filter(|(index, _, _)| {
-                self.unfinished[*index].request.head_sha.is_some()
-                    || !self.unfinished[*index].review_checks.is_empty()
+                let job = &self.unfinished[*index];
+                let Some(head) = job.request.head_sha.as_deref() else { return false; };
+                job.not_before_ms <= now_ms
+                    && job.review_checks.iter().any(|check| check.head_sha == head)
+                    && (job.request.mode != ReviewJobMode::Incremental
+                        || !self.incremental_heads.iter().any(|budget| {
+                            budget.repo == job.request.repo
+                                && budget.number == job.request.number
+                                && budget.head_sha == head
+                                && (budget.deadline_hit || budget.terminal_outcome.is_some())
+                        }))
             })
             .map(|(index, _, _)| self.unfinished[*index].request.id.clone())
             .collect::<Vec<_>>();
@@ -600,6 +609,12 @@ impl ReviewSchedulerState {
         let record = self.unfinished.iter_mut().find(|record| {
             record.not_before_ms <= now_ms
                 && (record.owner.is_none() || record.owner_until_ms <= now_ms)
+                && (record.review_checks.is_empty()
+                    || record.request.head_sha.as_deref().is_none_or(|head| {
+                        record.review_checks.iter().any(|check| {
+                            check.head_sha == head && check.published && check.check_id.is_some()
+                        })
+                    }))
         })?;
         record.generation += 1;
         record.owner = Some(owner.to_owned());

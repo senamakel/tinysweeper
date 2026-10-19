@@ -833,7 +833,15 @@ async fn publish_pending_queue_checks(
     jobs: &dyn ReviewJobStore,
     factory: QueueStatusClientFactory,
 ) -> Result<()> {
-    let pending = jobs.claim_pending_checks(unix_time_ms(), 16).await?;
+    publish_pending_queue_checks_at(jobs, factory, unix_time_ms()).await
+}
+
+async fn publish_pending_queue_checks_at(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+    now_ms: i64,
+) -> Result<()> {
+    let pending = jobs.claim_pending_checks(now_ms, 16).await?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -864,7 +872,7 @@ async fn publish_pending_queue_checks(
                 }
             };
             let _ = jobs
-                .record_queued_check_id(&check, check_id, unix_time_ms())
+                .record_queued_check_id(&check, check_id, now_ms)
                 .await?;
             Ok::<(), Error>(())
         }

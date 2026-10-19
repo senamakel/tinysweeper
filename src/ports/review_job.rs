@@ -18,6 +18,8 @@ pub const MAX_RUNNING_REVIEWS: usize = 4;
 pub const MAX_REVIEW_PAID_ATTEMPTS: u32 = 5;
 /// How long a job owner remains valid without a heartbeat.
 pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
+/// Short bounded owner claim for a queued status write, independent of review ownership.
+pub const QUEUE_STATUS_CLAIM_TTL_MS: i64 = 30_000;
 /// How long terminal delivery IDs remain deduped.
 pub const REVIEW_TOMBSTONE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 /// Upper bound for any persisted identifier or descriptive field.
@@ -311,7 +313,7 @@ impl ReviewSchedulerState {
             };
             let check = &mut self.unfinished[index].review_checks[check_index];
             check.write_generation = check.write_generation.saturating_add(1);
-            check.write_claim_until_ms = now_ms.saturating_add(30_000);
+            check.write_claim_until_ms = now_ms.saturating_add(QUEUE_STATUS_CLAIM_TTL_MS);
             let check = check.clone();
             let reviews_ahead = eligible
                 .iter()

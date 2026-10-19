@@ -113,9 +113,11 @@ impl crate::ports::model::ModelCallObserver for PhysicalEventCounter {
     }
 }
 
+#[cfg(feature = "harness")]
 #[derive(Default)]
 struct ModelEventCounter(std::sync::Mutex<Vec<Usage>>);
 
+#[cfg(feature = "harness")]
 impl crate::ports::model::ModelCallObserver for ModelEventCounter {
     fn completed(
         &self,
@@ -454,7 +456,7 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
     assert_eq!(take["usage"]["cost_usd"], 0.002);
 }
 
-#[cfg(feature = "serve")]
+#[cfg(feature = "harness")]
 #[tokio::test]
 async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads() {
     use crate::harness::fake_gateway::{FakeGateway, Reply};
@@ -574,13 +576,13 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
     assert_eq!(cassette.cost_usd(), 0.001);
 }
 
-#[cfg(feature = "serve")]
+#[cfg(feature = "harness")]
 struct CountingReviewTree {
     inner: crate::ports::tree::MockTree,
     lookups: std::sync::atomic::AtomicUsize,
 }
 
-#[cfg(feature = "serve")]
+#[cfg(feature = "harness")]
 #[async_trait::async_trait]
 impl TreeReader for CountingReviewTree {
     async fn lookup(&self, query: &Lookup) -> Result<Found> {

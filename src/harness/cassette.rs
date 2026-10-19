@@ -629,9 +629,6 @@ impl Model for Cassette {
         tree: &dyn crate::ports::tree::TreeReader,
         policy: &crate::config::types::LookupPolicy,
     ) -> Result<ModelResponse> {
-        // Controlled RED reproduction: this is the historical Model default.
-        return self.complete(request).await;
-
         let revision = tree.revision();
         let key = review_key(&request, revision.as_deref(), policy)?;
         if self.mode == Mode::Record {

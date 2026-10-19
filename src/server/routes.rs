@@ -7427,7 +7427,7 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_terminal_post_response_loss_recovers_without_duplicate_post() {
-        use crate::forge::MockForge;
+        use crate::forge::{MockForge, RepoId};
         use crate::forge::types::{CheckConclusion, CheckRunStatus};
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();

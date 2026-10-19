@@ -89,12 +89,14 @@ write and recording its outcome, so the scheduler cannot promise exactly-once
 remote writes. A confirmed successful publication is retained when an owner
 yields, preventing a known success from being rerun for the same head.
 
-Before minting a read token or fetching live PR state, the worker claims a
-provisional per-PR key. It then confirms the authoritative head from live
-Forge state and binds the lease before indexing or model work. Manual reviews
-resolve pull request numbers and SHAs before enqueueing, so the response can
-list the queued reviews. The app checks the leased SHA again after loading
-review context and skips before any model call if the context moved.
+When an event includes a head SHA, the worker claims that exact SHA before
+minting a read token or fetching live PR state. Without a SHA, it first claims
+a provisional per-PR key, then reads live Forge state and binds the lease to
+the authoritative head. Both paths confirm the live head before indexing or
+model work. Manual reviews resolve pull request numbers and SHAs before
+enqueueing, so the response can list the queued reviews. The app checks the
+leased SHA again after loading review context and skips before any model call
+if the context moved.
 
 ## The write-token boundary
 

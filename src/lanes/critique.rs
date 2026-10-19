@@ -373,6 +373,12 @@ async fn review_group(
     let round_one_survivors = findings.len();
     let mut rejected = filtered.rejected;
     let mut capped_for_degraded_context = 0usize;
+    let mut metrics = crate::lanes::coverage::Metrics::start(
+        round_one_usage,
+        round_one_elapsed,
+        round_one_candidates,
+        round_one_survivors,
+    );
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole
     // pull request's — a lane fans out per group, so a two-line group must
@@ -383,12 +389,6 @@ async fn review_group(
         // everything round one *and* the first coverage pass found, so it
         // does not rediscover the first pass's own additions.
         let mut confirmed = findings.clone();
-        let mut metrics = crate::lanes::coverage::Metrics::start(
-            round_one_usage,
-            round_one_elapsed,
-            round_one_candidates,
-            round_one_survivors,
-        );
 
         for pass_index in 1..config.review.passes {
             let reviewer = &reviewers[0];
@@ -532,8 +532,10 @@ async fn review_group(
             confirmed.extend(new_filtered.findings.clone());
             findings.extend(new_filtered.findings);
         }
-        metrics.emit(LaneId::Critique, group_paths);
     }
+    // Emit one yield record for every reviewed group, including one-pass and
+    // adaptively ineligible groups, so zero yield remains observable.
+    metrics.emit(LaneId::Critique, group_paths);
 
     // The application's typed context-degraded path keeps these findings as
     // non-blocking structured notes. A Likely cap makes that caveat visible
@@ -898,6 +900,20 @@ mod tests {
     use crate::ports::tree::{Found, Lookup};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[derive(Clone)]
+    struct MetricsLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for MetricsLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[derive(Debug)]
     struct CountingTree {
@@ -1933,6 +1949,80 @@ fn helper() {
             3,
             "a small group's first-pass candidate should earn one further review"
         );
+    }
+
+    #[tokio::test]
+    async fn a_small_candidate_rejected_by_falsification_still_gets_a_second_review() {
+        use tracing::instrument::WithSubscriber;
+
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "let x = items[i];",
+                    "rule": "unchecked-index",
+                    "title": "Guard the index",
+                    "body": "The index may be out of bounds.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": [{"index": 1, "reason": "The diff proves i is in bounds."}]}))
+            .then(json!({"summary": "No further findings.", "findings": []}));
+        let handle = model.clone();
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || MetricsLogWriter(writer_bytes.clone()))
+            .finish();
+
+        let outcome = run_with(model, &config_with_passes(2), &diffs())
+            .with_subscriber(subscriber)
+            .await;
+
+        assert!(outcome.findings.is_empty(), "falsification rejected the candidate");
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests.iter().map(|request| request.schema_name.as_str()).collect::<Vec<_>>(),
+            ["tinysweeper_critique", "tinysweeper_falsify", "tinysweeper_critique"],
+            "the final request is a second reviewer call, even though no finding survived"
+        );
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("candidate_findings_per_pass=[1, 0]"), "{line}");
+        assert!(line.contains("surviving_findings_per_pass=[0, 0]"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn one_pass_empty_groups_emit_zero_yield_metrics() {
+        use tracing::instrument::WithSubscriber;
+
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || MetricsLogWriter(writer_bytes.clone()))
+            .finish();
+
+        run_with(model, &config_with_passes(1), &diffs())
+            .with_subscriber(subscriber)
+            .await;
+
+        assert_eq!(handle.calls(), 1);
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("adaptive review passes").count(), 1, "{line}");
+        assert!(line.contains("passes_attempted=1"), "{line}");
+        assert!(line.contains("candidate_findings_per_pass=[0]"), "{line}");
+        assert!(line.contains("surviving_findings_per_pass=[0]"), "{line}");
     }
 
     #[tokio::test]

@@ -359,6 +359,34 @@ fn model_roles_have_independent_effort_and_global_off_is_a_kill_switch() {
 }
 
 #[test]
+fn configured_role_efforts_are_not_replaced_by_role_defaults() {
+    let mut config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
+    config.models.reasoning_effort = "high".into();
+    config.models.reviewer_reasoning_effort = "low".into();
+    config.models.falsify_reasoning_effort = "medium".into();
+    config.models.summary_reasoning_effort = "off".into();
+
+    assert_eq!(
+        config
+            .models
+            .role_reasoning_effort(crate::config::types::ReasoningRole::Reviewer),
+        "low"
+    );
+    assert_eq!(
+        config
+            .models
+            .role_reasoning_effort(crate::config::types::ReasoningRole::Falsify),
+        "medium"
+    );
+    assert_eq!(
+        config
+            .models
+            .role_reasoning_effort(crate::config::types::ReasoningRole::Summary),
+        "off"
+    );
+}
+
+#[test]
 fn an_unknown_role_effort_is_rejected() {
     let config = parse(
         "version = 1\n[models]\nfalsify_reasoning_effort = \"very_low\"\n",

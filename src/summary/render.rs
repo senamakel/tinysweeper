@@ -1465,6 +1465,7 @@ mod tests {
             "{section}"
         );
         assert_eq!(lines[label + 3].trim(), "</details>", "{section}");
-        assert_eq!(lines[label + 4].trim(), "````", "{section}");
+        assert_eq!(lines[label + 4].trim(), "```", "{section}");
+        assert_eq!(lines[label + 5].trim(), "````", "{section}");
     }
 }

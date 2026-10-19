@@ -3969,6 +3969,7 @@ mod tests {
     #[tokio::test]
     async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
 
         let (_lost, lost_receiver) = watch::channel(false);
         let (_until_sender, until) =
@@ -4449,7 +4450,7 @@ mod tests {
         let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").unwrap();
         let result = run_if_confirmed_head_needs_review(
-            &store,
+            store.as_ref(),
             Some(&owned_b),
             Mode::Incremental,
             || async {

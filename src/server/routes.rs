@@ -6875,6 +6875,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn superseded_check_without_recovered_id_gets_terminal_status_and_releases_outbox() {
+        use crate::forge::MockForge;
+        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        // A's queued POST fails, then B coalesces it before a check ID can be
+        // stored. The outbox must eventually publish a terminal result rather
+        // than retain A forever when external_id recovery is empty.
+        forge.fail_next_check_publishes(1);
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = |head: &str| Action::Review {
+            repo: "owner/repo".into(),
+            number: 77,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head.into()),
+        };
+        assert_eq!(
+            admit_webhook_review(&store, &action("head-a"), "delivery-a", "pull_request", factory.clone())
+                .await.expect("A remains durably accepted"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(store.snapshot_for_test().unfinished[0].review_checks[0].post_attempted, true);
+        assert_eq!(
+            admit_webhook_review(&store, &action("head-b"), "delivery-b", "pull_request", factory.clone())
+                .await.expect("B coalesces A"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(store.snapshot_for_test().retired_checks.len(), 1);
+
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        ).await.expect("retired status drain succeeds");
+
+        let check = forge.checks().remove(status::CHECK_NAME)
+            .expect("a terminal status is published for superseded A");
+        assert_eq!(check.head_sha, "head-a");
+        assert_eq!(check.status, Some(CheckRunStatus::Completed));
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+        assert!(check.summary.contains("superseded before review"));
+        assert!(store.snapshot_for_test().retired_checks.is_empty());
+    }
+
+    #[tokio::test]
     async fn triage_work_runs_while_every_review_permit_is_occupied() {
         use crate::forge::MockForge;
         use crate::forge::types::Issue;

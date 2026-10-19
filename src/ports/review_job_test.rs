@@ -135,6 +135,7 @@ fn ambiguous_retired_post_survives_restart_and_empty_recovery_reads() {
     first.head_sha = Some("head-a".into());
     state.admit_batch(vec![first], 10);
     let old = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.mark_queue_post_attempted(&old, 10));
     let mut next = request("ambiguous-status-b", 12);
     next.head_sha = Some("head-b".into());
     state.admit_batch(vec![next], 12);

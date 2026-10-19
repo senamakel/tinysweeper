@@ -7180,7 +7180,10 @@ mod tests {
             mode: ReviewJobMode::Incremental,
             accepted_at_ms: index as i64,
         }).collect();
-        assert_eq!(store.admit_batch(requests).await.expect("batch accepted"), Admission::Admitted);
+        assert_eq!(
+            store.admit_batch(requests).await.expect("batch accepted"),
+            crate::ports::review_job::Admission::Admitted
+        );
         let forge = MockForge::new();
         let clock_ms = Arc::new(AtomicI64::new(100));
         let client_forge = forge.clone();

@@ -594,7 +594,12 @@ async fn review_policy_revision_method_and_source_are_part_of_strict_identity() 
     assert_eq!(revision_player.strict_misses(), 1);
 
     let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
-    assert!(method_player.complete(review_request.clone()).await.is_err());
+    assert!(
+        method_player
+            .complete(review_request.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(method_player.strict_misses(), 1);
 
     struct SameRevisionDifferentSource;
@@ -619,11 +624,7 @@ async fn review_policy_revision_method_and_source_are_part_of_strict_identity() 
     let source_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
     assert!(
         source_player
-            .review(
-                review_request,
-                &SameRevisionDifferentSource,
-                &policy,
-            )
+            .review(review_request, &SameRevisionDifferentSource, &policy,)
             .await
             .is_err()
     );
@@ -1264,9 +1265,9 @@ async fn typed_refusal_without_usage_stays_unknown_when_accounting_is_incomplete
 #[cfg(feature = "harness")]
 #[tokio::test]
 async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
+    use crate::config::types::StructuredOutput;
     use crate::harness::fake_gateway::{FakeGateway, Reply};
     use crate::harness::mock::execution_test_support::execution_control;
-    use crate::config::types::StructuredOutput;
     use crate::ports::model::{Model, ModelRequest};
     use crate::ports::model_execution::ModelExecutionRefusal;
 
@@ -1310,7 +1311,10 @@ async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
         events.clone(),
         model.complete(ModelRequest {
             model: "b".into(),
-            messages: vec![Message::system("Return an object."), Message::user("bad JSON")],
+            messages: vec![
+                Message::system("Return an object."),
+                Message::user("bad JSON"),
+            ],
             schema: json!({"type":"object"}),
             schema_name: "review".into(),
             max_tokens: 128,

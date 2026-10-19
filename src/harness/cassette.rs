@@ -352,7 +352,7 @@ impl Cassette {
                 if let Some(usage) = usage {
                     state.spend.usage.add(**usage);
                 }
-                if !accounting_complete {
+                if !*accounting_complete {
                     state.unreported_errors += 1;
                 }
             }

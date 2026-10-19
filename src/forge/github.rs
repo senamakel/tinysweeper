@@ -2714,19 +2714,6 @@ mod tests {
         )
     }
 
-    async fn check_run_by_external_id(&self, repo: &RepoId, sha: &str, external_id: &str) -> Result<Option<u64>> {
-        read_all_pages(
-            |page| async move {
-                let route = format!("/repos/{}/{}/commits/{sha}/check-runs?per_page={PER_PAGE}&page={page}", repo.owner, repo.name);
-                self.client.get(route, None::<&()>).await.map_err(api)
-            },
-            |raw| raw["check_runs"].as_array(),
-            |items| items.iter().filter(|item| item["external_id"].as_str() == Some(external_id)).filter_map(|item| item["id"].as_u64()).collect::<Vec<_>>(),
-            MAX_CHECK_PAGES,
-            "the check runs for this commit",
-        ).await.map(|pages| pages.into_iter().flatten().next())
-    }
-
     #[tokio::test]
     async fn a_short_final_page_ends_the_read() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

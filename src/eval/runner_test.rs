@@ -207,30 +207,36 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
 
     let recorded_corpus = load(corpus_dir.path()).expect("loads persisted source evidence");
     let lookups = &recorded_corpus.cases[0].fixture.lookups;
-    assert!(lookups.contains_key(
-        &Lookup::Read {
-            path: "src/lib.rs".into(),
-            start: Some(1),
-            end: Some(2),
-        }
-        .key()
-    ));
-    assert!(lookups.contains_key(
-        &TreeQuery::Symbol {
-            symbol: "from_another_revision".into(),
-            limit: 3,
-        }
-        .key()
-    ));
-    assert!(lookups.contains_key(
-        &TreeQuery::History {
-            commit: "b".repeat(40),
-            path: "src/lib.rs".into(),
-            start: 1,
-            end: 1,
-        }
-        .key()
-    ));
+    assert!(
+        lookups.contains_key(
+            &Lookup::Read {
+                path: "src/lib.rs".into(),
+                start: Some(1),
+                end: Some(2),
+            }
+            .key()
+        )
+    );
+    assert!(
+        lookups.contains_key(
+            &TreeQuery::Symbol {
+                symbol: "from_another_revision".into(),
+                limit: 3,
+            }
+            .key()
+        )
+    );
+    assert!(
+        lookups.contains_key(
+            &TreeQuery::History {
+                commit: "b".repeat(40),
+                path: "src/lib.rs".into(),
+                start: 1,
+                end: 1,
+            }
+            .key()
+        )
+    );
     let cassette_dir = recorded_corpus.cases[0].cassette_dir(corpus_dir.path());
     let mut found_falsification_take = false;
     for entry in std::fs::read_dir(cassette_dir).expect("cassette directory") {

@@ -52,6 +52,10 @@ Model-call events include `latency_ms` alongside token usage and model ID.
 
 ## Bounded review scheduling
 
+Separate review and triage pools, queued check identity and status recovery,
+including the status-only pre-permit ordering, are documented in
+[Review queue status and capacity](review-queue-status.md).
+
 Webhook and manual reviews are atomically admitted to one bounded Mongo
 scheduler document before the server acknowledges them. The 256 queued and
 four running records are durable; the in-memory channel carries wakeup hints
@@ -159,13 +163,16 @@ bounded number of times, and then leaves it to the holder, who is doing the same
 work anyway. A worker blocked on that claim would be a worker not indexing
 anything else, and with a bounded pool a few of those are the whole pool.
 
-`MAX_CONCURRENT_INDEXES` is lower than the review cap and for a different
-reason: a review is mostly waiting on one model, while a full index is a fetch,
-a tree in memory and thousands of embedding calls.
+The default `MAX_CONCURRENT_INDEXES` limit of two is lower than the default
+review limit of four, and for a different reason: a review is mostly waiting
+on one model, while a full index is a fetch, a tree in memory and thousands of
+embedding calls. The index limit is independent of the operator-configured
+review pool.
 
 ## Concurrency and failure
 
-`MAX_CONCURRENT_REVIEWS` bounds how many reviews run at once. The limit is about
+`[server].review_concurrency` (default four) bounds how many reviews run at
+once. The limit is about
 spend and rate limits rather than CPU: a force-push across a repository delivers
 a burst, and an unbounded worker pool turns that into an unbounded bill.
 

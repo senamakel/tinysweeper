@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 use crate::forge::{PullRequest, RepoId};
 use crate::index::mongo::MongoIndex;
 use crate::ports::forge::ForgeRead as _;
+use crate::ports::forge::ForgeWrite;
 use crate::ports::knowledge::KnowledgeStore;
 use crate::ports::model::{Model, ModelRequest, ModelResponse};
 use crate::ports::model_factory::ModelFactory;
@@ -52,6 +53,7 @@ use crate::server::webhook::{self, Action, Payload};
 /// and rate limits rather than CPU. Keep it low: a repository-wide force-push
 /// delivers a burst, and an unbounded worker pool turns that into an unbounded
 /// bill.
+#[cfg(test)]
 const MAX_CONCURRENT_REVIEWS: usize = 4;
 /// Capacity of the bounded in-process channel of review wakeup hints. Durable
 /// accepted-job capacity lives in the review scheduler port.
@@ -187,6 +189,8 @@ struct AppState {
     /// Bounds concurrent indexing separately from concurrent reviewing: a
     /// delivery burst must not turn into a burst of full indexes.
     index_permits: Arc<Semaphore>,
+    /// Issue triage has a separate operator-sized pool and cannot consume review slots.
+    triage_permits: Arc<Semaphore>,
     /// One lock per UI preview session ever seen, so two `step` calls for the
     /// same session (the hands retrying a dropped response, or two flows
     /// racing) serialise their load-modify-save instead of one overwriting
@@ -219,6 +223,7 @@ struct ReviewJob {
     expected_head: Option<String>,
     queued_at: tokio::time::Instant,
     owned: Option<OwnedReview>,
+    queue_check: Option<crate::ports::review_job::ReviewCheckRecord>,
 }
 
 enum WorkerDisposition {
@@ -251,6 +256,8 @@ pub async fn serve_with_model_factory(
     factory: Arc<dyn ModelFactory>,
 ) -> Result<()> {
     let bind = config.bind.clone();
+    let review_concurrency = config.config.server.review_concurrency;
+    let triage_concurrency = config.config.server.triage_concurrency;
     let models = ResolvedModels::resolve(factory.as_ref(), &config.config).await?;
 
     // The boot assertion. `$vectorSearch` and `$rankFusion` are stages a stock
@@ -306,7 +313,7 @@ pub async fn serve_with_model_factory(
         models,
         knowledge: knowledge.clone(),
         auth: Arc::new(auth),
-        permits: Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS)),
+        permits: Arc::new(Semaphore::new(review_concurrency)),
         review_jobs,
         review_owner: Arc::from(format!(
             "{}-{}",
@@ -317,9 +324,28 @@ pub async fn serve_with_model_factory(
         review_queue,
         index: index.clone(),
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
+        triage_permits: Arc::new(Semaphore::new(triage_concurrency)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
+
+    // Status retry is independent of review permits and review ownership. A
+    // failed or interrupted check POST stays attached to the accepted job and
+    // is retried on a bounded durable claim after restart or API recovery.
+    let retry_jobs = state.review_jobs.clone();
+    let retry_factory = github_queue_status_client(state.auth.clone(), 0);
+    tokio::spawn(async move {
+        let mut poll = tokio::time::interval(std::time::Duration::from_secs(2));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            poll.tick().await;
+            if let Err(err) =
+                publish_pending_queue_checks(retry_jobs.as_ref(), retry_factory.clone()).await
+            {
+                tracing::warn!(%err, "queued review status retry failed; durable claim will expire for retry");
+            }
+        }
+    });
 
     let shutdown_state = state.clone();
     let manual_state = state.clone();
@@ -434,6 +460,7 @@ pub async fn serve_with_model_factory(
     let review_dispatcher = tokio::spawn(drain_review_queue(
         review_receiver,
         state.permits.clone(),
+        review_concurrency,
         state.review_jobs.clone(),
         state.review_owner.clone(),
         state.accepting_reviews.clone(),
@@ -650,15 +677,37 @@ async fn receive(
             )
                 .into_response();
         }
+        let installation = match &action {
+            Action::Review { installation, .. } => *installation,
+            _ => unreachable!("review action branch checked above"),
+        };
+        let author = match &action {
+            Action::Review { author, .. } => author,
+            _ => unreachable!("review action branch checked above"),
+        };
+        match state.store.contributor(author).await {
+            Ok(contributor) if contributor.trust == Trust::Blocked => {
+                tracing::info!(%author, "blocked contributor; not admitting review status");
+                return (StatusCode::OK, "ignored").into_response();
+            }
+            Err(err) => {
+                tracing::error!(%err, %author, "could not verify review trust before status admission");
+                return (StatusCode::SERVICE_UNAVAILABLE, "review trust unavailable")
+                    .into_response();
+            }
+            _ => {}
+        }
         let admission = match admit_webhook_review(
             state.review_jobs.as_ref(),
             &action,
             &delivery,
             &event,
+            github_queue_status_client(state.auth.clone(), installation),
         )
         .await
         {
-            Ok(admission) => admission,
+            Ok(Some(admission)) => admission,
+            Ok(None) => return (StatusCode::OK, "ignored").into_response(),
             Err(err) => {
                 tracing::error!(%err, %delivery, "could not durably accept review; operator redelivery required");
                 return (
@@ -724,7 +773,8 @@ async fn admit_webhook_review(
     action: &Action,
     delivery: &str,
     event: &str,
-) -> Result<Admission> {
+    status_client: QueueStatusClientFactory,
+) -> Result<Option<Admission>> {
     let Action::Review {
         repo,
         number,
@@ -740,19 +790,235 @@ async fn admit_webhook_review(
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
-    jobs.admit_batch(vec![ReviewRequest {
-        id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
-        repo: repo.clone(),
-        number: *number,
-        author: author.clone(),
-        installation: *installation,
-        head_sha: head_sha.clone(),
-        delivery: Some(delivery.to_owned()),
-        event: event.to_owned(),
-        mode: ReviewJobMode::Incremental,
-        accepted_at_ms: unix_time_ms(),
-    }])
-    .await
+    let admission = jobs
+        .admit_batch(vec![ReviewRequest {
+            id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
+            repo: repo.clone(),
+            number: *number,
+            author: author.clone(),
+            installation: *installation,
+            head_sha: head_sha.clone(),
+            delivery: Some(delivery.to_owned()),
+            event: event.to_owned(),
+            mode: ReviewJobMode::Incremental,
+            accepted_at_ms: unix_time_ms(),
+        }])
+        .await?;
+    if matches!(admission, Admission::Admitted | Admission::Duplicate) {
+        // This deterministic write is the narrow #19 exception: it reports
+        // trusted accepted work only. No review context, lease, budget, index,
+        // model or model credential is reachable from this path.
+        if let Err(err) = publish_pending_queue_checks(jobs, status_client).await {
+            tracing::warn!(%err, %delivery, "queued review status remains durable and will be retried");
+        }
+    }
+    Ok(Some(admission))
+}
+
+async fn publish_pending_queue_checks(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+) -> Result<()> {
+    publish_pending_queue_checks_with_clock(jobs, factory, unix_time_ms).await
+}
+
+#[cfg(test)]
+async fn publish_pending_queue_checks_at(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+    now_ms: i64,
+) -> Result<()> {
+    publish_pending_queue_checks_with_clock(jobs, factory, || now_ms).await
+}
+
+async fn publish_pending_queue_checks_with_clock<F>(
+    jobs: &dyn ReviewJobStore,
+    factory: QueueStatusClientFactory,
+    now: F,
+) -> Result<()>
+where
+    F: Fn() -> i64 + Send + Sync,
+{
+    let mut first_error = None;
+    for _ in 0..QUEUE_STATUS_DRAIN_BATCH {
+        let Some(pending) = jobs.claim_pending_metadata(now(), 1).await?.pop() else {
+            break;
+        };
+        let attempt = tokio::time::timeout(QUEUE_STATUS_OPERATION_TIMEOUT, async {
+            if !jobs.metadata_claim_current(&pending, now()).await? {
+                return Ok::<(), Error>(());
+            }
+            let clients = factory(pending.installation).await?;
+            let repo = RepoId::parse(&pending.repo)
+                .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
+            let metadata = clients
+                .read
+                .pull_request_metadata(&repo, pending.number)
+                .await?;
+            if !jobs.metadata_claim_current(&pending, now()).await? {
+                return Ok(());
+            }
+            let _ = jobs
+                .resolve_pending_metadata(
+                    &pending,
+                    &metadata.head_sha,
+                    metadata.open,
+                    metadata.draft,
+                    now(),
+                )
+                .await?;
+            Ok(())
+        })
+        .await;
+        let attempt = match attempt {
+            Ok(result) => result,
+            Err(_) => Err(Error::Forge(
+                "queued review metadata operation exceeded its deadline".into(),
+            )),
+        };
+        if let Err(err) = attempt {
+            first_error.get_or_insert(err);
+        }
+    }
+    for _ in 0..QUEUE_STATUS_DRAIN_BATCH {
+        let Some(check) = jobs.claim_pending_checks(now(), 1).await?.pop() else {
+            break;
+        };
+        let attempt = tokio::time::timeout(QUEUE_STATUS_OPERATION_TIMEOUT, async {
+            if !jobs.queued_check_claim_current(&check, now()).await? {
+                return Ok::<(), Error>(());
+            }
+            let clients = factory(check.installation).await?;
+            let repo = RepoId::parse(&check.repo)
+                .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
+            if check.retired {
+                let check_id = match check.check.check_id {
+                    Some(id) => Some(id),
+                    None => {
+                        clients
+                            .read
+                            .check_run_by_external_id(
+                                &repo,
+                                &check.check.head_sha,
+                                &check.check.external_id,
+                            )
+                            .await?
+                    }
+                };
+                if let Some(check_id) = check_id {
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
+                        return Ok(());
+                    }
+                    if check.check.check_id.is_none()
+                        && !jobs.record_queued_check_id(&check, check_id, now()).await?
+                    {
+                        return Ok(());
+                    }
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
+                        return Ok(());
+                    }
+                    crate::app::apply::retire_queued_review_status(
+                        clients.write.as_ref(),
+                        &repo,
+                        check_id,
+                        &check.check.head_sha,
+                    )
+                    .await?;
+                } else {
+                    // The exact head/external ID was not found. Publish a
+                    // terminal status directly, never another queued run.
+                    if !jobs.queued_check_claim_current(&check, now()).await? {
+                        return Ok(());
+                    }
+                    let check_id = crate::app::apply::publish_superseded_review_status(
+                        clients.write.as_ref(),
+                        &repo,
+                        &check.check.head_sha,
+                        &check.check.external_id,
+                    )
+                    .await?;
+                    if !jobs.record_queued_check_id(&check, check_id, now()).await? {
+                        return Ok(());
+                    }
+                }
+                let _ = jobs.complete_retired_check(&check, now()).await?;
+            } else {
+                let check_id = match clients
+                    .read
+                    .check_run_by_external_id(
+                        &repo,
+                        &check.check.head_sha,
+                        &check.check.external_id,
+                    )
+                    .await?
+                {
+                    Some(id) => id,
+                    None => {
+                        if !jobs.queued_check_claim_current(&check, now()).await? {
+                            return Ok(());
+                        }
+                        if !jobs.mark_queue_post_attempted(&check, now()).await? {
+                            return Ok(());
+                        }
+                        if !jobs.queued_check_claim_current(&check, now()).await? {
+                            return Ok(());
+                        }
+                        crate::app::apply::publish_queued_review_status(
+                            clients.write.as_ref(),
+                            &repo,
+                            &check.check.head_sha,
+                            check.reviews_ahead,
+                            &check.check.external_id,
+                        )
+                        .await?
+                    }
+                };
+                let _ = jobs.record_queued_check_id(&check, check_id, now()).await?;
+            }
+            Ok::<(), Error>(())
+        })
+        .await;
+        let attempt = match attempt {
+            Ok(result) => result,
+            Err(_) => Err(Error::Forge(
+                "queued review status operation exceeded its deadline".into(),
+            )),
+        };
+        if let Err(err) = attempt {
+            first_error.get_or_insert(err);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Lazily mint a status-only GitHub client after admission policy allows its
+/// first use. The factory itself performs no token exchange or forge request.
+type QueueStatusClientFactory = Arc<
+    dyn Fn(u64) -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send + Sync,
+>;
+
+const QUEUE_STATUS_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+const QUEUE_STATUS_DRAIN_BATCH: usize = 16;
+
+struct QueueStatusClients {
+    read: Arc<dyn crate::ports::forge::ForgeRead>,
+    write: Arc<dyn ForgeWrite>,
+}
+
+fn github_queue_status_client(auth: Arc<AppAuth>, _installation: u64) -> QueueStatusClientFactory {
+    Arc::new(move |installation| {
+        let auth = auth.clone();
+        async move {
+            let token = auth.installation_token(installation).await?;
+            let read = crate::forge::github::GitHubRead::for_app(&token, auth.app_id()?)?;
+            let write = crate::forge::github::GitHubWrite::new(&token)?;
+            Ok(QueueStatusClients {
+                read: Arc::new(read),
+                write: Arc::new(write),
+            })
+        }
+        .boxed()
+    })
 }
 
 fn unix_time_ms() -> i64 {
@@ -769,6 +1035,7 @@ fn unix_time_ms() -> i64 {
 async fn drain_review_queue<F>(
     mut receiver: mpsc::Receiver<()>,
     permits: Arc<Semaphore>,
+    max_concurrency: usize,
     jobs: Arc<dyn ReviewJobStore>,
     owner: Arc<str>,
     accepting: Arc<std::sync::atomic::AtomicBool>,
@@ -793,7 +1060,10 @@ async fn drain_review_queue<F>(
         let Ok(permit) = permits.clone().try_acquire_owned() else {
             continue;
         };
-        match jobs.claim_next(&owner, unix_time_ms()).await {
+        match jobs
+            .claim_next_with_limit(&owner, unix_time_ms(), max_concurrency)
+            .await
+        {
             Ok(Some(job)) => start(job, permit),
             Ok(None) => drop(permit),
             Err(err) => {
@@ -859,6 +1129,7 @@ async fn run_owned_review(
         expected_head: request.head_sha.clone(),
         queued_at,
         owned: Some(owned.clone()),
+        queue_check: owned.review_check.clone(),
     };
     let disposition = handle_review(
         state,
@@ -1131,6 +1402,7 @@ async fn dispatch(
                     expected_head: head_sha,
                     queued_at: queued_at.unwrap_or_else(tokio::time::Instant::now),
                     owned: None,
+                    queue_check: None,
                 },
                 review_permit,
                 None,
@@ -1422,29 +1694,25 @@ async fn triage_inner(
     let repo_id =
         RepoId::parse(repo).ok_or_else(|| Error::Forge(format!("`{repo}` is not owner/name")))?;
 
-    let permit = state
-        .permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|err| Error::Forge(err.to_string()))?;
+    let plan = run_triage_job(&state.permits, &state.triage_permits, || async {
+        // Keyed on the issue rather than a SHA — an issue has no head commit — so
+        // two deliveries for the same edit cannot both pay for a triage.
+        let lease = format!("{repo}#issue-{number}");
+        if !state.store.claim_lease(&lease, "server").await? {
+            tracing::debug!(%lease, "another worker holds this triage");
+            return Ok(None);
+        }
 
-    // Keyed on the issue rather than a SHA — an issue has no head commit — so
-    // two deliveries for the same edit cannot both pay for a triage.
-    let lease = format!("{repo}#issue-{number}");
-    if !state.store.claim_lease(&lease, "server").await? {
-        tracing::debug!(%lease, "another worker holds this triage");
+        let outcome = triage_and_apply(state, &repo_id, number, installation).await;
+        if let Err(err) = state.store.release_lease(&lease).await {
+            tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
+        }
+        outcome.map(Some)
+    })
+    .await?;
+    let Some(plan) = plan else {
         return Ok(());
-    }
-
-    let outcome = triage_and_apply(state, &repo_id, number, installation).await;
-
-    if let Err(err) = state.store.release_lease(&lease).await {
-        tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-    }
-    drop(permit);
-
-    let plan = outcome?;
+    };
     tracing::info!(
         %repo,
         number,
@@ -1454,6 +1722,40 @@ async fn triage_inner(
         "issue triaged"
     );
     Ok(())
+}
+
+fn triage_permit_pool(
+    review_pool: &Arc<Semaphore>,
+    triage_pool: &Arc<Semaphore>,
+) -> Arc<Semaphore> {
+    let _ = review_pool;
+    triage_pool.clone()
+}
+
+async fn run_triage_job<T, F, Fut>(
+    review_pool: &Arc<Semaphore>,
+    triage_pool: &Arc<Semaphore>,
+    work: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let pool = triage_permit_pool(review_pool, triage_pool);
+    with_triage_permit(&pool, work).await
+}
+
+async fn with_triage_permit<T, F, Fut>(pool: &Arc<Semaphore>, work: F) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let _permit = pool
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| Error::Forge(err.to_string()))?;
+    work().await
 }
 
 /// Read the issue, decide, then publish with a token minted afterwards.
@@ -2020,6 +2322,8 @@ struct ReviewStatus {
     check_id: u64,
     head_sha: String,
     installation: u64,
+    stage: crate::ports::review_job::ReviewCheckStage,
+    owned: Option<OwnedReview>,
     /// Durable review-hub comment opened alongside the status check.
     hub_comment_id: Option<u64>,
     /// Last completed body, retained if this pass fails.
@@ -2321,7 +2625,76 @@ async fn open_status(
 ) -> bool {
     // A retry re-enters `review_inner`, so without this the second attempt
     // would open a second check and orphan the first.
-    if slot.lock().expect("status slot").is_some() {
+    let existing = { slot.lock().expect("status slot").as_ref().cloned() };
+    if let Some(existing) = existing {
+        if existing.head_sha != head_sha {
+            tracing::warn!(%repo, check_id = existing.check_id, queued_head = %existing.head_sha, live_head = %head_sha, "queued review check belongs to a superseded head");
+            close_status(state, slot, Conclusion::NotReviewed).await;
+            return false;
+        }
+        if existing.stage == crate::ports::review_job::ReviewCheckStage::Queued {
+            let transitioned = async {
+                if let Some(owned) = &existing.owned
+                    && !state
+                        .review_jobs
+                        .check_transition_current(
+                            owned,
+                            &existing.head_sha,
+                            existing.check_id,
+                            unix_time_ms(),
+                        )
+                        .await?
+                {
+                    return Ok::<(), Error>(());
+                }
+                let token = state.auth.installation_token(installation).await?;
+                // Token minting awaits. Revalidate immediately before the write
+                // so a replacement owner cannot have its terminal state overwritten.
+                if let Some(owned) = &existing.owned
+                    && !state
+                        .review_jobs
+                        .check_transition_current(
+                            owned,
+                            &existing.head_sha,
+                            existing.check_id,
+                            unix_time_ms(),
+                        )
+                        .await?
+                {
+                    return Ok(());
+                }
+                crate::app::apply::start_queued_review_status(
+                    &crate::forge::github::GitHubWrite::new(&token)?,
+                    repo,
+                    existing.check_id,
+                    &existing.head_sha,
+                )
+                .await
+            }
+            .await;
+            match transitioned {
+                Ok(()) => {
+                    if let Some(owned) = &existing.owned {
+                        let _ = state
+                            .review_jobs
+                            .set_check_stage(
+                                owned,
+                                &existing.head_sha,
+                                existing.check_id,
+                                crate::ports::review_job::ReviewCheckStage::InProgress,
+                                unix_time_ms(),
+                            )
+                            .await;
+                    }
+                    if let Some(status) = slot.lock().expect("status slot").as_mut() {
+                        status.stage = crate::ports::review_job::ReviewCheckStage::InProgress;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(%err, %repo, check_id = existing.check_id, "could not transition queued check to in-progress")
+                }
+            }
+        }
         return true;
     }
 
@@ -2341,6 +2714,8 @@ async fn open_status(
                 check_id,
                 head_sha: head_sha.to_string(),
                 installation,
+                stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+                owned: None,
                 hub_comment_id: None,
                 prior_hub_body: None,
             });
@@ -2426,7 +2801,8 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         }
     };
 
-    if let Err(err) = write.update_check(&open.repo, open.check_id, check).await {
+    let concluded = write.update_check(&open.repo, open.check_id, check).await;
+    if let Err(err) = concluded {
         // Worth an error rather than a warning: the check is now stuck
         // in-progress, and a pending check refuses auto-merge on this commit
         // until somebody pushes again.
@@ -2434,6 +2810,17 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             %err, repo = %open.repo, check_id = open.check_id,
             "could not conclude the in-progress check; it will block auto-merge until the next push"
         );
+    } else if let Some(owned) = &open.owned {
+        let _ = state
+            .review_jobs
+            .set_check_stage(
+                owned,
+                &open.head_sha,
+                open.check_id,
+                crate::ports::review_job::ReviewCheckStage::Completed,
+                unix_time_ms(),
+            )
+            .await;
     }
     if let (Some(comment_id), Some(body)) = (open.hub_comment_id, hub_body)
         && let Err(err) = write.update_comment(&open.repo, comment_id, &body).await
@@ -2632,11 +3019,25 @@ async fn handle_review(
         expected_head,
         queued_at,
         owned,
+        queue_check,
     } = job;
     let timing = crate::review_timing::ReviewTiming::new(repo.clone(), number, format!("{mode:?}"));
     timing.record(|record| record.queue_wait_ms = queued_at.elapsed().as_millis() as u64);
     tracing::debug!(%repo, number, queue_wait_ms = queued_at.elapsed().as_millis(), "starting admitted review worker");
-    let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
+    let queued_status = queue_check.as_ref().and_then(|check| {
+        let check_id = check.check_id?;
+        Some(ReviewStatus {
+            repo: RepoId::parse(&repo)?,
+            check_id,
+            head_sha: check.head_sha.clone(),
+            installation,
+            stage: check.stage,
+            owned: owned.clone(),
+            hub_comment_id: None,
+            prior_hub_body: None,
+        })
+    });
+    let slot: StatusSlot = Arc::new(std::sync::Mutex::new(queued_status));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
         // Shutdown has already taken its concluding snapshot: no check has
         // been opened yet, so there is nothing to conclude. Declining here,
@@ -3268,14 +3669,43 @@ impl ReviewRun<'_> {
             expected_head: Some(pull_request.head_sha.clone()),
             ..run.clone()
         };
-        if let Some(owned) = &run.owned
-            && run.mode == Mode::Incremental
-            && !state
+        if let Some(owned) = &run.owned {
+            match state
                 .review_jobs
-                .confirm_head(owned, &pull_request.head_sha, unix_time_ms())
+                .reconcile_live_check(owned, &pull_request.head_sha, unix_time_ms())
                 .await?
-        {
-            return Err(Error::ReviewOwnershipLost);
+            {
+                crate::ports::review_job::ReconciledReviewCheck::Ready(check) => {
+                    let Some(check_id) = check.check_id else {
+                        return Err(Error::ReviewOwnershipLost);
+                    };
+                    *run.slot.lock().expect("status slot") = Some(ReviewStatus {
+                        repo: repo_id.clone(),
+                        check_id,
+                        head_sha: check.head_sha,
+                        installation,
+                        stage: check.stage,
+                        owned: Some(owned.clone()),
+                        hub_comment_id: None,
+                        prior_hub_body: None,
+                    });
+                }
+                crate::ports::review_job::ReconciledReviewCheck::Pending(_)
+                | crate::ports::review_job::ReconciledReviewCheck::CapacityDeferred => {
+                    // The old head has already moved to the detached outbox.
+                    // Clearing the slot prevents Busy handling from PATCHing it
+                    // independently while the durable worker publishes the new head.
+                    run.slot.lock().expect("status slot").take();
+                    let _ = state
+                        .review_jobs
+                        .defer(owned, unix_time_ms(), unix_time_ms())
+                        .await?;
+                    return Ok(InnerReview::Busy);
+                }
+                crate::ports::review_job::ReconciledReviewCheck::OwnershipLost => {
+                    return Err(Error::ReviewOwnershipLost);
+                }
+            }
         }
         run.check_work(state).await?;
 
@@ -4588,6 +5018,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        seed_previously_published_queue_checks(&store, unix_time_ms()).await;
         let first = store
             .claim_next("first-owner", unix_time_ms())
             .await
@@ -4645,6 +5076,7 @@ mod tests {
                 .unwrap(),
             Admission::Admitted
         );
+        seed_previously_published_queue_checks(&normal_store, unix_time_ms()).await;
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())
             .await
@@ -4685,6 +5117,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -4734,6 +5167,7 @@ mod tests {
         request.head_sha = Some("head-a".into());
         store.admit_batch(vec![request]).await.unwrap();
         let now = unix_time_ms();
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store
             .claim_next("slow-store-worker", now)
             .await
@@ -4768,7 +5202,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_queued_push_burst_runs_and_publishes_only_the_confirmed_last_head() {
-        use crate::forge::{MockForge, RepoId};
+        use crate::forge::MockForge;
         use crate::harness::MockModel;
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest};
@@ -4792,6 +5226,7 @@ mod tests {
             store.admit_batch(requests).await.unwrap(),
             Admission::Admitted
         );
+        seed_previously_published_queue_checks(&store, now + 4).await;
 
         let owned = store
             .claim_next("burst-worker", now + 4)
@@ -4828,6 +5263,8 @@ mod tests {
                             conclusion: Some(crate::forge::CheckConclusion::Success),
                             title: "Reviewed".into(),
                             summary: "Only the confirmed coalesced head ran".into(),
+                            status: None,
+                            external_id: None,
                             images: vec![],
                         },
                     )
@@ -4912,6 +5349,7 @@ mod tests {
         request_a.number = 7;
         request_a.head_sha = Some("head-a".into());
         store.admit_batch(vec![request_a.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
         assert_eq!(
@@ -4986,6 +5424,8 @@ mod tests {
             permits.try_acquire().is_ok(),
             "A releases its permit on yield"
         );
+        let forge = MockForge::new();
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
 
         let owned_b = store
             .claim_next("worker-b", unix_time_ms())
@@ -5002,8 +5442,29 @@ mod tests {
             store.begin_paid(&owned_b, unix_time_ms()).await.unwrap(),
             PaidStart::Started
         );
-        let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").unwrap();
+        let queued_b = forge
+            .writes()
+            .into_iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "head-b"
+                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("B's queued check is written before review work");
+        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "head-b",
+            queued_b.external_id.as_deref().expect("queued B identity"),
+        )
+        .await
+        .unwrap()
+        .expect("B's queued check has a remote ID");
         let result = run_if_confirmed_head_needs_review(
             store.as_ref(),
             Some(&owned_b),
@@ -5019,14 +5480,17 @@ mod tests {
                     })
                     .await?;
                 forge
-                    .publish_check(
+                    .update_check(
                         &repo,
+                        queued_b_id,
                         crate::forge::CheckRun {
                             name: "tinysweeper/review".into(),
                             head_sha: "head-b".into(),
                             conclusion: Some(crate::forge::CheckConclusion::Success),
                             title: "Reviewed B".into(),
                             summary: "B replaced the yielded A".into(),
+                            status: None,
+                            external_id: None,
                             images: vec![],
                         },
                     )
@@ -5046,10 +5510,37 @@ mod tests {
         assert!(requests[0].contains("head-a"));
         assert!(requests[1].contains("head-b"));
         drop(requests);
-        assert!(matches!(
-            &forge.writes()[..],
-            [crate::forge::Write::Check(check)] if check.head_sha == "head-b"
-        ));
+        let writes = forge.writes();
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|write| matches!(
+                    write,
+                    crate::forge::Write::CheckUpdate { check_id, check }
+                        if *check_id == queued_b_id
+                            && check.head_sha == "head-b"
+                            && check.conclusion == Some(crate::forge::CheckConclusion::Success)
+                ))
+                .count(),
+            1,
+            "B's completed review updates its queued check once: {writes:#?}"
+        );
+        assert!(
+            writes
+                .iter()
+                .filter_map(|write| match write {
+                    crate::forge::Write::Check(check) if check.head_sha == "head-a" => Some(check),
+                    crate::forge::Write::CheckUpdate { check, .. }
+                        if check.head_sha == "head-a" =>
+                        Some(check),
+                    _ => None,
+                })
+                .all(|check| {
+                    check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
+                        && check.title == "Review incomplete"
+                }),
+            "A may only receive its neutral retirement status: {writes:#?}"
+        );
     }
 
     #[tokio::test]
@@ -5065,6 +5556,7 @@ mod tests {
         let mut request = queued_test_review(7);
         request.head_sha = Some("head-a-delayed".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&store, now).await;
         let newer = store
             .claim_next("newer-worker", now)
             .await
@@ -5103,6 +5595,8 @@ mod tests {
                             conclusion: Some(crate::forge::CheckConclusion::Success),
                             title: "Reviewed".into(),
                             summary: "Reviewed".into(),
+                            status: None,
+                            external_id: None,
                             images: vec![],
                         },
                     )
@@ -5121,6 +5615,7 @@ mod tests {
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&store, now + 4).await;
         assert!(
             record_owned_disposition(
                 &store,
@@ -5176,6 +5671,8 @@ mod tests {
                             conclusion: Some(crate::forge::CheckConclusion::Success),
                             title: "Reviewed again".into(),
                             summary: "duplicate".into(),
+                            status: None,
+                            external_id: None,
                             images: vec![],
                         },
                     )
@@ -5228,6 +5725,7 @@ mod tests {
         let mut request = queued_test_review(84);
         request.head_sha = Some("head-b".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&store, now).await;
         let active = store
             .claim_next("retrying-worker", now)
             .await
@@ -5287,6 +5785,8 @@ mod tests {
             .expect("owned retry yield")
             .expect("scheduler update")
         );
+        let status_forge = MockForge::new();
+        publish_test_queued_statuses_through_forge(&store, status_forge, now + 5).await;
 
         let resumed = store
             .claim_next("replacement-worker", now + 6)
@@ -5331,6 +5831,8 @@ mod tests {
                             conclusion: Some(crate::forge::CheckConclusion::Success),
                             title: "Reviewed B".into(),
                             summary: "Retry yield left the live head reviewable".into(),
+                            status: None,
+                            external_id: None,
                             images: vec![],
                         },
                     )
@@ -5370,6 +5872,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&*store, now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -5444,6 +5947,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        seed_previously_published_queue_checks(&store, 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -5532,6 +6036,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
+        seed_previously_published_queue_checks(&store, now_ms).await;
         let owned = store
             .claim_next("same-worker", now_ms)
             .await
@@ -5689,6 +6194,7 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = queued_test_review(8);
         store.admit_batch(vec![request]).await.unwrap();
+        seed_previously_published_queue_checks(&store, 2).await;
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
             let owned = store
@@ -5799,6 +6305,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
+        seed_previously_published_queue_checks(&store, now_ms).await;
         let owned = store
             .claim_next("shutdown-owner", now_ms)
             .await
@@ -5858,6 +6365,7 @@ mod tests {
             .admit_batch(vec![queued_test_review(9)])
             .await
             .unwrap();
+        seed_previously_published_queue_checks(&store, 2).await;
         let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
         let stale_check_time = 3;
         let forge = MockForge::new();
@@ -5927,6 +6435,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        seed_previously_published_queue_checks(&*store, unix_time_ms()).await;
         let now = unix_time_ms();
         let owned = store
             .claim_next("first", now)
@@ -6245,6 +6754,62 @@ mod tests {
         }
     }
 
+    /// Seed remote acknowledgements for low-level ownership/paid-helper tests.
+    /// This assumes a status worker already published the remote checks; it does
+    /// not exercise remote publication. Lifecycle tests use the Forge-backed helper.
+    async fn seed_previously_published_queue_checks(store: &dyn ReviewJobStore, now_ms: i64) {
+        let pending = store
+            .claim_pending_checks(now_ms, QUEUE_STATUS_DRAIN_BATCH)
+            .await
+            .expect("test status claims succeed");
+        static NEXT_FIXTURE_CHECK_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(90_000);
+        for check in pending {
+            if check.retired {
+                continue;
+            }
+            assert!(
+                store
+                    .mark_queue_post_attempted(&check, now_ms)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .record_queued_check_id(
+                        &check,
+                        NEXT_FIXTURE_CHECK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        now_ms,
+                    )
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+
+    fn test_status_client_factory(forge: crate::forge::MockForge) -> QueueStatusClientFactory {
+        Arc::new(move |_| {
+            let forge = forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        })
+    }
+
+    async fn publish_test_queued_statuses_through_forge(
+        store: &dyn ReviewJobStore,
+        forge: crate::forge::MockForge,
+        now_ms: i64,
+    ) {
+        publish_pending_queue_checks_at(store, test_status_client_factory(forge), now_ms)
+            .await
+            .expect("test queued statuses publish through the production drainer");
+    }
+
     async fn confirm_test_head(store: &dyn ReviewJobStore, owned: &OwnedReview, now_ms: i64) {
         let head_sha = owned
             .request
@@ -6262,6 +6827,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let forge = crate::forge::MockForge::new();
+        let status_factory = test_status_client_factory(forge.clone());
         let webhook = Action::Review {
             repo: "owner/repo".into(),
             number: 7,
@@ -6270,10 +6837,16 @@ mod tests {
             head_sha: Some("webhook-head".into()),
         };
         assert_eq!(
-            admit_webhook_review(store.as_ref(), &webhook, "delivery-7", "pull_request")
-                .await
-                .expect("webhook admitted durably"),
-            Admission::Admitted
+            admit_webhook_review(
+                store.as_ref(),
+                &webhook,
+                "delivery-7",
+                "pull_request",
+                status_factory.clone(),
+            )
+            .await
+            .expect("webhook admitted durably"),
+            Some(Admission::Admitted)
         );
 
         // Manual admission resolves every PR then atomically journals the
@@ -6302,6 +6875,16 @@ mod tests {
         assert_eq!(queued, vec![8, 9]);
         drop(old_sender);
         drop(old_receiver);
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), unix_time_ms())
+            .await;
+        let queued_checks = forge.writes().into_iter().filter(|write| matches!(
+            write,
+            crate::forge::Write::Check(check) if check.status == Some(crate::forge::types::CheckRunStatus::Queued)
+        )).count();
+        assert_eq!(
+            queued_checks, 3,
+            "the status drainer publishes webhook and manual work before dispatch"
+        );
 
         // A fresh dispatcher has a new, empty wakeup channel. Polling the
         // durable scheduler must run each accepted PR exactly once.
@@ -6314,6 +6897,7 @@ mod tests {
         let dispatcher = tokio::spawn(drain_review_queue(
             new_receiver,
             permits,
+            MAX_CONCURRENT_REVIEWS,
             store.clone(),
             Arc::from("restart-process"),
             accepting,
@@ -6362,12 +6946,23 @@ mod tests {
                 .expect("admitted"),
             Admission::Admitted
         );
+        let forge = crate::forge::MockForge::new();
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
+        assert_eq!(
+            forge.writes().iter().filter(|write| matches!(
+                write,
+                crate::forge::Write::Check(check) if check.status == Some(crate::forge::types::CheckRunStatus::Queued)
+            )).count(),
+            1,
+            "the queue worker waits for a real published check identity"
+        );
 
         let started = Arc::new(AtomicUsize::new(0));
         let observed = started.clone();
         let dispatcher = tokio::spawn(drain_review_queue(
             receiver,
             permits,
+            1,
             store,
             Arc::from("test-owner"),
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -6396,6 +6991,1188 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(1);
         sender.try_send(()).expect("first hint fits");
         assert!(sender.try_send(()).is_err());
+    }
+
+    #[tokio::test]
+    async fn accepted_review_publishes_queued_status_before_a_permit_is_available() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+
+        let permits = Semaphore::new(0);
+        assert_eq!(permits.available_permits(), 0);
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let status_forge = forge.clone();
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let status_forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(status_forge.clone()),
+                    write: Arc::new(status_forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 7,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+
+        // This is the same durable admission helper used by the webhook route.
+        // Queue status must be visible before a worker can acquire a review
+        // permit; otherwise a valid accepted request looks like no work exists.
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-queued",
+                "pull_request",
+                status_client,
+            )
+            .await
+            .expect("accepted durably"),
+            Some(Admission::Admitted)
+        );
+
+        let check = forge.checks().get(status::CHECK_NAME).cloned();
+        let check = check.expect("queued status appears before the permit is released");
+        assert_eq!(check.head_sha, "accepted-head");
+        assert_eq!(check.status, Some(CheckRunStatus::Queued));
+        assert_eq!(check.conclusion, None);
+        assert!(
+            check.external_id.is_some(),
+            "status identity is recoverable"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_queued_status_retries_while_all_review_slots_are_held() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(
+                permits
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("review permit"),
+            );
+        }
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        let status_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 44,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-status-retry",
+                "pull_request",
+                factory.clone(),
+            )
+            .await
+            .expect("status failure leaves accepted work durable"),
+            Some(Admission::Admitted)
+        );
+        assert!(forge.checks().is_empty());
+        let external_id = store.snapshot_for_test().unfinished[0].review_checks[0]
+            .external_id
+            .clone();
+
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("status drainer retries without another delivery");
+        assert_eq!(permits.available_permits(), 0);
+        let queued = forge
+            .checks()
+            .remove(status::CHECK_NAME)
+            .expect("queued check published");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+        assert_eq!(queued.external_id.as_deref(), Some(external_id.as_str()));
+        let durable = store.snapshot_for_test();
+        assert_eq!(
+            durable.unfinished[0].review_checks[0].external_id,
+            external_id
+        );
+        assert!(durable.unfinished[0].review_checks[0].published);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn queued_review_check_uses_one_remote_id_through_completion() {
+        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+        use crate::forge::{MockForge, RepoId};
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
+        use crate::ports::review_job::{ReviewCheckStage, ReviewJobStore};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let now = 10;
+        let mut request = queued_test_review(224);
+        request.head_sha = Some("same-id-head".into());
+        request.accepted_at_ms = now;
+        assert_eq!(
+            store.admit_batch(vec![request]).await.unwrap(),
+            Admission::Admitted
+        );
+
+        publish_pending_queue_checks_at(&store, test_status_client_factory(forge.clone()), now)
+            .await
+            .expect("the production drainer publishes the queued run");
+        let queued_record = store.snapshot_for_test().unfinished[0].review_checks[0].clone();
+        assert_eq!(queued_record.stage, ReviewCheckStage::Queued);
+        let queued_id = forge
+            .check_run_by_external_id(&repo, "same-id-head", &queued_record.external_id)
+            .await
+            .unwrap()
+            .expect("the queued run has a remote ID");
+
+        let owned = store
+            .claim_next("same-id-worker", now + 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&owned, "same-id-head", now + 2)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.begin_paid(&owned, now + 3).await.unwrap(),
+            PaidStart::Started
+        );
+        assert!(
+            store
+                .check_transition_current(&owned, "same-id-head", queued_id, now + 4)
+                .await
+                .unwrap()
+        );
+        crate::app::apply::start_queued_review_status(&forge, &repo, queued_id, "same-id-head")
+            .await
+            .expect("the permit transition patches the queued run");
+        assert!(
+            store
+                .set_check_stage(
+                    &owned,
+                    "same-id-head",
+                    queued_id,
+                    ReviewCheckStage::InProgress,
+                    now + 5
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].stage,
+            ReviewCheckStage::InProgress
+        );
+
+        forge
+            .update_check(
+                &repo,
+                queued_id,
+                status::completed("same-id-head", 1, false, status::ReviewCoverage::default()),
+            )
+            .await
+            .expect("completion patches the same queued run");
+        assert!(
+            store
+                .set_check_stage(
+                    &owned,
+                    "same-id-head",
+                    queued_id,
+                    ReviewCheckStage::Completed,
+                    now + 6
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].stage,
+            ReviewCheckStage::Completed
+        );
+
+        let writes = forge.writes();
+        assert_eq!(writes.len(), 3, "one POST and two updates: {writes:#?}");
+        assert!(matches!(
+            &writes[0],
+            crate::forge::Write::Check(check)
+                if check.head_sha == "same-id-head"
+                    && check.status == Some(CheckRunStatus::Queued)
+        ));
+        assert!(matches!(
+            &writes[1],
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == queued_id
+                    && check.head_sha == "same-id-head"
+                    && check.status.unwrap_or(CheckRunStatus::InProgress)
+                        == CheckRunStatus::InProgress
+                    && check.conclusion.is_none()
+        ));
+        assert!(matches!(
+            &writes[2],
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == queued_id
+                    && check.head_sha == "same-id-head"
+                    && check.conclusion == Some(CheckConclusion::Success)
+        ));
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|write| matches!(write, crate::forge::Write::Check(_)))
+                .count(),
+            1,
+            "status progression never creates a second overall-review run"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_in_progress_write_does_not_label_exhausted_paid_work_unreviewed() {
+        use crate::forge::MockForge;
+        use crate::ports::review_job::{ReviewJobId, ReviewRequest};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let status_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        assert_eq!(
+            store
+                .admit_batch(vec![ReviewRequest {
+                    id: ReviewJobId("failed-stage-paid-work".into()),
+                    repo: "owner/repo".into(),
+                    number: 47,
+                    author: "contributor".into(),
+                    installation: 1,
+                    head_sha: Some("head-with-paid-work".into()),
+                    delivery: Some("failed-stage-paid-work".into()),
+                    event: "pull_request".into(),
+                    mode: ReviewJobMode::Incremental,
+                    accepted_at_ms: 10,
+                }])
+                .await
+                .unwrap(),
+            Admission::Admitted,
+        );
+        publish_pending_queue_checks_at(&store, factory.clone(), 10)
+            .await
+            .unwrap();
+        let queued = forge.checks().remove(status::CHECK_NAME).unwrap();
+        let check_id = forge
+            .check_run_by_external_id(
+                &RepoId::parse("owner/repo").unwrap(),
+                &queued.head_sha,
+                queued.external_id.as_deref().unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The remote in-progress PATCH fails, but paid work can still reach
+        // the scheduler's exhausted terminal state before cleanup retries.
+        forge.fail_next_check_updates(1);
+        assert!(
+            crate::app::apply::start_queued_review_status(
+                &forge,
+                &RepoId::parse("owner/repo").unwrap(),
+                check_id,
+                &queued.head_sha,
+            )
+            .await
+            .is_err()
+        );
+        let owner = store.claim_next("worker", 12).await.unwrap().unwrap();
+        assert!(
+            store
+                .confirm_head(&owner, &queued.head_sha, 13)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.begin_paid(&owner, 14).await.unwrap(),
+            PaidStart::Started
+        );
+        assert!(
+            store
+                .finish(&owner, TerminalOutcome::Exhausted, 20, 20)
+                .await
+                .unwrap()
+        );
+
+        publish_pending_queue_checks_at(&store, factory, 21)
+            .await
+            .unwrap();
+        let terminal = forge
+            .writes()
+            .into_iter()
+            .find_map(|write| match write {
+                crate::forge::Write::CheckUpdate {
+                    check_id: updated_id,
+                    check,
+                } if updated_id == check_id => Some(check),
+                _ => None,
+            })
+            .expect("retired status is retried after paid work ends");
+        assert_eq!(
+            terminal.conclusion,
+            Some(crate::forge::CheckConclusion::Neutral)
+        );
+        assert_eq!(terminal.title, "Review incomplete");
+        assert!(terminal.summary.contains("could not confirm completion"));
+        assert!(terminal.summary.contains("Work may have started"));
+        assert!(!terminal.summary.contains("Nothing is wrong with the code"));
+        assert!(!terminal.summary.contains("nothing was checked"));
+    }
+
+    #[tokio::test]
+    async fn headless_review_delivery_is_durable_when_status_metadata_is_unavailable() {
+        use crate::forge::types::CheckRunStatus;
+        use crate::forge::{MockForge, types::PullRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(
+                permits
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("review permit"),
+            );
+        }
+        assert_eq!(permits.available_permits(), 0);
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new().with_pull_request(
+            PullRequest {
+                number: 78,
+                head_sha: "live-head-b".into(),
+                ..PullRequest::default()
+            },
+            vec![],
+            vec![],
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let retry_forge = forge.clone();
+        let retry_attempts = attempts.clone();
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = retry_forge.clone();
+            let attempts = retry_attempts.clone();
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::Forge("simulated status metadata outage".into()));
+                }
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 78,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+
+        let admission = admit_webhook_review(
+            &store,
+            &action,
+            "headless-metadata-outage",
+            "issue_comment",
+            status_client.clone(),
+        )
+        .await
+        .expect("metadata failure leaves the webhook accepted");
+
+        assert_eq!(admission, Some(Admission::Admitted));
+        let durable = store.snapshot_for_test();
+        assert_eq!(durable.unfinished.len(), 1);
+        assert_eq!(
+            durable.unfinished[0].accepted_ids[0].0,
+            "webhook:headless-metadata-outage"
+        );
+        assert_eq!(durable.unfinished[0].request.head_sha, None);
+        assert!(durable.unfinished[0].status_reconcile_reserved);
+        assert_eq!(permits.available_permits(), 0);
+
+        publish_pending_queue_checks_at(
+            &store,
+            status_client,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("metadata and queued status retry independently of reviews");
+        let queued = forge
+            .checks()
+            .remove(status::CHECK_NAME)
+            .expect("resolved metadata produces a queued check");
+        assert_eq!(queued.head_sha, "live-head-b");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+        assert_eq!(permits.available_permits(), 0);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn headless_metadata_read_failure_retries_without_redelivery() {
+        use crate::forge::types::CheckRunStatus;
+        use crate::forge::{MockForge, types::PullRequest};
+
+        let review_pool = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(
+                review_pool
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("review permit"),
+            );
+        }
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 79,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "metadata-read-fails",
+                "issue_comment",
+                factory.clone()
+            )
+            .await
+            .expect("metadata outage does not undo durable acceptance"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(store.snapshot_for_test().unfinished.len(), 1);
+        assert!(forge.writes().is_empty());
+
+        forge.replace_pull_request(PullRequest {
+            number: 79,
+            head_sha: "recovered-head".into(),
+            ..PullRequest::default()
+        });
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("metadata retry publishes accepted status");
+        let queued = forge
+            .checks()
+            .remove(status::CHECK_NAME)
+            .expect("queued check exists");
+        assert_eq!(queued.head_sha, "recovered-head");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+        assert_eq!(review_pool.available_permits(), 0);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn closed_and_draft_headless_deliveries_write_nothing_and_allow_a_fresh_delivery() {
+        use crate::forge::types::CheckRunStatus;
+        use crate::forge::{MockForge, types::PullRequest};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new()
+            .with_pull_request(
+                PullRequest {
+                    number: 80,
+                    open: false,
+                    head_sha: "closed-head".into(),
+                    ..PullRequest::default()
+                },
+                vec![],
+                vec![],
+            )
+            .with_pull_request(
+                PullRequest {
+                    number: 81,
+                    draft: true,
+                    head_sha: "draft-head".into(),
+                    ..PullRequest::default()
+                },
+                vec![],
+                vec![],
+            );
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = |number| Action::Review {
+            repo: "owner/repo".into(),
+            number,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+        for (number, delivery) in [(80, "closed-delivery"), (81, "draft-delivery")] {
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(number),
+                    delivery,
+                    "issue_comment",
+                    factory.clone()
+                )
+                .await
+                .expect("accepted then resolved by metadata worker"),
+                Some(Admission::Admitted)
+            );
+        }
+        assert!(store.snapshot_for_test().unfinished.is_empty());
+        assert!(
+            forge.writes().is_empty(),
+            "closed/draft metadata must not publish checks"
+        );
+
+        for (number, head) in [(80, "reopened-head"), (81, "ready-head")] {
+            forge.replace_pull_request(PullRequest {
+                number,
+                open: true,
+                draft: false,
+                head_sha: head.into(),
+                ..PullRequest::default()
+            });
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(number),
+                    &format!("new-delivery-{number}"),
+                    "issue_comment",
+                    factory.clone(),
+                )
+                .await
+                .expect("new delivery after eligibility changes"),
+                Some(Admission::Admitted)
+            );
+        }
+        let queued = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.status == Some(CheckRunStatus::Queued) =>
+                {
+                    Some(check.head_sha)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(queued.contains(&"reopened-head".to_string()));
+        assert!(queued.contains(&"ready-head".to_string()));
+    }
+
+    #[tokio::test]
+    async fn slow_successful_metadata_lookup_keeps_its_status_claim_valid() {
+        use crate::forge::types::CheckRunStatus;
+        use crate::forge::{MockForge, types::PullRequest};
+        use crate::ports::review_job::{ReviewJobId, ReviewJobMode, ReviewRequest};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        store
+            .admit_batch(vec![ReviewRequest {
+                id: ReviewJobId("slow-metadata".into()),
+                repo: "owner/repo".into(),
+                number: 82,
+                author: "contributor".into(),
+                installation: 1,
+                head_sha: None,
+                delivery: Some("slow-metadata".into()),
+                event: "issue_comment".into(),
+                mode: ReviewJobMode::Incremental,
+                accepted_at_ms: 10,
+            }])
+            .await
+            .expect("headless acceptance is durable");
+        let forge = MockForge::new().with_pull_request(
+            PullRequest {
+                number: 82,
+                head_sha: "slow-live-head".into(),
+                ..PullRequest::default()
+            },
+            vec![],
+            vec![],
+        );
+        let clock_ms = Arc::new(AtomicI64::new(100));
+        let client_forge = forge.clone();
+        let client_clock = clock_ms.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            let clock = client_clock.clone();
+            async move {
+                // Model a successful token+metadata operation that took 45s.
+                clock.fetch_add(45_000, Ordering::SeqCst);
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let clock = clock_ms.clone();
+        publish_pending_queue_checks_with_clock(&store, factory, move || {
+            clock.load(Ordering::SeqCst)
+        })
+        .await
+        .expect("slow status operation stays within its bounded claim");
+        let queued = forge
+            .checks()
+            .remove(status::CHECK_NAME)
+            .expect("slow metadata response still produces the check");
+        assert_eq!(queued.head_sha, "slow-live-head");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+    }
+
+    #[tokio::test]
+    async fn status_drain_claims_later_items_after_prior_network_operations() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+        use crate::ports::review_job::{ReviewJobId, ReviewJobMode, ReviewRequest};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let requests = (0..QUEUE_STATUS_DRAIN_BATCH)
+            .map(|index| ReviewRequest {
+                id: ReviewJobId(format!("slow-status-{index}")),
+                repo: "owner/repo".into(),
+                number: 100 + index as u64,
+                author: "contributor".into(),
+                installation: 1,
+                head_sha: Some(format!("head-{index}")),
+                delivery: Some(format!("slow-status-{index}")),
+                event: "pull_request".into(),
+                mode: ReviewJobMode::Incremental,
+                accepted_at_ms: index as i64,
+            })
+            .collect();
+        assert_eq!(
+            store.admit_batch(requests).await.expect("batch accepted"),
+            crate::ports::review_job::Admission::Admitted
+        );
+        let forge = MockForge::new();
+        let clock_ms = Arc::new(AtomicI64::new(100));
+        let client_forge = forge.clone();
+        let client_clock = clock_ms.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            let clock = client_clock.clone();
+            async move {
+                clock.fetch_add(45_000, Ordering::SeqCst);
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let clock = clock_ms.clone();
+        publish_pending_queue_checks_with_clock(&store, factory, move || {
+            clock.load(Ordering::SeqCst)
+        })
+        .await
+        .expect("bounded status drain succeeds");
+        let queued = forge.writes().into_iter().filter(|write| matches!(
+            write,
+            crate::forge::Write::Check(check) if check.status == Some(CheckRunStatus::Queued)
+        )).count();
+        assert_eq!(
+            queued, QUEUE_STATUS_DRAIN_BATCH,
+            "each item receives a fresh claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn superseded_check_without_recovered_id_gets_terminal_status_and_releases_outbox() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckConclusion;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        // A's queued POST fails, then B coalesces it before a check ID can be
+        // stored. The outbox must eventually publish a terminal result rather
+        // than retain A forever when external_id recovery is empty.
+        forge.fail_next_check_publishes(1);
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = |head: &str| Action::Review {
+            repo: "owner/repo".into(),
+            number: 77,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head.into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action("head-a"),
+                "delivery-a",
+                "pull_request",
+                factory.clone()
+            )
+            .await
+            .expect("A remains durably accepted"),
+            Some(Admission::Admitted)
+        );
+        assert!(store.snapshot_for_test().unfinished[0].review_checks[0].post_attempted);
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action("head-b"),
+                "delivery-b",
+                "pull_request",
+                factory.clone()
+            )
+            .await
+            .expect("B coalesces A"),
+            Some(Admission::Admitted)
+        );
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("retired status drain succeeds");
+
+        let check = forge
+            .writes()
+            .into_iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check) if check.head_sha == "head-a" => Some(check),
+                _ => None,
+            })
+            .expect("a terminal status is published for superseded A");
+        assert_eq!(check.status, None, "terminal checks omit pending status");
+        assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
+        assert_eq!(check.title, "Review incomplete");
+        assert!(check.summary.contains("could not confirm completion"));
+        assert!(check.summary.contains("Work may have started"));
+        assert!(!check.summary.contains("No review ran"));
+        assert!(!check.summary.contains("nothing was checked"));
+        assert!(store.snapshot_for_test().retired_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_terminal_post_response_loss_recovers_without_duplicate_post() {
+        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+        use crate::forge::{MockForge, RepoId};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        forge.fail_after_terminal_check_publishes(1);
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = |head: &str| Action::Review {
+            repo: "owner/repo".into(),
+            number: 83,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head.into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action("lost-a"),
+                "lost-a-delivery",
+                "pull_request",
+                factory.clone()
+            )
+            .await
+            .expect("A is durably accepted"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action("lost-b"),
+                "lost-b-delivery",
+                "pull_request",
+                factory.clone()
+            )
+            .await
+            .expect("B supersedes A"),
+            Some(Admission::Admitted)
+        );
+        let retired = store.snapshot_for_test().retired_checks[0].clone();
+        assert!(
+            retired.check.check_id.is_none(),
+            "ambiguous response leaves recovery intent durable"
+        );
+
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("external ID recovery and terminal patch complete");
+
+        let writes = forge.writes();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let external_id = retired.check.external_id.as_str();
+        let recovered_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "lost-a",
+            external_id,
+        )
+        .await
+        .unwrap()
+        .expect("the accepted terminal POST is found by its external identity");
+        let queued_b = writes
+            .iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "lost-b"
+                        && check.status == Some(CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("B has its own queued check");
+        let queued_b_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "lost-b",
+            queued_b.external_id.as_deref().expect("queued B identity"),
+        )
+        .await
+        .unwrap()
+        .expect("the queued B check is discoverable");
+        assert_ne!(
+            recovered_id, queued_b_id,
+            "A recovery cannot adopt B's check"
+        );
+        let terminal_posts = writes
+            .iter()
+            .filter(|write| {
+                matches!(
+                    write,
+                    crate::forge::Write::Check(check)
+                        if check.head_sha == "lost-a"
+                            && check.conclusion == Some(CheckConclusion::Neutral)
+                )
+            })
+            .count();
+        assert_eq!(
+            terminal_posts, 1,
+            "recovery finds the accepted terminal POST"
+        );
+        assert!(
+            writes.iter().any(|write| matches!(
+                write,
+                crate::forge::Write::CheckUpdate { check_id, check }
+                    if *check_id == recovered_id
+                        && check.head_sha == "lost-a"
+                        && check.conclusion == Some(CheckConclusion::Neutral)
+            )),
+            "terminal write should update the ID returned by recovery: {writes:#?}"
+        );
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::Check(check)
+                if check.head_sha == "lost-b" && check.status == Some(CheckRunStatus::Queued)
+        )));
+        assert!(store.snapshot_for_test().retired_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn superseded_no_id_statuses_do_not_fill_the_bounded_outbox() {
+        use crate::forge::MockForge;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = |head: String, number| Action::Review {
+            repo: "owner/repo".into(),
+            number,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head),
+        };
+
+        for index in 0..=crate::ports::review_job::MAX_REVIEW_STATUS_RECORDS {
+            let number = 84;
+            let first = format!("outbox-a-{index}");
+            forge.fail_next_check_publishes(1);
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(first.clone(), number),
+                    &format!("outbox-a-delivery-{index}"),
+                    "pull_request",
+                    factory.clone(),
+                )
+                .await
+                .expect("first delivery remains durable"),
+                Some(Admission::Admitted)
+            );
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(format!("outbox-b-{index}"), number),
+                    &format!("outbox-b-delivery-{index}"),
+                    "pull_request",
+                    factory.clone(),
+                )
+                .await
+                .expect("new delivery supersedes the failed queued POST"),
+                Some(Admission::Admitted)
+            );
+            assert!(store.snapshot_for_test().retired_checks.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn triage_work_runs_while_every_review_permit_is_occupied() {
+        use crate::forge::MockForge;
+        use crate::forge::types::Issue;
+        use crate::harness::MockModel;
+
+        let review_pool = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut review_permits = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            review_permits.push(
+                review_pool
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("review permit"),
+            );
+        }
+        assert_eq!(review_pool.available_permits(), 0);
+
+        let triage_pool = Arc::new(Semaphore::new(2));
+        let repo = RepoId::parse("owner/repo").expect("repo id");
+        let forge = MockForge::new().with_issue(Issue {
+            number: 7,
+            title: "The editor crashes while saving".into(),
+            body: "Saving a large file crashes the editor.".into(),
+            author: "reporter".into(),
+            open: true,
+            age_days: 90,
+            quiet_days: 90,
+            ..Issue::default()
+        });
+        let model = MockModel::always(serde_json::json!({
+            "priority": "p1",
+            "summary": "The editor crashes while saving."
+        }));
+        let config = Config {
+            issues: crate::config::types::Issues {
+                enabled: true,
+                comment: false,
+                apply_labels: true,
+                max_labels: 3,
+                dedupe: false,
+                ..crate::config::types::Issues::default()
+            },
+            ..Config::default()
+        };
+        let plan = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_triage_job(&review_pool, &triage_pool, || async {
+                let outcome =
+                    crate::issues::triage(&forge, Arc::new(model.clone()), &config, &repo, 7, &[])
+                        .await?;
+                crate::issues::apply_plan(&forge, &repo, &outcome.plan).await?;
+                Ok(outcome.plan)
+            }),
+        )
+        .await
+        .expect("triage is not queued behind reviews")
+        .expect("triage permit acquired and applied");
+        assert!(
+            !plan.add_labels.is_empty(),
+            "the real triage planner chose a label"
+        );
+        assert_eq!(model.requests().len(), 1, "triage called the model");
+        let updated = crate::ports::forge::ForgeRead::issue(&forge, &repo, 7)
+            .await
+            .expect("triaged issue is readable");
+        assert!(
+            plan.add_labels
+                .iter()
+                .all(|label| updated.labels.contains(label)),
+            "the deterministic triage plan was applied"
+        );
+        assert_eq!(review_pool.available_permits(), 0);
+        drop(review_permits);
+    }
+
+    #[tokio::test]
+    async fn failed_queued_status_is_retried_from_durable_state_without_review_capacity() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.expect("review slot"));
+        }
+        assert_eq!(permits.available_permits(), 0);
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        let status_forge = forge.clone();
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let status_forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(status_forge.clone()),
+                    write: Arc::new(status_forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 44,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-retry-status",
+                "pull_request",
+                status_client.clone(),
+            )
+            .await
+            .expect("status failure does not undo durable acceptance"),
+            Some(Admission::Admitted)
+        );
+        assert!(forge.checks().is_empty());
+        let original_external_id = store.snapshot_for_test().unfinished[0].review_checks[0]
+            .external_id
+            .clone();
+
+        // This is the periodic retry path, independent of webhook redelivery
+        // and review permits. Advancing the clock expires only the bounded
+        // status-write claim; it does not create a new job or check identity.
+        publish_pending_queue_checks_at(
+            &store,
+            status_client,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("retry publishes queued check");
+        assert_eq!(permits.available_permits(), 0);
+        let check = forge
+            .checks()
+            .get(status::CHECK_NAME)
+            .cloned()
+            .expect("status retry publishes without a new delivery");
+        assert_eq!(check.status, Some(CheckRunStatus::Queued));
+        assert_eq!(
+            check.external_id.as_deref(),
+            Some(original_external_id.as_str())
+        );
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].check_id,
+            Some(1)
+        );
+        drop(held);
     }
 
     #[test]
@@ -6455,6 +8232,8 @@ mod tests {
                         conclusion: Some(crate::forge::CheckConclusion::Success),
                         title: "Reviewed".into(),
                         summary: "Reviewed".into(),
+                        status: None,
+                        external_id: None,
                         images: vec![],
                     },
                 )
@@ -6509,6 +8288,8 @@ mod tests {
                         conclusion: Some(crate::forge::CheckConclusion::Success),
                         title: "Reviewed".into(),
                         summary: "Reviewed".into(),
+                        status: None,
+                        external_id: None,
                         images: vec![],
                     },
                 )

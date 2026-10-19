@@ -654,6 +654,37 @@ async fn a_fetched_config_is_filtered_exactly_as_a_parsed_one_is() {
     assert_eq!(overlaid.ignored, vec!["automerge.enabled".to_string()]);
 }
 
+#[tokio::test]
+async fn a_repository_cannot_change_the_operators_global_worker_pools() {
+    let forge = forge_with(
+        "basesha",
+        ".tinysweeper.toml",
+        "[server]\nreview_concurrency = 100\ntriage_concurrency = 0\n",
+    );
+    let deployment = base();
+
+    let overlaid = overlay(&forge, &repo(), "basesha", &deployment).await;
+
+    assert_eq!(
+        overlaid.config.server.review_concurrency,
+        deployment.server.review_concurrency
+    );
+    assert_eq!(
+        overlaid.config.server.triage_concurrency,
+        deployment.server.triage_concurrency
+    );
+    assert!(
+        overlaid
+            .ignored
+            .contains(&"server.review_concurrency".to_string())
+    );
+    assert!(
+        overlaid
+            .ignored
+            .contains(&"server.triage_concurrency".to_string())
+    );
+}
+
 #[test]
 fn council_keys_are_not_overridable_by_a_reviewed_repository() {
     // Every key under `[council]` either spends the operator's money — a second

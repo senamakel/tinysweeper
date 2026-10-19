@@ -1442,7 +1442,9 @@ mod tests {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         use crate::lanes::large_pr::ReviewMode;
         use crate::ports::model::{Message, Model};
-        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use crate::ports::model_execution::{
+            ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+        };
         use crate::ports::tree::{MockTree, TreeReader};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::time::Instant;
@@ -1505,7 +1507,24 @@ mod tests {
                 drain_seconds: 30,
             },
         ));
-        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        struct CountingControl {
+            inner: Arc<crate::app::review_execution::ReviewExecution>,
+            acquires: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl ModelExecutionControl for CountingControl {
+            async fn acquire(
+                &self,
+            ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+                self.acquires.fetch_add(1, Ordering::SeqCst);
+                self.inner.acquire().await
+            }
+        }
+        let acquire_count = Arc::new(AtomicUsize::new(0));
+        let control: Arc<dyn ModelExecutionControl> = Arc::new(CountingControl {
+            inner: execution.clone(),
+            acquires: acquire_count.clone(),
+        });
         let model = model
             .with_execution_control(control)
             .expect("the gateway preserves review execution control");
@@ -1557,6 +1576,11 @@ mod tests {
 
         assert_eq!(tree.lookups.load(Ordering::SeqCst), 1);
         assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(
+            acquire_count.load(Ordering::SeqCst),
+            2,
+            "one admitted tool-call and one refused follow-up; no fallback reset"
+        );
         assert_eq!(execution.snapshot().committed_calls, 1);
         let refusal = result.expect_err("the next agentic turn exceeds the physical call cap");
         assert!(matches!(
@@ -1574,6 +1598,7 @@ mod tests {
         assert_eq!(usage.calls_attempted, 1);
         assert_eq!(usage.calls_succeeded, 1);
         assert_eq!(usage.cost_usd, 0.001);
+        assert_eq!(refusal.usage_accounting_complete(), Some(true));
         let calls = calls.0.lock().unwrap();
         assert_eq!(
             calls.len(),

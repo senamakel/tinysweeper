@@ -1453,9 +1453,18 @@ mod tests {
             "{section}"
         );
         assert!(section.contains("if token.is_empty()"), "{section}");
-        assert!(
-            section.contains("**Suggested fix:**\n  ````\n  if token.is_empty() { return Err(Error::MissingToken); }\n  </details>\n  ````"),
+        let lines: Vec<_> = section.lines().collect();
+        let label = lines
+            .iter()
+            .position(|line| line.trim() == "**Suggested fix:**")
+            .expect("suggested-fix label");
+        assert_eq!(lines[label + 1].trim(), "````", "{section}");
+        assert_eq!(
+            lines[label + 2].trim(),
+            "if token.is_empty() { return Err(Error::MissingToken); }",
             "{section}"
         );
+        assert_eq!(lines[label + 3].trim(), "</details>", "{section}");
+        assert_eq!(lines[label + 4].trim(), "````", "{section}");
     }
 }

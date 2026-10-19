@@ -46,6 +46,33 @@ Current source constraints:
   thread and wireframe model calls must use root-bound models. This records the
   reviewed integration constraint; exact wrapper/API details remain subject to
   the dependency review and must not be guessed from an unmerged API.
+- The strong integration review recommends a separate optional neutral model
+  hook, `Model::with_review_budget(limit_usd) -> Option<Arc<dyn Model>>`, with
+  default `None`; do not couple the physical-dispatch control trait to Embed's
+  `Budget`. Gateway root binding creates one fresh Embed `Budget`, preserves
+  `review_budget` through clones, and derives `Budget::child(SpendLimits)` for
+  lane caps when bound. Unbound `scoped_budget` keeps its current fresh-budget
+  behavior. Factor USD-to-Embed-limit conversion so root and child limits share
+  the same rounding. `ObservedModel` and `OwnedModel` forward root binding
+  without losing timing or ownership. Cassette Record forwards it while
+  retaining its existing lookup/storage state and physical capability flags;
+  Replay makes no live money reservation or physical event, and any logical
+  replay admission is a separate policy.
+
+  Tests must respect Embed reservation semantics: dropping an unsettled money
+  reservation conservatively charges its requested spend, unlike dropping an
+  uncommitted physical permit, which refunds the call slot. Reuse
+  `GatewayModel::admission_fixture`: bind a `$1` review root, hold exactly
+  `1_000_000` micros, then poll two actual `ModelCapability` scopes and a direct
+  base `complete` concurrently; none may reach the provider until the hold is
+  settled with `Spend::default()`. This catches leakage from old fresh lane
+  budgets. With root cap `2R - 1`, two lane caps at least `R`, and a direct root
+  call, hold the first provider response and require exactly one dispatch;
+  after settling paid `R`, the others must refuse at the root budget. A tighter
+  lane cap must refuse without consuming the sibling or root allowance, and a
+  second fresh review must remain isolated. Keep the existing independent
+  fresh-scope test unchanged. Detailed fixture evidence is in the private
+  source-preparation log; confirm exact API behavior against merged Embed code.
 - #221 observes physical dispatches inside Embed and TinyAgents, separately
   from logical completion usage. Its observer callbacks cannot refuse a call.
   Existing `ModelBudget` bounds tokens and money, not physical call count.

@@ -2853,11 +2853,7 @@ mod tests {
 
         let now = tokio::time::Instant::now();
         let started_at = now - Duration::from_secs(90);
-        let execution = large_execution_scope(
-            started_at,
-            now + Duration::from_secs(10),
-            4,
-        );
+        let execution = large_execution_scope(started_at, now + Duration::from_secs(10), 4);
         let control: Arc<dyn ModelExecutionControl> = execution.clone();
         let mock = MockModel::silent();
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
@@ -3514,6 +3510,115 @@ mod tests {
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=abc123"), "{lines}");
         assert!(lines.contains("mode=Incremental"), "{lines}");
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn observed_gateway_counts_a_typed_repair_refusal_without_double_counting_paid_usage() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::harness::mock::execution_test_support::execution_control;
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use tracing::{Instrument, instrument::WithSubscriber};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "deep",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "deep",
+                r#"{"summary":"repair should not be requested"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3,"cost":0.25}),
+            ),
+        ])
+        .await;
+        let mut models = Config::default().models;
+        models.base_url = gateway.base_url.clone();
+        models.fallback.clear();
+        models.agentic_reviewers = false;
+        models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        let adapter = GatewayModel::with_key(&models, "fixture".into());
+        let (execution, control) = execution_control(1);
+        let adapter = adapter
+            .with_execution_control(control)
+            .expect("gateway preserves the dispatch ceiling");
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
+        timing.record(|record| record.head_sha = "abc123".into());
+        let observed = ObservedModel {
+            inner: adapter,
+            timing: timing.clone(),
+        };
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_log = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_log.clone()))
+            .finish();
+        let request = crate::ports::model::ModelRequest {
+            model: "deep".into(),
+            messages: vec![
+                crate::ports::model::Message::system("Review."),
+                crate::ports::model::Message::user("Check this evidence."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "critique".into(),
+            max_tokens: 32,
+        };
+        let result = observed
+            .complete(request)
+            .with_subscriber(tracing::Dispatch::new(subscriber))
+            .instrument(tracing::info_span!(
+                "review",
+                repo = "owner/repo",
+                pr = 7,
+                head_sha = "abc123",
+                mode = "Large"
+            ))
+            .await;
+
+        let refusal = result.expect_err("the ceiling refuses the paid structured repair");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        let usage = refusal
+            .usage()
+            .expect("the refused repair retains known usage from the first response");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 2);
+        assert_eq!(usage.calls_attempted, 1);
+        assert_eq!(usage.calls_succeeded, 1);
+        assert_eq!(usage.cost_usd, 0.125);
+        assert_eq!(refusal.usage_accounting_complete(), Some(true));
+
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_succeeded, 1);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.usage.input_tokens, 5);
+        assert_eq!(record.usage.output_tokens, 2);
+        assert_eq!(record.usage.cost_usd, 0.125);
+        let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert_eq!(lines.matches("model call").count(), 1, "{lines}");
+        assert!(lines.contains("latency_ms="), "{lines}");
+        assert!(lines.contains("repo=owner/repo"), "{lines}");
+        assert!(lines.contains("pr=7"), "{lines}");
+        assert!(lines.contains("head_sha=abc123"), "{lines}");
+        assert!(lines.contains("mode=Large"), "{lines}");
     }
 
     #[tokio::test]

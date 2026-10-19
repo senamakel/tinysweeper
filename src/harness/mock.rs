@@ -387,8 +387,8 @@ mod tests {
 
     #[tokio::test]
     async fn mock_execution_ceiling_refuses_before_recording_or_consuming_the_next_answer() {
+        use super::execution_test_support::execution_control;
         use crate::ports::model_execution::ModelExecutionRefusal;
-        use execution_test_support::execution_control;
 
         let mock = MockModel::new()
             .then(json!({"summary":"first"}))
@@ -398,7 +398,10 @@ mod tests {
             .with_execution_control(control)
             .unwrap_or_else(|| Arc::new(mock.clone()));
 
-        assert_eq!(controlled.complete(request()).await.unwrap().value["summary"], "first");
+        assert_eq!(
+            controlled.complete(request()).await.unwrap().value["summary"],
+            "first"
+        );
         assert!(matches!(
             controlled.complete(request()).await,
             Err(Error::ModelExecutionRefused {
@@ -422,8 +425,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_mock_control_does_not_consume_the_first_canned_answer() {
+        use super::execution_test_support::execution_control;
         use crate::ports::model_execution::ModelExecutionRefusal;
-        use execution_test_support::execution_control;
 
         let mock = MockModel::new().then(json!({"summary":"first"}));
         let (execution, control) = execution_control(1);
@@ -445,7 +448,10 @@ mod tests {
         let rebound = mock
             .with_execution_control(replacement_control)
             .unwrap_or_else(|| Arc::new(mock.clone()));
-        assert_eq!(rebound.complete(request()).await.unwrap().value["summary"], "first");
+        assert_eq!(
+            rebound.complete(request()).await.unwrap().value["summary"],
+            "first"
+        );
         assert_eq!(mock.calls(), 1);
     }
 }
@@ -453,8 +459,8 @@ mod tests {
 /// Shared physical-dispatch fixture for decorator regression tests.
 #[cfg(test)]
 pub(crate) mod execution_test_support {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -549,7 +555,7 @@ pub(crate) mod execution_test_support {
                 control: self.control.clone(),
                 review_remaining: self.review_remaining.clone(),
                 lane_remaining: Some(Arc::new(AtomicUsize::new(
-                    limit_usd.floor().max(0.0) as usize,
+                    limit_usd.floor().max(0.0) as usize
                 ))),
             }))
         }
@@ -559,7 +565,7 @@ pub(crate) mod execution_test_support {
                 model: self.model.clone(),
                 control: self.control.clone(),
                 review_remaining: Some(Arc::new(AtomicUsize::new(
-                    limit_usd.floor().max(0.0) as usize,
+                    limit_usd.floor().max(0.0) as usize
                 ))),
                 lane_remaining: self.lane_remaining.clone(),
             }))

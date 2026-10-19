@@ -4785,9 +4785,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_model_preserves_dispatch_control_and_lease_across_rescoping() {
-        use crate::harness::mock::execution_test_support::{
-            DispatchProbe, execution_control,
-        };
+        use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
         use crate::ports::model::Message;
         use crate::ports::model_execution::ModelExecutionRefusal;
 
@@ -4826,9 +4824,7 @@ mod tests {
                     let budgeted = scoped
                         .with_review_budget(10.0)
                         .expect("owned wrapper binds a review budget");
-                    budgeted
-                        .with_execution_control(control)
-                        .unwrap_or(budgeted)
+                    budgeted.with_execution_control(control).unwrap_or(budgeted)
                 };
                 let lane = root
                     .scoped_budget(8.0)
@@ -4852,10 +4848,11 @@ mod tests {
                 assert_eq!(mock.calls(), 1, "refusal occurs before the provider probe");
                 assert_eq!(execution.snapshot().committed_calls, 1);
 
-                original.id = crate::ports::review_job::ReviewJobId(
-                    format!("new-head-delivery-{scope_first}-{control_first}"),
-                );
-                original.delivery = Some(format!("new-head-delivery-{scope_first}-{control_first}"));
+                original.id = crate::ports::review_job::ReviewJobId(format!(
+                    "new-head-delivery-{scope_first}-{control_first}"
+                ));
+                original.delivery =
+                    Some(format!("new-head-delivery-{scope_first}-{control_first}"));
                 original.head_sha = Some("head-b".into());
                 store.admit_batch(vec![original.clone()]).await.unwrap();
                 assert!(matches!(

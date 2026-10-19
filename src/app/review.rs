@@ -2690,9 +2690,7 @@ mod tests {
 
     #[tokio::test]
     async fn observed_model_preserves_dispatch_control_across_budget_binding_orders() {
-        use crate::harness::mock::execution_test_support::{
-            DispatchProbe, execution_control,
-        };
+        use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
         use crate::ports::model::Message;
         use crate::ports::model_execution::ModelExecutionRefusal;
 
@@ -2709,11 +2707,7 @@ mod tests {
                         cost_usd: 1.0,
                         ..Usage::default()
                     });
-                let timing = crate::review_timing::ReviewTiming::new(
-                    "owner/repo",
-                    7,
-                    "Large",
-                );
+                let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
                 let observed: Arc<dyn Model> = Arc::new(ObservedModel {
                     inner: Arc::new(DispatchProbe::new(mock.clone())),
                     timing: timing.clone(),
@@ -2737,9 +2731,7 @@ mod tests {
                     let budgeted = scoped
                         .with_review_budget(10.0)
                         .expect("the probe binds a review budget");
-                    budgeted
-                        .with_execution_control(control)
-                        .unwrap_or(budgeted)
+                    budgeted.with_execution_control(control).unwrap_or(budgeted)
                 };
                 let lane = root
                     .scoped_budget(8.0)

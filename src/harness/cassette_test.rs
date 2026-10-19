@@ -178,9 +178,7 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
 
 #[tokio::test]
 async fn recording_cassette_preserves_dispatch_control_across_budget_binding_orders() {
-    use crate::harness::mock::execution_test_support::{
-        DispatchProbe, execution_control,
-    };
+    use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
     use crate::ports::model_execution::ModelExecutionRefusal;
 
     for scope_first in [false, true] {
@@ -221,29 +219,38 @@ async fn recording_cassette_preserves_dispatch_control_across_budget_binding_ord
                 let budgeted = scoped
                     .with_review_budget(10.0)
                     .expect("recording cassette binds the shared review budget");
-                budgeted
-                    .with_execution_control(control)
-                    .unwrap_or(budgeted)
+                budgeted.with_execution_control(control).unwrap_or(budgeted)
             };
             let lane = root
                 .scoped_budget(8.0)
                 .expect("rescoping retains the recording state and both controls");
 
-            assert!(root.complete(request("probe", "first paid response")).await.is_ok());
+            assert!(
+                root.complete(request("probe", "first paid response"))
+                    .await
+                    .is_ok()
+            );
             assert!(matches!(
-                lane.complete(request("probe", "refused second response")).await,
+                lane.complete(request("probe", "refused second response"))
+                    .await,
                 Err(Error::ModelExecutionRefused {
                     refusal: ModelExecutionRefusal::CallLimit,
                     ..
                 })
             ));
-            assert_eq!(mock.calls(), 1, "the refused call does not reach the inner model");
+            assert_eq!(
+                mock.calls(),
+                1,
+                "the refused call does not reach the inner model"
+            );
             assert_eq!(execution.snapshot().committed_calls, 1);
             assert_eq!(cassette.served(), 1);
             assert_eq!(cassette.spend().usage.input_tokens, 2);
             assert_eq!(cassette.cost_usd(), 1.0);
             assert_eq!(
-                cassette.flush().expect("the shared recorder retains its first take"),
+                cassette
+                    .flush()
+                    .expect("the shared recorder retains its first take"),
                 1
             );
             assert_eq!(load(dir.path()).expect("recorded take loads").len(), 1);

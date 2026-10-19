@@ -1280,13 +1280,31 @@ mod tests {
         );
         drop(running);
 
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if calls.0.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both physical dispatch terminals are observed after cancellation");
+
         let calls = calls.0.lock().unwrap();
-        assert_eq!(calls.len(), 1, "the paid model event is recorded once");
+        assert_eq!(calls.len(), 2, "each physical dispatch is recorded once");
         assert_eq!(calls[0].0.input_tokens, 12);
         assert_eq!(calls[0].0.output_tokens, 3);
         assert_eq!(calls[0].0.calls_attempted, 1);
         assert_eq!(calls[0].0.calls_succeeded, 1);
         assert!(calls[0].3 > Duration::ZERO);
+        assert_eq!(calls[1].0.input_tokens, 0);
+        assert_eq!(calls[1].0.output_tokens, 0);
+        assert_eq!(calls[1].0.calls_attempted, 1);
+        assert_eq!(calls[1].0.calls_succeeded, 0);
+        assert_eq!(calls[1].0.calls_refused, 0);
+        assert_eq!(calls[1].0.calls_errored, 1);
+        assert!(calls[1].3 > Duration::ZERO);
     }
 
     fn models() -> Models {

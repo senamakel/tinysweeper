@@ -33,6 +33,7 @@ pub(crate) struct ReviewExecutionOptions {
 }
 
 /// A snapshot of committed and currently reserved provider-call slots.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ReviewExecutionSnapshot {
     /// Calls committed immediately before their provider invocation.
@@ -108,16 +109,21 @@ impl ReviewRunContext {
 struct ExecutionState {
     committed_calls: usize,
     reserved_calls: usize,
+    #[cfg(test)]
     physical_usage: Usage,
     cancelled: bool,
     max_calls: Option<usize>,
 }
 
 struct ExecutionInner {
+    #[cfg(test)]
     started_at: Instant,
+    #[cfg(test)]
     hard_deadline: Instant,
     soft_deadline: Instant,
+    #[cfg(test)]
     mode: ReviewMode,
+    #[cfg(test)]
     drain_seconds: u64,
     _now: Arc<dyn Fn() -> Instant + Send + Sync>,
     availability_generation: watch::Sender<u64>,
@@ -148,16 +154,21 @@ impl ReviewExecution {
         let (availability_generation, _) = watch::channel(0);
         Self {
             inner: Arc::new(ExecutionInner {
+                #[cfg(test)]
                 started_at: options.started_at,
+                #[cfg(test)]
                 hard_deadline: options.hard_deadline,
                 soft_deadline,
+                #[cfg(test)]
                 mode: options.mode,
+                #[cfg(test)]
                 drain_seconds: options.drain_seconds,
                 _now: now,
                 availability_generation,
                 state: Mutex::new(ExecutionState {
                     committed_calls: 0,
                     reserved_calls: 0,
+                    #[cfg(test)]
                     physical_usage: Usage::default(),
                     cancelled: false,
                     max_calls: options.max_calls,
@@ -167,16 +178,19 @@ impl ReviewExecution {
     }
 
     /// The original absolute review start, before checkout and setup.
+    #[cfg(test)]
     pub(crate) fn started_at(&self) -> Instant {
         self.inner.started_at
     }
 
     /// The absolute hard deadline inherited from the server job.
+    #[cfg(test)]
     pub(crate) fn hard_deadline(&self) -> Instant {
         self.inner.hard_deadline
     }
 
     /// The absolute soft deadline for stopping new work.
+    #[cfg(test)]
     pub(crate) fn soft_deadline(&self) -> Instant {
         self.inner.soft_deadline
     }
@@ -185,17 +199,20 @@ impl ReviewExecution {
     ///
     /// A later per-head plan may tighten the job's call ceiling without
     /// changing this initial scope mode.
+    #[cfg(test)]
     pub(crate) fn mode(&self) -> ReviewMode {
         self.inner.mode
     }
 
     /// Maximum time reserved for admitted work to drain.
+    #[cfg(test)]
     pub(crate) fn drain_seconds(&self) -> u64 {
         self.inner.drain_seconds
     }
 
     /// The effective physical-call ceiling, tightened monotonically by later
     /// Large-mode plans when the scope began in Normal mode.
+    #[cfg(test)]
     pub(crate) fn max_calls(&self) -> Option<usize> {
         lock(&self.inner.state).max_calls
     }
@@ -223,11 +240,13 @@ impl ReviewExecution {
     }
 
     /// Record a terminal physical call event independently of timing spans.
+    #[cfg(test)]
     pub(crate) fn record_physical_usage(&self, usage: Usage) {
         lock(&self.inner.state).physical_usage.add(usage);
     }
 
     /// Snapshot the counters used when the proposal is finalized.
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> ReviewExecutionSnapshot {
         let state = lock(&self.inner.state);
         ReviewExecutionSnapshot {
@@ -238,6 +257,7 @@ impl ReviewExecution {
     }
 
     /// Cancel this review's remaining execution and wake pending acquisitions.
+    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         let mut state = lock(&self.inner.state);
         if !state.cancelled {

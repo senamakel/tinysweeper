@@ -56,12 +56,7 @@ fn finding(path: &str, severity: Severity) -> Finding {
 
 #[test]
 fn one_changed_behaviour_does_not_get_a_mermaid_diagram() {
-    let diffs = [
-        diff("src/order.rs", "settle"),
-        diff("src/a.rs", "alpha"),
-        diff("src/b.rs", "beta"),
-        diff("src/c.rs", "gamma"),
-    ];
+    let diffs = [diff("src/order.rs", "settle")];
     let walk = Neighbourhood {
         nodes: vec![
             symbol("src/order.rs", "settle"),
@@ -327,7 +322,12 @@ fn graph_outcomes_remain_distinguishable() {
 #[test]
 fn a_hostile_symbol_cannot_escape_the_diagram() {
     let hostile = "settle\"] click n0 \"javascript:alert(1)";
-    let diffs = [diff("src/order.rs", "settle")];
+    let diffs = [
+        diff("src/order.rs", "settle"),
+        diff("src/a.rs", "alpha"),
+        diff("src/b.rs", "beta"),
+        diff("src/c.rs", "gamma"),
+    ];
     let hostile_id = format!("src/caller.rs#{hostile}");
     let walk = Neighbourhood {
         nodes: vec![

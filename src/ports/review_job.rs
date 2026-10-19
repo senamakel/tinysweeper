@@ -558,6 +558,19 @@ impl ReviewSchedulerState {
     /// beyond delivery tombstones. If a push raced the deadline, preserve the
     /// accepted job for the next owner while keeping that head terminal.
     pub fn finish_deadline(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
+        self.finish_with_yield(owned, TerminalOutcome::Deadline, now_ms)
+    }
+
+    /// Complete a terminal result while preserving a superseding delivery.
+    /// The terminal marker belongs to the confirmed head; accepted IDs stay
+    /// attached to the queued job so the replacement owner resolves Forge's
+    /// actual head before deciding whether any work remains.
+    pub fn finish_with_yield(
+        &mut self,
+        owned: &OwnedReview,
+        outcome: TerminalOutcome,
+        now_ms: i64,
+    ) -> bool {
         let Some(index) = self
             .unfinished
             .iter()
@@ -574,8 +587,16 @@ impl ReviewSchedulerState {
             else {
                 return false;
             };
-            budget.deadline_hit = true;
-            budget.terminal_outcome = Some(TerminalOutcome::Deadline);
+            if matches!(
+                outcome,
+                TerminalOutcome::Published
+                    | TerminalOutcome::Declined
+                    | TerminalOutcome::Exhausted
+                    | TerminalOutcome::Deadline
+            ) {
+                budget.terminal_outcome = Some(outcome);
+            }
+            budget.deadline_hit = outcome == TerminalOutcome::Deadline;
         }
         if self.unfinished[index].yield_requested {
             let record = &mut self.unfinished[index];
@@ -585,6 +606,9 @@ impl ReviewSchedulerState {
             record.request.head_sha = record.latest_head_hint.clone();
             record.yield_requested = false;
             return true;
+        }
+        if outcome != TerminalOutcome::Deadline {
+            return self.finish(owned, outcome, now_ms, now_ms);
         }
         let record = self.unfinished.remove(index);
         self.terminal
@@ -682,6 +706,11 @@ impl ReviewSchedulerState {
         now_ms: i64,
         completed_at_ms: i64,
     ) -> bool {
+        if self.unfinished.iter().any(|record| {
+            owns(record, owned) && record.owner_until_ms > now_ms && record.yield_requested
+        }) {
+            return self.finish_with_yield(owned, outcome, now_ms);
+        }
         let Some(index) = self.unfinished.iter().position(|record| {
             owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
         }) else {

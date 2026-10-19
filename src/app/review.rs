@@ -2573,6 +2573,112 @@ mod budget_tests;
 mod tests {
     use super::*;
 
+    #[derive(Clone, Default)]
+    struct ReviewBudgetProbe {
+        remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        completed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for ReviewBudgetProbe {
+        async fn complete(
+            &self,
+            _request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            use std::sync::atomic::Ordering;
+
+            if let Some(remaining) = &self.remaining
+                && remaining
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    })
+                    .is_err()
+            {
+                return Err(Error::Budget {
+                    spent: 1.0,
+                    limit: 1.0,
+                    usage: None,
+                });
+            }
+            self.completed.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::ports::model::ModelResponse {
+                value: json!({"ok": true}),
+                model: "review-budget-probe".into(),
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    calls_attempted: 1,
+                    calls_succeeded: 1,
+                    cost_usd: 0.25,
+                    ..Usage::default()
+                },
+            })
+        }
+
+        fn scoped_budget(&self, _budget_usd: f64) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(self.clone()))
+        }
+
+        fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            let calls = limit_usd.floor().max(0.0) as usize;
+            Some(Arc::new(Self {
+                remaining: Some(Arc::new(std::sync::atomic::AtomicUsize::new(calls))),
+                completed: self.completed.clone(),
+            }))
+        }
+    }
+
+    async fn assert_observed_review_root_survives_scope_order(bind_after_scope: bool) {
+        let probe = ReviewBudgetProbe::default();
+        let completed = probe.completed.clone();
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        let observed: Arc<dyn Model> = Arc::new(ObservedModel {
+            inner: Arc::new(probe),
+            timing: timing.clone(),
+        });
+        let root = if bind_after_scope {
+            observed
+                .scoped_budget(8.0)
+                .expect("the probe can create a lane scope")
+                .with_review_budget(1.0)
+                .expect("the observed wrapper forwards review binding")
+        } else {
+            observed
+                .with_review_budget(1.0)
+                .expect("the observed wrapper forwards review binding")
+        };
+        let lane = root
+            .scoped_budget(8.0)
+            .expect("the observed wrapper forwards lane scopes");
+        let request = || crate::ports::model::ModelRequest {
+            model: "probe".into(),
+            messages: vec![],
+            schema: json!({"type":"object"}),
+            schema_name: "review-root-probe".into(),
+            max_tokens: 16,
+        };
+
+        let response = root.complete(request()).await.expect("one paid call fits");
+        assert_eq!(response.value, json!({"ok": true}));
+        assert!(matches!(
+            lane.complete(request()).await,
+            Err(Error::Budget { .. })
+        ));
+        assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let record = timing.snapshot();
+        assert_eq!(record.calls_succeeded, 1);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.usage.input_tokens, 2);
+        assert_eq!(record.usage.output_tokens, 1);
+        assert_eq!(record.usage.cost_usd, 0.25);
+    }
+
+    #[tokio::test]
+    async fn observed_model_preserves_review_budget_across_lane_rescoping() {
+        assert_observed_review_root_survives_scope_order(false).await;
+        assert_observed_review_root_survives_scope_order(true).await;
+    }
+
     #[test]
     fn maintainer_disputed_findings_keep_their_status_in_prompt_annotations() {
         let title = "Reject the stale caller contract".to_string();

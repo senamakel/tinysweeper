@@ -2831,6 +2831,93 @@ mod tests {
 
     #[cfg(feature = "harness")]
     #[tokio::test]
+    async fn cancelling_before_agentic_admission_does_not_create_a_phantom_call() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::FakeGateway;
+        use crate::ports::model::{Message, Model, ModelRequest, ModelResponse};
+        use crate::ports::tree::MockTree;
+
+        struct BeforeAdmission {
+            inner: Arc<dyn Model>,
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Semaphore>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for BeforeAdmission {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                self.inner.complete(request).await
+            }
+
+            async fn review(
+                &self,
+                request: ModelRequest,
+                tree: &dyn TreeReader,
+                policy: &crate::config::types::LookupPolicy,
+            ) -> Result<ModelResponse> {
+                self.started.notify_one();
+                let permit = self.release.acquire().await.map_err(|_| {
+                    Error::Model("test admission gate closed".into())
+                })?;
+                permit.forget();
+                self.inner.review(request, tree, policy).await
+            }
+
+            fn complete_reports_physical_calls(&self) -> bool {
+                self.inner.complete_reports_physical_calls()
+            }
+
+            fn review_reports_physical_calls(&self) -> bool {
+                self.inner.review_reports_physical_calls()
+            }
+        }
+
+        let gateway = FakeGateway::start(vec![]).await;
+        let mut config = Config::default().models;
+        config.base_url = gateway.base_url.clone();
+        config.fallback.clear();
+        config.agentic_reviewers = true;
+        let inner = GatewayModel::with_key(&config, "fixture".into())
+            .scoped_budget(1_000.0)
+            .expect("gateway supports budget scopes");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let adapter = BeforeAdmission {
+            inner,
+            started: started.clone(),
+            release,
+        };
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        let model = ObservedModel {
+            inner: Arc::new(adapter),
+            timing: timing.clone(),
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let policy = crate::config::types::LookupPolicy::default();
+        let request = ModelRequest {
+            model: "deep".into(),
+            messages: vec![Message::user("Review this evidence.")],
+            schema: json!({"type":"object"}),
+            schema_name: "review".into(),
+            max_tokens: 32,
+        };
+        let mut running = Box::pin(model.review(request, &tree, &policy));
+        tokio::select! {
+            result = &mut running => panic!("review completed before admission cancellation: {result:?}"),
+            () = started.notified() => (),
+        }
+        drop(running);
+
+        assert!(gateway.requests().is_empty(), "cancelled before provider admission");
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 0);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.calls_refused, 0);
+        assert_eq!(record.calls_errored, 0);
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
     async fn cancelling_an_inflight_agentic_dispatch_is_counted_once() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};

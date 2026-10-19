@@ -202,8 +202,8 @@ mod tests {
         let files: Vec<_> = (0..60)
             .map(|index| ChangedFile {
                 path: format!("src/file_{index:02}.rs"),
-                additions: 1,
-                deletions: 1,
+                additions: u64::from(index != 0),
+                deletions: if index == 0 { 2 } else { 1 },
                 patch: (index != 59).then_some("untrusted patch text".into()),
                 ..ChangedFile::default()
             })
@@ -229,5 +229,101 @@ mod tests {
 
         assert_eq!(plan.mode, ReviewMode::Normal);
         assert_eq!(plan.selected[0].group.label, "src/file_00.rs");
+    }
+
+    #[test]
+    fn large_mode_ranks_scanner_prior_and_sensitive_paths_ahead_of_large_docs() {
+        let config = Config::default();
+        let files = [
+            ChangedFile {
+                path: "docs/reference.md".into(),
+                additions: 5_000,
+                ..ChangedFile::default()
+            },
+            ChangedFile {
+                path: "src/auth/session.rs".into(),
+                additions: 1,
+                ..ChangedFile::default()
+            },
+        ];
+        let group = |lane, path: &str, risk| PlannedGroup {
+            lane,
+            group: FileGroup {
+                label: path.into(),
+                paths: vec![path.into()],
+            },
+            risk,
+        };
+        let plan = plan(
+            &config,
+            &files,
+            &[],
+            vec![
+                group(
+                    LaneId::Critique,
+                    "docs/reference.md",
+                    RiskScore {
+                        changed_lines: 1_000,
+                        ..RiskScore::default()
+                    },
+                ),
+                group(
+                    LaneId::Critique,
+                    "src/auth/session.rs",
+                    RiskScore {
+                        sensitive: true,
+                        changed_lines: 1,
+                        ..RiskScore::default()
+                    },
+                ),
+                group(
+                    LaneId::Security,
+                    "src/scan.rs",
+                    RiskScore {
+                        scanner: true,
+                        ..RiskScore::default()
+                    },
+                ),
+                group(
+                    LaneId::Critique,
+                    "src/prior.rs",
+                    RiskScore {
+                        prior_finding: true,
+                        ..RiskScore::default()
+                    },
+                ),
+            ],
+        );
+
+        assert_eq!(plan.mode, ReviewMode::Large);
+        assert_eq!(plan.selected[0].group.label, "src/scan.rs");
+        assert_eq!(plan.selected[1].group.label, "src/prior.rs");
+        assert_eq!(plan.selected[2].group.label, "src/auth/session.rs");
+        assert_eq!(plan.selected[3].group.label, "docs/reference.md");
+    }
+
+    #[test]
+    fn exact_risk_ties_put_security_before_critique() {
+        let config = Config::default();
+        let files = [ChangedFile {
+            additions: 2_000,
+            ..ChangedFile::default()
+        }];
+        let group = |lane| PlannedGroup {
+            lane,
+            group: FileGroup {
+                label: "src/shared.rs".into(),
+                paths: vec!["src/shared.rs".into()],
+            },
+            risk: RiskScore::default(),
+        };
+        let plan = plan(
+            &config,
+            &files,
+            &[],
+            vec![group(LaneId::Critique), group(LaneId::Security)],
+        );
+
+        assert_eq!(plan.selected[0].lane, LaneId::Security);
     }
 }

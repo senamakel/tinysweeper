@@ -2726,7 +2726,8 @@ mod tests {
             .await
             .expect("applies");
 
-        let body = match &overview_comments(&forge)[0] {
+        let posted = overview_comments(&forge);
+        let body = match &posted[0] {
             Write::Comment { body, .. } => body,
             write => panic!("expected new hub comment, got {write:?}"),
         };

@@ -67,7 +67,6 @@ struct ExecutionState {
     physical_usage: Usage,
 }
 
-#[derive(Debug)]
 struct ExecutionInner {
     started_at: Instant,
     hard_deadline: Instant,
@@ -75,11 +74,12 @@ struct ExecutionInner {
     mode: ReviewMode,
     max_calls: Option<usize>,
     drain_seconds: u64,
+    _now: Arc<dyn Fn() -> Instant + Send + Sync>,
     state: Mutex<ExecutionState>,
 }
 
 /// Shared execution limits and accounting for one pull-request review.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ReviewExecution {
     inner: Arc<ExecutionInner>,
 }
@@ -87,6 +87,13 @@ pub(crate) struct ReviewExecution {
 impl ReviewExecution {
     /// Create a scope from a hard deadline established before checkout work.
     pub(crate) fn new(options: ReviewExecutionOptions) -> Self {
+        Self::with_clock(options, Arc::new(Instant::now))
+    }
+
+    fn with_clock(
+        options: ReviewExecutionOptions,
+        now: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
         let window = options
             .hard_deadline
             .saturating_duration_since(options.started_at);
@@ -100,6 +107,7 @@ impl ReviewExecution {
                 mode: options.mode,
                 max_calls: options.max_calls,
                 drain_seconds: options.drain_seconds,
+                _now: now,
                 state: Mutex::new(ExecutionState {
                     committed_calls: 0,
                     reserved_calls: 0,
@@ -229,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_dispatches_do_not_exceed_the_shared_call_ceiling() {
+    async fn concurrent_dispatches_wait_for_reservations_then_refuse_at_the_shared_ceiling() {
         let started_at = Instant::now();
         let execution = Arc::new(ReviewExecution::new(options(
             ReviewMode::Large,
@@ -238,22 +246,54 @@ mod tests {
             started_at + Duration::from_secs(100),
         )));
         let control: Arc<dyn ModelExecutionControl> = execution.clone();
-        let mut tasks = tokio::task::JoinSet::new();
+        let mut permits = Vec::new();
 
-        for _ in 0..100 {
+        for _ in 0..3 {
+            permits.push(control.acquire().await.expect("initial reservation"));
+        }
+        assert_eq!(execution.snapshot().reserved_calls, 3);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+
+        let start_barrier = Arc::new(tokio::sync::Barrier::new(98));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..97 {
             let control = Arc::clone(&control);
+            let start_barrier = Arc::clone(&start_barrier);
+            let started_tx = started_tx.clone();
             tasks.spawn(async move {
-                let Ok(permit) = control.acquire().await else {
-                    return false;
-                };
-                permit.mark_dispatched().is_ok()
+                started_tx.send(()).expect("test receiver");
+                start_barrier.wait().await;
+                control.acquire().await
             });
         }
+        drop(started_tx);
+        for _ in 0..97 {
+            started_rx.recv().await.expect("acquire task started");
+        }
+        start_barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(
+            tasks.try_join_next().is_none(),
+            "quota waiters stay pending while slots are reserved"
+        );
+
+        for permit in &permits {
+            permit.mark_dispatched().expect("commit reserved slot");
+        }
+        let mut refused = 0;
         while let Some(result) = tasks.join_next().await {
-            result.expect("dispatch task");
+            match result.expect("dispatch task") {
+                Err(reason) => assert_eq!(reason, ModelExecutionRefusal::CallLimit),
+                Ok(_) => panic!("committed quota must refuse after all reserved slots commit"),
+            }
+            refused += 1;
         }
 
-        assert!(execution.snapshot().committed_calls <= 3);
+        assert_eq!(refused, 97);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 3);
+        assert_eq!(snapshot.reserved_calls, 0);
     }
 
     #[tokio::test]
@@ -293,6 +333,84 @@ mod tests {
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.reserved_calls, 0);
         assert_eq!(snapshot.committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn abandoning_a_full_reservation_wakes_the_next_acquirer() {
+        let started_at = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        )));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let first = control.acquire().await.expect("first reservation");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut task = tokio::task::JoinSet::new();
+        task.spawn(async move {
+            started_tx.send(()).expect("test receiver");
+            control.acquire().await
+        });
+        started_rx.await.expect("replacement task started");
+        tokio::task::yield_now().await;
+        assert!(
+            task.try_join_next().is_none(),
+            "replacement waits at full reserved capacity"
+        );
+
+        drop(first);
+        let replacement = task
+            .join_next()
+            .await
+            .expect("replacement result")
+            .expect("replacement task")
+            .expect("refunded slot admits replacement");
+        assert_eq!(execution.snapshot().reserved_calls, 1);
+        replacement.mark_dispatched().expect("commit replacement");
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn a_permit_crossing_the_absolute_soft_deadline_cannot_commit() {
+        let started_at = Instant::now();
+        let crossed_deadline = Arc::new(AtomicBool::new(false));
+        let clock_flag = Arc::clone(&crossed_deadline);
+        let now: Arc<dyn Fn() -> Instant + Send + Sync> = Arc::new(move || {
+            if clock_flag.load(Ordering::Acquire) {
+                started_at + Duration::from_secs(81)
+            } else {
+                started_at
+            }
+        });
+        let execution = ReviewExecution::with_clock(
+            options(
+                ReviewMode::Large,
+                None,
+                started_at,
+                started_at + Duration::from_secs(100),
+            ),
+            now,
+        );
+        let permit = execution.acquire().await.expect("pre-deadline reservation");
+        assert_eq!(execution.snapshot().reserved_calls, 1);
+
+        crossed_deadline.store(true, Ordering::Release);
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::SoftDeadline)
+        );
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::SoftDeadline)
+        );
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 0);
+        assert_eq!(snapshot.reserved_calls, 1);
+        drop(permit);
+        assert_eq!(execution.snapshot().reserved_calls, 0);
     }
 
     #[tokio::test]

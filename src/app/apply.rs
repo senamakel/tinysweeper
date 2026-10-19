@@ -84,14 +84,6 @@ async fn execute_mcp_issue(write: &dyn ForgeWrite, plan: &McpIssuePlan) -> Resul
 /// If a store is provided, extends the stored fingerprints with the identities
 /// of newly posted findings after successful publication, so the next review
 /// will dedupe them correctly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyDisposition {
-    /// All deterministic writes for this proposal were applied.
-    Published,
-    /// The live pull-request head changed before publication began.
-    Superseded,
-}
-
 /// Publish a proposal and report whether its reviewed head was still current.
 pub async fn apply(
     read: &dyn ForgeRead,

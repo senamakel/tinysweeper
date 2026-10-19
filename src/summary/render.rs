@@ -1416,7 +1416,7 @@ mod tests {
         );
         assert!(section.contains("if token.is_empty()"), "{section}");
         assert!(
-            section.contains("**Suggested fix:**\n````\nif token.is_empty() { return Err(Error::MissingToken); }\n</details>\n````"),
+            section.contains("**Suggested fix:**\n  ````\n  if token.is_empty() { return Err(Error::MissingToken); }\n  </details>\n  ````"),
             "{section}"
         );
     }

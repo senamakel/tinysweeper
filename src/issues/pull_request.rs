@@ -177,6 +177,7 @@ mod tests {
                 completed: true,
                 findings: vec![],
                 noted: vec![],
+                context_degraded: false,
                 resolved: vec![],
                 pending: vec![],
                 skipped: None,

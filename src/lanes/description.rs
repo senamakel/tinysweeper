@@ -168,6 +168,7 @@ fn empty_body_outcome(pr: &PullRequest, files: usize) -> LaneOutcome {
     let suggestion = suggested_body(pr, files);
     LaneOutcome {
         summary: "The pull request has no description.".into(),
+        context_degraded: false,
         completed: true,
         findings: vec![Finding {
             lane: LaneId::Description,
@@ -289,6 +290,7 @@ mod tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -381,6 +383,7 @@ mod tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,

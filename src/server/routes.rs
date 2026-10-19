@@ -4963,7 +4963,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(&store, unix_time_ms()).await;
+        seed_previously_published_queue_checks(store.as_ref(), unix_time_ms()).await;
         let first = store
             .claim_next("first-owner", unix_time_ms())
             .await
@@ -5021,7 +5021,7 @@ mod tests {
                 .unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(&normal_store, unix_time_ms()).await;
+        seed_previously_published_queue_checks(normal_store.as_ref(), unix_time_ms()).await;
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())
             .await
@@ -5171,7 +5171,7 @@ mod tests {
             store.admit_batch(requests).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(&store, now + 4).await;
+        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
 
         let owned = store
             .claim_next("burst-worker", now + 4)
@@ -5510,7 +5510,7 @@ mod tests {
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(&store, now + 4).await;
+        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
         assert!(
             record_owned_disposition(
                 &store,
@@ -5645,7 +5645,7 @@ mod tests {
         request.head_sha = Some("head-a-older-hint".into());
         request.accepted_at_ms = now + 3;
         store.admit_batch(vec![request]).await.unwrap();
-        seed_previously_published_queue_checks(&store, now + 4).await;
+        seed_previously_published_queue_checks(store.as_ref(), now + 4).await;
         assert!(!store.should_continue(&active, now + 4).await.unwrap());
 
         let run = Run {
@@ -5841,7 +5841,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
-        seed_previously_published_queue_checks(&store, 2).await;
+        seed_previously_published_queue_checks(store.as_ref(), 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -5930,7 +5930,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
-        seed_previously_published_queue_checks(&store, now_ms).await;
+        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
         let owned = store
             .claim_next("same-worker", now_ms)
             .await
@@ -6088,7 +6088,7 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let request = queued_test_review(8);
         store.admit_batch(vec![request]).await.unwrap();
-        seed_previously_published_queue_checks(&store, 2).await;
+        seed_previously_published_queue_checks(store.as_ref(), 2).await;
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
             let owned = store
@@ -6199,7 +6199,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
-        seed_previously_published_queue_checks(&store, now_ms).await;
+        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
         let owned = store
             .claim_next("shutdown-owner", now_ms)
             .await
@@ -6259,7 +6259,7 @@ mod tests {
             .admit_batch(vec![queued_test_review(9)])
             .await
             .unwrap();
-        seed_previously_published_queue_checks(&store, 2).await;
+        seed_previously_published_queue_checks(store.as_ref(), 2).await;
         let stale = store.claim_next("old-process", 2).await.unwrap().unwrap();
         let stale_check_time = 3;
         let forge = MockForge::new();

@@ -2615,27 +2615,53 @@ mod tests {
     }
     // --- the change map ----------------------------------------------------
 
-    /// A proposal carrying one changed behaviour and its caller.
+    /// A proposal carrying enough changed behaviours to warrant a flow map.
     fn proposal_with_map(head: &str) -> Proposal {
         use crate::evidence::diff::parse_file_patch;
         use crate::index::types::{EdgeKind, GraphEdge, GraphNode, Neighbourhood};
 
-        let diffs = [parse_file_patch(
-            "src/lanes/critique.rs",
-            "@@ -1,1 +1,2 @@ fn review() {\n x\n+y\n",
-        )];
+        let diffs = [
+            parse_file_patch(
+                "src/lanes/critique.rs",
+                "@@ -1,1 +1,2 @@ fn review() {\n x\n+y\n",
+            ),
+            parse_file_patch("src/app/run.rs", "@@ -1,1 +1,2 @@ fn run() {\n x\n+y\n"),
+            parse_file_patch("src/app/parse.rs", "@@ -1,1 +1,2 @@ fn parse() {\n x\n+y\n"),
+            parse_file_patch(
+                "src/app/dispatch.rs",
+                "@@ -1,1 +1,2 @@ fn dispatch() {\n x\n+y\n",
+            ),
+        ];
         let walk = Neighbourhood {
             nodes: vec![
                 GraphNode::symbol("o/r", "src/lanes/critique.rs", "review"),
                 GraphNode::symbol("o/r", "src/app/run.rs", "run"),
+                GraphNode::symbol("o/r", "src/app/parse.rs", "parse"),
+                GraphNode::symbol("o/r", "src/app/dispatch.rs", "dispatch"),
             ],
-            edges: vec![GraphEdge::new(
-                "o/r",
-                "src/app/run.rs#run",
-                "src/lanes/critique.rs#review",
-                EdgeKind::Calls,
-                "src/app/run.rs",
-            )],
+            edges: vec![
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/run.rs#run",
+                    "src/lanes/critique.rs#review",
+                    EdgeKind::Calls,
+                    "src/app/run.rs",
+                ),
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/parse.rs#parse",
+                    "src/app/run.rs#run",
+                    EdgeKind::Calls,
+                    "src/app/parse.rs",
+                ),
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/dispatch.rs#dispatch",
+                    "src/app/parse.rs#parse",
+                    EdgeKind::Calls,
+                    "src/app/dispatch.rs",
+                ),
+            ],
         };
         Proposal {
             overview: Some(crate::overview::build(
@@ -2680,6 +2706,66 @@ mod tests {
             matches!(&posted[0], Write::Comment { body, .. } if body.contains("```mermaid")),
             "{posted:#?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mock_forge_publishes_the_compact_hub_golden() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.summary = Some(crate::summary::ReviewSummary {
+            executive_summary: "The change adds a request guard.".into(),
+            file_coverage: Some(crate::summary::FileReviewCoverage {
+                reviewed: 2,
+                total: 3,
+                unreviewed: vec!["README.md".into()],
+            }),
+            ..crate::summary::ReviewSummary::default()
+        });
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        let body = match &posted[0] {
+            Write::Comment { body, .. } => body.clone(),
+            write => panic!("expected new hub comment, got {write:?}"),
+        };
+        let public = body.split("<details").next().expect("public hub");
+        assert_eq!(
+            public,
+            format!(
+                "{}\n\n# Tiny Sweeper review\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
+                crate::summary::MARKER,
+                crate::markdown::code_span("README.md")
+            )
+        );
+        assert!(public.len() <= 800, "{} chars", public.len());
+    }
+
+    #[tokio::test]
+    async fn mock_forge_marks_degraded_context_notes_as_unverified() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].context_degraded = true;
+        proposal.lanes[0].noted.push(finding());
+
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let posted = overview_comments(&forge);
+        let body = match &posted[0] {
+            Write::Comment { body, .. } => body,
+            write => panic!("expected new hub comment, got {write:?}"),
+        };
+        assert!(
+            body.contains("Unverified notes — repository context was unavailable; these are not actionable findings"),
+            "{body}"
+        );
+        assert!(body.contains("Unverified note — critique"), "{body}");
+        assert!(body.contains("[`src/main.rs:2`]"), "{body}");
+        assert!(body.contains("**Problem:**"), "{body}");
+        assert!(body.contains("**Suggested fix:**"), "{body}");
     }
 
     #[tokio::test]
@@ -2853,10 +2939,12 @@ mod tests {
         assert!(body.contains("The test fixture maps the empty-state case"));
         assert!(!body.contains("The commit reviewer found no issues"));
         assert!(
-            opening.starts_with("Pull request purpose (title): Enforce speech privacy."),
-            "{opening}"
+            body.contains("Pull request purpose (title): Enforce speech privacy."),
+            "{body}"
         );
-        assert!(body.contains("No reviewer produced a usable response."));
+        assert!(opening.starts_with("**Verdict:** Incomplete"), "{opening}");
+        assert!(body.contains("**Lane gaps:**"), "{body}");
+        assert!(body.contains("reviewers did not respond"), "{body}");
     }
 
     #[tokio::test]

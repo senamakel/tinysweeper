@@ -359,6 +359,7 @@ async fn review_group(
     } else {
         per_reviewer.into_iter().flatten().collect()
     };
+    let round_one_candidates = findings.len();
 
     // Step 5, once over the merged set rather than once per reviewer. The
     // filter can only reject, so more inputs in one pass is identical semantics
@@ -369,6 +370,7 @@ async fn review_group(
     spend.merge(filtered.spend);
 
     let mut findings = filtered.findings;
+    let round_one_survivors = findings.len();
     let mut rejected = filtered.rejected;
     let mut capped_for_degraded_context = 0usize;
 
@@ -384,7 +386,8 @@ async fn review_group(
         let mut metrics = crate::lanes::coverage::Metrics::start(
             round_one_usage,
             round_one_elapsed,
-            findings.len(),
+            round_one_candidates,
+            round_one_survivors,
         );
 
         for pass_index in 1..config.review.passes {
@@ -421,7 +424,7 @@ async fn review_group(
                     // No per-call usage is observable when the round itself
                     // fails to return an outcome; count the attempt without
                     // attributing concurrent groups' shared lane spend to it.
-                    metrics.record(Usage::default(), Duration::ZERO, 0);
+                    metrics.record(Usage::default(), Duration::ZERO, 0, 0);
                     metrics.stop(crate::lanes::coverage::StopReason::Failed);
                     break;
                 }
@@ -435,7 +438,7 @@ async fn review_group(
             // could not be reached is not evidence a further one would fare
             // better, so stop rather than pay for another.
             let Some(response) = coverage.response else {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             };
@@ -450,7 +453,7 @@ async fn review_group(
                 Ok(asked) => asked,
                 Err(err) => {
                     tracing::warn!(%err, "a coverage pass failed to place its findings");
-                    metrics.record(coverage_usage, coverage_elapsed, 0);
+                    metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                     metrics.stop(crate::lanes::coverage::StopReason::PlacementFailure);
                     break;
                 }
@@ -487,7 +490,7 @@ async fn review_group(
             // Nothing new: a further pass over the same evidence would not
             // find more either, so stop rather than pay for one.
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if had_proposals {
                     crate::lanes::coverage::StopReason::Duplicate
                 } else {
@@ -498,6 +501,7 @@ async fn review_group(
 
             // Falsify only what this pass added — free when empty, and it
             // never re-judges what round one's own pass already kept.
+            let new_candidates = new_findings.len();
             let mut new_filtered = Falsifier::new(llm.model().as_ref(), config)
                 .filter_with(
                     LaneId::Critique,
@@ -513,7 +517,7 @@ async fn review_group(
             rejected.extend(new_filtered.rejected);
 
             if new_filtered.findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, new_candidates, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::NonSurviving);
                 break;
             }
@@ -521,6 +525,7 @@ async fn review_group(
             metrics.record(
                 coverage_usage,
                 coverage_elapsed,
+                new_candidates,
                 new_filtered.findings.len(),
             );
             added_by_coverage += new_filtered.findings.len();
@@ -1882,6 +1887,23 @@ fn helper() {
             handle.calls(),
             1,
             "an empty first-pass result on an ordinary group must not buy another look"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_high_risk_group_without_candidates_gets_an_adaptive_pass() {
+        let model = MockModel::new()
+            .then(json!({"summary": "Nothing to report.", "findings": []}))
+            .then(json!({"summary": "Nothing to report.", "findings": []}));
+        let handle = model.clone();
+        let auth_diff = vec![parse_file_patch("src/auth.rs", PATCH)];
+
+        run_with(model, &config_with_passes(2), &auth_diff).await;
+
+        assert_eq!(
+            handle.calls(),
+            2,
+            "a sensitive path keeps a second look even when the first found no candidate"
         );
     }
 

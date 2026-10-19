@@ -1438,6 +1438,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agentic_review_execution_cap_stops_after_a_paid_repository_read() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::{Message, Model};
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use crate::ports::tree::{MockTree, TreeReader};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::time::Instant;
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let tool_reply = Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic-admission",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"read-1","type":"function","function":{
+                        "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
+                    }
+                }]} ,"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let gateway = FakeGateway::start(vec![
+            tool_reply,
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        config.provider = ProviderRouting {
+            order: vec!["pinned-provider".into()],
+            allow_fallbacks: false,
+            last_resort_unpinned: true,
+            unpinned_vendors: vec![],
+        };
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(1),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                Message::system("Review this evidence."),
+                Message::user("Check the implementation."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        struct CountingTree {
+            inner: MockTree,
+            lookups: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl TreeReader for CountingTree {
+            async fn lookup(
+                &self,
+                query: &crate::ports::tree::Lookup,
+            ) -> Result<crate::ports::tree::Found> {
+                self.lookups.fetch_add(1, Ordering::SeqCst);
+                self.inner.lookup(query).await
+            }
+
+            fn describe(&self) -> String {
+                "counting agentic admission fixture".into()
+            }
+        }
+        let tree = CountingTree {
+            inner: MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]),
+            lookups: AtomicUsize::new(0),
+        };
+        let calls = Arc::new(RecordedModelCalls::default());
+        let result = crate::ports::model::with_model_call_observer(
+            calls.clone(),
+            model.review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            ),
+        )
+        .await;
+
+        assert_eq!(tree.lookups.load(Ordering::SeqCst), 1);
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        let refusal = result.expect_err("the next agentic turn exceeds the physical call cap");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("the paid repository-read dispatch remains reportable");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.calls_attempted, 1);
+        assert_eq!(usage.calls_succeeded, 1);
+        assert_eq!(usage.cost_usd, 0.001);
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the admitted provider event is observed once");
+        assert_eq!(calls[0].0.input_tokens, 12);
+        assert_eq!(calls[0].0.output_tokens, 3);
+        assert_eq!(calls[0].0.cost_usd, 0.001);
+        assert_eq!(calls[0].0.calls_attempted, 1);
+        assert_eq!(calls[0].0.calls_succeeded, 1);
+        assert!(calls[0].3 > std::time::Duration::ZERO);
+    }
+
+    #[tokio::test]
     async fn agentic_paid_call_is_retained_when_the_next_dispatch_is_cancelled() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         use crate::ports::model::Message;

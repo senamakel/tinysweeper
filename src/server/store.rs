@@ -177,7 +177,12 @@ impl ReviewJobStore for Store {
             .await
     }
 
-    async fn confirm_head(&self, owned: &OwnedReview, head_sha: &str, _now_ms: i64) -> Result<bool> {
+    async fn confirm_head(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        _now_ms: i64,
+    ) -> Result<bool> {
         let owned = owned.clone();
         let head_sha = head_sha.to_owned();
         self.change_review_scheduler(move |state, now_ms| {
@@ -241,14 +246,10 @@ impl ReviewJobStore for Store {
         .await
     }
 
-    async fn finish_deadline(
-        &self,
-        owned: &OwnedReview,
-        _now_ms: i64,
-    ) -> Result<bool> {
+    async fn finish_deadline(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let owned = owned.clone();
         self.change_review_scheduler(move |state, now_ms| state.finish_deadline(&owned, now_ms))
-        .await
+            .await
     }
 }
 

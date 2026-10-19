@@ -109,11 +109,7 @@ impl ReviewJobStore for MockReviewJobStore {
     }
 
     async fn defer_yield(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .expect("state")
-            .defer_yield(owned, now_ms))
+        Ok(self.state.lock().expect("state").defer_yield(owned, now_ms))
     }
 
     async fn finish(
@@ -130,11 +126,7 @@ impl ReviewJobStore for MockReviewJobStore {
             .finish(owned, outcome, now_ms, completed_at_ms))
     }
 
-    async fn finish_deadline(
-        &self,
-        owned: &OwnedReview,
-        now_ms: i64,
-    ) -> Result<bool> {
+    async fn finish_deadline(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
         Ok(self
             .state
             .lock()

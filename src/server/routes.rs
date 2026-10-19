@@ -2004,7 +2004,11 @@ impl OwnedModel {
         {
             return Err(Error::ReviewOwnershipLost);
         }
-        if !self.jobs.should_continue(&self.owned, unix_time_ms()).await? {
+        if !self
+            .jobs
+            .should_continue(&self.owned, unix_time_ms())
+            .await?
+        {
             if self.jobs.owns(&self.owned, unix_time_ms()).await? {
                 return Err(Error::ReviewSuperseded);
             }
@@ -2083,7 +2087,10 @@ impl Run {
     async fn check_work(&self, state: &AppState) -> Result<()> {
         self.check_owner(state).await?;
         if let Some(owned) = &self.owned
-            && !state.review_jobs.should_continue(owned, unix_time_ms()).await?
+            && !state
+                .review_jobs
+                .should_continue(owned, unix_time_ms())
+                .await?
         {
             return Err(Error::ReviewSuperseded);
         }
@@ -2674,7 +2681,11 @@ async fn handle_review(
                     if let Some(owned) = &owned
                         && run.check_owner(&state).await.is_ok()
                     {
-                        match state.review_jobs.should_continue(owned, unix_time_ms()).await {
+                        match state
+                            .review_jobs
+                            .should_continue(owned, unix_time_ms())
+                            .await
+                        {
                             Ok(false) => {
                                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                                 drop(permit);
@@ -4094,8 +4105,14 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(Error::ReviewSuperseded)));
-        assert!(model.requests().is_empty(), "the old provider request never starts");
-        assert!(store.owns(&owned, 102).await.unwrap(), "the old owner keeps its slot until yield acknowledgement");
+        assert!(
+            model.requests().is_empty(),
+            "the old provider request never starts"
+        );
+        assert!(
+            store.owns(&owned, 102).await.unwrap(),
+            "the old owner keeps its slot until yield acknowledgement"
+        );
         assert!(!store.should_continue(&owned, 102).await.unwrap());
     }
 
@@ -4113,18 +4130,32 @@ mod tests {
         store.admit_batch(vec![request.clone()]).await.unwrap();
         let newer = store.claim_next("newer-worker", 10).await.unwrap().unwrap();
         assert!(store.confirm_head(&newer, "head-b-live", 11).await.unwrap());
-        assert_eq!(store.begin_paid(&newer, 12).await.unwrap(), PaidStart::Started);
-        assert!(store
-            .finish(&newer, TerminalOutcome::Published, 13, 13)
-            .await
-            .unwrap());
+        assert_eq!(
+            store.begin_paid(&newer, 12).await.unwrap(),
+            PaidStart::Started
+        );
+        assert!(
+            store
+                .finish(&newer, TerminalOutcome::Published, 13, 13)
+                .await
+                .unwrap()
+        );
 
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = 14;
         store.admit_batch(vec![request]).await.unwrap();
-        let delayed = store.claim_next("delayed-worker", 15).await.unwrap().unwrap();
-        assert!(store.confirm_head(&delayed, "head-b-live", 16).await.unwrap());
+        let delayed = store
+            .claim_next("delayed-worker", 15)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&delayed, "head-b-live", 16)
+                .await
+                .unwrap()
+        );
 
         let forge = MockForge::new();
         let model = MockModel::silent();
@@ -4158,13 +4189,24 @@ mod tests {
                 .unwrap();
         }
 
-        assert!(terminal, "the live head, not delayed A's hint, controls the decision");
-        assert!(model.requests().is_empty(), "published B is not sent to the model again");
-        assert!(forge.writes().is_empty(), "the delayed delivery publishes no duplicate check");
-        assert!(store
-            .finish(&delayed, TerminalOutcome::Declined, 17, 17)
-            .await
-            .unwrap());
+        assert!(
+            terminal,
+            "the live head, not delayed A's hint, controls the decision"
+        );
+        assert!(
+            model.requests().is_empty(),
+            "published B is not sent to the model again"
+        );
+        assert!(
+            forge.writes().is_empty(),
+            "the delayed delivery publishes no duplicate check"
+        );
+        assert!(
+            store
+                .finish(&delayed, TerminalOutcome::Declined, 17, 17)
+                .await
+                .unwrap()
+        );
         assert!(store.snapshot_for_test().terminal.iter().all(|record| {
             record.id.0 != "delayed-a" || record.outcome == TerminalOutcome::Published
         }));
@@ -4190,12 +4232,16 @@ mod tests {
         let owned = store.claim_next("old-worker", 100).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", 101).await.unwrap());
 
-        let permits = Arc::new(Semaphore::new(crate::ports::review_job::MAX_RUNNING_REVIEWS));
+        let permits = Arc::new(Semaphore::new(
+            crate::ports::review_job::MAX_RUNNING_REVIEWS,
+        ));
         let mut held = Vec::new();
         for _ in 0..crate::ports::review_job::MAX_RUNNING_REVIEWS {
             held.push(permits.clone().acquire_owned().await.unwrap());
         }
-        let worker_permit = held.pop().expect("one running review owns the worker permit");
+        let worker_permit = held
+            .pop()
+            .expect("one running review owns the worker permit");
         let dropped = Arc::new(AtomicBool::new(false));
         let dropped_by_future = dropped.clone();
         let jobs: Arc<dyn ReviewJobStore> = store.clone();
@@ -4204,7 +4250,8 @@ mod tests {
             std::future::pending::<Result<()>>().await
         };
         let worker = tokio::spawn(async move {
-            let result = select_review_control(review, jobs.as_ref(), Some(&owned), None, None).await;
+            let result =
+                select_review_control(review, jobs.as_ref(), Some(&owned), None, None).await;
             if matches!(result, Err(Error::ReviewSuperseded)) {
                 assert!(jobs.defer_yield(&owned, unix_time_ms()).await.unwrap());
             }
@@ -4225,8 +4272,14 @@ mod tests {
                 .unwrap(),
             Err(Error::ReviewSuperseded)
         ));
-        assert!(dropped.load(Ordering::SeqCst), "the provider future is dropped");
-        assert!(permits.try_acquire().is_ok(), "the acknowledged worker releases its slot");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the provider future is dropped"
+        );
+        assert!(
+            permits.try_acquire().is_ok(),
+            "the acknowledged worker releases its slot"
+        );
     }
 
     #[tokio::test]
@@ -5016,11 +5069,7 @@ mod tests {
         }
     }
 
-    async fn confirm_test_head(
-        store: &dyn ReviewJobStore,
-        owned: &OwnedReview,
-        now_ms: i64,
-    ) {
+    async fn confirm_test_head(store: &dyn ReviewJobStore, owned: &OwnedReview, now_ms: i64) {
         let head_sha = owned
             .request
             .head_sha

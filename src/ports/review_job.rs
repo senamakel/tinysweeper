@@ -217,7 +217,8 @@ impl ReviewSchedulerState {
         }
         self.normalize_legacy_records();
         self.terminal.retain(|record| record.expires_at_ms > now_ms);
-        self.head_history.retain(|record| record.expires_at_ms > now_ms);
+        self.head_history
+            .retain(|record| record.expires_at_ms > now_ms);
         let mut incoming = std::collections::HashSet::new();
         if requests
             .iter()
@@ -250,9 +251,10 @@ impl ReviewSchedulerState {
             .map(|request| (request.repo.clone(), request.number))
             .filter(|key| {
                 !pending_prs.contains(key)
-                    && !self.incremental_heads.iter().any(|budget| {
-                        budget.repo == key.0 && budget.number == key.1
-                    })
+                    && !self
+                        .incremental_heads
+                        .iter()
+                        .any(|budget| budget.repo == key.0 && budget.number == key.1)
             })
             .collect::<std::collections::HashSet<_>>()
             .len();
@@ -272,18 +274,20 @@ impl ReviewSchedulerState {
         }
         for request in requests {
             let coalesce = request.mode == ReviewJobMode::Incremental;
-            if let Some(record) = coalesce.then(|| {
-                self.unfinished.iter_mut().find(|record| {
-                    record.request.mode == ReviewJobMode::Incremental
-                        && record.request.repo == request.repo
-                        && record.request.number == request.number
+            if let Some(record) = coalesce
+                .then(|| {
+                    self.unfinished.iter_mut().find(|record| {
+                        record.request.mode == ReviewJobMode::Incremental
+                            && record.request.repo == request.repo
+                            && record.request.number == request.number
+                    })
                 })
-            }).flatten() {
+                .flatten()
+            {
                 record.accepted_ids.push(request.id);
                 record.latest_head_hint = request.head_sha.clone();
-                record.head_history_reservations = Some(
-                    record.head_history_reservations.unwrap_or_default() + 1,
-                );
+                record.head_history_reservations =
+                    Some(record.head_history_reservations.unwrap_or_default() + 1);
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
                         record.yield_requested = true;
@@ -324,9 +328,10 @@ impl ReviewSchedulerState {
         let pending_head_slots = pending_prs
             .iter()
             .filter(|(repo, number)| {
-                !self.incremental_heads.iter().any(|budget| {
-                    budget.repo == *repo && budget.number == *number
-                })
+                !self
+                    .incremental_heads
+                    .iter()
+                    .any(|budget| budget.repo == *repo && budget.number == *number)
             })
             .count();
         self.terminal.len()
@@ -408,16 +413,20 @@ impl ReviewSchedulerState {
         };
         if self.unfinished[index].request.mode == ReviewJobMode::Incremental {
             let request = &self.unfinished[index].request;
-            if !self.incremental_heads.iter().any(|budget| {
-                budget.repo == request.repo && budget.number == request.number
-            }) {
+            if !self
+                .incremental_heads
+                .iter()
+                .any(|budget| budget.repo == request.repo && budget.number == request.number)
+            {
                 // A webhook SHA is only a hint. Production must confirm a live
                 // head from Forge before paid work can start.
                 return PaidStart::OwnershipLost;
             }
-            let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
-                budget.repo == request.repo && budget.number == request.number
-            }) else {
+            let Some(budget) = self
+                .incremental_heads
+                .iter_mut()
+                .find(|budget| budget.repo == request.repo && budget.number == request.number)
+            else {
                 return PaidStart::OwnershipLost;
             };
             if budget.terminal_outcome.is_some()
@@ -459,10 +468,13 @@ impl ReviewSchedulerState {
         }
         let repo = self.unfinished[index].request.repo.clone();
         let number = self.unfinished[index].request.number;
-        self.head_history.retain(|record| record.expires_at_ms > now_ms);
-        if let Some(current) = self.incremental_heads.iter_mut().find(|budget| {
-            budget.repo == repo && budget.number == number
-        }) {
+        self.head_history
+            .retain(|record| record.expires_at_ms > now_ms);
+        if let Some(current) = self
+            .incremental_heads
+            .iter_mut()
+            .find(|budget| budget.repo == repo && budget.number == number)
+        {
             if current.head_sha == head_sha {
                 self.unfinished[index].request.head_sha = Some(head_sha.to_owned());
                 return true;
@@ -485,17 +497,23 @@ impl ReviewSchedulerState {
                     repo: repo.clone(),
                     number,
                     head_sha: current.head_sha.clone(),
-                    outcome: current.terminal_outcome.unwrap_or(TerminalOutcome::Deadline),
+                    outcome: current
+                        .terminal_outcome
+                        .unwrap_or(TerminalOutcome::Deadline),
                     expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
                 });
             }
             current.head_sha = head_sha.to_owned();
-            let historical_outcome = self.head_history.iter().find(|record| {
-                record.repo == repo
-                    && record.number == number
-                    && record.head_sha == head_sha
-                    && record.expires_at_ms > now_ms
-            }).map(|record| record.outcome);
+            let historical_outcome = self
+                .head_history
+                .iter()
+                .find(|record| {
+                    record.repo == repo
+                        && record.number == number
+                        && record.head_sha == head_sha
+                        && record.expires_at_ms > now_ms
+                })
+                .map(|record| record.outcome);
             let historical_deadline = historical_outcome == Some(TerminalOutcome::Deadline);
             current.paid_attempts = if historical_deadline {
                 MAX_REVIEW_PAID_ATTEMPTS
@@ -533,25 +551,27 @@ impl ReviewSchedulerState {
                     budget.repo == record.request.repo && budget.number == record.request.number
                 })
             })
-            .is_some_and(|budget| {
-                budget.terminal_outcome.is_some() || budget.deadline_hit
-            })
+            .is_some_and(|budget| budget.terminal_outcome.is_some() || budget.deadline_hit)
     }
 
     /// Record an owned deadline and persist a marker for the confirmed SHA
     /// beyond delivery tombstones. If a push raced the deadline, preserve the
     /// accepted job for the next owner while keeping that head terminal.
     pub fn finish_deadline(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
-        let Some(index) = self.unfinished.iter().position(|record| {
-            owns(record, owned) && record.owner_until_ms > now_ms
-        }) else {
+        let Some(index) = self
+            .unfinished
+            .iter()
+            .position(|record| owns(record, owned) && record.owner_until_ms > now_ms)
+        else {
             return false;
         };
         let request = self.unfinished[index].request.clone();
         if request.mode == ReviewJobMode::Incremental {
-            let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
-                budget.repo == request.repo && budget.number == request.number
-            }) else {
+            let Some(budget) = self
+                .incremental_heads
+                .iter_mut()
+                .find(|budget| budget.repo == request.repo && budget.number == request.number)
+            else {
                 return false;
             };
             budget.deadline_hit = true;
@@ -567,11 +587,12 @@ impl ReviewSchedulerState {
             return true;
         }
         let record = self.unfinished.remove(index);
-        self.terminal.extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
-            id,
-            outcome: TerminalOutcome::Deadline,
-            expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
-        }));
+        self.terminal
+            .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
+                id,
+                outcome: TerminalOutcome::Deadline,
+                expires_at_ms: now_ms + REVIEW_TOMBSTONE_TTL_MS,
+            }));
         true
     }
 
@@ -606,9 +627,7 @@ impl ReviewSchedulerState {
         self.unfinished
             .iter()
             .find(|record| owns(record, owned))
-            .is_some_and(|record| {
-                record.owner_until_ms > now_ms && !record.yield_requested
-            })
+            .is_some_and(|record| record.owner_until_ms > now_ms && !record.yield_requested)
     }
 
     /// Acknowledge an advisory supersession and return this same accepted work
@@ -663,13 +682,9 @@ impl ReviewSchedulerState {
         now_ms: i64,
         completed_at_ms: i64,
     ) -> bool {
-        let Some(index) = self
-            .unfinished
-            .iter()
-            .position(|record| {
-                owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
-            })
-        else {
+        let Some(index) = self.unfinished.iter().position(|record| {
+            owns(record, owned) && record.owner_until_ms > now_ms && !record.yield_requested
+        }) else {
             return false;
         };
         let record = self.unfinished.remove(index);
@@ -702,13 +717,12 @@ impl ReviewSchedulerState {
             }
         }
         let dedupe_outcome = existing_terminal.unwrap_or(outcome);
-        self.terminal.extend(record.accepted_ids.into_iter().map(|id| {
-            ReviewTombstone {
+        self.terminal
+            .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
                 id,
                 outcome: dedupe_outcome,
                 expires_at_ms: completed_at_ms + REVIEW_TOMBSTONE_TTL_MS,
-            }
-        }));
+            }));
         true
     }
 }
@@ -803,11 +817,7 @@ pub trait ReviewJobStore: Send + Sync {
     ) -> Result<bool>;
 
     /// Finish a deadline outcome and persist the confirmed-head no-retry marker.
-    async fn finish_deadline(
-        &self,
-        owned: &OwnedReview,
-        now_ms: i64,
-    ) -> Result<bool>;
+    async fn finish_deadline(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool>;
 }
 
 #[cfg(test)]

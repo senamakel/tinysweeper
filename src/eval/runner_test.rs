@@ -92,15 +92,145 @@ fn config() -> Config {
         .unwrap()
 }
 
-#[test]
-fn replay_tree_exposes_the_fixture_head_revision() {
-    let recorded = crate::ports::tree::MockTree::from_recorded(Default::default());
-    let head = "b".repeat(40);
-    let tree = CaseRevisionTree {
-        inner: &recorded,
-        revision: head.clone(),
-    };
-    assert_eq!(tree.revision().as_deref(), Some(head.as_str()));
+#[tokio::test]
+async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
+    use crate::ports::model::{ModelRequest, ModelResponse, Usage};
+    use crate::ports::tree::{Found, Lookup, TreeQuery, TreeReader};
+
+    struct HistoryProbe {
+        history: Arc<std::sync::Mutex<Vec<Found>>>,
+        falsification_keys: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::model::Model for HistoryProbe {
+        async fn complete(&self, request: ModelRequest) -> crate::error::Result<ModelResponse> {
+            if request.schema_name == "tinysweeper_falsify" {
+                self.falsification_keys
+                    .lock()
+                    .expect("falsification key capture")
+                    .push(crate::harness::cassette::key(&request));
+            }
+            Ok(ModelResponse {
+                value: json!({"incorrect": []}),
+                model: "test/history-probe".into(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn review(
+            &self,
+            _request: ModelRequest,
+            tree: &dyn TreeReader,
+            _policy: &crate::config::types::LookupPolicy,
+        ) -> crate::error::Result<ModelResponse> {
+            let _ = tree
+                .lookup(&Lookup::Read {
+                    path: "src/lib.rs".into(),
+                    start: Some(1),
+                    end: Some(2),
+                })
+                .await?;
+            let _ = tree
+                .explore(&TreeQuery::Symbol {
+                    symbol: "from_another_revision".into(),
+                    limit: 3,
+                })
+                .await?;
+            let found = tree
+                .explore(&TreeQuery::History {
+                    commit: "b".repeat(40),
+                    path: "src/lib.rs".into(),
+                    start: 1,
+                    end: 1,
+                })
+                .await?;
+            self.history.lock().expect("history capture").push(found);
+            Ok(ModelResponse {
+                value: json!({"summary": "Indexing can panic on an empty slice.", "findings": [{
+                    "path": "src/lib.rs", "existing_code": "items[0]", "rule": "unchecked-index",
+                    "title": "Guard the index", "body": "Indexing panics for an empty slice.",
+                    "severity": "high", "confidence": 0.9
+                }], "rules": [], "rejected": []}),
+                model: "test/history-probe".into(),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    let corpus_dir = corpus_dir("");
+    let corpus = load(corpus_dir.path()).expect("loads corpus");
+    let source = tempfile::tempdir().expect("source tree");
+    std::fs::create_dir_all(source.path().join("src")).expect("source directory");
+    std::fs::write(source.path().join("src/lib.rs"), "fn from_another_revision() {}\n")
+        .expect("source file");
+    let history = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let falsification_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut config = config();
+    config.models.agentic_reviewers = true;
+
+    run(
+        &corpus,
+        &config,
+        Some(Arc::new(HistoryProbe {
+            history: history.clone(),
+            falsification_keys: falsification_keys.clone(),
+        })),
+        &RunOptions {
+            out: corpus_dir.path().join("runs/record"),
+            record: true,
+            tree: Some(source.path().to_path_buf()),
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("records against the supplied tree");
+
+    {
+        let history = history.lock().expect("history capture");
+        assert_eq!(history.len(), 1);
+        assert!(
+            !matches!(history[0], Found::Text { .. }),
+            "an arbitrary directory cannot answer history at the fixture's commit: {:?}",
+            history[0]
+        );
+    }
+    let falsification_key = falsification_keys
+        .lock()
+        .expect("falsification key capture")
+        .first()
+        .cloned()
+        .expect("the finding reaches the falsifier");
+
+    let recorded_corpus = load(corpus_dir.path()).expect("loads persisted source evidence");
+    assert_eq!(recorded_corpus.cases[0].fixture.lookups.len(), 3);
+    let cassette_dir = recorded_corpus.cases[0].cassette_dir(corpus_dir.path());
+    let mut found_falsification_take = false;
+    for entry in std::fs::read_dir(cassette_dir).expect("cassette directory") {
+        let raw = std::fs::read_to_string(entry.expect("cassette entry").path())
+            .expect("cassette take");
+        let take: crate::harness::cassette::Take =
+            serde_json::from_str(&raw).expect("valid cassette take");
+        if take.schema_name == "tinysweeper_falsify" {
+            assert_eq!(take.key, falsification_key);
+            found_falsification_take = true;
+        }
+    }
+    assert!(found_falsification_take, "the actual falsification response is recorded");
+
+    let replay_out = corpus_dir.path().join("runs/replay");
+    let replay = run(
+        &recorded_corpus,
+        &config,
+        None,
+        &RunOptions {
+            out: replay_out,
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("strict replay is offline");
+    assert!(replay.scores[0].error.is_none(), "all review and falsification keys replay: {:?}", replay.scores[0]);
 }
 
 /// A model that reports the real defect on the added line.

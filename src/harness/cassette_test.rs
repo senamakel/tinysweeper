@@ -302,6 +302,7 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
 struct ScopedQuotaModel {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     scopes: Arc<std::sync::atomic::AtomicUsize>,
+    reviews: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -330,6 +331,24 @@ impl Model for ScopedQuotaModel {
         })
     }
 
+    async fn review(
+        &self,
+        request: ModelRequest,
+        tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.reviews
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = tree
+            .lookup(&Lookup::Read {
+                path: "src/lib.rs".into(),
+                start: Some(1),
+                end: Some(2),
+            })
+            .await?;
+        self.complete(request).await
+    }
+
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
         assert!(budget_usd > 0.0);
         self.scopes
@@ -337,6 +356,7 @@ impl Model for ScopedQuotaModel {
         Some(Arc::new(Self {
             calls: self.calls.clone(),
             scopes: self.scopes.clone(),
+            reviews: self.reviews.clone(),
         }))
     }
 }
@@ -347,16 +367,14 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
     let model = Arc::new(ScopedQuotaModel {
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         scopes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        reviews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
     let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
     let mut models = crate::config::types::Models::default();
     models.agentic_reviewers = true;
     models.budget_usd_per_pr = 100.0;
     let capability = crate::flows::caps::ModelCapability::new(recorder.clone(), models);
-    let policy = crate::config::types::LookupPolicy {
-        enabled: false,
-        ..Default::default()
-    };
+    let policy = crate::config::types::LookupPolicy::default();
     let call = crate::flows::panel::Call {
         id: "reviewer".into(),
         model: "test/scoped".into(),
@@ -376,6 +394,7 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
 
     assert!(err.to_string().contains("scope exhausted"));
     assert!(model.scopes.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert_eq!(model.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(recorder.served(), 1);
     assert_eq!(recorder.spend().usage.input_tokens, 150);

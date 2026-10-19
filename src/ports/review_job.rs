@@ -21,7 +21,7 @@ pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
 /// Short bounded owner claim for a queued status write, independent of review ownership.
 pub const QUEUE_STATUS_CLAIM_TTL_MS: i64 = 30_000;
 /// Bound active and detached check identities well below the BSON scheduler cap.
-pub const MAX_REVIEW_STATUS_RECORDS: usize = 512;
+pub const MAX_REVIEW_STATUS_RECORDS: usize = 1_024;
 /// How long terminal delivery IDs remain deduped.
 pub const REVIEW_TOMBSTONE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 /// Upper bound for any persisted identifier or descriptive field.
@@ -244,6 +244,13 @@ pub struct ScheduledReview {
     /// Check identities for accepted heads; never used as paid-head authority.
     #[serde(default)]
     pub review_checks: Vec<ReviewCheckRecord>,
+    /// One bounded slot for a live SHA discovered after a delivery was accepted.
+    #[serde(default = "default_true")]
+    pub status_reconcile_reserved: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A completed ID retained to dedupe redeliveries for seven days.

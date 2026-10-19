@@ -140,6 +140,10 @@ pub struct ScheduledReview {
     /// the next owner still resolves the live head from Forge.
     #[serde(default)]
     pub latest_head_hint: Option<String>,
+    /// Reserved slots for terminal-head history records this accepted work
+    /// could create while resolving successive authoritative heads.
+    #[serde(default)]
+    pub head_history_reservations: usize,
 }
 
 /// A completed ID retained to dedupe redeliveries for seven days.
@@ -232,11 +236,51 @@ impl ReviewSchedulerState {
             return Admission::Duplicate;
         }
         let new_jobs = new_uncoalesced_count(&self.unfinished, &requests);
+        let incoming_incremental = requests
+            .iter()
+            .filter(|request| request.mode == ReviewJobMode::Incremental)
+            .count();
+        let pending_prs = self
+            .unfinished
+            .iter()
+            .filter(|record| record.request.mode == ReviewJobMode::Incremental)
+            .map(|record| (record.request.repo.clone(), record.request.number))
+            .collect::<std::collections::HashSet<_>>();
+        let new_prs_without_head = requests
+            .iter()
+            .filter(|request| request.mode == ReviewJobMode::Incremental)
+            .map(|request| (request.repo.clone(), request.number))
+            .filter(|key| {
+                !pending_prs.contains(key)
+                    && !self.incremental_heads.iter().any(|budget| {
+                        budget.repo == key.0 && budget.number == key.1
+                    })
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let pending_head_slots = pending_prs
+            .iter()
+            .filter(|key| {
+                !self.incremental_heads.iter().any(|budget| {
+                    budget.repo == key.0 && budget.number == key.1
+                })
+            })
+            .count();
         if already != 0
             || self.unfinished.len() + new_jobs > MAX_UNFINISHED_REVIEWS
-            || self.terminal.len() + accepted_id_count(&self.unfinished) + requests.len()
+            || self.terminal.len()
+                + accepted_id_count(&self.unfinished)
+                + requests.len()
                 + self.incremental_heads.len()
                 + self.head_history.len()
+                + self
+                    .unfinished
+                    .iter()
+                    .map(|record| record.head_history_reservations)
+                    .sum::<usize>()
+                + incoming_incremental
+                + pending_head_slots
+                + new_prs_without_head
                 > MAX_TERMINAL_REVIEW_RESERVATIONS
         {
             return Admission::Full;
@@ -252,6 +296,7 @@ impl ReviewSchedulerState {
             }).flatten() {
                 record.accepted_ids.push(request.id);
                 record.latest_head_hint = request.head_sha.clone();
+                record.head_history_reservations += 1;
                 if record.owner.is_some() {
                     if record.request.head_sha != request.head_sha {
                         record.yield_requested = true;
@@ -264,6 +309,9 @@ impl ReviewSchedulerState {
             self.unfinished.push(ScheduledReview {
                 accepted_ids: vec![request.id.clone()],
                 latest_head_hint: request.head_sha.clone(),
+                head_history_reservations: usize::from(
+                    request.mode == ReviewJobMode::Incremental,
+                ),
                 request,
                 owner: None,
                 generation: 0,
@@ -286,6 +334,11 @@ impl ReviewSchedulerState {
             }
             if record.latest_head_hint.is_none() {
                 record.latest_head_hint = record.request.head_sha.clone();
+            }
+            if record.request.mode == ReviewJobMode::Incremental
+                && record.head_history_reservations == 0
+            {
+                record.head_history_reservations = record.accepted_ids.len();
             }
         }
     }
@@ -329,20 +382,9 @@ impl ReviewSchedulerState {
             if !self.incremental_heads.iter().any(|budget| {
                 budget.repo == request.repo && budget.number == request.number
             }) {
-                // Older test harnesses and migrated jobs may reach the budget
-                // helper without an explicit confirm call. Production workers
-                // always confirm after the live Forge read before this point.
-                let Some(head_sha) = request.head_sha.clone() else {
-                    return PaidStart::OwnershipLost;
-                };
-                self.incremental_heads.push(IncrementalHeadBudget {
-                    repo: request.repo.clone(),
-                    number: request.number,
-                    head_sha,
-                    paid_attempts: 0,
-                    deadline_hit: false,
-                    terminal_outcome: None,
-                });
+                // A webhook SHA is only a hint. Production must confirm a live
+                // head from Forge before paid work can start.
+                return PaidStart::OwnershipLost;
             }
             let Some(budget) = self.incremental_heads.iter_mut().find(|budget| {
                 budget.repo == request.repo && budget.number == request.number
@@ -397,11 +439,10 @@ impl ReviewSchedulerState {
                 return true;
             }
             if current.terminal_outcome.is_some() || current.deadline_hit {
-                if self.incremental_heads.len() + self.head_history.len()
-                    >= MAX_TERMINAL_REVIEW_RESERVATIONS
-                {
+                if self.unfinished[index].head_history_reservations == 0 {
                     return false;
                 }
+                self.unfinished[index].head_history_reservations -= 1;
                 self.head_history.push(HeadTerminalTombstone {
                     repo: repo.clone(),
                     number,
@@ -428,9 +469,7 @@ impl ReviewSchedulerState {
             self.unfinished[index].request.head_sha = Some(head_sha.to_owned());
             return true;
         }
-        if self.incremental_heads.len() + self.head_history.len()
-            >= MAX_TERMINAL_REVIEW_RESERVATIONS
-        {
+        if self.unfinished[index].request.mode != ReviewJobMode::Incremental {
             return false;
         }
         self.incremental_heads.push(IncrementalHeadBudget {

@@ -651,11 +651,16 @@ async fn receive(
             )
                 .into_response();
         }
+        let installation = match &action {
+            Action::Review { installation, .. } => *installation,
+            _ => unreachable!("review action branch checked above"),
+        };
         let admission = match admit_webhook_review(
             state.review_jobs.as_ref(),
             &action,
             &delivery,
             &event,
+            github_queue_status_client(state.auth.clone(), installation),
         )
         .await
         {
@@ -759,14 +764,10 @@ async fn admit_webhook_review(
 
 /// Lazily mint a status-only GitHub client after admission policy allows its
 /// first use. The factory itself performs no token exchange or forge request.
-type QueueStatusClientFactory = Box<
-    dyn FnOnce() -> futures::future::BoxFuture<'static, Result<Arc<dyn ForgeWrite>>> + Send,
->;
+type QueueStatusClientFactory =
+    Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<Arc<dyn ForgeWrite>>> + Send>;
 
-fn github_queue_status_client(
-    auth: Arc<AppAuth>,
-    installation: u64,
-) -> QueueStatusClientFactory {
+fn github_queue_status_client(auth: Arc<AppAuth>, installation: u64) -> QueueStatusClientFactory {
     Box::new(move || {
         async move {
             let token = auth.installation_token(installation).await?;
@@ -6302,9 +6303,15 @@ mod tests {
             head_sha: Some("webhook-head".into()),
         };
         assert_eq!(
-            admit_webhook_review(store.as_ref(), &webhook, "delivery-7", "pull_request")
-                .await
-                .expect("webhook admitted durably"),
+            admit_webhook_review(
+                store.as_ref(),
+                &webhook,
+                "delivery-7",
+                "pull_request",
+                Box::new(|| async { Err(Error::Forge("unused status client".into())) }.boxed()),
+            )
+            .await
+            .expect("webhook admitted durably"),
             Admission::Admitted
         );
 
@@ -6432,13 +6439,17 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_review_publishes_queued_status_before_a_permit_is_available() {
+        use crate::forge::MockForge;
         use crate::forge::types::CheckRunStatus;
-        use crate::forge::{MockForge, RepoId};
 
         let permits = Semaphore::new(0);
         assert_eq!(permits.available_permits(), 0);
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let forge = MockForge::new();
+        let status_forge = forge.clone();
+        let status_client: QueueStatusClientFactory = Box::new(move || {
+            async move { Ok(Arc::new(status_forge) as Arc<dyn ForgeWrite>) }.boxed()
+        });
         let action = Action::Review {
             repo: "owner/repo".into(),
             number: 7,
@@ -6451,9 +6462,15 @@ mod tests {
         // Queue status must be visible before a worker can acquire a review
         // permit; otherwise a valid accepted request looks like no work exists.
         assert_eq!(
-            admit_webhook_review(&store, &action, "delivery-queued", "pull_request")
-                .await
-                .expect("accepted durably"),
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-queued",
+                "pull_request",
+                status_client,
+            )
+            .await
+            .expect("accepted durably"),
             Admission::Admitted
         );
 

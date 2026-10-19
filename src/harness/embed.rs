@@ -1349,8 +1349,8 @@ impl Model for GatewayModel {
 mod tests {
     use super::*;
     use crate::ports::model_execution::{
-        ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
-        ModelExecutionTerminal, ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+        ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal, ModelExecutionTerminal,
+        ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
     };
 
     #[test]
@@ -1405,7 +1405,9 @@ mod tests {
         }
     }
 
-    fn execution_scope(max_calls: Option<usize>) -> Arc<crate::app::review_execution::ReviewExecution> {
+    fn execution_scope(
+        max_calls: Option<usize>,
+    ) -> Arc<crate::app::review_execution::ReviewExecution> {
         use crate::lanes::large_pr::ReviewMode;
         use tokio::time::Instant;
 
@@ -1587,7 +1589,7 @@ mod tests {
         use crate::ports::model_execution::{
             ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
         };
-        use crate::ports::tree::{MockTree, TreeReader};
+        use crate::ports::tree::MockTree;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::time::Instant;
 
@@ -1661,6 +1663,10 @@ mod tests {
             {
                 self.acquires.fetch_add(1, Ordering::SeqCst);
                 self.inner.acquire().await
+            }
+
+            fn on_terminal(&self, terminal: ModelExecutionTerminal) {
+                self.inner.on_terminal(terminal);
             }
         }
         let acquire_count = Arc::new(AtomicUsize::new(0));
@@ -1968,7 +1974,10 @@ mod tests {
             .expect("the Gateway keeps the supplied execution control");
         let request = ModelRequest {
             model: "b".into(),
-            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Review source.")],
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Review source."),
+            ],
             schema: json!({
                 "type":"object", "additionalProperties":false,
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
@@ -1977,7 +1986,10 @@ mod tests {
             max_tokens: 100,
         };
 
-        model.complete(request).await.expect("the response succeeds");
+        model
+            .complete(request)
+            .await
+            .expect("the response succeeds");
 
         assert_eq!(gateway.requests().len(), 2);
         let expected = vec![
@@ -2051,7 +2063,10 @@ mod tests {
             .expect("the Gateway keeps the supplied execution control");
         let request = ModelRequest {
             model: "b".into(),
-            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Read source.")],
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Read source."),
+            ],
             schema: json!({
                 "type":"object", "additionalProperties":false,
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
@@ -2078,6 +2093,8 @@ mod tests {
         ));
         assert_eq!(gateway.requests().len(), 1);
         let expected = raw_terminal(
+            "b",
+            Some("b"),
             ModelExecutionTerminalOutcome::Succeeded,
             Some(ModelExecutionTerminalUsage {
                 input_tokens: 12,
@@ -2120,7 +2137,10 @@ mod tests {
         );
         let request = ModelRequest {
             model: "b".into(),
-            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Read source.")],
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Read source."),
+            ],
             schema: json!({
                 "type":"object", "additionalProperties":false,
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
@@ -2149,9 +2169,7 @@ mod tests {
             snapshot.physical_terminals.is_empty()
                 || snapshot.physical_terminals.iter().all(|terminal| {
                     terminal.usage.is_none()
-                        || terminal
-                            .usage
-                            .is_some_and(|usage| usage.cost_usd.is_none())
+                        || terminal.usage.is_some_and(|usage| usage.cost_usd.is_none())
                 }),
             "a cancelled call cannot claim an exact provider charge"
         );

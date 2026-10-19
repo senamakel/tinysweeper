@@ -15,11 +15,11 @@ use crate::lanes::large_pr::ReviewMode;
 use crate::ports::model::Model;
 #[cfg(test)]
 use crate::ports::model::Usage;
+#[cfg(test)]
+use crate::ports::model_execution::ModelExecutionTerminal;
 use crate::ports::model_execution::{
     ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
 };
-#[cfg(test)]
-use crate::ports::model_execution::ModelExecutionTerminal;
 
 /// Absolute review window and the operator limits applied to it.
 #[derive(Debug, Clone, Copy)]

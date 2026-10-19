@@ -601,12 +601,17 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         }
         if !lane.unanswered.is_empty() {
             any = true;
-            let _ = writeln!(
-                out,
-                "- [ ] Complete the {} review for {}.",
-                lane.lane,
-                code_list(lane.unanswered.iter().map(String::as_str))
-            );
+            let paths = unanswered_paths(lane);
+            if paths.is_empty() {
+                let _ = writeln!(out, "- [ ] Complete the {} review.", lane.lane);
+            } else {
+                let _ = writeln!(
+                    out,
+                    "- [ ] Complete the {} review for {}.",
+                    lane.lane,
+                    code_list(paths)
+                );
+            }
         }
     }
     if !proposal.unreviewed.is_empty() {
@@ -645,10 +650,12 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             if lane.unanswered.is_empty() {
                 "all assigned evidence".into()
             } else {
-                format!(
-                    "incomplete; unanswered: {}",
-                    code_list(lane.unanswered.iter().map(String::as_str))
-                )
+                let paths = unanswered_paths(lane);
+                if paths.is_empty() {
+                    "no lane response".into()
+                } else {
+                    format!("incomplete; unanswered files: {}", code_list(paths))
+                }
             }
         );
         if let Some(observations) = summary.positive_observations.get(&lane.lane) {
@@ -1427,10 +1434,7 @@ mod tests {
             rendered.contains("tests reviewer did not respond"),
             "{rendered}"
         );
-        assert!(
-            rendered.contains("`src/tested.rs`"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("`src/tested.rs`"), "{rendered}");
         assert!(!rendered.contains("tinysweeper/"), "{rendered}");
     }
 

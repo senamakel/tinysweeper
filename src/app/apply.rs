@@ -50,6 +50,19 @@ pub async fn start_queued_review_status(
         .await
 }
 
+/// Conclude a detached queued check after its review job was superseded.
+#[cfg(feature = "serve")]
+pub async fn retire_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    check_id: u64,
+    head_sha: &str,
+) -> Result<()> {
+    write
+        .update_check(repo, check_id, crate::server::status::not_reviewed(head_sha))
+        .await
+}
+
 /// Whether a review proposal was published against the live pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDisposition {

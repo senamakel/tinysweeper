@@ -299,6 +299,49 @@ pub struct ReviewSchedulerState {
 }
 
 impl ReviewSchedulerState {
+    fn retire_check(&mut self, repo: &str, installation: u64, mut check: ReviewCheckRecord) {
+        if check.stage == ReviewCheckStage::Completed
+            || (!check.published && check.check_id.is_none() && check.write_generation == 0)
+            || self.retired_checks.iter().any(|entry| {
+                entry.check.external_id == check.external_id
+            })
+        {
+            return;
+        }
+        // Invalidate any queued POST claim before moving this check to the
+        // detached terminal-status outbox.
+        check.write_generation = check.write_generation.saturating_add(1);
+        check.write_claim_until_ms = 0;
+        self.retired_checks.push(RetiredReviewCheck {
+            repo: repo.to_owned(),
+            installation,
+            check,
+        });
+    }
+
+    fn detach_checks_except(record: &mut ScheduledReview, keep_head: Option<&str>) -> Vec<RetiredReviewCheck> {
+        let mut keep = Vec::new();
+        let mut retired = Vec::new();
+        for check in std::mem::take(&mut record.review_checks) {
+            if Some(check.head_sha.as_str()) == keep_head {
+                keep.push(check);
+            } else if check.stage != ReviewCheckStage::Completed
+                && (check.published || check.check_id.is_some() || check.write_generation > 0)
+            {
+                let mut check = check;
+                check.write_generation = check.write_generation.saturating_add(1);
+                check.write_claim_until_ms = 0;
+                retired.push(RetiredReviewCheck {
+                    repo: record.request.repo.clone(),
+                    installation: record.request.installation,
+                    check,
+                });
+            }
+        }
+        record.review_checks = keep;
+        retired
+    }
+
     /// Claim a bounded batch of queued-check publications without claiming review work.
     pub fn claim_pending_checks(&mut self, now_ms: i64, limit: usize) -> Vec<PendingReviewCheck> {
         let mut ordered = self
@@ -524,6 +567,26 @@ impl ReviewSchedulerState {
         {
             return Admission::Full;
         }
+        let status_records = self.retired_checks.len()
+            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>();
+        let additional_status_records = requests.iter().filter(|request| {
+            let existing = (request.mode == ReviewJobMode::Incremental).then(|| {
+                self.unfinished.iter().find(|record| {
+                    record.request.mode == ReviewJobMode::Incremental
+                        && record.request.repo == request.repo
+                        && record.request.number == request.number
+                })
+            }).flatten();
+            match (existing, request.head_sha.as_deref()) {
+                (Some(record), Some(head)) => !record.review_checks.iter().any(|check| check.head_sha == head),
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
+        }).count();
+        let future_status_slots = requests.iter().filter(|request| request.head_sha.is_none()).count();
+        if status_records + additional_status_records + future_status_slots > MAX_REVIEW_STATUS_RECORDS {
+            return Admission::Full;
+        }
         let already = requests
             .iter()
             .filter(|request| {
@@ -571,6 +634,7 @@ impl ReviewSchedulerState {
             return Admission::Full;
         }
         for request in requests {
+            let mut detached_checks = Vec::new();
             let initial_check = request.head_sha.as_ref().map(|head_sha| ReviewCheckRecord {
                 head_sha: head_sha.clone(),
                 external_id: queued_check_external_id(&request.id, head_sha),
@@ -594,6 +658,9 @@ impl ReviewSchedulerState {
             {
                 record.accepted_ids.push(request.id.clone());
                 record.latest_head_hint = request.head_sha.clone();
+                let new_head = request.head_sha.clone();
+                let is_unowned_head_change = record.owner.is_none()
+                    && record.request.head_sha != request.head_sha;
                 if let Some(check) = initial_check {
                     if !record
                         .review_checks
@@ -610,8 +677,12 @@ impl ReviewSchedulerState {
                         record.yield_requested = true;
                     }
                 } else {
+                    if is_unowned_head_change {
+                        detached_checks = Self::detach_checks_except(record, new_head.as_deref());
+                    }
                     record.request = request;
                 }
+                self.retired_checks.extend(detached_checks);
                 continue;
             }
             self.unfinished.push(ScheduledReview {
@@ -654,6 +725,7 @@ impl ReviewSchedulerState {
             })
             .count();
         self.terminal.len()
+            + self.retired_checks.len()
             + self
                 .unfinished
                 .iter()
@@ -661,6 +733,16 @@ impl ReviewSchedulerState {
                 .sum::<usize>()
             + self.incremental_heads.len()
             + self.head_history.len()
+            + self
+                .unfinished
+                .iter()
+                .map(|record| record.review_checks.len())
+                .sum::<usize>()
+            + self
+                .unfinished
+                .iter()
+                .filter(|record| record.review_checks.is_empty())
+                .count()
             + self
                 .unfinished
                 .iter()

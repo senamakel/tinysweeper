@@ -169,7 +169,8 @@ a tree in memory and thousands of embedding calls.
 
 ## Concurrency and failure
 
-`MAX_CONCURRENT_REVIEWS` bounds how many reviews run at once. The limit is about
+`[server].review_concurrency` (default four) bounds how many reviews run at
+once. The limit is about
 spend and rate limits rather than CPU: a force-push across a repository delivers
 a burst, and an unbounded worker pool turns that into an unbounded bill.
 

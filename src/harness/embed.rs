@@ -1158,7 +1158,7 @@ mod tests {
         assert!(lines.contains("repo=owner/repo"), "{lines}");
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=abc123"), "{lines}");
-        assert!(lines.contains("mode=\"Incremental\""), "{lines}");
+        assert!(lines.contains("mode=Incremental"), "{lines}");
     }
 
     #[tokio::test]
@@ -1661,7 +1661,7 @@ mod tests {
         assert!(lines.contains("repo=owner/repo"), "{lines}");
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=abc123"), "{lines}");
-        assert!(lines.contains("mode=\"Incremental\""), "{lines}");
+        assert!(lines.contains("mode=Incremental"), "{lines}");
     }
 
     #[tokio::test]

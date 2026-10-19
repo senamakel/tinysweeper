@@ -952,7 +952,14 @@ async fn drain_review_queue<F>(
         let Ok(permit) = permits.clone().try_acquire_owned() else {
             continue;
         };
-        match jobs.claim_next(&owner, unix_time_ms()).await {
+        match jobs
+            .claim_next_with_limit(
+                &owner,
+                unix_time_ms(),
+                state.config.config.server.review_concurrency,
+            )
+            .await
+        {
             Ok(Some(job)) => start(job, permit),
             Ok(None) => drop(permit),
             Err(err) => {

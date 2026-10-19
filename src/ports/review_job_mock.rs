@@ -127,6 +127,15 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").claim_next(owner, now_ms))
     }
 
+    async fn claim_next_with_limit(
+        &self,
+        owner: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Option<OwnedReview>> {
+        Ok(self.state.lock().expect("state").claim_next_with_limit(owner, now_ms, limit))
+    }
+
     async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart> {
         Ok(self.state.lock().expect("state").begin_paid(owned, now_ms))
     }

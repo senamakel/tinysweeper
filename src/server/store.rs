@@ -217,6 +217,19 @@ impl ReviewJobStore for Store {
             .await
     }
 
+    async fn claim_next_with_limit(
+        &self,
+        owner: &str,
+        _now_ms: i64,
+        limit: usize,
+    ) -> Result<Option<OwnedReview>> {
+        let owner = owner.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.claim_next_with_limit(&owner, now_ms, limit)
+        })
+        .await
+    }
+
     async fn begin_paid(&self, owned: &OwnedReview, _now_ms: i64) -> Result<PaidStart> {
         let owned = owned.clone();
         self.change_review_scheduler(move |state, now_ms| state.begin_paid(&owned, now_ms))

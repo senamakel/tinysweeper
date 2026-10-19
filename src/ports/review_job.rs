@@ -596,14 +596,14 @@ impl ReviewSchedulerState {
         }
     }
 
-    /// Claim the oldest eligible record within the four-process global bound.
-    pub fn claim_next(&mut self, owner: &str, now_ms: i64) -> Option<OwnedReview> {
+    /// Claim the oldest eligible record within the configured global bound.
+    pub fn claim_next_with_limit(&mut self, owner: &str, now_ms: i64, limit: usize) -> Option<OwnedReview> {
         let running = self
             .unfinished
             .iter()
             .filter(|record| record.owner.is_some() && record.owner_until_ms > now_ms)
             .count();
-        if running >= MAX_RUNNING_REVIEWS {
+        if running >= limit {
             return None;
         }
         let record = self.unfinished.iter_mut().find(|record| {
@@ -636,6 +636,11 @@ impl ReviewSchedulerState {
             generation,
             review_check,
         })
+    }
+
+    /// Claim using the default global review bound.
+    pub fn claim_next(&mut self, owner: &str, now_ms: i64) -> Option<OwnedReview> {
+        self.claim_next_with_limit(owner, now_ms, MAX_RUNNING_REVIEWS)
     }
 
     /// Consume one paid attempt, leaving exhausted work owned for status cleanup.
@@ -1100,6 +1105,17 @@ pub trait ReviewJobStore: Send + Sync {
     /// Claim one eligible request if fewer than four are running globally.
     /// The implementation must never take an unexpired foreign owner.
     async fn claim_next(&self, owner: &str, now_ms: i64) -> Result<Option<OwnedReview>>;
+
+    /// Claim using the trusted deployment pool size across all server processes.
+    async fn claim_next_with_limit(
+        &self,
+        owner: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Option<OwnedReview>> {
+        let _ = limit;
+        self.claim_next(owner, now_ms).await
+    }
 
     /// Consume a paid attempt, retaining exhausted work until its owner concludes status.
     async fn begin_paid(&self, owned: &OwnedReview, now_ms: i64) -> Result<PaidStart>;

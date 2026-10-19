@@ -74,6 +74,9 @@ impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
 #[derive(Clone)]
 pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
+    // Reserved for the review-root binding; child scopes must retain it even
+    // while their existing per-scope ledgers remain independent.
+    review_budget: Option<openhuman_embed::budget::Budget>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
     output_history: crate::harness::budget::OutputHistory,
     agentic_reviewers: bool,
@@ -472,6 +475,7 @@ impl GatewayModel {
         Self {
             api_key,
             budget: None,
+            review_budget: None,
             budget_prices: models.budget_prices.clone(),
             output_history: Default::default(),
             agentic_reviewers: models.agentic_reviewers,
@@ -946,6 +950,7 @@ impl Model for GatewayModel {
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
         let mut model = self.clone();
         model.budget = Some(crate::harness::budget::ledger(budget_usd));
+        model.review_budget = self.review_budget.clone();
         // Clones share atomic reservation capacity; a fresh scope is isolated.
         Some(Arc::new(model))
     }

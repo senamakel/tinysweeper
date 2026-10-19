@@ -185,6 +185,52 @@ fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
     assert_eq!(state.admit_batch(vec![extra], 1), Admission::Full);
 }
 
+#[test]
+fn resolving_a_headless_status_does_not_consume_unreserved_status_capacity() {
+    let check = super::ReviewCheckRecord {
+        head_sha: "old-head".into(),
+        external_id: "old-external-id".into(),
+        check_id: Some(7),
+        stage: super::ReviewCheckStage::Queued,
+        owner_generation: None,
+        published: true,
+        post_attempted: true,
+        write_claim_until_ms: 0,
+        write_generation: 1,
+    };
+    let mut state = ReviewSchedulerState::default();
+    state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS - 1)
+        .map(|_| super::RetiredReviewCheck {
+            repo: "owner/repo".into(),
+            installation: 1,
+            check: check.clone(),
+        })
+        .collect();
+    let mut headless = request("headless-capacity", 20);
+    headless.head_sha = None;
+    assert_eq!(state.admit_batch(vec![headless.clone()], 20), Admission::Full);
+    state.retired_checks.pop();
+    assert_eq!(state.admit_batch(vec![headless], 20), Admission::Admitted);
+    assert_eq!(
+        state.retired_checks.len()
+            + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
+            + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
+            + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count(),
+        super::MAX_REVIEW_STATUS_RECORDS,
+    );
+
+    let pending = state.claim_pending_metadata(20, 1).pop().unwrap();
+    assert!(state.resolve_pending_metadata(&pending, "live-head", true, false, 21));
+    let status_records = state.retired_checks.len()
+        + state.unfinished.iter().map(|job| job.review_checks.len()).sum::<usize>()
+        + state.unfinished.iter().filter(|job| job.status_reconcile_reserved).count()
+        + state.unfinished.iter().filter(|job| job.metadata_resolution_pending).count();
+    assert!(
+        status_records <= super::MAX_REVIEW_STATUS_RECORDS,
+        "metadata resolution must exchange its reserved slot for the check identity"
+    );
+}
+
 #[tokio::test]
 async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_failed() {
     let store = MockReviewJobStore::default();

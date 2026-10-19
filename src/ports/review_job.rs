@@ -324,11 +324,23 @@ pub struct ReviewSchedulerState {
 
 impl ReviewSchedulerState {
     fn detach_checks_except(record: &mut ScheduledReview, keep_head: Option<&str>) -> Vec<RetiredReviewCheck> {
+        Self::detach_checks_except_preserving(record, keep_head, None)
+    }
+
+    fn detach_checks_except_preserving(
+        record: &mut ScheduledReview,
+        keep_head: Option<&str>,
+        preserve_status_head: Option<&str>,
+    ) -> Vec<RetiredReviewCheck> {
         let mut keep = Vec::new();
         let mut retired = Vec::new();
         for check in std::mem::take(&mut record.review_checks) {
             if Some(check.head_sha.as_str()) == keep_head {
                 keep.push(check);
+            } else if Some(check.head_sha.as_str()) == preserve_status_head {
+                // The paid review result is already known. A failed status
+                // PATCH must not be converted into the opposite NotReviewed
+                // conclusion just because a newer advisory head arrived.
             } else if check.stage != ReviewCheckStage::Completed
                 && (check.published || check.check_id.is_some() || check.post_attempted)
             {
@@ -1126,6 +1138,9 @@ impl ReviewSchedulerState {
         }
         if self.unfinished[index].yield_requested {
             let head = self.unfinished[index].latest_head_hint.clone();
+            let preserve_status_head = (outcome == TerminalOutcome::Published)
+                .then(|| self.unfinished[index].request.head_sha.clone())
+                .flatten();
             let detached = {
                 let record = &mut self.unfinished[index];
                 record.owner = None;
@@ -1133,7 +1148,11 @@ impl ReviewSchedulerState {
                 record.not_before_ms = now_ms;
                 record.request.head_sha = head.clone();
                 record.yield_requested = false;
-                Self::detach_checks_except(record, head.as_deref())
+                Self::detach_checks_except_preserving(
+                    record,
+                    head.as_deref(),
+                    preserve_status_head.as_deref(),
+                )
             };
             self.retired_checks.extend(detached);
             return true;

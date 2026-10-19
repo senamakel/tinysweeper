@@ -109,13 +109,21 @@ about which lane landed where, and no vocabulary expresses it.
 
 ## What this corpus does not measure yet
 
-**Recall, barely.** One case carries `[[expected]]` entries:
-`oc-2313-round-boundary-leaks`, a 62-file submodule bump where two external
-reviewers found two boundary defects in the one file with a logic change and
-the live review approved with nothing. The default configuration scores 0/2 on
-it, which is the number to move. One case is a floor, not a measurement; the
-labelling still owed is every pull request where a Codex or CodeRabbit
-finding was acted on and tinysweeper said nothing.
+**Recall, not yet measured.** Five historical miss cases now have
+`[[expected]]` labels: one in `tinymcp#102`, three distinct findings in
+`openhuman#8061`, and one in `openhuman#8076`. Each pins the exact externally
+reviewed head and changed-file patches, and cites the acted-on review comment
+and fix. Their source provenance is not a model response: these cases have no
+recorded TinySweeper cassettes yet, so they do not establish a current hit rate
+or a recall percentage. The earlier `oc-2313-round-boundary-leaks` case also
+remains in the corpus; its prior 0/2 result is a historical replay result, not
+a score for these new cases.
+
+The external PR descriptions and comments are omitted from these five fixture
+snapshots because the preserved versions include post-review fix explanations
+and no exact original body/comment snapshot was available. The changed patches
+and commit ranges are frozen at each original review head. Keep this limitation
+visible when recording and interpreting new responses.
 
 **Clean pull requests.** A case with `exhaustive = true` and no expectations is
 how noise gets measured, and there are none yet. The obvious candidates —

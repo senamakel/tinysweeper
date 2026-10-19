@@ -92,6 +92,9 @@ pub trait ForgeRead: Send + Sync {
     /// worse than no gate.
     async fn check_runs(&self, repo: &RepoId, sha: &str) -> Result<Vec<CheckStatus>>;
 
+    /// Find a previously published check by its stable external recovery key.
+    async fn check_run_by_external_id(&self, _repo: &RepoId, _sha: &str, _external_id: &str) -> Result<Option<u64>> { Ok(None) }
+
     /// Every review left on a pull request, oldest first.
     ///
     /// The history rather than a verdict: only the caller knows that a later

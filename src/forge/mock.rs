@@ -157,6 +157,8 @@ pub struct MockState {
     pub review_threads_fail: bool,
     /// Check runs, keyed by the commit they report on and then by check name.
     pub checks: BTreeMap<String, BTreeMap<String, CheckStatus>>,
+    /// Check-run IDs indexed by commit and stable external recovery key.
+    pub check_run_ids: BTreeMap<(String, String), u64>,
     /// Reviews, oldest first, keyed by pull request number.
     pub reviews: BTreeMap<u64, Vec<ReviewVerdict>>,
     /// Review conversations, keyed by pull request number.
@@ -624,6 +626,10 @@ impl ForgeRead for MockForge {
             .unwrap_or_default())
     }
 
+    async fn check_run_by_external_id(&self, _repo: &RepoId, sha: &str, external_id: &str) -> Result<Option<u64>> {
+        Ok(self.state.lock().expect("mock state lock").check_run_ids.get(&(sha.to_owned(), external_id.to_owned())).copied())
+    }
+
     async fn reviews(&self, _repo: &RepoId, number: u64) -> Result<Vec<ReviewVerdict>> {
         let state = self.state.lock().expect("mock state lock");
         Ok(state.reviews.get(&number).cloned().unwrap_or_default())
@@ -768,8 +774,12 @@ impl ForgeRead for MockForge {
 #[async_trait]
 impl ForgeWrite for MockForge {
     async fn publish_check(&self, _repo: &RepoId, check: CheckRun) -> Result<u64> {
+        let id = self.allocate_id();
+        if let Some(external_id) = check.external_id.as_ref() {
+            self.state.lock().expect("mock state lock").check_run_ids.insert((check.head_sha.clone(), external_id.clone()), id);
+        }
         self.record(Write::Check(check));
-        Ok(self.allocate_id())
+        Ok(id)
     }
 
     async fn update_check(&self, _repo: &RepoId, check_id: u64, check: CheckRun) -> Result<()> {

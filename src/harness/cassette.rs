@@ -55,6 +55,10 @@ pub struct Take {
     pub usage: Usage,
     /// The structured answer.
     pub value: Value,
+    /// Lookup policy, source revision and tree-query outcomes for reviews.
+    /// Missing from historical completion-only recordings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_context: Option<ReviewContext>,
     /// The prompt, recorded only when explicitly asked for.
     ///
     /// Off by default because a prompt embeds the reviewed repository's diff,
@@ -63,6 +67,45 @@ pub struct Take {
     /// debug a prompt change from a recording afterwards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<Vec<RecordedMessage>>,
+}
+
+/// Repository context needed to replay a review without a live model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewContext {
+    /// Effective lookup limits and feature flags for this review.
+    pub policy: crate::config::types::LookupPolicy,
+    /// The tree revision when the review was recorded, when known.
+    pub revision: Option<String>,
+    /// Repository operations completed during the review, in completion order.
+    pub queries: Vec<RecordedQuery>,
+}
+
+/// A repository operation and a digest of its redacted result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedQuery {
+    /// The operation sent to the tree reader.
+    pub query: RecordedTreeQuery,
+    /// SHA-256 of a canonical `Found`, or `failed` for a returned error.
+    pub result: String,
+}
+
+/// Serializable form of the read-only repository operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "query", rename_all = "snake_case")]
+pub enum RecordedTreeQuery {
+    /// A normal repository lookup.
+    Lookup(crate::ports::tree::Lookup),
+    /// A bounded tree query.
+    List { path: String, limit: u32 },
+    /// A literal symbol query.
+    Symbol { symbol: String, limit: u32 },
+    /// A read against a historical commit.
+    History {
+        commit: String,
+        path: String,
+        start: u32,
+        end: u32,
+    },
 }
 
 /// One message of a recorded prompt.

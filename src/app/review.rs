@@ -2829,11 +2829,13 @@ mod tests {
         config.base_url = gateway.base_url.clone();
         config.fallback.clear();
         config.agentic_reviewers = true;
-        let adapter = GatewayModel::with_key(&config, "fixture".into());
+        let adapter = GatewayModel::with_key(&config, "fixture".into())
+            .scoped_budget(1.0)
+            .expect("gateway supports budget scopes");
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
         timing.record(|record| record.head_sha = "abc123".into());
         let observed = ObservedModel {
-            inner: Arc::new(adapter),
+            inner: adapter,
             timing: timing.clone(),
         };
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));

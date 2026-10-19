@@ -1297,7 +1297,7 @@ impl ForgeRead for GitHubRead {
             "the check runs for this commit",
         )
         .await
-        .map(|pages| pages.into_iter().flatten().next())
+        .map(|pages| pages.into_iter().next())
     }
 
     async fn reviews(&self, repo: &RepoId, number: u64) -> Result<Vec<ReviewVerdict>> {

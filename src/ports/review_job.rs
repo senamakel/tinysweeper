@@ -358,6 +358,23 @@ impl ReviewSchedulerState {
                 retired: false,
             });
         }
+        for retired in &mut self.retired_checks {
+            if claims.len() >= limit {
+                break;
+            }
+            if retired.check.write_claim_until_ms > now_ms {
+                continue;
+            }
+            retired.check.write_generation = retired.check.write_generation.saturating_add(1);
+            retired.check.write_claim_until_ms = now_ms.saturating_add(QUEUE_STATUS_CLAIM_TTL_MS);
+            claims.push(PendingReviewCheck {
+                repo: retired.repo.clone(),
+                installation: retired.installation,
+                check: retired.check.clone(),
+                reviews_ahead: 0,
+                retired: true,
+            });
+        }
         claims
     }
 
@@ -368,10 +385,27 @@ impl ReviewSchedulerState {
         check_id: u64,
         now_ms: i64,
     ) -> bool {
+        if pending.retired {
+            let Some(check) = self.retired_checks.iter_mut().find(|entry| {
+                entry.check.external_id == pending.check.external_id
+            }) else {
+                return false;
+            };
+            if check.check.write_generation != pending.check.write_generation
+                || check.check.write_claim_until_ms <= now_ms
+            {
+                return false;
+            }
+            check.check.check_id = Some(check_id);
+            check.check.published = true;
+            return true;
+        }
         let Some(job) = self
             .unfinished
             .iter_mut()
-            .find(|job| job.request.id == pending.request.id)
+            .find(|job| job.review_checks.iter().any(|check| {
+                check.external_id == pending.check.external_id
+            }))
         else {
             return false;
         };
@@ -396,17 +430,40 @@ impl ReviewSchedulerState {
 
     /// Verify a queued status claim immediately before an external read or write.
     pub fn queued_check_claim_current(&self, pending: &PendingReviewCheck, now_ms: i64) -> bool {
+        if pending.retired {
+            return self.retired_checks.iter().any(|entry| {
+                entry.check.external_id == pending.check.external_id
+                    && entry.check.write_generation == pending.check.write_generation
+                    && entry.check.write_claim_until_ms > now_ms
+            });
+        }
         self.unfinished.iter().any(|job| {
-            job.request.id == pending.request.id
-                && job.request.head_sha.as_deref() == Some(pending.check.head_sha.as_str())
-                && job.review_checks.iter().any(|check| {
+            job.review_checks.iter().any(|check| {
                     check.head_sha == pending.check.head_sha
                         && check.external_id == pending.check.external_id
+                        && job.request.head_sha.as_deref() == Some(check.head_sha.as_str())
                         && !check.published
                         && check.write_generation == pending.check.write_generation
                         && check.write_claim_until_ms > now_ms
                 })
         })
+    }
+
+    /// Acknowledge a detached check's terminal write and remove its outbox entry.
+    pub fn complete_retired_check(&mut self, pending: &PendingReviewCheck, now_ms: i64) -> bool {
+        if !pending.retired {
+            return false;
+        }
+        let Some(index) = self.retired_checks.iter().position(|entry| {
+            entry.check.external_id == pending.check.external_id
+                && entry.check.write_generation == pending.check.write_generation
+                && entry.check.write_claim_until_ms > now_ms
+                && entry.check.check_id.is_some()
+        }) else {
+            return false;
+        };
+        self.retired_checks.remove(index);
+        true
     }
 
     /// Advance a check stage only for the live review owner generation.
@@ -1134,6 +1191,9 @@ pub trait ReviewJobStore: Send + Sync {
         pending: &PendingReviewCheck,
         now_ms: i64,
     ) -> Result<bool>;
+
+    /// Remove a retired status only after its terminal GitHub write succeeds.
+    async fn complete_retired_check(&self, pending: &PendingReviewCheck, now_ms: i64) -> Result<bool>;
 
     /// Persist a queued/in-progress/completed transition under the current review owner fence.
     async fn set_check_stage(

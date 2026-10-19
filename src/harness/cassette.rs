@@ -373,9 +373,9 @@ impl Model for Cassette {
     }
 
     fn review_reports_physical_calls(&self) -> bool {
-        self.inner
-            .as_ref()
-            .is_some_and(|inner| inner.review_reports_physical_calls())
+        // Cassette uses Model's default review implementation, which routes
+        // review through this complete method.
+        self.complete_reports_physical_calls()
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {

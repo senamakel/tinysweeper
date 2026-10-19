@@ -7037,6 +7037,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_review_check_uses_one_remote_id_through_completion() {
+        use crate::forge::{MockForge, RepoId};
+        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
+        use crate::ports::review_job::{ReviewCheckStage, ReviewJobStore};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let now = unix_time_ms();
+        let mut request = queued_test_review(224);
+        request.head_sha = Some("same-id-head".into());
+        assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
+
+        publish_pending_queue_checks_at(&store, test_status_client_factory(forge.clone()), now)
+            .await
+            .expect("the production drainer publishes the queued run");
+        let queued_record = store.snapshot_for_test().unfinished[0].review_checks[0].clone();
+        assert_eq!(queued_record.stage, ReviewCheckStage::Queued);
+        let queued_id = forge
+            .check_run_by_external_id(&repo, "same-id-head", &queued_record.external_id)
+            .await
+            .unwrap()
+            .expect("the queued run has a remote ID");
+
+        let owned = store.claim_next("same-id-worker", now + 1).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "same-id-head", now + 2).await.unwrap());
+        assert_eq!(store.begin_paid(&owned, now + 3).await.unwrap(), PaidStart::Started);
+        assert!(store.check_transition_current(&owned, "same-id-head", queued_id, now + 4).await.unwrap());
+        crate::app::apply::start_queued_review_status(&forge, &repo, queued_id, "same-id-head")
+            .await
+            .expect("the permit transition patches the queued run");
+        assert!(store
+            .set_check_stage(&owned, "same-id-head", queued_id, ReviewCheckStage::InProgress, now + 5)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].stage,
+            ReviewCheckStage::InProgress
+        );
+
+        forge
+            .update_check(
+                &repo,
+                queued_id,
+                status::completed("same-id-head", 1, false, status::ReviewCoverage::default()),
+            )
+            .await
+            .expect("completion patches the same queued run");
+        assert!(store
+            .set_check_stage(&owned, "same-id-head", queued_id, ReviewCheckStage::Completed, now + 6)
+            .await
+            .unwrap());
+        assert_eq!(
+            store.snapshot_for_test().unfinished[0].review_checks[0].stage,
+            ReviewCheckStage::Completed
+        );
+
+        let writes = forge.writes();
+        assert_eq!(writes.len(), 3, "one POST and two updates: {writes:#?}");
+        assert!(matches!(
+            &writes[0],
+            crate::forge::Write::Check(check)
+                if check.head_sha == "same-id-head"
+                    && check.status == Some(CheckRunStatus::Queued)
+        ));
+        assert!(matches!(
+            &writes[1],
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == queued_id
+                    && check.head_sha == "same-id-head"
+                    && check.status.is_none()
+                    && check.conclusion.is_none()
+        ));
+        assert!(matches!(
+            &writes[2],
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == queued_id
+                    && check.head_sha == "same-id-head"
+                    && check.conclusion == Some(CheckConclusion::Success)
+        ));
+        assert_eq!(
+            writes.iter().filter(|write| matches!(write, crate::forge::Write::Check(_))).count(),
+            1,
+            "status progression never creates a second overall-review run"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_in_progress_write_does_not_label_exhausted_paid_work_unreviewed() {
         use crate::forge::MockForge;
         use crate::ports::review_job::{ReviewJobId, ReviewRequest};

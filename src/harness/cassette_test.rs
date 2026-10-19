@@ -164,6 +164,7 @@ async fn review_replay_reissues_queries_and_reconstructs_identical_evidence_offl
     let recorder = Arc::new(Cassette::record(live.clone(), dir.path()));
     let mut models = crate::config::types::Models::default();
     models.agentic_reviewers = true;
+    models.budget_usd_per_pr = 1.0;
     let live_cap = crate::flows::caps::ModelCapability::new(recorder.clone(), models.clone());
     let call = crate::flows::panel::Call {
         id: "reviewer".into(),

@@ -1100,18 +1100,24 @@ impl ReviewSchedulerState {
             }
         }
         if self.unfinished[index].yield_requested {
-            let record = &mut self.unfinished[index];
-            record.owner = None;
-            record.owner_until_ms = 0;
-            record.not_before_ms = now_ms;
-            record.request.head_sha = record.latest_head_hint.clone();
-            record.yield_requested = false;
+            let head = self.unfinished[index].latest_head_hint.clone();
+            let detached = {
+                let record = &mut self.unfinished[index];
+                record.owner = None;
+                record.owner_until_ms = 0;
+                record.not_before_ms = now_ms;
+                record.request.head_sha = head.clone();
+                record.yield_requested = false;
+                Self::detach_checks_except(record, head.as_deref())
+            };
+            self.retired_checks.extend(detached);
             return true;
         }
         if outcome != TerminalOutcome::Deadline {
             return self.finish(owned, outcome, now_ms, now_ms);
         }
         let record = self.unfinished.remove(index);
+        self.retire_removed_record_checks(&record);
         self.terminal
             .extend(record.accepted_ids.into_iter().map(|id| ReviewTombstone {
                 id,
@@ -1223,6 +1229,7 @@ impl ReviewSchedulerState {
             return false;
         };
         let record = self.unfinished.remove(index);
+        self.retire_removed_record_checks(&record);
         let existing_terminal = if record.request.mode == ReviewJobMode::Incremental {
             self.incremental_heads
                 .iter()
@@ -1263,6 +1270,25 @@ impl ReviewSchedulerState {
                 expires_at_ms: completed_at_ms + REVIEW_TOMBSTONE_TTL_MS,
             }));
         true
+    }
+
+    fn retire_removed_record_checks(&mut self, record: &ScheduledReview) {
+        for mut check in record.review_checks.iter().cloned() {
+            if check.stage == ReviewCheckStage::Completed
+                || (!check.published && check.check_id.is_none() && check.write_generation == 0)
+            {
+                continue;
+            }
+            check.write_generation = check.write_generation.saturating_add(1);
+            check.write_claim_until_ms = 0;
+            if !self.retired_checks.iter().any(|entry| entry.check.external_id == check.external_id) {
+                self.retired_checks.push(RetiredReviewCheck {
+                    repo: record.request.repo.clone(),
+                    installation: record.request.installation,
+                    check,
+                });
+            }
+        }
     }
 }
 

@@ -964,6 +964,7 @@ fn unix_time_ms() -> i64 {
 async fn drain_review_queue<F>(
     mut receiver: mpsc::Receiver<()>,
     permits: Arc<Semaphore>,
+    max_concurrency: usize,
     jobs: Arc<dyn ReviewJobStore>,
     owner: Arc<str>,
     accepting: Arc<std::sync::atomic::AtomicBool>,
@@ -992,7 +993,7 @@ async fn drain_review_queue<F>(
             .claim_next_with_limit(
                 &owner,
                 unix_time_ms(),
-                state.config.config.server.review_concurrency,
+                max_concurrency,
             )
             .await
         {

@@ -458,9 +458,11 @@ async fn review_replay_reissues_queries_and_reconstructs_identical_evidence_offl
     let source = ReviewTree;
     let recording_tree = crate::ports::tree::RecordingTree::new(&source);
     let recorder = Arc::new(Cassette::record(live.clone(), dir.path()));
-    let mut models = crate::config::types::Models::default();
-    models.agentic_reviewers = true;
-    models.budget_usd_per_pr = 1.0;
+    let models = crate::config::types::Models {
+        agentic_reviewers: true,
+        budget_usd_per_pr: 1.0,
+        ..Default::default()
+    };
     let live_cap = crate::flows::caps::ModelCapability::new(recorder.clone(), models.clone());
     let call = crate::flows::panel::Call {
         id: "reviewer".into(),
@@ -761,8 +763,10 @@ async fn cancelled_cassette_dispatch_with_no_paid_call_is_not_unknown_usage() {
     use crate::ports::model_execution::ModelExecutionRefusal;
 
     let gateway = FakeGateway::start(vec![]).await;
-    let mut config = crate::config::types::Models::default();
-    config.base_url = gateway.base_url.clone();
+    let config = crate::config::types::Models {
+        base_url: gateway.base_url.clone(),
+        ..Default::default()
+    };
     let gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
     let (execution, control) = execution_control(1);
     execution.cancel();
@@ -1287,9 +1291,11 @@ async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
         ),
     ])
     .await;
-    let mut config = crate::config::types::Models::default();
-    config.base_url = gateway.base_url.clone();
-    config.structured_output = StructuredOutput::JsonObject;
+    let mut config = crate::config::types::Models {
+        base_url: gateway.base_url.clone(),
+        structured_output: StructuredOutput::JsonObject,
+        ..Default::default()
+    };
     config.budget_prices.insert(
         "b".into(),
         crate::config::types::BudgetPriceBound {

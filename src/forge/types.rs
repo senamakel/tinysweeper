@@ -121,6 +121,24 @@ pub struct PullRequest {
     pub quiet_days: u32,
 }
 
+/// Minimal live pull-request data needed before accepting a queued status.
+///
+/// This intentionally excludes diff, approval, comment, and review context
+/// data; queue admission must not fetch expensive review inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestMetadata {
+    /// Pull request number.
+    pub number: u64,
+    /// Login of the pull request author.
+    pub author: String,
+    /// Verified live head used to pin the queued check.
+    pub head_sha: String,
+    /// Whether the pull request is still open.
+    pub open: bool,
+    /// Whether the pull request is a draft.
+    pub draft: bool,
+}
+
 /// An unstated `open` is an open pull request.
 ///
 /// Every guard that reads it refuses when the pull request is *not* open, so an

@@ -34,6 +34,26 @@ pub trait ForgeRead: Send + Sync {
     /// Fetch a pull request.
     async fn pull_request(&self, repo: &RepoId, number: u64) -> Result<PullRequest>;
 
+    /// Fetch only the live fields needed to validate queue admission.
+    ///
+    /// Implementations should avoid approvals and review context reads. The
+    /// default preserves compatibility for adapters while server production
+    /// uses the narrow GitHub and mock implementations.
+    async fn pull_request_metadata(
+        &self,
+        repo: &RepoId,
+        number: u64,
+    ) -> Result<crate::forge::types::PullRequestMetadata> {
+        let pull_request = self.pull_request(repo, number).await?;
+        Ok(crate::forge::types::PullRequestMetadata {
+            number: pull_request.number,
+            author: pull_request.author,
+            head_sha: pull_request.head_sha,
+            open: pull_request.open,
+            draft: pull_request.draft,
+        })
+    }
+
     /// Fetch the files a pull request changed.
     async fn changed_files(&self, repo: &RepoId, number: u64) -> Result<Vec<ChangedFile>>;
 

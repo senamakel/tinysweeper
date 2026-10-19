@@ -167,13 +167,16 @@ impl ChangeMap {
             .filter(|(_, component)| is_diagram_symbol(component))
             .map(|(index, _)| index)
             .collect();
-        self.components
+        let changed: BTreeSet<&str> = self
+            .components
             .iter()
             .enumerate()
             .filter(|(index, component)| {
                 drawable.contains(index) && component.role == Role::Changed
             })
-            .count()
+            .map(|(_, component)| component.name.as_str())
+            .collect();
+        changed.len()
             >= 4
             && self
                 .links
@@ -204,9 +207,9 @@ pub(crate) fn is_diagram_symbol(component: &Component) -> bool {
         return false;
     }
     let symbol = symbol.to_ascii_lowercase();
-    if symbol.starts_with("test_")
-        || symbol.starts_with("tests::")
-        || symbol.contains("::tests::")
+    if symbol
+        .split("::")
+        .any(|part| part == "tests" || part.starts_with("test_"))
         || symbol.ends_with("_test")
         || symbol.ends_with("_tests")
     {

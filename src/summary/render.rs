@@ -99,13 +99,16 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
             "The review found no actionable issues.".to_string()
         } else if executive.is_empty() {
             "No actionable findings were reported in the available review results.".to_string()
+        } else if contains_run_diagnostics(executive) {
+            "No actionable findings were reported in the available review results.".to_string()
         } else {
-            bounded_sentence(executive, 240)
+            bounded_sentence(executive, 50)
         };
         let _ = writeln!(body, "{}\n", prose(&sentence));
     }
 
     body.push_str("<details>\n<summary>Diagnostics and supporting details</summary>\n\n");
+    summary_details(&mut body, &summary);
     coverage_details(&mut body, proposal, &summary);
     for section in &config.summary.sections {
         match section {
@@ -146,6 +149,13 @@ fn first_sentence(text: &str) -> &str {
     text
 }
 
+fn contains_run_diagnostics(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["cache chain", "index is behind", "ladder/", "per evidence"]
+        .iter()
+        .any(|term| lower.contains(term))
+}
+
 fn bounded_sentence(text: &str, limit: usize) -> String {
     let sentence = first_sentence(text);
     let mut chars = sentence.chars();
@@ -163,7 +173,7 @@ fn bounded_paths(paths: &[String], shown: usize) -> String {
         .take(shown)
         .map(|path| {
             let mut chars = path.chars();
-            let clipped: String = chars.by_ref().take(56).collect();
+            let clipped: String = chars.by_ref().take(16).collect();
             let path = if chars.next().is_some() {
                 format!("{}…", clipped)
             } else {
@@ -198,6 +208,15 @@ fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSumma
     }
 }
 
+fn summary_details(out: &mut String, summary: &ReviewSummary) {
+    let executive = summary.executive_summary.trim();
+    if !executive.is_empty() {
+        out.push_str("## Full summary\n\n");
+        out.push_str(&prose(executive));
+        out.push_str("\n\n");
+    }
+}
+
 fn has_finding_signal(proposal: &Proposal) -> bool {
     proposal.findings().next().is_some()
         || proposal
@@ -222,7 +241,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             let _ = write!(
                 out,
                 "; not reviewed: {}",
-                bounded_paths(&coverage.unreviewed, 3)
+                bounded_paths(&coverage.unreviewed, 2)
             );
         }
         out.push_str(".  \n");
@@ -230,7 +249,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
         let _ = writeln!(
             out,
             "**Coverage:** File coverage is unavailable; not reviewed: {}.",
-            bounded_paths(&proposal.unreviewed, 3)
+            bounded_paths(&proposal.unreviewed, 2)
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");
@@ -406,9 +425,8 @@ fn carried_findings(out: &mut String, proposal: &Proposal) {
 
 /// Findings that qualified but did not fit the inline-comment budget.
 ///
-/// Compact on purpose — one line, title and location — because the budget
-/// exists to keep the conversation list short, and a long paragraph per
-/// overflowed finding would rebuild the wall of text here instead.
+/// Keep the finding's location, problem, and suggested fix visible even when
+/// its inline conversation missed the comment budget.
 fn over_budget(out: &mut String, proposal: &Proposal) {
     let over: Vec<_> = proposal.overflowed().collect();
     if over.is_empty() {
@@ -1324,7 +1342,7 @@ mod tests {
                 "findings": []
             }],
             "summary": {
-                "executive_summary": "The change updates the request handler.",
+                "executive_summary": "The change updates the request handler. The index is behind.",
                 "cache_chain_restarted": true,
                 "tests": [{
                     "kind": "regression", "behavior": "request handler",

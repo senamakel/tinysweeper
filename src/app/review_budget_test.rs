@@ -170,8 +170,13 @@ async fn thirty_findings_over_three_passes_post_the_budget_and_list_the_rest() {
     for finding in &overflow {
         let line = finding.line.expect("placed");
         // Paths are rendered as code spans, preserving their ordinary dots.
-        let entry = format!("{} (`src/large.rs:{line}`)", finding.title);
-        assert!(hub.contains(&entry), "missing {entry}:\n{hub}");
+        let title = &finding.title;
+        let location = format!("`src/large.rs:{line}`");
+        let start = hub.find(title).unwrap_or_else(|| panic!("missing {title}:\n{hub}"));
+        assert!(
+            hub[start..].contains(&location),
+            "missing {location} after {title}:\n{hub}"
+        );
     }
 
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)

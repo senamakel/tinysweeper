@@ -2614,27 +2614,59 @@ mod tests {
     }
     // --- the change map ----------------------------------------------------
 
-    /// A proposal carrying one changed behaviour and its caller.
+    /// A proposal carrying enough changed behaviours to warrant a flow map.
     fn proposal_with_map(head: &str) -> Proposal {
         use crate::evidence::diff::parse_file_patch;
         use crate::index::types::{EdgeKind, GraphEdge, GraphNode, Neighbourhood};
 
-        let diffs = [parse_file_patch(
-            "src/lanes/critique.rs",
-            "@@ -1,1 +1,2 @@ fn review() {\n x\n+y\n",
-        )];
+        let diffs = [
+            parse_file_patch(
+                "src/lanes/critique.rs",
+                "@@ -1,1 +1,2 @@ fn review() {\n x\n+y\n",
+            ),
+            parse_file_patch(
+                "src/app/run.rs",
+                "@@ -1,1 +1,2 @@ fn run() {\n x\n+y\n",
+            ),
+            parse_file_patch(
+                "src/app/parse.rs",
+                "@@ -1,1 +1,2 @@ fn parse() {\n x\n+y\n",
+            ),
+            parse_file_patch(
+                "src/app/dispatch.rs",
+                "@@ -1,1 +1,2 @@ fn dispatch() {\n x\n+y\n",
+            ),
+        ];
         let walk = Neighbourhood {
             nodes: vec![
                 GraphNode::symbol("o/r", "src/lanes/critique.rs", "review"),
                 GraphNode::symbol("o/r", "src/app/run.rs", "run"),
+                GraphNode::symbol("o/r", "src/app/parse.rs", "parse"),
+                GraphNode::symbol("o/r", "src/app/dispatch.rs", "dispatch"),
             ],
-            edges: vec![GraphEdge::new(
-                "o/r",
-                "src/app/run.rs#run",
-                "src/lanes/critique.rs#review",
-                EdgeKind::Calls,
-                "src/app/run.rs",
-            )],
+            edges: vec![
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/run.rs#run",
+                    "src/lanes/critique.rs#review",
+                    EdgeKind::Calls,
+                    "src/app/run.rs",
+                ),
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/parse.rs#parse",
+                    "src/app/run.rs#run",
+                    EdgeKind::Calls,
+                    "src/app/parse.rs",
+                ),
+                GraphEdge::new(
+                    "o/r",
+                    "src/app/dispatch.rs#dispatch",
+                    "src/app/parse.rs#parse",
+                    EdgeKind::Calls,
+                    "src/app/dispatch.rs",
+                ),
+            ],
         };
         Proposal {
             overview: Some(crate::overview::build(
@@ -2911,11 +2943,9 @@ mod tests {
         assert!(body.contains("The transaction commits each event once"));
         assert!(body.contains("The test fixture maps the empty-state case"));
         assert!(!body.contains("The commit reviewer found no issues"));
-        assert!(
-            opening.starts_with("Pull request purpose (title): Enforce speech privacy."),
-            "{opening}"
-        );
-        assert!(body.contains("No reviewer produced a usable response."));
+        assert!(opening.starts_with("**Verdict:** Incomplete"), "{opening}");
+        assert!(body.contains("**Lane gaps:**"), "{body}");
+        assert!(body.contains("reviewers did not respond"), "{body}");
     }
 
     #[tokio::test]

@@ -2497,7 +2497,13 @@ async fn open_status(
 ) -> bool {
     // A retry re-enters `review_inner`, so without this the second attempt
     // would open a second check and orphan the first.
-    if let Some(existing) = slot.lock().expect("status slot").as_ref().cloned() {
+    let existing = { slot.lock().expect("status slot").as_ref().cloned() };
+    if let Some(existing) = existing {
+        if existing.head_sha != head_sha {
+            tracing::warn!(%repo, check_id = existing.check_id, queued_head = %existing.head_sha, live_head = %head_sha, "queued review check belongs to a superseded head");
+            close_status(state, slot, Conclusion::NotReviewed).await;
+            return false;
+        }
         if existing.stage == crate::ports::review_job::ReviewCheckStage::Queued {
             let transitioned = async {
                 use crate::ports::forge::ForgeWrite;

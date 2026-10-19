@@ -4279,7 +4279,7 @@ mod tests {
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
-        store.admit_batch(vec![request]).await.unwrap();
+        store.admit_batch(vec![request.clone()]).await.unwrap();
         assert!(
             record_owned_disposition(
                 &store,

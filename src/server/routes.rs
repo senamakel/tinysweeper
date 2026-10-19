@@ -676,6 +676,21 @@ async fn receive(
             Action::Review { installation, .. } => *installation,
             _ => unreachable!("review action branch checked above"),
         };
+        let author = match &action {
+            Action::Review { author, .. } => author,
+            _ => unreachable!("review action branch checked above"),
+        };
+        match state.store.contributor(author).await {
+            Ok(contributor) if contributor.trust == Trust::Blocked => {
+                tracing::info!(%author, "blocked contributor; not admitting review status");
+                return (StatusCode::OK, "ignored").into_response();
+            }
+            Err(err) => {
+                tracing::error!(%err, %author, "could not verify review trust before status admission");
+                return (StatusCode::SERVICE_UNAVAILABLE, "review trust unavailable").into_response();
+            }
+            _ => {}
+        }
         let admission = match admit_webhook_review(
             state.review_jobs.as_ref(),
             &action,
@@ -685,7 +700,8 @@ async fn receive(
         )
         .await
         {
-            Ok(admission) => admission,
+            Ok(Some(admission)) => admission,
+            Ok(None) => return (StatusCode::OK, "ignored").into_response(),
             Err(err) => {
                 tracing::error!(%err, %delivery, "could not durably accept review; operator redelivery required");
                 return (
@@ -752,7 +768,7 @@ async fn admit_webhook_review(
     delivery: &str,
     event: &str,
     _status_client: QueueStatusClientFactory,
-) -> Result<Admission> {
+) -> Result<Option<Admission>> {
     let Action::Review {
         repo,
         number,
@@ -768,13 +784,25 @@ async fn admit_webhook_review(
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
+    let mut accepted_head = head_sha.clone();
+    if accepted_head.is_none() {
+        let metadata_clients = status_client(*installation).await?;
+        let metadata = metadata_clients.read.pull_request_metadata(
+            &RepoId::parse(repo).ok_or_else(|| Error::Forge("review action has an invalid repository".into()))?,
+            *number,
+        ).await?;
+        if !metadata.open || metadata.draft {
+            return Ok(None);
+        }
+        accepted_head = Some(metadata.head_sha);
+    }
     let admission = jobs.admit_batch(vec![ReviewRequest {
         id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
         repo: repo.clone(),
         number: *number,
         author: author.clone(),
         installation: *installation,
-        head_sha: head_sha.clone(),
+        head_sha: accepted_head,
         delivery: Some(delivery.to_owned()),
         event: event.to_owned(),
         mode: ReviewJobMode::Incremental,
@@ -789,7 +817,7 @@ async fn admit_webhook_review(
             tracing::warn!(%err, %delivery, "queued review status remains durable and will be retried");
         }
     }
-    Ok(admission)
+    Ok(Some(admission))
 }
 
 async fn publish_pending_queue_checks(
@@ -4674,7 +4702,7 @@ mod tests {
         let request = queued_test_review(71);
         assert_eq!(
             store.admit_batch(vec![request]).await.unwrap(),
-            Admission::Admitted
+            Some(Admission::Admitted)
         );
         let first = store
             .claim_next("first-owner", unix_time_ms())
@@ -4731,7 +4759,7 @@ mod tests {
                 .admit_batch(vec![queued_test_review(72)])
                 .await
                 .unwrap(),
-            Admission::Admitted
+            Some(Admission::Admitted)
         );
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())

@@ -10,6 +10,7 @@ use tracing::Span;
 use crate::ports::model::Usage;
 
 /// Stable phase keys included in every terminal timing record.
+#[cfg(any(feature = "serve", test))]
 pub(crate) const PHASES: &[&str] = &[
     "permit",
     "open_status",
@@ -26,6 +27,7 @@ pub(crate) const PHASES: &[&str] = &[
 ];
 
 /// Classify a review error for timing and operator dashboards.
+#[cfg(any(feature = "serve", test))]
 pub(crate) fn outcome_for_error(error: &crate::error::Error) -> &'static str {
     if matches!(error, crate::error::Error::Timeout { .. }) {
         "deadline"
@@ -85,6 +87,7 @@ pub(crate) struct Record {
 
 impl ReviewTiming {
     /// Start a timing record for the repository, PR, and review mode.
+    #[cfg(any(feature = "serve", test))]
     pub(crate) fn new(repo: impl Into<String>, pr: u64, mode: impl Into<String>) -> Self {
         let mut record = Record {
             repo: repo.into(),
@@ -168,6 +171,7 @@ impl ReviewTiming {
     }
 
     /// Mark the terminal outcome emitted when the final handle is dropped.
+    #[cfg(any(feature = "serve", test))]
     pub(crate) fn finish(&self, outcome: &str) {
         self.record(|r| r.outcome = outcome.to_owned());
     }

@@ -24,11 +24,13 @@ pub(crate) trait ModelCallObserver: Send + Sync {
     fn completed(&self, usage: Usage, succeeded: bool, refused: bool, latency: Duration);
 
     /// Correlate physical-call telemetry to its review without retaining content.
+    #[cfg(feature = "harness")]
     fn correlation(&self) -> ModelCallContext {
         ModelCallContext::default()
     }
 }
 
+#[cfg(feature = "harness")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ModelCallContext {
     pub(crate) repo: String,

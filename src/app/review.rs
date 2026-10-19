@@ -77,6 +77,7 @@ impl crate::ports::model::ModelCallObserver for ReviewCallObserver {
         });
     }
 
+    #[cfg(feature = "harness")]
     fn correlation(&self) -> crate::ports::model::ModelCallContext {
         let record = self.timing.snapshot();
         crate::ports::model::ModelCallContext {

@@ -556,6 +556,14 @@ fn render_finding(
     }
 }
 
+fn unanswered_paths(lane: &crate::app::review::LaneProposal) -> Vec<&str> {
+    lane.unanswered
+        .iter()
+        .filter(|item| item.as_str() != lane.check_name.as_str())
+        .map(String::as_str)
+        .collect()
+}
+
 fn before_merge(out: &mut String, proposal: &Proposal) {
     out.push_str("\n## Before merge\n\n");
     let mut any = false;
@@ -1394,8 +1402,7 @@ mod tests {
 
     #[test]
     fn lane_gaps_are_not_rendered_as_unreviewed_file_paths() {
-        let mut config = Config::default();
-        config.summary.sections = vec![SummarySection::Findings];
+        let config = Config::default();
         let proposal: Proposal = serde_json::from_value(json!({
             "version": crate::app::review::PROPOSAL_VERSION,
             "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
@@ -1403,7 +1410,7 @@ mod tests {
                 "lane": "tests", "check_name": "tinysweeper/tests",
                 "conclusion": "neutral", "summary": "No answer.",
                 "findings": [],
-                "unanswered": ["tinysweeper/tests"]
+                "unanswered": ["tinysweeper/tests", "src/tested.rs"]
             }],
             "unreviewed": ["src/unread.rs"],
             "summary": ReviewSummary::default(), "prior_findings": [],
@@ -1421,7 +1428,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            !rendered.contains("Could not review: `src/tested.rs`"),
+            rendered.contains("`src/tested.rs`"),
             "{rendered}"
         );
         assert!(!rendered.contains("tinysweeper/"), "{rendered}");

@@ -1382,6 +1382,49 @@ mod tests {
     #[derive(Default)]
     struct RecordedModelCalls(std::sync::Mutex<Vec<(Usage, bool, bool, std::time::Duration)>>);
 
+    struct RecordingExecutionControl {
+        inner: Arc<crate::app::review_execution::ReviewExecution>,
+        terminals: std::sync::Mutex<Vec<crate::ports::model_execution::ModelExecutionTerminal>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelExecutionControl for RecordingExecutionControl {
+        async fn acquire(
+            &self,
+        ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+            self.inner.acquire().await
+        }
+
+        fn on_terminal(&self, terminal: crate::ports::model_execution::ModelExecutionTerminal) {
+            self.terminals.lock().unwrap().push(terminal);
+            self.inner.on_terminal(terminal);
+        }
+    }
+
+    fn execution_scope(max_calls: Option<usize>) -> Arc<crate::app::review_execution::ReviewExecution> {
+        use crate::lanes::large_pr::ReviewMode;
+        use tokio::time::Instant;
+
+        let started_at = Instant::now();
+        Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls,
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ))
+    }
+
+    fn raw_terminal(
+        outcome: crate::ports::model_execution::ModelExecutionTerminalOutcome,
+        usage: Option<crate::ports::model_execution::ModelExecutionTerminalUsage>,
+    ) -> crate::ports::model_execution::ModelExecutionTerminal {
+        crate::ports::model_execution::ModelExecutionTerminal { outcome, usage }
+    }
+
     impl crate::ports::model::ModelCallObserver for RecordedModelCalls {
         fn completed(
             &self,

@@ -3,8 +3,8 @@
 //! This module has no model or forge dependency. It receives the complete
 //! bounded diffstat and the already-prepared critique/security candidate
 //! groups, so callers can decide the review shape before paid work begins.
-//! Host-signal extraction from scanners, prior anchors and source text, plus
-//! hard-refusal precedence in the production caller, remain integration work.
+//! The application derives candidate risk from scanners, prior anchors and
+//! changed lines, then enforces the selected mode before paid extraction.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;

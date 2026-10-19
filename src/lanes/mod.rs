@@ -35,6 +35,15 @@ use crate::ports::model::Spend;
 use crate::ports::tree::TreeReader;
 use crate::scan::types::{Finding as ScanFinding, ScanKind};
 
+/// Receives bounded yield counters when one review pass finishes.
+///
+/// Implementations aggregate by lane and pass number; they must not retain
+/// group paths, prompts, or findings.
+pub(crate) trait PassYieldObserver: Send + Sync {
+    /// Record one group's candidate and surviving finding counts for a pass.
+    fn record_pass_yield(&self, lane: LaneId, pass: u8, candidates: usize, survivors: usize);
+}
+
 /// Everything a lane is given.
 pub struct LaneInput<'a> {
     /// The effective configuration.
@@ -102,6 +111,8 @@ pub struct LaneInput<'a> {
     /// heuristics alone, which is what every offline golden test does and
     /// what a forge-only review without a graph store does too.
     pub graph: Option<&'a crate::index::types::Neighbourhood>,
+    /// Optional terminal-review telemetry sink for completed adaptive passes.
+    pub(crate) pass_yield_observer: Option<&'a dyn PassYieldObserver>,
 }
 
 impl<'a> LaneInput<'a> {

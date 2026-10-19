@@ -5357,7 +5357,6 @@ mod tests {
         request_b.head_sha = Some("head-b".into());
         request_b.accepted_at_ms = now + 2;
         store.admit_batch(vec![request_b]).await.unwrap();
-        seed_previously_published_queue_checks(&*store, now + 2).await;
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(2), worker)
                 .await
@@ -5370,6 +5369,7 @@ mod tests {
             permits.try_acquire().is_ok(),
             "A releases its permit on yield"
         );
+        seed_previously_published_queue_checks(&*store, unix_time_ms()).await;
 
         let owned_b = store
             .claim_next("worker-b", unix_time_ms())
@@ -5645,7 +5645,6 @@ mod tests {
         request.head_sha = Some("head-a-older-hint".into());
         request.accepted_at_ms = now + 3;
         store.admit_batch(vec![request]).await.unwrap();
-        seed_previously_published_queue_checks(&store, now + 4).await;
         assert!(!store.should_continue(&active, now + 4).await.unwrap());
 
         let run = Run {
@@ -5681,6 +5680,7 @@ mod tests {
             .expect("owned retry yield")
             .expect("scheduler update")
         );
+        seed_previously_published_queue_checks(&store, now + 5).await;
 
         let resumed = store
             .claim_next("replacement-worker", now + 6)
@@ -7472,7 +7472,7 @@ mod tests {
                 if *check_id == 1
                     && check.head_sha == "lost-a"
                     && check.conclusion == Some(CheckConclusion::Neutral)
-        )));
+        )), "terminal write should update the ID returned by recovery: {writes:#?}");
         assert!(writes.iter().any(|write| matches!(
             write,
             crate::forge::Write::Check(check)

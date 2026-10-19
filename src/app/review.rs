@@ -158,17 +158,10 @@ impl ObservedModel {
                 .flatten();
             self.timing.record(|record| {
                 if let Some(usage) = usage {
-                    if usage.calls_attempted
-                        + usage.calls_succeeded
-                        + usage.calls_refused
-                        + usage.calls_errored
-                        > 0
-                    {
-                        record.calls_attempted += usage.calls_attempted;
-                        record.calls_succeeded += usage.calls_succeeded;
-                        record.calls_refused += usage.calls_refused;
-                        record.calls_errored += usage.calls_errored;
-                    }
+                    record.calls_attempted += usage.calls_attempted;
+                    record.calls_succeeded += usage.calls_succeeded;
+                    record.calls_refused += usage.calls_refused;
+                    record.calls_errored += usage.calls_errored;
                     record.usage.add(usage);
                 }
                 if matches!(

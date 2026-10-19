@@ -19,9 +19,7 @@ use openhuman_embed::Route;
 use openhuman_embed::complete::{
     ChatMessage, Completer, CompletionObserver, CompletionRequest, CompletionTrace, ResponseFormat,
 };
-use openhuman_embed::routing::{
-    CompletionLadder, CompletionRung, TruncationRetry,
-};
+use openhuman_embed::routing::{CompletionLadder, CompletionRung, TruncationRetry};
 use serde_json::json;
 
 use crate::config::types::{Models, ProviderRouting, StructuredOutput};
@@ -125,8 +123,8 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 openhuman_embed::PhysicalDispatchStatus::Succeeded
                     | openhuman_embed::PhysicalDispatchStatus::Refused
             );
-            let was_refused = *refused
-                || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
+            let was_refused =
+                *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             let observed_usage = Usage {
                 input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
@@ -226,7 +224,8 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
         let usage = outcome.usage.as_ref();
         if let Some(usage) = usage {
             let model = outcome.answered_model.as_deref().unwrap_or("unknown");
-            self.history.record(&self.lane, model, usage.output_tokens, self.output_cap);
+            self.history
+                .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         let provider_responded = matches!(
             outcome.status,
@@ -728,8 +727,13 @@ impl GatewayModel {
                 )
             });
             cost += settled;
-            tracing::debug!(model, cap = attempt.max_tokens, reported_cost_usd = reported,
-                settled_cost_usd = settled, "model attempt settlement");
+            tracing::debug!(
+                model,
+                cap = attempt.max_tokens,
+                reported_cost_usd = reported,
+                settled_cost_usd = settled,
+                "model attempt settlement"
+            );
             if reasoning_crowds_the_answer(
                 attempt.max_tokens.unwrap_or_default(),
                 usage.reasoning_tokens,
@@ -1643,12 +1647,10 @@ mod tests {
         model.structured_output = StructuredOutput::JsonObject;
 
         let calls = Arc::new(RecordedModelCalls::default());
-        let response = crate::ports::model::with_model_call_observer(
-            calls.clone(),
-            model.complete(request),
-        )
-        .await
-        .expect("the second physical dispatch repairs malformed JSON");
+        let response =
+            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
+                .await
+                .expect("the second physical dispatch repairs malformed JSON");
 
         assert_eq!(response.value["summary"], "checked");
         assert_eq!(gateway.requests().len(), 2);

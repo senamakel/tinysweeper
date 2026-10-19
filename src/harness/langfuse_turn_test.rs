@@ -45,8 +45,8 @@ fn model_observations_preserve_actual_model_and_cost_without_messages() {
 
 #[test]
 fn physical_dispatch_observations_keep_safe_usage_and_terminal_status() {
-    use openhuman_embed::observe::TurnObservation;
     use openhuman_embed::PhysicalDispatchStatus;
+    use openhuman_embed::observe::TurnObservation;
 
     let event = TurnObservation::ModelDispatch {
         run_id: "run-1".into(),
@@ -68,7 +68,10 @@ fn physical_dispatch_observations_keep_safe_usage_and_terminal_status() {
 
     let payload = observation(&event);
     assert_eq!(payload["batch"][0]["body"]["model"], "actual");
-    assert_eq!(payload["batch"][0]["body"]["metadata"]["status"], "Succeeded");
+    assert_eq!(
+        payload["batch"][0]["body"]["metadata"]["status"],
+        "Succeeded"
+    );
     assert_eq!(payload["batch"][0]["body"]["usage"]["output"], 3);
     assert_eq!(payload["batch"][0]["body"]["costDetails"]["total"], 0.02);
     assert!(!payload.to_string().contains("private"));

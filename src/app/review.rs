@@ -1185,59 +1185,59 @@ pub(crate) async fn review_with_tree_observed_at_head(
         crate::review_timing::measure(timing.as_ref(), "summary", async {
             let full_pr_paths: Vec<String> =
                 context.files.iter().map(|file| file.path.clone()).collect();
-            let (summary, summary_spend, summary_transcript) = if config.summary.enabled {
-        if summary_generation_needed(config, &diffs) {
-            let (summary, spend, transcript) = crate::summary::generate_with_input(
-                model.as_ref(),
-                config,
-                &context.pull_request,
-                crate::summary::SummaryGenerationInput {
-                    diffs: &diffs,
-                    full_pr_paths: &full_pr_paths,
-                    full_pr_diffstat: crate::summary::SummaryDiffstat {
-                        files: context.files.len(),
-                        additions: context.files.iter().map(|file| file.additions).sum(),
-                        deletions: context.files.iter().map(|file| file.deletions).sum(),
-                    },
-                    previous_reviewed_head: remembered
+            if config.summary.enabled {
+                if summary_generation_needed(config, &diffs) {
+                    let (summary, spend, transcript) = crate::summary::generate_with_input(
+                        model.as_ref(),
+                        config,
+                        &context.pull_request,
+                        crate::summary::SummaryGenerationInput {
+                            diffs: &diffs,
+                            full_pr_paths: &full_pr_paths,
+                            full_pr_diffstat: crate::summary::SummaryDiffstat {
+                                files: context.files.len(),
+                                additions: context.files.iter().map(|file| file.additions).sum(),
+                                deletions: context.files.iter().map(|file| file.deletions).sum(),
+                            },
+                            previous_reviewed_head: remembered
+                                .as_ref()
+                                .map(|state| state.head_sha.as_str()),
+                            lanes: &lanes,
+                            prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
+                            prior_transcript: stored
+                                .as_ref()
+                                .map(|state| state.summary_transcript.as_slice())
+                                .unwrap_or_default(),
+                        },
+                    )
+                    .await;
+                    (Some(summary), spend, transcript)
+                } else {
+                    (
+                        Some(crate::summary::deterministic_with_paths(
+                            config,
+                            &context.pull_request,
+                            &diffs,
+                            &full_pr_paths,
+                            &lanes,
+                            stored.as_ref().and_then(|state| state.summary.as_ref()),
+                        )),
+                        Spend::default(),
+                        stored
+                            .as_ref()
+                            .map(|state| state.summary_transcript.clone())
+                            .unwrap_or_default(),
+                    )
+                }
+            } else {
+                (
+                    None,
+                    Spend::default(),
+                    stored
                         .as_ref()
-                        .map(|state| state.head_sha.as_str()),
-                    lanes: &lanes,
-                    prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
-                    prior_transcript: stored
-                        .as_ref()
-                        .map(|state| state.summary_transcript.as_slice())
+                        .map(|state| state.summary_transcript.clone())
                         .unwrap_or_default(),
-                },
-            )
-            .await;
-            (Some(summary), spend, transcript)
-        } else {
-            (
-                Some(crate::summary::deterministic_with_paths(
-                    config,
-                    &context.pull_request,
-                    &diffs,
-                    &full_pr_paths,
-                    &lanes,
-                    stored.as_ref().and_then(|state| state.summary.as_ref()),
-                )),
-                Spend::default(),
-                stored
-                    .as_ref()
-                    .map(|state| state.summary_transcript.clone())
-                    .unwrap_or_default(),
-            )
-        }
-    } else {
-        (
-            None,
-            Spend::default(),
-            stored
-                .as_ref()
-                .map(|state| state.summary_transcript.clone())
-                .unwrap_or_default(),
-        )
+                )
             }
             (summary, summary_spend, summary_transcript)
         })

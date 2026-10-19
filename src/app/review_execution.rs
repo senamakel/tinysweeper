@@ -53,6 +53,7 @@ struct ExecutionState {
     reserved_calls: usize,
     physical_usage: Usage,
     cancelled: bool,
+    max_calls: Option<usize>,
 }
 
 struct ExecutionInner {
@@ -60,7 +61,6 @@ struct ExecutionInner {
     hard_deadline: Instant,
     soft_deadline: Instant,
     mode: ReviewMode,
-    max_calls: Option<usize>,
     drain_seconds: u64,
     _now: Arc<dyn Fn() -> Instant + Send + Sync>,
     availability_generation: watch::Sender<u64>,
@@ -95,7 +95,6 @@ impl ReviewExecution {
                 hard_deadline: options.hard_deadline,
                 soft_deadline,
                 mode: options.mode,
-                max_calls: options.max_calls,
                 drain_seconds: options.drain_seconds,
                 _now: now,
                 availability_generation,
@@ -104,6 +103,7 @@ impl ReviewExecution {
                     reserved_calls: 0,
                     physical_usage: Usage::default(),
                     cancelled: false,
+                    max_calls: options.max_calls,
                 }),
             }),
         }
@@ -136,15 +136,30 @@ impl ReviewExecution {
 
     /// The fixed physical-call ceiling, if this mode has one.
     pub(crate) fn max_calls(&self) -> Option<usize> {
-        self.inner.max_calls
+        lock(&self.inner.state).max_calls
     }
 
-    /// Test-only no-op scaffold for the compiled Large-mode cap regressions.
+    /// Tighten this review job's physical-call ceiling after Large mode is
+    /// selected from host-derived metadata.
     ///
-    /// Replace this body with monotonic cap tightening when runtime planning
-    /// calls it after selecting Large mode; until then, the new tests expose
-    /// the missing behavior as assertion failures rather than compile errors.
-    pub(crate) fn restrict_to_large(&self, _max_calls: usize) {}
+    /// A retry may inspect a newer pull-request head, but remains in the same
+    /// job: tightening never resets spent calls or raises an earlier ceiling.
+    /// Normal-mode jobs remain uncapped unless this is called.
+    pub(crate) fn restrict_to_large(&self, max_calls: usize) {
+        let mut state = lock(&self.inner.state);
+        let tightened = match state.max_calls {
+            Some(existing) => existing.min(max_calls),
+            None => max_calls,
+        };
+        if state.max_calls == Some(tightened) {
+            return;
+        }
+        state.max_calls = Some(tightened);
+        drop(state);
+        self.inner
+            .availability_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
 
     /// Record a terminal physical call event independently of timing spans.
     pub(crate) fn record_physical_usage(&self, usage: Usage) {

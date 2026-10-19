@@ -17,12 +17,23 @@ use crate::ports::review_job::{
 pub struct MockReviewJobStore {
     state: Mutex<ReviewSchedulerState>,
     fail_admission: Mutex<bool>,
+    #[cfg(test)]
+    should_continue_delay: Mutex<Option<std::time::Duration>>,
 }
 
 impl MockReviewJobStore {
     /// Make the next whole-batch admission fail with a simulated store error.
     pub fn fail_next_admission(&self) {
         *self.fail_admission.lock().expect("admission failure") = true;
+    }
+
+    /// Delay the control-plane check to exercise a local lease expiring in flight.
+    #[cfg(test)]
+    pub(crate) fn delay_should_continue(&self, delay: std::time::Duration) {
+        *self
+            .should_continue_delay
+            .lock()
+            .expect("control-plane delay") = Some(delay);
     }
 
     /// Return the number of pending or currently owned requests.
@@ -101,6 +112,15 @@ impl ReviewJobStore for MockReviewJobStore {
     }
 
     async fn should_continue(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
+        #[cfg(test)]
+        let delay = *self
+            .should_continue_delay
+            .lock()
+            .expect("control-plane delay");
+        #[cfg(test)]
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(self
             .state
             .lock()

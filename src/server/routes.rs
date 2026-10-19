@@ -4169,6 +4169,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_model_dispatch_rechecks_local_expiry_after_a_slow_store_reply() {
+        use crate::harness::MockModel;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let mut request = queued_test_review(75);
+        request.head_sha = Some("head-a".into());
+        store.admit_batch(vec![request]).await.unwrap();
+        let now = unix_time_ms();
+        let owned = store.claim_next("slow-store-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", now).await.unwrap());
+        store.delay_should_continue(std::time::Duration::from_millis(50));
+
+        let model = MockModel::silent();
+        let local_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10);
+        let (_, owner_until) = watch::channel(local_deadline);
+        let guarded = OwnedModel {
+            inner: Arc::new(model.clone()),
+            jobs: store,
+            owned,
+            owner_lost: None,
+            owner_until: Some(owner_until),
+        };
+        let result = guarded
+            .complete(ModelRequest {
+                model: "test".into(),
+                messages: vec![Message::user("must not dispatch after local lease expiry")],
+                schema: json!({"type": "object"}),
+                schema_name: "review".into(),
+                max_tokens: 16,
+            })
+            .await;
+
+        assert!(matches!(result, Err(Error::ReviewOwnershipLost)));
+        assert!(model.requests().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_delayed_old_delivery_does_not_rerun_or_republish_a_completed_live_head() {
         use crate::forge::{MockForge, RepoId};
         use crate::harness::MockModel;
@@ -4196,87 +4235,127 @@ mod tests {
             store.begin_paid(&newer, now + 2).await.unwrap(),
             PaidStart::Started
         );
-        assert!(
-            store
-                .finish(&newer, TerminalOutcome::Published, now + 3, now + 3)
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            store.snapshot_for_test().incremental_heads[0].terminal_outcome,
-            Some(TerminalOutcome::Published)
-        );
+        let forge = MockForge::new();
+        let model = MockModel::silent();
+        let repo_id = RepoId::parse("owner/repo").unwrap();
+        let published = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&newer),
+            Mode::Incremental,
+            || async {
+                model
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![Message::user("review the live head")],
+                        schema: json!({"type": "object"}),
+                        schema_name: "review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
+                forge
+                    .publish_check(
+                        &repo_id,
+                        crate::forge::CheckRun {
+                            name: "tinysweeper/review".into(),
+                            head_sha: "head-b-live".into(),
+                            conclusion: Some(crate::forge::CheckConclusion::Success),
+                            title: "Reviewed".into(),
+                            summary: "Reviewed".into(),
+                            images: vec![],
+                        },
+                    )
+                    .await?;
+                Ok(InnerReview::Complete(Some((
+                    1,
+                    false,
+                    status::ReviewCoverage::default(),
+                ))))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(published, InnerReview::Complete(Some(_))));
 
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request]).await.unwrap();
+        assert!(record_owned_disposition(
+            &store,
+            &newer,
+            WorkerDisposition::Terminal(TerminalOutcome::Published),
+            now + 5,
+        )
+        .await
+        .expect("owned terminal disposition")
+        .expect("scheduler update")
+        .expect("publication records terminal head while yielding"));
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published)
+        );
         let delayed = store
-            .claim_next("delayed-worker", now + 5)
+            .claim_next("delayed-worker", now + 6)
             .await
             .unwrap()
             .unwrap();
         assert!(
             store
-                .confirm_head(&delayed, "head-b-live", now + 6)
+                .confirm_head(&delayed, "head-b-live", now + 7)
                 .await
                 .unwrap()
         );
         assert_eq!(
             store.snapshot_for_test().incremental_heads[0].terminal_outcome,
-            Some(TerminalOutcome::Published)
+            Some(TerminalOutcome::Published),
+            "publication remains terminal through the delayed delivery"
         );
 
-        let forge = MockForge::new();
-        let model = MockModel::silent();
-        let terminal = confirmed_head_is_terminal(&store, &delayed, Mode::Incremental)
-            .await
-            .expect("the confirmed head outcome is durable");
-        if !terminal {
-            model
-                .complete(ModelRequest {
-                    model: "test".into(),
-                    messages: vec![Message::user("review the live head")],
-                    schema: json!({"type": "object"}),
-                    schema_name: "review".into(),
-                    max_tokens: 16,
-                })
-                .await
-                .unwrap();
-            forge
-                .publish_check(
-                    &RepoId::parse("owner/repo").unwrap(),
-                    crate::forge::CheckRun {
-                        name: "tinysweeper/review".into(),
-                        head_sha: "head-b-live".into(),
-                        conclusion: Some(crate::forge::CheckConclusion::Success),
-                        title: "Reviewed".into(),
-                        summary: "Reviewed".into(),
-                        images: vec![],
-                    },
-                )
-                .await
-                .unwrap();
-        }
-
+        let delayed_result = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&delayed),
+            Mode::Incremental,
+            || async {
+                model
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![Message::user("review the live head again")],
+                        schema: json!({"type": "object"}),
+                        schema_name: "review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
+                forge
+                    .publish_check(
+                        &repo_id,
+                        crate::forge::CheckRun {
+                            name: "tinysweeper/review".into(),
+                            head_sha: "head-b-live".into(),
+                            conclusion: Some(crate::forge::CheckConclusion::Success),
+                            title: "Reviewed again".into(),
+                            summary: "duplicate".into(),
+                            images: vec![],
+                        },
+                    )
+                    .await?;
+                Ok(InnerReview::Complete(None))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(delayed_result, InnerReview::Complete(None)));
         assert!(
-            terminal,
-            "the live head, not delayed A's hint, controls the decision"
-        );
-        assert!(
-            model.requests().is_empty(),
+            model.requests().len() == 1,
             "published B is not sent to the model again"
         );
         assert!(
-            forge.writes().is_empty(),
+            forge.writes().len() == 1,
             "the delayed delivery publishes no duplicate check"
         );
-        assert!(
-            store
-                .finish(&delayed, TerminalOutcome::Declined, 17, 17)
-                .await
-                .unwrap()
-        );
+        assert!(store
+            .finish(&delayed, TerminalOutcome::Published, now + 8, now + 8)
+            .await
+            .unwrap());
         assert!(store.snapshot_for_test().terminal.iter().all(|record| {
             record.id.0 != "delayed-a" || record.outcome == TerminalOutcome::Published
         }));

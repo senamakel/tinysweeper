@@ -7270,7 +7270,7 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let forge = MockForge::new();
         forge.fail_next_check_publishes(1);
-        forge.fail_after_check_publishes(1);
+        forge.fail_after_terminal_check_publishes(1);
         let client_forge = forge.clone();
         let factory: QueueStatusClientFactory = Arc::new(move |_| {
             let forge = client_forge.clone();
@@ -7325,6 +7325,55 @@ mod tests {
                 if check.head_sha == "lost-b" && check.status == Some(CheckRunStatus::Queued)
         )));
         assert!(store.snapshot_for_test().retired_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn superseded_no_id_statuses_do_not_fill_the_bounded_outbox() {
+        use crate::forge::MockForge;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients { read: Arc::new(forge.clone()), write: Arc::new(forge) })
+            }.boxed()
+        });
+        let action = |head: String, number| Action::Review {
+            repo: "owner/repo".into(),
+            number,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head),
+        };
+
+        for index in 0..=crate::ports::review_job::MAX_REVIEW_STATUS_RECORDS {
+            let number = 84;
+            let first = format!("outbox-a-{index}");
+            forge.fail_next_check_publishes(1);
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(first.clone(), number),
+                    &format!("outbox-a-delivery-{index}"),
+                    "pull_request",
+                    factory.clone(),
+                ).await.expect("first delivery remains durable"),
+                Some(Admission::Admitted)
+            );
+            assert_eq!(
+                admit_webhook_review(
+                    &store,
+                    &action(format!("outbox-b-{index}"), number),
+                    &format!("outbox-b-delivery-{index}"),
+                    "pull_request",
+                    factory.clone(),
+                ).await.expect("new delivery supersedes the failed queued POST"),
+                Some(Admission::Admitted)
+            );
+            assert!(store.snapshot_for_test().retired_checks.is_empty());
+        }
     }
 
     #[tokio::test]

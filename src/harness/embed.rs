@@ -1950,8 +1950,18 @@ mod tests {
     async fn direct_gateway_reports_raw_terminals_without_a_timing_observer() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
 
+        let primary_repair = || {
+            Reply::completion(
+                "b",
+                "{primary broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
+            )
+        };
         let gateway = FakeGateway::start(vec![
-            Reply::error(503, "primary unavailable"),
+            primary_repair(),
+            primary_repair(),
+            primary_repair(),
             Reply::completion(
                 "fallback",
                 r#"{"summary":"checked"}"#,
@@ -1963,8 +1973,9 @@ mod tests {
         let mut config = models();
         config.base_url = gateway.base_url.clone();
         config.fallback = vec!["fallback".into()];
-        let model = GatewayModel::with_key(&config, "fixture".into());
-        let execution = execution_scope(Some(2));
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.structured_output = StructuredOutput::JsonObject;
+        let execution = execution_scope(Some(4));
         let control = Arc::new(RecordingExecutionControl {
             inner: Arc::clone(&execution),
             terminals: std::sync::Mutex::new(Vec::new()),
@@ -1991,9 +2002,23 @@ mod tests {
             .await
             .expect("the response succeeds");
 
-        assert_eq!(gateway.requests().len(), 2);
+        assert_eq!(gateway.requests().len(), 4);
+        let primary_terminal = raw_terminal(
+            "b",
+            Some("b"),
+            ModelExecutionTerminalOutcome::Succeeded,
+            Some(ModelExecutionTerminalUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.001),
+            }),
+        );
         let expected = vec![
-            raw_terminal("b", None, ModelExecutionTerminalOutcome::Failed, None),
+            primary_terminal.clone(),
+            primary_terminal.clone(),
+            primary_terminal,
             raw_terminal(
                 "fallback",
                 Some("fallback"),
@@ -2009,7 +2034,7 @@ mod tests {
         ];
         assert_eq!(*control.terminals.lock().unwrap(), expected);
         let snapshot = execution.snapshot();
-        assert_eq!(snapshot.committed_calls, 2);
+        assert_eq!(snapshot.committed_calls, 4);
         assert_eq!(snapshot.physical_terminals, expected);
         assert!(snapshot.physical_accounting_complete);
     }

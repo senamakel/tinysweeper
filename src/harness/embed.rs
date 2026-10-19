@@ -1458,7 +1458,7 @@ mod tests {
                     "id":"read-1","type":"function","function":{
                         "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
                     }
-                ]}]} ,"finish_reason":"tool_calls"}],
+                }]},"finish_reason":"tool_calls"}],
                 "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
             }),
         };

@@ -2188,6 +2188,7 @@ struct ReviewStatus {
     check_id: u64,
     head_sha: String,
     installation: u64,
+    stage: crate::ports::review_job::ReviewCheckStage,
     /// Durable review-hub comment opened alongside the status check.
     hub_comment_id: Option<u64>,
     /// Last completed body, retained if this pass fails.
@@ -2509,6 +2510,7 @@ async fn open_status(
                 check_id,
                 head_sha: head_sha.to_string(),
                 installation,
+                stage: crate::ports::review_job::ReviewCheckStage::InProgress,
                 hub_comment_id: None,
                 prior_hub_body: None,
             });

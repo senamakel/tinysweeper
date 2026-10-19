@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+#[cfg(test)]
 use std::time::Duration;
 
 use tokio::sync::watch;

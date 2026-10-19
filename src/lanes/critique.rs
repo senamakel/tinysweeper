@@ -2002,6 +2002,34 @@ fn helper() {
     }
 
     #[tokio::test]
+    async fn critique_coverage_and_falsify_requests_use_their_custom_efforts() {
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [finding_named("Guard the first index", 3)]
+            }))
+            .then(json!({"incorrect": []}))
+            .then(json!({"summary": "No additional findings.", "findings": []}));
+        let handle = model.clone();
+        let mut config = config_with_passes(2);
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
+        config.models.falsify_reasoning_effort = "medium".into();
+        config.models.summary_reasoning_effort = "off".into();
+
+        run_with(model, &config, &large_diffs()).await;
+
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].schema_name, "tinysweeper_critique");
+        assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(requests[1].schema_name, "tinysweeper_falsify");
+        assert_eq!(requests[1].reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(requests[2].schema_name, "tinysweeper_critique");
+        assert_eq!(requests[2].reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[tokio::test]
     async fn one_pass_empty_groups_emit_zero_yield_metrics() {
         use tracing::instrument::WithSubscriber;
 

@@ -19,7 +19,7 @@ pub const MAX_REVIEW_PAID_ATTEMPTS: u32 = 5;
 /// How long a job owner remains valid without a heartbeat.
 pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
 /// Short bounded owner claim for a queued status write, independent of review ownership.
-pub const QUEUE_STATUS_CLAIM_TTL_MS: i64 = 300_000;
+pub const QUEUE_STATUS_CLAIM_TTL_MS: i64 = 30_000;
 /// Bound active and detached check identities well below the BSON scheduler cap.
 pub const MAX_REVIEW_STATUS_RECORDS: usize = 1_024;
 /// How long terminal delivery IDs remain deduped.

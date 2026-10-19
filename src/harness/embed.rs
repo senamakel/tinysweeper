@@ -2044,6 +2044,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refusal_keeps_known_cost_when_a_later_repair_omits_cost() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::Model;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use tokio::time::Instant;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                "{still broken",
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3}),
+            ),
+        ])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        model.budget_prices.get_mut("b").unwrap().output = 5000.0;
+        model.budget = Some(crate::harness::budget::ledger(10.0));
+        model.structured_output = StructuredOutput::JsonObject;
+
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(2),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let calls = Arc::new(RecordedModelCalls::default());
+
+        let result =
+            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
+                .await;
+
+        assert_eq!(gateway.requests().len(), 2);
+        let refusal = result.expect_err("the third repair is refused before dispatch");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("both paid responses remain represented");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.calls_attempted, 2);
+        assert_eq!(usage.calls_succeeded, 2);
+        assert_eq!(usage.cost_usd, 0.125, "known charges remain a lower bound");
+        assert_eq!(refusal.usage_accounting_complete(), Some(false));
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "only actual provider dispatches are observed"
+        );
+        assert_eq!(calls[0].0.cost_usd, 0.125);
+        assert_eq!(calls[1].0.input_tokens, 7);
+        assert!(calls.iter().all(|call| call.1));
+        assert!(calls.iter().all(|call| !call.2));
+        assert_eq!(execution.snapshot().committed_calls, 2);
+    }
+
+    #[tokio::test]
     async fn json_object_truncation_repairs_twice_before_growing_the_ceiling() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         let (mut model, _, request) = admission_fixture().await;

@@ -20,6 +20,8 @@ pub enum ModelExecutionRefusal {
     /// The absolute review soft deadline has passed, either at acquisition or
     /// when a reserved permit is committed for dispatch.
     SoftDeadline,
+    /// The review's logical owner cancelled its execution scope.
+    Cancelled,
 }
 
 /// A review-scoped source of physical-dispatch permits.

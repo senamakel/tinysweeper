@@ -151,6 +151,10 @@ impl ReviewExecution {
             physical_usage: state.physical_usage,
         }
     }
+
+    /// Test scaffold for the owner cancellation signal. Admission enforcement
+    /// remains intentionally absent until the behavioral tests are compiled.
+    pub(crate) fn cancel(&self) {}
 }
 
 #[async_trait::async_trait]
@@ -526,6 +530,93 @@ mod tests {
         permit.mark_dispatched().expect("idempotent commit");
 
         assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_refuses_an_uncommitted_permit_and_drop_refunds_it() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit = execution.acquire().await.expect("reserve one dispatch");
+        execution.cancel();
+
+        let result = permit.mark_dispatched();
+        drop(permit);
+        let snapshot = execution.snapshot();
+        assert_eq!(result, Err(ModelExecutionRefusal::Cancelled));
+        assert_eq!(snapshot.committed_calls, 0);
+        assert_eq!(snapshot.reserved_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_a_capacity_waiter_without_refunding_committed_calls() {
+        let started_at = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        )));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let held = control.acquire().await.expect("hold the reserved slot");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut waiting = tokio::task::JoinSet::new();
+        let waiting_control = Arc::clone(&control);
+        waiting.spawn(async move {
+            started_tx.send(()).expect("waiting task started");
+            waiting_control.acquire().await
+        });
+        started_rx.await.expect("waiter reached its acquire call");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), waiting.join_next())
+                .await
+                .is_err(),
+            "the second reservation is blocked by the held slot"
+        );
+
+        execution.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), waiting.join_next()).await;
+        let outcome = match result {
+            Ok(Some(Ok(outcome))) => outcome,
+            _ => {
+                waiting.abort_all();
+                waiting.shutdown().await;
+                drop(held);
+                panic!("cancellation did not settle the blocked acquisition");
+            }
+        };
+        drop(held);
+
+        assert_eq!(outcome.err(), Some(ModelExecutionRefusal::Cancelled));
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 0);
+        assert_eq!(snapshot.reserved_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_does_not_refund_a_committed_dispatch() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit = execution.acquire().await.expect("reserve a dispatch");
+        permit
+            .mark_dispatched()
+            .expect("commit before cancellation");
+
+        execution.cancel();
+        drop(permit);
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -5,12 +5,27 @@ use std::fmt::Write as _;
 use crate::VERSION;
 use crate::app::review::Proposal;
 use crate::config::types::{Config, Severity, SummarySection};
+use crate::markdown::{code_span, prose};
 use crate::summary::types::ReviewSummary;
+
+fn render_citations(citations: &[String], proposal: &Proposal) -> String {
+    citations
+        .iter()
+        .map(|citation| crate::markdown::citation(citation, &proposal.repo, &proposal.head_sha))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn code_list<'a>(paths: impl Iterator<Item = &'a str>) -> String {
+    paths.map(code_span).collect::<Vec<_>>().join(", ")
+}
 
 /// Marker for the durable review comment.
 pub const MARKER: &str = "<!-- tinysweeper:review-hub -->";
 /// Marker used by the former standalone change-map comment.
 pub const LEGACY_MARKER: &str = "<!-- tinysweeper:change-map -->";
+const LAST_REPORT_START: &str = "<!-- tinysweeper:last-report:start -->";
+const LAST_REPORT_END: &str = "<!-- tinysweeper:last-report:end -->";
 
 /// Render the initial state while model work is running, retaining the last report.
 pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
@@ -20,7 +35,11 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
         body.push_str("\n<details>\n<summary>Previous completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -28,14 +47,22 @@ pub fn in_progress(head_sha: &str, previous: Option<&str>) -> String {
 
 /// Render a prominent failure without destroying the prior trustworthy report.
 pub fn failed(head_sha: &str, message: &str, previous: Option<&str>) -> String {
+    let reason = safe_failure_reason(message);
     let mut body = format!(
-        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review failed for `{}`.** {}\n",
+        "{MARKER}\n\n# Tiny Sweeper review\n\n> ⚠️ **Review of `{}` {}.**\n",
         short(head_sha),
-        md(&crate::scan::scrub(message))
+        reason,
     );
     if let Some(previous) = previous.and_then(trustworthy_report) {
+        if let Some(sha) = reviewed_sha(previous) {
+            let _ = writeln!(body, " The last completed review (`{sha}`) is shown below.");
+        }
         body.push_str("\n<details open>\n<summary>Last completed report</summary>\n\n");
+        body.push_str(LAST_REPORT_START);
+        body.push('\n');
         body.push_str(previous);
+        body.push('\n');
+        body.push_str(LAST_REPORT_END);
         body.push_str("\n</details>\n");
     }
     body
@@ -51,7 +78,7 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     } else {
         summary.executive_summary.trim()
     };
-    let _ = writeln!(body, "{}\n", md(executive));
+    let _ = writeln!(body, "{}\n", prose(executive));
     let _ = writeln!(body, "**State:** {}  ", state(proposal));
     let _ = writeln!(body, "**Priority:** {}  ", priority(proposal));
     let _ = write!(body, "**Reviewed head:** `{}`", short(&proposal.head_sha));
@@ -70,7 +97,7 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
         match section {
             SummarySection::Snapshot => snapshot(&mut body, proposal, &summary),
             SummarySection::Changes => changes(&mut body, &summary),
-            SummarySection::Features => features(&mut body, &summary),
+            SummarySection::Features => features(&mut body, proposal, &summary),
             SummarySection::Tests => tests(&mut body, proposal, &summary),
             SummarySection::Findings => findings(&mut body, proposal),
             SummarySection::BeforeMerge => before_merge(&mut body, proposal),
@@ -147,11 +174,11 @@ fn changes(out: &mut String, summary: &ReviewSummary) {
         return;
     }
     out.push_str("\n## What changed\n\n");
-    out.push_str(&md(changes));
+    out.push_str(&prose(changes));
     out.push('\n');
 }
 
-fn features(out: &mut String, summary: &ReviewSummary) {
+fn features(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
     out.push_str("\n## Features\n\n");
     if summary.features.is_empty() {
         out.push_str("None identified with supported citations.\n");
@@ -162,9 +189,9 @@ fn features(out: &mut String, summary: &ReviewSummary) {
             out,
             "- **{} — {}:** {} _({})_",
             feature.kind.label(),
-            md(&feature.name),
-            md(&feature.impact),
-            md(&feature.citations.join(", "))
+            prose(&feature.name),
+            prose(&feature.impact),
+            render_citations(&feature.citations, proposal)
         );
     }
     if summary.omitted_features > 0 {
@@ -187,10 +214,10 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         let _ = writeln!(
             out,
             "- **{} — {}:** {} _({})_",
-            md(&test.kind),
-            md(&test.behavior),
-            md(&test.assessment),
-            md(&test.citations.join(", "))
+            prose(&test.kind),
+            prose(&test.behavior),
+            prose(&test.assessment),
+            render_citations(&test.citations, proposal)
         );
     }
     if summary.omitted_tests > 0 {
@@ -202,7 +229,11 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
     }
     for lane in &proposal.lanes {
         if lane.lane == crate::config::types::LaneId::Tests && !lane.unanswered.is_empty() {
-            let _ = writeln!(out, "- **Unreviewed:** {}", md(&lane.unanswered.join(", ")));
+            let _ = writeln!(
+                out,
+                "- **Unreviewed:** {}",
+                code_list(lane.unanswered.iter().map(String::as_str))
+            );
         }
     }
 }
@@ -220,7 +251,7 @@ fn carried_findings(out: &mut String, proposal: &Proposal) {
     if !carried.is_empty() {
         out.push_str("\n**Previously reported and still active**\n");
         for title in carried {
-            let _ = writeln!(out, "- {}", md(title));
+            let _ = writeln!(out, "- {}", prose(title));
         }
     }
 }
@@ -243,15 +274,18 @@ fn over_budget(out: &mut String, proposal: &Proposal) {
     for finding in over {
         let _ = writeln!(
             out,
-            "- {} · {} — {} (`{}{}`)",
+            "- {} · {} — {} ({})",
             severity(finding.severity),
             finding.lane,
-            md(&finding.title),
-            md(&finding.path),
-            finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default()
+            prose(&finding.title),
+            code_span(&format!(
+                "{}{}",
+                finding.path,
+                finding
+                    .line
+                    .map(|line| format!(":{line}"))
+                    .unwrap_or_default()
+            ))
         );
     }
 }
@@ -277,16 +311,19 @@ fn findings(out: &mut String, proposal: &Proposal) {
         for finding in &lane.findings {
             let _ = writeln!(
                 out,
-                "- **{} · {} · {}** — {} (`{}`{})",
+                "- **{} · {} · {}** — {} ({})",
                 severity(finding.severity),
                 lane.lane,
-                md(&finding.title),
-                md(&concise(&finding.body)),
-                md(&finding.path),
-                finding
-                    .line
-                    .map(|line| format!(":{line}"))
-                    .unwrap_or_default()
+                prose(&finding.title),
+                prose(&concise(&finding.body)),
+                code_span(&format!(
+                    "{}{}",
+                    finding.path,
+                    finding
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                ))
             );
         }
     }
@@ -302,11 +339,11 @@ fn findings(out: &mut String, proposal: &Proposal) {
         for finding in noted {
             let _ = writeln!(
                 out,
-                "- {} · {} — {} (`{}`)",
+                "- {} · {} — {} ({})",
                 severity(finding.severity),
                 finding.lane,
-                md(&finding.title),
-                md(&finding.path)
+                prose(&finding.title),
+                code_span(&finding.path)
             );
         }
     }
@@ -318,7 +355,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
     if !resolved.is_empty() {
         out.push_str("\n**Resolved this pass**\n");
         for title in resolved {
-            let _ = writeln!(out, "- {}", md(title));
+            let _ = writeln!(out, "- {}", prose(title));
         }
     }
     let pending: Vec<_> = proposal
@@ -330,14 +367,14 @@ fn findings(out: &mut String, proposal: &Proposal) {
         let _ = writeln!(
             out,
             "\n**Pending checks:** {}",
-            md(&pending.into_iter().cloned().collect::<Vec<_>>().join(", "))
+            prose(&pending.into_iter().cloned().collect::<Vec<_>>().join(", "))
         );
     }
     if !proposal.unanswered().is_empty() {
         let _ = writeln!(
             out,
             "\n**Could not review:** {}",
-            md(&proposal.unanswered().join(", "))
+            code_list(proposal.unanswered().into_iter())
         );
     }
 }
@@ -355,7 +392,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         .filter(|title| !current_titles.contains(title.as_str()))
     {
         any = true;
-        let _ = writeln!(out, "- [ ] Address carried finding **{}**.", md(title));
+        let _ = writeln!(out, "- [ ] Address carried finding **{}**.", prose(title));
     }
     for lane in &proposal.lanes {
         for finding in lane
@@ -367,15 +404,15 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                 any = true;
                 let _ = writeln!(
                     out,
-                    "- [ ] Address **{}** (`{}`).",
-                    md(&finding.title),
-                    md(&finding.path)
+                    "- [ ] Address **{}** ({}).",
+                    prose(&finding.title),
+                    code_span(&finding.path)
                 );
             }
         }
         if !lane.pending.is_empty() {
             any = true;
-            let _ = writeln!(out, "- [ ] Wait for {}.", md(&lane.pending.join(", ")));
+            let _ = writeln!(out, "- [ ] Wait for {}.", prose(&lane.pending.join(", ")));
         }
         if !lane.unanswered.is_empty() {
             any = true;
@@ -383,7 +420,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
                 out,
                 "- [ ] Complete the {} review for {}.",
                 lane.lane,
-                md(&lane.unanswered.join(", "))
+                code_list(lane.unanswered.iter().map(String::as_str))
             );
         }
     }
@@ -392,7 +429,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         let _ = writeln!(
             out,
             "- [ ] Review unavailable diffs: {}.",
-            md(&proposal.unreviewed.join(", "))
+            code_list(proposal.unreviewed.iter().map(String::as_str))
         );
     }
     if !any {
@@ -425,29 +462,29 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             } else {
                 format!(
                     "incomplete; unanswered: {}",
-                    md(&lane.unanswered.join(", "))
+                    code_list(lane.unanswered.iter().map(String::as_str))
                 )
             }
         );
         if let Some(observations) = summary.positive_observations.get(&lane.lane) {
             for observation in observations {
-                let _ = writeln!(out, "- **Positive:** {}", md(observation));
+                let _ = writeln!(out, "- **Positive:** {}", prose(observation));
             }
         }
-        let _ = writeln!(out, "- **Lane summary:** {}", md(&lane.summary));
+        let _ = writeln!(out, "- **Lane summary:** {}", prose(&lane.summary));
         if !lane.pending.is_empty() {
             let _ = writeln!(
                 out,
                 "- **Unresolved questions/checks:** {}",
-                md(&lane.pending.join(", "))
+                prose(&lane.pending.join(", "))
             );
         }
         for finding in &lane.findings {
             let _ = writeln!(
                 out,
-                "- **Evidence:** `{}` — {}",
-                md(&finding.path),
-                md(&finding.title)
+                "- **Evidence:** {} — {}",
+                code_span(&finding.path),
+                prose(&finding.title)
             );
         }
         out.push('\n');
@@ -463,7 +500,7 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         if proposal.models.is_empty() {
             "None".into()
         } else {
-            md(&proposal.models.join(", "))
+            prose(&proposal.models.join(", "))
         }
     );
     let _ = writeln!(out, "- **Spend:** ${:.6}", proposal.cost_usd);
@@ -483,10 +520,10 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         for pass in &summary.history {
             let _ = writeln!(
                 out,
-                "| `{}` | {} | {}{} |",
-                short(&pass.head_sha),
-                md(&pass.state),
-                md(&pass.summary),
+                "| {} | {} | {}{} |",
+                crate::markdown::table_code_span(short(&pass.head_sha)),
+                crate::markdown::table_cell(&pass.state),
+                crate::markdown::table_cell(&pass.summary),
                 if pass.reviewed_at_epoch > 0 {
                     format!(" (at {})", iso8601_utc(pass.reviewed_at_epoch))
                 } else {
@@ -604,35 +641,89 @@ fn concise(body: &str) -> String {
         .take(180)
         .collect()
 }
-pub(crate) fn md(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '@' => escaped.push_str("&#64;"),
-            '`' => escaped.push_str("&#96;"),
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '!' | '|' | '{' | '}' | '+' | '-'
-            | '.' => {
-                escaped.push('\\');
-                escaped.push(character);
-            }
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
 fn trustworthy_report(body: &str) -> Option<&str> {
-    if body.contains(MARKER)
+    if let Some(start) = body.find(LAST_REPORT_START) {
+        let content_start = start + LAST_REPORT_START.len();
+        let end = body[content_start..].find(LAST_REPORT_END)? + content_start;
+        return trustworthy_report(body[content_start..end].trim_matches('\n'));
+    }
+
+    if is_completed_report(body) {
+        return Some(body);
+    }
+
+    // Older hubs nested the report in a details block before stable delimiters
+    // were introduced. Extract that block so an upgrade during a review keeps
+    // the report instead of replacing it with another status wrapper.
+    let opening = body.find("<details")?;
+    let content_start = body[opening..].find("</summary>")? + opening + "</summary>".len();
+    let mut cursor = opening;
+    let mut depth = 0usize;
+    let closing = loop {
+        let next_open = body[cursor..]
+            .find("<details")
+            .map(|offset| cursor + offset);
+        let next_close = body[cursor..]
+            .find("</details>")
+            .map(|offset| cursor + offset);
+        match (next_open, next_close) {
+            (Some(open), Some(close)) if open < close => {
+                depth += 1;
+                cursor = open + "<details".len();
+            }
+            (_, Some(close)) => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    break close;
+                }
+                cursor = close + "</details>".len();
+            }
+            _ => return None,
+        }
+    };
+    trustworthy_report(body[content_start..closing].trim())
+}
+
+fn is_completed_report(body: &str) -> bool {
+    body.contains(MARKER)
         && body.contains("**Reviewed head:**")
         && !body.contains("**Reviewing `")
         && !body.contains("**Review failed for `")
-    {
-        Some(body)
-    } else {
-        None
+}
+
+fn reviewed_sha(report: &str) -> Option<&str> {
+    let line = report
+        .lines()
+        .find(|line| line.contains("**Reviewed head:**"))?;
+    let value = line.split("**Reviewed head:**").nth(1)?.trim();
+    value.strip_prefix('`')?.split('`').next()
+}
+
+fn safe_failure_reason(message: &str) -> String {
+    let message = message.to_ascii_lowercase();
+    if message.contains("pull request may have closed or changed") {
+        return "stopped because the pull request closed or changed".to_string();
     }
+    if message.contains("timeout") || message.contains("timed out") || message.contains("within ") {
+        let seconds = message
+            .split_once("within ")
+            .and_then(|(_, rest)| rest.split_once('s'))
+            .and_then(|(seconds, _)| seconds.trim().parse::<u64>().ok());
+        return match seconds {
+            Some(seconds) if seconds >= 60 => {
+                format!("timed out after {} min", seconds.saturating_add(59) / 60)
+            }
+            Some(seconds) => format!("timed out after {seconds} sec"),
+            None => "timed out".to_string(),
+        };
+    }
+    if message.contains("budget") {
+        return "ran out of budget".to_string();
+    }
+    if message.contains("model") || message.contains("gateway") || message.contains("provider") {
+        return "could not reach a model".to_string();
+    }
+    "could not complete".to_string()
 }
 
 #[cfg(test)]
@@ -667,10 +758,81 @@ mod tests {
     #[test]
     fn progress_does_not_recursively_retain_a_failure_wrapper() {
         let completed = format!("{MARKER}\n\n**Reviewed head:** `abc`");
-        let failure = failed("def", "network error", Some(&completed));
+        let first_progress = in_progress("def", Some(&completed));
+        let failure = failed("def", "network error", Some(&first_progress));
+        let second_progress = in_progress("ghi", Some(&failure));
+        let second_failure = failed("ghi", "network error", Some(&second_progress));
 
-        assert!(failure.contains("Last completed report"));
-        assert!(!in_progress("ghi", Some(&failure)).contains("Previous completed report"));
+        assert_eq!(
+            second_failure.matches("**Reviewed head:** `abc`").count(),
+            1
+        );
+        assert!(second_failure.contains("Last completed report"));
+    }
+
+    #[test]
+    fn legacy_progress_wrapper_keeps_its_completed_report() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_progress = format!(
+            "{MARKER}\n\n**Reviewing `def` now.**\n<details>\n<summary>Previous completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let failure = failed("def", "network error", Some(&legacy_progress));
+        let next_progress = in_progress("ghi", Some(&failure));
+
+        assert_eq!(next_progress.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(!next_progress.contains("**Reviewing `def`"));
+        assert!(next_progress.contains("<summary>Report detail</summary>"));
+    }
+
+    #[test]
+    fn legacy_failure_wrapper_extracts_a_report_with_nested_details() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n\n<details>\n<summary>Report detail</summary>\n\nDetails.\n</details>"
+        );
+        let legacy_failure = format!(
+            "{MARKER}\n\n**Review failed for `def`.** timed out\n<details open>\n<summary>Last completed report</summary>\n\n{completed}\n</details>"
+        );
+
+        let progress = in_progress("ghi", Some(&legacy_failure));
+        let failure = failed("ghi", "timeout", Some(&progress));
+
+        assert_eq!(failure.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(failure.contains("<summary>Report detail</summary>"));
+        assert!(!failure.contains("**Review failed for `def`"));
+    }
+
+    #[test]
+    fn failed_copy_is_safe_and_names_the_preserved_head() {
+        let completed = format!("{MARKER}\n\n**Reviewed head:** `def5678`");
+        let failure = failed(
+            "abc1234",
+            "#49 Error::Timeout: raw details",
+            Some(&completed),
+        );
+
+        assert!(failure.contains("`def5678`"));
+        assert!(!failure.contains("\\#"));
+        assert!(!failure.contains("Error::"));
+    }
+
+    #[test]
+    fn failure_wrappers_remain_bounded_across_ten_cycles() {
+        let completed = format!(
+            "{MARKER}\n\n**Reviewed head:** `abc`\n{}",
+            "report ".repeat(1_000)
+        );
+        let mut body = completed.clone();
+
+        for cycle in 0..10 {
+            body = in_progress(&format!("progress-{cycle}"), Some(&body));
+            body = failed(&format!("failed-{cycle}"), "timeout", Some(&body));
+        }
+
+        assert_eq!(body.matches("**Reviewed head:** `abc`").count(), 1);
+        assert!(body.len() < completed.len() + 2_000);
     }
 
     #[test]
@@ -690,9 +852,72 @@ mod tests {
         assert!(!rendered.contains("[click](https://evil.example)"));
         assert!(!rendered.contains("@maintainer"));
         assert!(!rendered.contains("<img src=x>"));
-        assert!(rendered.contains("\\[click\\]\\(https://evil\\.example\\)"));
+        assert!(rendered.contains("\\[click\\](https&#58;//evil&#46;example)"));
         assert!(rendered.contains("&#64;maintainer"));
         assert!(rendered.contains("&lt;img src=x&gt;"));
+    }
+
+    #[test]
+    fn run_history_escapes_table_pipes_in_state_summary_and_head() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::RunDetails];
+        let rendered = render(
+            &config,
+            &proposal(
+                ReviewSummary {
+                    history: vec![crate::summary::types::ReviewPass {
+                        head_sha: "sha|injected".into(),
+                        state: "ready | **blocked**".into(),
+                        summary: "done | [click](https://evil.example)".into(),
+                        ..Default::default()
+                    }],
+                    ..ReviewSummary::default()
+                },
+                &[],
+            ),
+        );
+        assert!(rendered.contains("`sha\\|injected`"), "{rendered}");
+        assert!(
+            rendered.contains("ready \\| \\*\\*blocked\\*\\*"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("done \\| \\[click\\]"), "{rendered}");
+        assert!(!rendered.contains("| **blocked** |"), "{rendered}");
+        assert!(
+            !rendered.contains("| [click](https://evil.example) |"),
+            "{rendered}"
+        );
+        let row = rendered
+            .lines()
+            .find(|line| line.starts_with("| `sha"))
+            .expect("history row");
+        assert_eq!(row.matches(" | ").count(), 2, "{row}");
+    }
+
+    #[test]
+    fn summary_citations_link_to_the_reviewed_head_and_keep_paths_in_code_spans() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::Features];
+        let rendered = render(
+            &config,
+            &proposal(
+                ReviewSummary {
+                    features: vec![crate::summary::types::Feature {
+                        kind: crate::summary::types::FeatureKind::Addition,
+                        name: "Saved value".into(),
+                        impact: "A new persisted field.".into(),
+                        citations: vec!["src/savings_store.rs:42".into()],
+                    }],
+                    ..ReviewSummary::default()
+                },
+                &[],
+            ),
+        );
+
+        assert!(rendered.contains(
+            "[`src/savings_store.rs:42`](https://github.com/acme/widget/blob/abcdef1234567890/src/savings_store.rs#L42)"
+        ));
+        assert!(!rendered.contains("savings\\_store"));
     }
 
     #[test]

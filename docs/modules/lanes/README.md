@@ -280,3 +280,24 @@ completion. See [e2e.md](e2e.md).
 3. A dispatch arm in `src/app/review.rs`.
 4. A golden test: fixture diff, canned `MockModel` response, assertions on
    exactly the findings that survive filtering, dedupe and capping.
+
+## Coverage and clean scans
+
+A lane with unanswered files is `Neutral` unless its findings already warrant
+`Failure`. It cannot report a clean success for work it did not complete. The
+per-file check title gives the reviewed and unreviewed counts, so a partial
+result is visible even when the summary is folded. The umbrella review check
+unions distinct unread paths across per-file lanes, so a file is counted as
+reviewed only when every applicable lane answered it. Whole-PR lanes keep a
+separate incomplete signal; their lane names are never counted as file paths.
+The umbrella title preserves that signal alongside file coverage and any
+changes-requested verdict. A per-file lane also records unchanged replayed
+paths and exact mechanical substitutions as reviewed proof, while a failed
+sample remains unanswered. Security coverage applies its own attack-surface
+triage before counting replayed or verified paths, so prose outside that
+lane's scope is not presented as a security gap.
+
+The `commits` lane is different: an empty deterministic scanner result is a
+successful clean scan, titled “No sensitive content in committed files.” It
+did inspect the committed files; describing that as a skip would hide a useful
+all-clear behind wording reserved for work that never happened.

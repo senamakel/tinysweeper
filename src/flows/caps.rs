@@ -136,6 +136,7 @@ impl ModelCapability {
             return Err(Error::Budget {
                 spent,
                 limit: self.budget_usd,
+                usage: None,
             });
         }
         // A call that names no model must not silently inherit one — which

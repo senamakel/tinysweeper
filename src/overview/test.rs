@@ -296,6 +296,35 @@ fn filtered_only_links_do_not_leave_a_disconnected_diagram() {
 }
 
 #[test]
+fn test_and_keyword_symbols_do_not_count_toward_the_four_symbol_threshold() {
+    let component = |name: &str| Component {
+        name: name.into(), role: Role::Changed, files: 1, additions: 1, deletions: 0,
+        findings: 0, worst: None, paths: vec![],
+    };
+    let map = ChangeMap {
+        components: vec![
+            component("src/a.rs#alpha"),
+            component("src/b.rs#beta"),
+            component("src/lib.rs#test_leaks_state"),
+            component("src/lib.rs#tests::reject_empty"),
+            component("src/lib.rs#call"),
+            component("src/lib.rs#json"),
+        ],
+        links: vec![
+            Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 1, to: 2, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 2, to: 3, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 3, to: 4, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 4, to: 5, relation: FlowRelation::Calls, weight: 1 },
+        ],
+        files: 6, additions: 6, deletions: 0, folded: 0,
+        graph: GraphStatus::Walked { nodes: 6 },
+    };
+
+    assert!(mermaid::flowchart(&map).is_none());
+}
+
+#[test]
 fn findings_mark_the_changed_behaviour_not_a_directory() {
     let diffs = [diff("src/a.rs", "alpha"), diff("src/b.rs", "beta")];
     let walk = Neighbourhood {

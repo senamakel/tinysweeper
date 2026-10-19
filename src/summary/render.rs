@@ -96,16 +96,17 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
         lane_gaps(&mut body, proposal);
         let executive = summary.executive_summary.trim();
         let sentence = if executive.is_empty() && proposal.complete() {
-            "The review found no actionable issues."
+            "The review found no actionable issues.".to_string()
         } else if executive.is_empty() {
-            "No actionable findings were reported in the available review results."
+            "No actionable findings were reported in the available review results.".to_string()
         } else {
-            first_sentence(executive)
+            bounded_sentence(executive, 240)
         };
-        let _ = writeln!(body, "{}\n", prose(sentence));
+        let _ = writeln!(body, "{}\n", prose(&sentence));
     }
 
     body.push_str("<details>\n<summary>Diagnostics and supporting details</summary>\n\n");
+    coverage_details(&mut body, proposal, &summary);
     for section in &config.summary.sections {
         match section {
             SummarySection::Snapshot => snapshot(&mut body, proposal, &summary),
@@ -145,6 +146,58 @@ fn first_sentence(text: &str) -> &str {
     text
 }
 
+fn bounded_sentence(text: &str, limit: usize) -> String {
+    let sentence = first_sentence(text);
+    let mut chars = sentence.chars();
+    let clipped: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{}…", clipped.trim_end())
+    } else {
+        clipped
+    }
+}
+
+fn bounded_paths(paths: &[String], shown: usize) -> String {
+    let listed = paths
+        .iter()
+        .take(shown)
+        .map(|path| {
+            let mut chars = path.chars();
+            let clipped: String = chars.by_ref().take(56).collect();
+            let path = if chars.next().is_some() {
+                format!("{}…", clipped)
+            } else {
+                clipped
+            };
+            code_span(&path)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = paths.len().saturating_sub(shown.min(paths.len()));
+    if remaining == 0 {
+        listed
+    } else if listed.is_empty() {
+        format!("{remaining} additional unreviewed files")
+    } else {
+        format!("{listed}, and {remaining} additional unreviewed files")
+    }
+}
+
+fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    let paths = summary
+        .file_coverage
+        .as_ref()
+        .map(|coverage| coverage.unreviewed.as_slice())
+        .filter(|paths| !paths.is_empty())
+        .or_else(|| (!proposal.unreviewed.is_empty()).then_some(proposal.unreviewed.as_slice()));
+    if let Some(paths) = paths {
+        out.push_str("\n**Unreviewed paths**\n\n");
+        for path in paths {
+            let _ = writeln!(out, "- {}", code_span(path));
+        }
+    }
+}
+
 fn has_finding_signal(proposal: &Proposal) -> bool {
     proposal.findings().next().is_some()
         || proposal
@@ -169,7 +222,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             let _ = write!(
                 out,
                 "; not reviewed: {}",
-                code_list(coverage.unreviewed.iter().map(String::as_str))
+                bounded_paths(&coverage.unreviewed, 3)
             );
         }
         out.push_str(".  \n");
@@ -177,7 +230,7 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
         let _ = writeln!(
             out,
             "**Coverage:** File coverage is unavailable; not reviewed: {}.",
-            code_list(proposal.unreviewed.iter().map(String::as_str))
+            bounded_paths(&proposal.unreviewed, 3)
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");

@@ -6,6 +6,7 @@
 //! turn them into a comment.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use crate::config::types::Severity;
 
@@ -159,11 +160,25 @@ pub struct ChangeMap {
 impl ChangeMap {
     /// Whether at least four changed, non-test symbols make a diagram useful.
     pub fn worth_drawing(&self) -> bool {
-        self.changed()
-            .filter(|component| is_drawable_changed_symbol(component))
+        let drawable: BTreeSet<usize> = self
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, component)| is_diagram_symbol(component))
+            .map(|(index, _)| index)
+            .collect();
+        self.components
+            .iter()
+            .enumerate()
+            .filter(|(index, component)| {
+                drawable.contains(index) && component.role == Role::Changed
+            })
             .count()
             >= 4
-            && !self.links.is_empty()
+            && self
+                .links
+                .iter()
+                .any(|link| drawable.contains(&link.from) && drawable.contains(&link.to))
     }
 
     /// The behaviours the change edits.
@@ -177,10 +192,8 @@ impl ChangeMap {
     }
 }
 
-fn is_drawable_changed_symbol(component: &Component) -> bool {
-    if component.role != Role::Changed {
-        return false;
-    }
+/// Whether a symbol is useful and safe to show in the behavioural diagram.
+pub(crate) fn is_diagram_symbol(component: &Component) -> bool {
     let Some((path, symbol)) = component.name.split_once('#') else {
         return false;
     };
@@ -190,8 +203,17 @@ fn is_drawable_changed_symbol(component: &Component) -> bool {
     }) {
         return false;
     }
+    let symbol = symbol.to_ascii_lowercase();
+    if symbol.starts_with("test_")
+        || symbol.starts_with("tests::")
+        || symbol.contains("::tests::")
+        || symbol.ends_with("_test")
+        || symbol.ends_with("_tests")
+    {
+        return false;
+    }
     !matches!(
-        symbol.to_ascii_lowercase().as_str(),
+        symbol.as_str(),
         "call"
             | "json"
             | "test"

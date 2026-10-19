@@ -452,11 +452,6 @@ fn file_coverage(
                     .map(String::as_str)
                     .filter(|path| paths.contains(path) && !unanswered.contains(path)),
             );
-        } else if lane.completed && lane.unanswered.is_empty() {
-            // A completed whole-pull-request lane covers the full forge path
-            // set; lanes with explicit fan-out coverage use that narrower list.
-            has_evidence = true;
-            reviewed.extend(paths.iter().copied());
         }
     }
     if !has_evidence {

@@ -177,6 +177,107 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
 }
 
 #[tokio::test]
+async fn recording_cassette_preserves_dispatch_control_across_budget_binding_orders() {
+    use crate::harness::mock::execution_test_support::{
+        DispatchProbe, execution_control,
+    };
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    for scope_first in [false, true] {
+        for control_first in [false, true] {
+            let dir = tempfile::tempdir().expect("temporary cassette directory");
+            let mock = MockModel::new()
+                .then(json!({"summary":"first"}))
+                .then(json!({"summary":"must remain queued"}))
+                .with_usage(Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    calls_attempted: 1,
+                    calls_succeeded: 1,
+                    cost_usd: 1.0,
+                    ..Usage::default()
+                });
+            let cassette = Arc::new(Cassette::record(
+                Arc::new(DispatchProbe::new(mock.clone())),
+                dir.path(),
+            ));
+            let model: Arc<dyn Model> = cassette.clone();
+            let (execution, control) = execution_control(1);
+            let scoped = if scope_first {
+                model
+                    .scoped_budget(8.0)
+                    .expect("recording cassette creates a lane scope")
+            } else {
+                model
+            };
+            let root = if control_first {
+                let controlled = scoped
+                    .with_execution_control(control)
+                    .unwrap_or_else(|| scoped.clone());
+                controlled
+                    .with_review_budget(10.0)
+                    .expect("recording cassette binds the shared review budget")
+            } else {
+                let budgeted = scoped
+                    .with_review_budget(10.0)
+                    .expect("recording cassette binds the shared review budget");
+                budgeted
+                    .with_execution_control(control)
+                    .unwrap_or(budgeted)
+            };
+            let lane = root
+                .scoped_budget(8.0)
+                .expect("rescoping retains the recording state and both controls");
+
+            assert!(root.complete(request("probe", "first paid response")).await.is_ok());
+            assert!(matches!(
+                lane.complete(request("probe", "refused second response")).await,
+                Err(Error::ModelExecutionRefused {
+                    refusal: ModelExecutionRefusal::CallLimit,
+                    ..
+                })
+            ));
+            assert_eq!(mock.calls(), 1, "the refused call does not reach the inner model");
+            assert_eq!(execution.snapshot().committed_calls, 1);
+            assert_eq!(cassette.served(), 1);
+            assert_eq!(cassette.spend().usage.input_tokens, 2);
+            assert_eq!(cassette.cost_usd(), 1.0);
+            assert_eq!(
+                cassette.flush().expect("the shared recorder retains its first take"),
+                1
+            );
+            assert_eq!(load(dir.path()).expect("recorded take loads").len(), 1);
+            assert!(root.complete_reports_physical_calls());
+            assert!(root.review_reports_physical_calls());
+        }
+    }
+}
+
+#[tokio::test]
+async fn replay_cassette_serves_answers_without_committing_a_live_dispatch_permit() {
+    use crate::harness::mock::execution_test_support::execution_control;
+
+    let dir = tempfile::tempdir().expect("temporary cassette directory");
+    let recorder = Cassette::record(Arc::new(MockModel::always(answer())), dir.path());
+    recorder
+        .complete(request("probe", "recorded response"))
+        .await
+        .expect("recording writes one take");
+    recorder.flush().expect("write the take to disk");
+
+    let replay = Cassette::replay(dir.path(), Mode::Strict).expect("load recorded take");
+    let (execution, control) = execution_control(1);
+    assert!(replay.with_execution_control(control).is_none());
+    let response = replay
+        .complete(request("probe", "recorded response"))
+        .await
+        .expect("offline replay does not need a live dispatch capability");
+    assert_eq!(response.value, answer());
+    assert_eq!(execution.snapshot().committed_calls, 0);
+    assert!(!replay.complete_reports_physical_calls());
+}
+
+#[tokio::test]
 async fn recording_cassette_review_reports_the_physical_path_it_uses() {
     let dir = tempfile::tempdir().expect("temporary cassette directory");
     let inner = Arc::new(ReviewBudgetProbe::default());

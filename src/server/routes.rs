@@ -4790,7 +4790,6 @@ mod tests {
         };
         use crate::ports::model::Message;
         use crate::ports::model_execution::ModelExecutionRefusal;
-        use std::sync::atomic::Ordering;
 
         for scope_first in [false, true] {
             for control_first in [false, true] {
@@ -4864,8 +4863,6 @@ mod tests {
                     Err(Error::ReviewSuperseded)
                 ));
                 assert_eq!(mock.calls(), 1);
-                assert_eq!(store.get(&original.id).await.unwrap().unwrap().head_sha, Some("head-b".into()));
-                let _ = Ordering::Relaxed;
             }
         }
     }

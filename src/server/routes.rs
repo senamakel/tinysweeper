@@ -5842,7 +5842,6 @@ mod tests {
             Admission::Admitted
         );
         publish_test_queued_statuses(&store, 2).await;
-        publish_test_queued_statuses(&store, 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -6664,6 +6663,29 @@ mod tests {
         }
     }
 
+    fn test_status_client_factory(forge: crate::forge::MockForge) -> QueueStatusClientFactory {
+        Arc::new(move |_| {
+            let forge = forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        })
+    }
+
+    async fn publish_test_queued_statuses_through_forge(
+        store: &dyn ReviewJobStore,
+        forge: crate::forge::MockForge,
+        now_ms: i64,
+    ) {
+        publish_pending_queue_checks_at(store, test_status_client_factory(forge), now_ms)
+            .await
+            .expect("test queued statuses publish through the production drainer");
+    }
+
     async fn confirm_test_head(store: &dyn ReviewJobStore, owned: &OwnedReview, now_ms: i64) {
         let head_sha = owned
             .request
@@ -6681,6 +6703,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let forge = crate::forge::MockForge::new();
+        let status_factory = test_status_client_factory(forge.clone());
         let webhook = Action::Review {
             repo: "owner/repo".into(),
             number: 7,
@@ -6694,7 +6718,7 @@ mod tests {
                 &webhook,
                 "delivery-7",
                 "pull_request",
-                Arc::new(|_| async { Err(Error::Forge("unused status client".into())) }.boxed()),
+                status_factory.clone(),
             )
             .await
             .expect("webhook admitted durably"),
@@ -6727,6 +6751,16 @@ mod tests {
         assert_eq!(queued, vec![8, 9]);
         drop(old_sender);
         drop(old_receiver);
+        publish_test_queued_statuses_through_forge(
+            store.as_ref(),
+            forge.clone(),
+            unix_time_ms(),
+        ).await;
+        let queued_checks = forge.writes().into_iter().filter(|write| matches!(
+            write,
+            crate::forge::Write::Check(check) if check.status == Some(crate::forge::types::CheckRunStatus::Queued)
+        )).count();
+        assert_eq!(queued_checks, 3, "the status drainer publishes webhook and manual work before dispatch");
 
         // A fresh dispatcher has a new, empty wakeup channel. Polling the
         // durable scheduler must run each accepted PR exactly once.
@@ -6787,6 +6821,16 @@ mod tests {
                 .await
                 .expect("admitted"),
             Admission::Admitted
+        );
+        let forge = crate::forge::MockForge::new();
+        publish_test_queued_statuses_through_forge(&store, forge.clone(), unix_time_ms()).await;
+        assert_eq!(
+            forge.writes().iter().filter(|write| matches!(
+                write,
+                crate::forge::Write::Check(check) if check.status == Some(crate::forge::types::CheckRunStatus::Queued)
+            )).count(),
+            1,
+            "the queue worker waits for a real published check identity"
         );
 
         let started = Arc::new(AtomicUsize::new(0));

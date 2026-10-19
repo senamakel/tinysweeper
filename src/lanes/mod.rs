@@ -179,7 +179,7 @@ impl<'a> LaneInput<'a> {
     }
 
     /// Borrow the evidence needed to prepare a lane without model work.
-    pub(crate) fn preparation(&self) -> crate::lanes::preparation::LanePreparationInput<'_> {
+    pub(crate) fn preparation(&self) -> crate::lanes::preparation::LanePreparationInput<'a> {
         crate::lanes::preparation::LanePreparationInput {
             config: self.config,
             pull_request: self.pull_request,

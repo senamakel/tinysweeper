@@ -787,7 +787,7 @@ pub(crate) async fn review_with_tree_observed_at_head(
     timing: Option<crate::review_timing::ReviewTiming>,
 ) -> Result<Proposal> {
     let started_at = tokio::time::Instant::now();
-    let large_pr = config.review.large_pr;
+    let large_pr = &config.review.large_pr;
     let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
         crate::app::review_execution::ReviewExecutionOptions {
             started_at,

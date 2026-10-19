@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+#[cfg(test)]
 use crate::lanes::large_pr::ReviewMode;
 use crate::ports::model::Model;
 #[cfg(test)]
@@ -24,13 +25,15 @@ pub(crate) struct ReviewExecutionOptions {
     pub started_at: Instant,
     /// The already-established server hard deadline.
     pub hard_deadline: Instant,
-    /// Review policy mode.
+    /// Review policy mode retained for test diagnostics until scheduler wiring.
+    #[cfg(test)]
     pub mode: ReviewMode,
     /// Physical call ceiling, absent for normal-mode scheduling.
     pub max_calls: Option<usize>,
     /// Percent of the original hard window available for new work.
     pub soft_deadline_percent: u8,
-    /// Maximum finish interval for work already admitted at the soft deadline.
+    /// Maximum finish interval for admitted work, consumed by bounded fan-out.
+    #[cfg(test)]
     pub drain_seconds: u64,
 }
 
@@ -52,6 +55,7 @@ pub(crate) struct ReviewModelBinding {
     /// The root-budgeted and execution-controlled model when those hooks exist.
     pub(crate) model: Arc<dyn Model>,
     /// Whether the model supplied a shared review-level monetary root.
+    #[cfg(test)]
     pub(crate) review_budget_bound: bool,
     /// Whether physical dispatches are governed by this job's execution scope.
     pub(crate) execution_control_bound: bool,
@@ -83,6 +87,7 @@ impl ReviewRunContext {
     pub(crate) fn bind_model(&self, base: Arc<dyn Model>, budget_usd: f64) -> &ReviewModelBinding {
         self.model.get_or_init(|| {
             let rooted = base.with_review_budget(budget_usd);
+            #[cfg(test)]
             let review_budget_bound = rooted.is_some();
             let rooted = rooted.unwrap_or(base);
             let execution: Arc<dyn ModelExecutionControl> = self.execution.clone();
@@ -90,6 +95,7 @@ impl ReviewRunContext {
             let execution_control_bound = controlled.is_some();
             ReviewModelBinding {
                 model: controlled.unwrap_or(rooted),
+                #[cfg(test)]
                 review_budget_bound,
                 execution_control_bound,
             }

@@ -334,7 +334,7 @@ mod tests {
             embed_tokens: 0,
             cost_usd: 0.005,
         };
-        let mut metrics = Metrics::start(round_one, Duration::from_millis(20), 3, 2);
+        let mut metrics = Metrics::start(round_one, Duration::from_millis(20), 3, 2, None);
 
         metrics.record(round_two, Duration::from_millis(10), 2, 1);
         metrics.record(Usage::default(), Duration::from_millis(5), 1, 0);

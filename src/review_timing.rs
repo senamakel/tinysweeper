@@ -192,9 +192,13 @@ impl ReviewTiming {
         self.record(|record| {
             let key = format!("{}:{pass}", lane.as_str());
             let yield_totals = record.pass_yields.entry(key).or_default();
-            yield_totals.groups += 1;
-            yield_totals.candidates += candidates as u64;
-            yield_totals.survivors += survivors as u64;
+            yield_totals.groups = yield_totals.groups.saturating_add(1);
+            yield_totals.candidates = yield_totals
+                .candidates
+                .saturating_add(candidates.min(u64::MAX as usize) as u64);
+            yield_totals.survivors = yield_totals
+                .survivors
+                .saturating_add(survivors.min(u64::MAX as usize) as u64);
         });
     }
 

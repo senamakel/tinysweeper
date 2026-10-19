@@ -209,15 +209,14 @@ impl ModelExecutionControl for ReviewExecution {
                     return Err(ModelExecutionRefusal::SoftDeadline);
                 }
 
-                if self
-                    .inner
+                if state
                     .max_calls
                     .is_some_and(|limit| state.committed_calls >= limit)
                 {
                     return Err(ModelExecutionRefusal::CallLimit);
                 }
 
-                let capacity_is_reserved = self.inner.max_calls.is_some_and(|limit| {
+                let capacity_is_reserved = state.max_calls.is_some_and(|limit| {
                     state.committed_calls.saturating_add(state.reserved_calls) >= limit
                 });
                 if !capacity_is_reserved {
@@ -242,6 +241,7 @@ const PERMIT_COMMITTED: u8 = 1;
 const PERMIT_REFUSED: u8 = 2;
 const PERMIT_RELEASED: u8 = 3;
 const PERMIT_CANCELLED: u8 = 4;
+const PERMIT_CALL_LIMIT: u8 = 5;
 
 struct ReviewDispatchPermit {
     inner: Arc<ExecutionInner>,
@@ -254,6 +254,7 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
             PERMIT_COMMITTED => return Ok(()),
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
+            PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
             PERMIT_RESERVED => {}
             _ => return Err(ModelExecutionRefusal::SoftDeadline),
         }
@@ -263,6 +264,7 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
             PERMIT_COMMITTED => return Ok(()),
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
+            PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
             PERMIT_RESERVED => {}
             _ => return Err(ModelExecutionRefusal::SoftDeadline),
         }
@@ -275,6 +277,14 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         if (self.inner._now)() >= self.inner.soft_deadline {
             self.state.store(PERMIT_REFUSED, Ordering::Release);
             return Err(ModelExecutionRefusal::SoftDeadline);
+        }
+
+        if state
+            .max_calls
+            .is_some_and(|limit| state.committed_calls >= limit)
+        {
+            self.state.store(PERMIT_CALL_LIMIT, Ordering::Release);
+            return Err(ModelExecutionRefusal::CallLimit);
         }
 
         state.reserved_calls = state.reserved_calls.saturating_sub(1);

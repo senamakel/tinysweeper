@@ -822,7 +822,7 @@ async fn admit_webhook_review(
         // This deterministic write is the narrow #19 exception: it reports
         // trusted accepted work only. No review context, lease, budget, index,
         // model or model credential is reachable from this path.
-        if let Err(err) = publish_pending_queue_checks(jobs, _status_client).await {
+        if let Err(err) = publish_pending_queue_checks(jobs, status_client).await {
             tracing::warn!(%err, %delivery, "queued review status remains durable and will be retried");
         }
     }

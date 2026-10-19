@@ -6877,7 +6877,7 @@ mod tests {
     #[tokio::test]
     async fn superseded_check_without_recovered_id_gets_terminal_status_and_releases_outbox() {
         use crate::forge::MockForge;
-        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+        use crate::forge::types::CheckConclusion;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let forge = MockForge::new();
@@ -6925,7 +6925,7 @@ mod tests {
         let check = forge.checks().remove(status::CHECK_NAME)
             .expect("a terminal status is published for superseded A");
         assert_eq!(check.head_sha, "head-a");
-        assert_eq!(check.status, Some(CheckRunStatus::Completed));
+        assert_eq!(check.status, None, "terminal checks omit pending status");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
         assert!(check.summary.contains("superseded before review"));
         assert!(store.snapshot_for_test().retired_checks.is_empty());

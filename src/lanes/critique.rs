@@ -1908,6 +1908,34 @@ fn helper() {
     }
 
     #[tokio::test]
+    async fn a_small_group_with_a_candidate_gets_an_adaptive_pass() {
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "let x = items[i];",
+                    "rule": "unchecked-index",
+                    "title": "Guard the index",
+                    "body": "The index may be out of bounds.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}))
+            .then(json!({"summary": "No further findings.", "findings": []}));
+        let handle = model.clone();
+
+        run_with(model, &config_with_passes(2), &diffs()).await;
+
+        assert_eq!(
+            handle.calls(),
+            3,
+            "a small group's first-pass candidate should earn one further review"
+        );
+    }
+
+    #[tokio::test]
     async fn adaptive_requests_keep_path_rules_and_redaction_guidance() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![

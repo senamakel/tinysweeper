@@ -4136,18 +4136,19 @@ mod tests {
         use serde_json::json;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let now = unix_time_ms();
         let mut request = queued_test_review(7);
         request.head_sha = Some("head-a-delayed".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
-        let newer = store.claim_next("newer-worker", 10).await.unwrap().unwrap();
-        assert!(store.confirm_head(&newer, "head-b-live", 11).await.unwrap());
+        let newer = store.claim_next("newer-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&newer, "head-b-live", now + 1).await.unwrap());
         assert_eq!(
-            store.begin_paid(&newer, 12).await.unwrap(),
+            store.begin_paid(&newer, now + 2).await.unwrap(),
             PaidStart::Started
         );
         assert!(
             store
-                .finish(&newer, TerminalOutcome::Published, 13, 13)
+                .finish(&newer, TerminalOutcome::Published, now + 3, now + 3)
                 .await
                 .unwrap()
         );
@@ -4158,16 +4159,16 @@ mod tests {
 
         request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
         request.delivery = Some("delayed-a".into());
-        request.accepted_at_ms = 14;
+        request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request]).await.unwrap();
         let delayed = store
-            .claim_next("delayed-worker", 15)
+            .claim_next("delayed-worker", now + 5)
             .await
             .unwrap()
             .unwrap();
         assert!(
             store
-                .confirm_head(&delayed, "head-b-live", 16)
+                .confirm_head(&delayed, "head-b-live", now + 6)
                 .await
                 .unwrap()
         );

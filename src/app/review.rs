@@ -2888,6 +2888,7 @@ mod tests {
         .expect("the physical agentic dispatch started");
         drop(running);
         releases.add_permits(1);
+        crate::harness::agentic::drain_worker_tasks().await;
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {

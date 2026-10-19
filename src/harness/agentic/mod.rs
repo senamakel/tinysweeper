@@ -42,6 +42,12 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[cfg(test)]
+pub(crate) async fn drain_worker_tasks() {
+    let barrier = WORKERS.spawn(async { tokio::task::yield_now().await });
+    let _ = barrier.await;
+}
+
 async fn shared_runtime() -> Result<Arc<Runtime>> {
     RUNTIME
         .get_or_try_init(|| async {

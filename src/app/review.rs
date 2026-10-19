@@ -1087,10 +1087,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let prepared_knowledge = crate::knowledge::prepare(
         config,
         repo,
-        &context
-            .files
+        &diffs
             .iter()
-            .map(|file| file.path.clone())
+            .map(|diff| diff.path.clone())
             .collect::<Vec<_>>(),
         knowledge,
     )

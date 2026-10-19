@@ -33,7 +33,8 @@ use crate::evidence::diff::{FileDiff, LineKind};
 /// These reuse security triage's established path and sink indicators; public
 /// API detection is intentionally a bounded textual hint, not a parser.
 pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
-    let sensitive = sensitive_path(&diff.path) || added_sinks(diff) > 0;
+    let sensitive =
+        sensitive_path(&diff.path) || is_supply_chain_file(&diff.path) || added_sinks(diff) > 0;
     let lower_path = diff.path.to_ascii_lowercase();
     let public_path = ["/api/", "/schema/", "/schemas/"]
         .iter()

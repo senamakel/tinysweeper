@@ -1945,6 +1945,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_queued_status_and_external_id_survive_wire_serialization() {
+        let mut queued = check(None);
+        queued.status = Some(crate::forge::types::CheckRunStatus::Queued);
+        queued.external_id = Some("review:job-123:head-abc".into());
+
+        let payload = check_payload(&queued);
+
+        assert_eq!(payload["status"], "queued");
+        assert_eq!(payload["external_id"], "review:job-123:head-abc");
+    }
+
+    #[test]
+    fn pending_without_explicit_status_remains_in_progress() {
+        assert_eq!(check_payload(&check(None))["status"], "in_progress");
+    }
+
+    #[test]
     fn images_ride_under_output_and_are_capped_at_the_api_ceiling() {
         let mut shots = check(Some(CheckConclusion::Neutral));
         shots.images = (0..MAX_CHECK_IMAGES + 3)

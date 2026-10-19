@@ -259,6 +259,26 @@ mod tests {
     use crate::forge::MockForge;
     use crate::forge::types::CheckConclusion;
 
+    #[test]
+    fn queued_check_is_pinned_and_names_its_durable_wait_position() {
+        let check = queued("head-123", 3, "review:job-123:head-123");
+
+        assert_eq!(check.name, CHECK_NAME);
+        assert_eq!(check.head_sha, "head-123");
+        assert_eq!(check.conclusion, None);
+        assert_eq!(check.status, Some(crate::forge::types::CheckRunStatus::Queued));
+        assert_eq!(check.external_id.as_deref(), Some("review:job-123:head-123"));
+        assert_eq!(check.title, "Queued — 3 reviews ahead");
+    }
+
+    #[test]
+    fn existing_pending_check_helper_keeps_legacy_in_progress_default() {
+        let check = in_progress("head-123");
+
+        assert_eq!(check.status, None);
+        assert_eq!(check.conclusion, None);
+    }
+
     fn file_lane(id: &str, reviewed: &[&str], unanswered: &[&str]) -> LaneProposal {
         LaneProposal {
             lane: match id {

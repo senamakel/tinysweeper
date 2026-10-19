@@ -2715,6 +2715,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_forge_marks_degraded_context_notes_as_unverified() {
+        let forge = forge("abc123");
+        let mut proposal = proposal("abc123", vec![]);
+        proposal.lanes[0].context_degraded = true;
+        proposal.lanes[0].noted.push(finding());
+
+        apply(&forge, &forge, &config(), &proposal, None)
+            .await
+            .expect("applies");
+
+        let body = match &overview_comments(&forge)[0] {
+            Write::Comment { body, .. } => body,
+            write => panic!("expected new hub comment, got {write:?}"),
+        };
+        assert!(
+            body.contains("Unverified notes — repository context was unavailable; these are not actionable findings"),
+            "{body}"
+        );
+        assert!(body.contains("Unverified note — critique"), "{body}");
+        assert!(body.contains("[`src/main.rs:2`]"), "{body}");
+        assert!(body.contains("**Problem:**"), "{body}");
+        assert!(body.contains("**Suggested fix:**"), "{body}");
+    }
+
+    #[tokio::test]
     async fn mock_forge_publishes_only_citations_on_supplied_head_lines() {
         use crate::harness::mock::MockModel;
 

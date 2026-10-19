@@ -254,7 +254,6 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
             Link { from: 2, to: 3, relation: FlowRelation::Implements, weight: 1 },
             Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
             Link { from: 5, to: 0, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
             Link { from: 6, to: 0, relation: FlowRelation::Calls, weight: 1 },
             Link { from: 7, to: 0, relation: FlowRelation::Tests, weight: 1 },
         ],

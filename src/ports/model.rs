@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::ports::model_execution::ModelExecutionControl;
 
 /// Observe one settled model call without exposing its request or response.
 pub(crate) trait ModelCallObserver: Send + Sync {
@@ -290,6 +291,19 @@ pub trait Model: Send + Sync {
     /// Replaces any prior scope rather than nesting ledgers. Offline models
     /// need no provider budget and keep returning `None`.
     fn scoped_budget(&self, _budget_usd: f64) -> Option<Arc<dyn Model>> {
+        None
+    }
+
+    /// Return a model clone that preserves one review-wide dispatch control.
+    ///
+    /// The default keeps existing offline and custom models source-compatible.
+    /// Returning `None` means this adapter cannot enforce a physical-call
+    /// ceiling; normal-mode scheduling may still cancel its logical work, but
+    /// a large-mode caller must fail closed before paid model work.
+    fn with_execution_control(
+        &self,
+        _control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
         None
     }
 }

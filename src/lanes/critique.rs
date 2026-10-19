@@ -50,6 +50,7 @@ use crate::harness::schema::{self, RawFinding};
 use crate::lanes::fanout::{FileReview, per_unit};
 use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
+use crate::lanes::preparation::LanePreparationInput;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
@@ -66,6 +67,114 @@ impl Critique {
     /// Build the lane over `model`.
     pub fn new(model: Arc<dyn Model>) -> Self {
         Self { model }
+    }
+}
+
+/// The model-free part of preparing one critique lane.
+pub(crate) struct CritiquePreparation {
+    /// An early draft/content skip, when the lane has no candidate work.
+    pub(crate) skipped: Option<LaneOutcome>,
+    /// Groups in the exact order the existing critique runner reviews them.
+    pub(crate) groups: Vec<FileGroup>,
+    /// Paths covered without a current model response.
+    pub(crate) covered_without_model: Vec<String>,
+    /// A deterministic substitution proved by the changed lines, if any.
+    pub(crate) mechanical: Option<mechanical::Substitution>,
+    /// The one verified path still sent as the mechanical sample.
+    pub(crate) sample: Option<String>,
+    /// Whether every fresh path was verified mechanically.
+    pub(crate) paths_empty: bool,
+}
+
+/// Prepare critique groups without constructing prompts or calling a model.
+pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
+    if !input.has_reviewable_content() {
+        return CritiquePreparation {
+            skipped: Some(LaneOutcome::skipped(
+                "No added or modified lines to review.",
+            )),
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            sample: None,
+            paths_empty: true,
+        };
+    }
+
+    if let Some(skipped) = input.skip_as_draft() {
+        return CritiquePreparation {
+            skipped: Some(skipped),
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            sample: None,
+            paths_empty: true,
+        };
+    }
+
+    let fresh: Vec<&FileDiff> = replay::unreviewed(input.reviewed_evidence, input.diffs)
+        .into_iter()
+        .filter(|diff| !diff.changed_lines.is_empty())
+        .collect();
+    let mut covered_without_model: Vec<String> = input
+        .diffs
+        .iter()
+        .filter(|diff| {
+            !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
+        })
+        .map(|diff| diff.path.clone())
+        .collect();
+
+    let mechanical = mechanical::detect(&fresh);
+    let sample = mechanical
+        .as_ref()
+        .and_then(|substitution| substitution.verified.first().cloned());
+    let paths: Vec<String> = fresh
+        .iter()
+        .filter(|diff| {
+            mechanical.as_ref().is_none_or(|substitution| {
+                !substitution.verified.contains(&diff.path)
+                    || Some(&diff.path) == sample.as_ref()
+            })
+        })
+        .map(|diff| diff.path.clone())
+        .collect();
+
+    if let Some(substitution) = &mechanical {
+        covered_without_model.extend(
+            substitution
+                .verified
+                .iter()
+                .filter(|path| Some(*path) != sample.as_ref())
+                .cloned(),
+        );
+    }
+
+    let groups = if input.config.grouping.enabled {
+        input.group(
+            &paths,
+            &GroupBounds {
+                max_files: input.config.grouping.max_files,
+                max_hunk_chars: input.config.grouping.max_hunk_chars,
+            },
+        )
+    } else {
+        paths
+            .iter()
+            .map(|path| FileGroup {
+                label: path.clone(),
+                paths: vec![path.clone()],
+            })
+            .collect()
+    };
+
+    CritiquePreparation {
+        skipped: None,
+        groups,
+        covered_without_model,
+        mechanical,
+        sample,
+        paths_empty: paths.is_empty(),
     }
 }
 

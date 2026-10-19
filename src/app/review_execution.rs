@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_dispatches_wait_for_reservations_then_refuse_at_the_shared_ceiling() {
         let started_at = Instant::now();
         let execution = Arc::new(ReviewExecution::new(options(
@@ -246,18 +246,10 @@ mod tests {
             started_at + Duration::from_secs(100),
         )));
         let control: Arc<dyn ModelExecutionControl> = execution.clone();
-        let mut permits = Vec::new();
-
-        for _ in 0..3 {
-            permits.push(control.acquire().await.expect("initial reservation"));
-        }
-        assert_eq!(execution.snapshot().reserved_calls, 3);
-        assert_eq!(execution.snapshot().committed_calls, 0);
-
-        let start_barrier = Arc::new(tokio::sync::Barrier::new(98));
+        let start_barrier = Arc::new(tokio::sync::Barrier::new(101));
         let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tasks = tokio::task::JoinSet::new();
-        for _ in 0..97 {
+        for _ in 0..100 {
             let control = Arc::clone(&control);
             let start_barrier = Arc::clone(&start_barrier);
             let started_tx = started_tx.clone();
@@ -268,29 +260,53 @@ mod tests {
             });
         }
         drop(started_tx);
-        for _ in 0..97 {
+        for _ in 0..100 {
             started_rx.recv().await.expect("acquire task started");
         }
         start_barrier.wait().await;
-        tokio::task::yield_now().await;
+
+        let mut permits = Vec::new();
+        let admissions = tokio::time::timeout(Duration::from_secs(2), async {
+            while permits.len() < 3 {
+                let result = tasks.join_next().await.expect("admission task");
+                match result.expect("dispatch task") {
+                    Ok(permit) => permits.push(permit),
+                    Err(reason) => panic!("empty call budget refused an admission: {reason:?}"),
+                }
+            }
+        })
+        .await;
         assert!(
-            tasks.try_join_next().is_none(),
-            "quota waiters stay pending while slots are reserved"
+            admissions.is_ok(),
+            "three concurrent admissions complete promptly"
         );
+
+        let pending = tokio::time::timeout(Duration::from_millis(25), tasks.join_next()).await;
+        assert!(
+            pending.is_err(),
+            "callers wait while all three admitted reservations are held"
+        );
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.reserved_calls, 3);
+        assert_eq!(snapshot.committed_calls, 0);
 
         for permit in &permits {
             permit.mark_dispatched().expect("commit reserved slot");
         }
-        let mut refused = 0;
-        while let Some(result) = tasks.join_next().await {
-            match result.expect("dispatch task") {
-                Err(reason) => assert_eq!(reason, ModelExecutionRefusal::CallLimit),
-                Ok(_) => panic!("committed quota must refuse after all reserved slots commit"),
+        let refusals = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut refused = 0;
+            while let Some(result) = tasks.join_next().await {
+                match result.expect("dispatch task") {
+                    Err(reason) => assert_eq!(reason, ModelExecutionRefusal::CallLimit),
+                    Ok(_) => panic!("committed quota must refuse after all reserved slots commit"),
+                }
+                refused += 1;
             }
-            refused += 1;
-        }
+            refused
+        })
+        .await;
 
-        assert_eq!(refused, 97);
+        assert_eq!(refusals.expect("bounded refusal completion"), 97);
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.committed_calls, 3);
         assert_eq!(snapshot.reserved_calls, 0);

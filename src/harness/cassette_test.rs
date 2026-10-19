@@ -138,8 +138,197 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
         .expect("take file"),
     )
     .expect("take json");
-    assert_eq!(take.model_answered, "test/review-only");
+    let context = take.review_context.expect("review query context");
+    assert_eq!(context.revision.as_deref(), Some(&"a".repeat(40)));
+    assert_eq!(context.queries.len(), 2);
+    assert!(matches!(
+        context.queries[0].query,
+        RecordedTreeQuery::Lookup(Lookup::Read { .. })
+    ));
+    assert!(matches!(
+        context.queries[1].query,
+        RecordedTreeQuery::Symbol { .. }
+    ));
     assert_eq!(take.usage.cost_usd, 0.002);
+}
+
+#[tokio::test]
+async fn review_replay_reissues_queries_and_reconstructs_identical_evidence_offline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let live = Arc::new(ReviewOnlyModel {
+        reviews: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let source = ReviewTree;
+    let recording_tree = crate::ports::tree::RecordingTree::new(&source);
+    let recorder = Arc::new(Cassette::record(live.clone(), dir.path()));
+    let mut models = crate::config::types::Models::default();
+    models.agentic_reviewers = true;
+    let live_cap = crate::flows::caps::ModelCapability::new(recorder.clone(), models.clone());
+    let call = crate::flows::panel::Call {
+        id: "reviewer".into(),
+        model: "test/review-only".into(),
+        system: "inspect".into(),
+        prompt: "change evidence".into(),
+        schema_name: "tinysweeper_critique".into(),
+    };
+    let schema = json!({"type": "object"});
+    let policy = crate::config::types::LookupPolicy::default();
+    let (live_response, live_evidence) = live_cap
+        .review(&call, &schema, &recording_tree, &policy)
+        .await
+        .expect("live review");
+    recorder.flush().expect("flushes actual review response");
+    assert_eq!(live.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let recorded_lookups = recording_tree.recorded();
+    assert_eq!(recorded_lookups.len(), 2);
+    let replay_tree = crate::ports::tree::MockTree::from_recorded(recorded_lookups);
+    let replay = Arc::new(Cassette::replay(dir.path(), Mode::Strict).expect("loads"));
+    let replay_cap = crate::flows::caps::ModelCapability::new(replay.clone(), models);
+    let (replayed_response, replayed_evidence) = replay_cap
+        .review(&call, &schema, &replay_tree, &policy)
+        .await
+        .expect("offline replay reissues source reads");
+
+    assert_eq!(replayed_response.value, live_response.value);
+    assert_eq!(replayed_response.usage, live_response.usage);
+    assert_eq!(replayed_evidence, live_evidence);
+    assert_eq!(replay.served(), 1);
+    assert_eq!(replay.strict_misses(), 0);
+
+    let falsification_request = |evidence: &str| {
+        let mut request = request("test/review-only", "falsify the finding");
+        request.messages.push(Message::user(evidence));
+        request
+    };
+    assert_eq!(
+        key(&falsification_request(&live_evidence)),
+        key(&falsification_request(&replayed_evidence)),
+        "source evidence must keep the downstream falsification prompt stable"
+    );
+}
+
+#[tokio::test]
+async fn review_context_policy_revision_and_method_are_part_of_strict_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = Cassette::record(
+        Arc::new(ReviewOnlyModel {
+            reviews: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        dir.path(),
+    );
+    let request = request("test/review-only", "inspect this change");
+    let policy = crate::config::types::LookupPolicy::default();
+    recorder.review(request.clone(), &ReviewTree, &policy).await.expect("records");
+    recorder.flush().expect("flushes");
+
+    let player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    let mut changed_policy = policy.clone();
+    changed_policy.rounds += 1;
+    assert!(player.review(request.clone(), &ReviewTree, &changed_policy).await.is_err());
+    assert_eq!(player.strict_misses(), 1);
+
+    struct DifferentRevision;
+    #[async_trait::async_trait]
+    impl TreeReader for DifferentRevision {
+        async fn lookup(&self, _: &Lookup) -> Result<Found> { Ok(Found::NotFound) }
+        fn describe(&self) -> String { "same reader".into() }
+        fn revision(&self) -> Option<String> { Some("b".repeat(40)) }
+    }
+    let revision_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(revision_player
+        .review(request.clone(), &DifferentRevision, &policy)
+        .await
+        .is_err());
+    assert_eq!(revision_player.strict_misses(), 1);
+
+    let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(method_player.complete(request).await.is_err());
+    assert_eq!(method_player.strict_misses(), 1);
+}
+
+struct ScopedQuotaModel {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    scopes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Model for ScopedQuotaModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call > 0 {
+            return Err(crate::error::Error::Model("scope exhausted".into()).with_usage(
+                Usage {
+                    input_tokens: 50,
+                    output_tokens: 7,
+                    cost_usd: 0.005,
+                    ..Default::default()
+                },
+            ));
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/scoped".into(),
+            usage: Usage {
+                input_tokens: 100,
+                output_tokens: 12,
+                cost_usd: 0.01,
+                ..Default::default()
+            },
+        })
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        self.scopes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Arc::new(Self {
+            calls: self.calls.clone(),
+            scopes: self.scopes.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model = Arc::new(ScopedQuotaModel {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scopes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
+    let mut models = crate::config::types::Models::default();
+    models.agentic_reviewers = true;
+    models.budget_usd_per_pr = 100.0;
+    let capability = crate::flows::caps::ModelCapability::new(recorder.clone(), models);
+    let policy = crate::config::types::LookupPolicy {
+        enabled: false,
+        ..Default::default()
+    };
+    let call = crate::flows::panel::Call {
+        id: "reviewer".into(),
+        model: "test/scoped".into(),
+        system: "inspect".into(),
+        prompt: "change evidence".into(),
+        schema_name: "tinysweeper_critique".into(),
+    };
+    capability
+        .review(&call, &json!({}), &ReviewTree, &policy)
+        .await
+        .expect("first call goes through scoped review");
+    let err = capability
+        .model()
+        .complete(request("test/scoped", "direct follow-up"))
+        .await
+        .expect_err("the same finite model scope refuses the second call");
+
+    assert!(err.to_string().contains("scope exhausted"));
+    assert!(model.scopes.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(recorder.served(), 1);
+    assert_eq!(recorder.spend().usage.input_tokens, 150);
+    assert_eq!(recorder.cost_usd(), 0.015);
+    assert_eq!(recorder.flush().expect("root cassette sees scoped response"), 1);
 }
 
 #[test]

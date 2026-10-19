@@ -293,8 +293,7 @@ mod tests {
                 path: path.clone(),
                 additions: if index == 0 { 1 } else { 0 },
                 deletions: if index == 0 { 1 } else { 0 },
-                patch: (path.as_str() != "src/zz_test.rs")
-                    .then_some("untrusted patch text".into()),
+                patch: (path.as_str() != "src/zz_test.rs").then_some("untrusted patch text".into()),
                 ..ChangedFile::default()
             })
             .collect::<Vec<_>>();
@@ -356,8 +355,20 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>(),
             omitted_critique
         );
-        assert_eq!(plan.selected.iter().filter(|g| g.lane == LaneId::Security).count(), 9);
-        assert_eq!(plan.selected.iter().filter(|g| g.lane == LaneId::Critique).count(), 3);
+        assert_eq!(
+            plan.selected
+                .iter()
+                .filter(|g| g.lane == LaneId::Security)
+                .count(),
+            9
+        );
+        assert_eq!(
+            plan.selected
+                .iter()
+                .filter(|g| g.lane == LaneId::Critique)
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -407,10 +418,7 @@ mod tests {
         config.review.large_pr.changed_lines = u64::MAX;
         config.review.large_pr.groups = 24;
         for (count, expected) in [(23, ReviewMode::Normal), (24, ReviewMode::Large)] {
-            assert_eq!(
-                plan(&config, &[], &[], candidates(count)).mode,
-                expected
-            );
+            assert_eq!(plan(&config, &[], &[], candidates(count)).mode, expected);
         }
     }
 

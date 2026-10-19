@@ -97,6 +97,14 @@ impl Lane for Critique {
             .into_iter()
             .filter(|diff| !diff.changed_lines.is_empty())
             .collect();
+        let mut covered_without_model: Vec<String> = input
+            .diffs
+            .iter()
+            .filter(|diff| {
+                !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
+            })
+            .map(|diff| diff.path.clone())
+            .collect();
 
         // A mechanical rename is verified, not read. Every file the
         // substitution explains in full is proven line for line here and
@@ -181,6 +189,15 @@ impl Lane for Critique {
         // rather than per file: `llm` is shared across the fan-out, so adding
         // it per file would multiply the bill by the file count.
         let mut outcome = outcome.into_outcome();
+        if let Some(sub) = &mechanical {
+            covered_without_model.extend(
+                sub.verified
+                    .iter()
+                    .filter(|path| Some(*path) != sample)
+                    .cloned(),
+            );
+        }
+        outcome.include_reviewed_paths(covered_without_model);
         outcome.spend.merge(llm.spend());
         if let Some(sub) = &mechanical {
             outcome.summary = format!("{} {}", outcome.summary.trim(), mechanical::note(sub));
@@ -636,6 +653,7 @@ async fn place(
             return Err(crate::error::Error::Budget {
                 spent: spend.cost_usd(),
                 limit: config.models.budget_usd_per_pr,
+                usage: None,
             });
         }
 

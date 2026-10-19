@@ -195,6 +195,9 @@ pub enum Anchoring {
 pub struct LaneOutcome {
     /// One or two sentences for the check-run summary.
     pub summary: String,
+    /// Whether this lane produced a completed result, including deterministic
+    /// policy checks that do not make a model call.
+    pub completed: bool,
     /// The findings, before the shared filtering pipeline runs.
     pub findings: Vec<Finding>,
     /// Titles of earlier findings this revision fixed.
@@ -220,6 +223,17 @@ pub struct LaneOutcome {
     /// change. A review that consulted no model once approved a pull request
     /// with "found nothing blocking · $0.0000 · 0 in / 0 out".
     pub unanswered: Vec<String>,
+    /// Per-file review coverage, when this lane fans out over changed files.
+    pub coverage: Option<FileCoverage>,
+}
+
+/// Paths a per-file lane considered, split by whether it received a response.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileCoverage {
+    /// Files this lane reviewed.
+    pub reviewed: Vec<String>,
+    /// Files this lane could not review.
+    pub unanswered: Vec<String>,
 }
 
 impl LaneOutcome {
@@ -230,6 +244,20 @@ impl LaneOutcome {
             summary: reason.clone(),
             skipped: Some(reason),
             ..Self::default()
+        }
+    }
+
+    /// Add paths this lane can prove it reviewed without a model call.
+    ///
+    /// Used for unchanged replayed files and deterministic mechanical
+    /// verification. A path with a current unanswered result stays uncovered;
+    /// an earlier proof cannot hide a failed attempt on this run.
+    pub fn include_reviewed_paths(&mut self, paths: impl IntoIterator<Item = String>) {
+        for path in paths {
+            let coverage = self.coverage.get_or_insert_with(FileCoverage::default);
+            if !coverage.unanswered.contains(&path) && !coverage.reviewed.contains(&path) {
+                coverage.reviewed.push(path);
+            }
         }
     }
 
@@ -303,12 +331,14 @@ impl LaneOutcome {
 
         Self {
             summary,
+            completed: true,
             findings,
             resolved: parsed.resolved,
             spend,
             skipped: None,
             pending: Vec::new(),
             unanswered: Vec::new(),
+            coverage: None,
         }
     }
 
@@ -323,6 +353,9 @@ impl LaneOutcome {
         }
         if self.findings.iter().any(|f| f.severity >= fail_on) {
             return CheckConclusion::Failure;
+        }
+        if !self.unanswered.is_empty() {
+            return CheckConclusion::Neutral;
         }
         if !self.pending.is_empty() {
             return CheckConclusion::Neutral;
@@ -502,5 +535,14 @@ mod outcome_tests {
         let outcome = LaneOutcome::skipped("no reviewable content");
         assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Neutral);
         assert!(!outcome.conclusion(Severity::High).blocks());
+    }
+
+    #[test]
+    fn an_outcome_with_unanswered_files_is_neutral() {
+        let outcome = LaneOutcome {
+            unanswered: vec!["src/unread.rs".into()],
+            ..LaneOutcome::default()
+        };
+        assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Neutral);
     }
 }

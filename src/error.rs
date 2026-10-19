@@ -37,6 +37,11 @@ pub enum Error {
     #[error("forge: {0}")]
     Forge(String),
 
+    /// Review workers are at capacity and a manual request was refused before
+    /// it spent credentials or read pull request data.
+    #[error("review capacity is full; retry the manual request")]
+    ReviewCapacityFull,
+
     /// A model call failed, timed out, or returned output that did not match
     /// the lane's structured-output schema.
     #[error("model: {0}")]
@@ -80,6 +85,8 @@ pub enum Error {
         spent: f64,
         /// The configured ceiling.
         limit: f64,
+        /// Paid model usage from earlier turns, when this refusal follows them.
+        usage: Option<Box<crate::ports::model::Usage>>,
     },
 
     /// A pull request is larger than the review's deterministic input limits.
@@ -101,6 +108,17 @@ pub enum Error {
         max_lines: u64,
     },
 
+    /// The pull request head changed after the server claimed a review lease.
+    /// This is a clean skip: retry on the new head rather than reviewing it
+    /// under a lease for a different revision.
+    #[error("pull request head changed before the review started")]
+    ReviewSuperseded,
+
+    /// This process lost its durable scheduler ownership before a protected
+    /// review phase could start or publish.
+    #[error("review worker ownership expired or was replaced")]
+    ReviewOwnershipLost,
+
     /// A feature required for this code path was not compiled in.
     #[error("{0} requires the `{1}` feature; rebuild with --features {1}")]
     FeatureDisabled(&'static str, &'static str),
@@ -119,17 +137,30 @@ pub enum Error {
 }
 
 impl Error {
-    /// Paid usage retained by a model refusal, when available.
+    /// Paid model usage retained when an unsuccessful review has accounting.
     pub fn usage(&self) -> Option<crate::ports::model::Usage> {
         match self {
             Self::ModelUsage { usage, .. } => Some(**usage),
+            Self::Budget {
+                usage: Some(usage), ..
+            } => Some(**usage),
             _ => None,
         }
     }
 
     /// Keep safe paid accounting when a model cannot return an answer.
     pub fn with_usage(self, usage: crate::ports::model::Usage) -> Self {
-        let message = match self {
+        let error = match self {
+            Self::Budget { spent, limit, .. } => {
+                return Self::Budget {
+                    spent,
+                    limit,
+                    usage: Some(Box::new(usage)),
+                };
+            }
+            other => other,
+        };
+        let message = match error {
             Self::Model(message) | Self::ModelUsage { message, .. } => message,
             other => other.to_string(),
         };
@@ -197,8 +228,37 @@ mod tests {
         let err = Error::Budget {
             spent: 1.239,
             limit: 1.0,
+            usage: None,
         };
         assert_eq!(err.to_string(), "budget exhausted: spent $1.24 of $1.00");
+    }
+
+    #[test]
+    fn paid_budget_refusal_keeps_its_classification_and_usage() {
+        let usage = crate::ports::model::Usage {
+            input_tokens: 12,
+            output_tokens: 4,
+            cost_usd: 0.015,
+            ..Default::default()
+        };
+        let err = Error::Budget {
+            spent: 0.015,
+            limit: 0.02,
+            usage: None,
+        }
+        .with_usage(usage);
+        assert!(matches!(err, Error::Budget { .. }));
+        assert_eq!(err.usage(), Some(usage));
+    }
+
+    #[test]
+    fn a_budget_refusal_without_paid_turns_has_no_usage() {
+        let err = Error::Budget {
+            spent: 0.0,
+            limit: 0.02,
+            usage: None,
+        };
+        assert_eq!(err.usage(), None);
     }
 
     #[test]

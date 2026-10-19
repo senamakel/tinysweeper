@@ -2526,12 +2526,28 @@ async fn open_status(
         if existing.stage == crate::ports::review_job::ReviewCheckStage::Queued {
             let transitioned = async {
                 use crate::ports::forge::ForgeWrite;
+                if let Some(owned) = &existing.owned
+                    && !state.review_jobs.check_transition_current(
+                        owned, &existing.head_sha, existing.check_id, unix_time_ms(),
+                    ).await?
+                {
+                    return Ok::<(), Error>(());
+                }
                 let token = state.auth.installation_token(installation).await?;
+                // Token minting awaits. Revalidate immediately before the write
+                // so a replacement owner cannot have its terminal state overwritten.
+                if let Some(owned) = &existing.owned
+                    && !state.review_jobs.check_transition_current(
+                        owned, &existing.head_sha, existing.check_id, unix_time_ms(),
+                    ).await?
+                {
+                    return Ok(());
+                }
                 crate::app::apply::start_queued_review_status(
                     &crate::forge::github::GitHubWrite::new(&token)?,
                     repo,
                     existing.check_id,
-                    head_sha,
+                    &existing.head_sha,
                 )
                 .await
             }

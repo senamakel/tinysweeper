@@ -1515,7 +1515,8 @@ mod tests {
         impl ModelExecutionControl for CountingControl {
             async fn acquire(
                 &self,
-            ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+            ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal>
+            {
                 self.acquires.fetch_add(1, Ordering::SeqCst);
                 self.inner.acquire().await
             }

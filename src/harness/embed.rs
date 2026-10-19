@@ -306,12 +306,7 @@ impl PhysicalDispatchCounts {
         );
     }
 
-    fn record_raw(
-        &self,
-        succeeded: bool,
-        refused: bool,
-        usage: Option<RawPhysicalDispatchUsage>,
-    ) {
+    fn record_raw(&self, succeeded: bool, refused: bool, usage: Option<RawPhysicalDispatchUsage>) {
         let mut counts = self
             .0
             .lock()
@@ -416,6 +411,13 @@ fn execution_refusal_error(
         _ => return None,
     };
 
+    Some(execution_refusal_with_counts(refusal, counts))
+}
+
+fn execution_refusal_with_counts(
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+    counts: PhysicalDispatchCountSnapshot,
+) -> Error {
     let has_physical_calls = counts.calls_attempted > 0;
     let usage = has_physical_calls.then(|| {
         Box::new(Usage {
@@ -435,11 +437,11 @@ fn execution_refusal_error(
     });
     let accounting_complete = has_physical_calls && counts.accounting_complete;
 
-    Some(Error::ModelExecutionRefused {
+    Error::ModelExecutionRefused {
         refusal,
         usage,
         accounting_complete,
-    })
+    }
 }
 
 impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserver {
@@ -1076,6 +1078,7 @@ impl GatewayModel {
         policy: &crate::config::types::LookupPolicy,
         routing: &ProviderRouting,
         lookup_budget: &Arc<crate::harness::agentic::LookupBudget>,
+        physical_counts: &PhysicalDispatchCounts,
     ) -> std::result::Result<ModelResponse, crate::harness::agentic::ReviewFailure> {
         let mut request = request.clone();
         request.model = model.to_owned();
@@ -1122,6 +1125,7 @@ impl GatewayModel {
         let observer = Arc::new(AgenticCallObserver {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
+            counts: physical_counts.clone(),
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
         });
@@ -1141,6 +1145,12 @@ impl GatewayModel {
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
                 lookup_budget: lookup_budget.clone(),
+                dispatch_admission: self.execution_control.as_ref().map(|control| {
+                    Arc::new(GatewayExecutionAdmission {
+                        control: Arc::clone(control),
+                    })
+                        as Arc<dyn openhuman_embed::budget::PhysicalDispatchAdmission>
+                }),
             },
             Some(observer),
         )
@@ -1194,9 +1204,9 @@ impl Model for GatewayModel {
     }
 
     fn review_reports_physical_calls(&self) -> bool {
-        // Agentic calls are physically observed by TinyAgents' budget model
-        // wrapper. The ordinary completion ladder installs its own observer.
-        self.budget.is_some() || !self.agentic_reviewers
+        // Controlled agentic turns report physical calls to the host observer;
+        // budgeted turns also retain TinyAgents' existing physical wrapper.
+        self.execution_control.is_some() || self.budget.is_some() || !self.agentic_reviewers
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
@@ -1245,6 +1255,7 @@ impl Model for GatewayModel {
         // Paid turns share atomic reservation capacity through their child
         // ledgers; tool allowance remains scoped to this review and its routes.
         let lookup_budget = crate::harness::agentic::LookupBudget::new(policy);
+        let physical_counts = PhysicalDispatchCounts::default();
         let mut last = None;
         let mut prior = Usage::default();
         for model in std::iter::once(&request.model).chain(self.fallbacks.iter()) {
@@ -1256,6 +1267,7 @@ impl Model for GatewayModel {
                     policy,
                     &self.routing_for(model),
                     &lookup_budget,
+                    &physical_counts,
                 )
                 .await
             {
@@ -1264,6 +1276,12 @@ impl Model for GatewayModel {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    if let Error::ModelExecutionRefused { refusal, .. } = &failure.error {
+                        return Err(execution_refusal_with_counts(
+                            *refusal,
+                            physical_counts.snapshot(),
+                        ));
+                    }
                     if let Some(usage) = failure.usage {
                         crate::harness::agentic::accumulate_usage(&mut prior, *usage);
                     }
@@ -1281,6 +1299,7 @@ impl Model for GatewayModel {
                     policy,
                     &ProviderRouting::unpinned(),
                     &lookup_budget,
+                    &physical_counts,
                 )
                 .await
             {
@@ -1289,6 +1308,12 @@ impl Model for GatewayModel {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    if let Error::ModelExecutionRefused { refusal, .. } = &failure.error {
+                        return Err(execution_refusal_with_counts(
+                            *refusal,
+                            physical_counts.snapshot(),
+                        ));
+                    }
                     if let Some(usage) = failure.usage {
                         crate::harness::agentic::accumulate_usage(&mut prior, *usage);
                     }

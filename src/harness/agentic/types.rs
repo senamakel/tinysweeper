@@ -55,9 +55,11 @@ impl ReviewFailure {
                 DispatchRefusalReason::Deadline => ModelExecutionRefusal::SoftDeadline,
                 DispatchRefusalReason::Cancelled => ModelExecutionRefusal::Cancelled,
             };
-            let accounting_complete = usage
-                .as_ref()
-                .is_some_and(|usage| usage.cost_usd.is_some_and(|cost| cost.is_finite() && cost >= 0.0));
+            let accounting_complete = usage.as_ref().is_some_and(|usage| {
+                usage
+                    .cost_usd
+                    .is_some_and(|cost| cost.is_finite() && cost >= 0.0)
+            });
             let usage = usage.as_ref().map(|usage| {
                 Box::new(Usage {
                     input_tokens: usage.input_tokens,

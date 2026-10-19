@@ -196,6 +196,18 @@ impl ReviewJobStore for Store {
         Ok(state.queued_check_claim_current(pending, self.server_now_ms().await?))
     }
 
+    async fn complete_retired_check(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.complete_retired_check(&pending, now_ms)
+        })
+        .await
+    }
+
     async fn set_check_stage(
         &self,
         owned: &OwnedReview,

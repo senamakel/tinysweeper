@@ -140,6 +140,30 @@ fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
     assert_eq!(check.stage, super::ReviewCheckStage::Completed);
 }
 
+#[test]
+fn expired_owner_cannot_start_a_queued_check_after_replacement_claims_it() {
+    let mut state = ReviewSchedulerState::default();
+    assert_eq!(state.admit_batch(vec![request("fenced-transition", 1)], 1), Admission::Admitted);
+    let pending = state.claim_pending_checks(1, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&pending, 700, 2));
+    let old = state.claim_next("old", 3).unwrap();
+    assert!(state.check_transition_current(&old, "sha", 700, 4));
+
+    let replacement = state.claim_next("replacement", 3 + REVIEW_OWNER_TTL_MS + 1).unwrap();
+    assert!(!state.check_transition_current(
+        &old,
+        "sha",
+        700,
+        3 + REVIEW_OWNER_TTL_MS + 1,
+    ));
+    assert!(state.check_transition_current(
+        &replacement,
+        "sha",
+        700,
+        3 + REVIEW_OWNER_TTL_MS + 1,
+    ));
+}
+
 #[tokio::test]
 async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
     let store = MockReviewJobStore::default();

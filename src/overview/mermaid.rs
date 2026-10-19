@@ -22,7 +22,7 @@
 use std::fmt::Write as _;
 
 use crate::config::types::Severity;
-use crate::overview::types::{ChangeMap, Component, Role};
+use crate::overview::types::{ChangeMap, Component, Role, is_diagram_symbol};
 
 /// Characters allowed through into a diagram label.
 ///
@@ -70,7 +70,7 @@ pub fn flowchart(map: &ChangeMap) -> Option<String> {
         .components
         .iter()
         .enumerate()
-        .filter(|(_, component)| drawable_component(component))
+        .filter(|(_, component)| is_diagram_symbol(component))
         .collect();
     let indices: std::collections::BTreeMap<usize, usize> = components
         .iter()
@@ -108,52 +108,6 @@ pub fn flowchart(map: &ChangeMap) -> Option<String> {
     out.push_str(CLASS_DEFS);
     out.push_str("```\n");
     Some(out)
-}
-
-fn drawable_component(component: &Component) -> bool {
-    if component.name.split_once('#').is_none() {
-        return false;
-    }
-    let path = component.name.split_once('#').map_or("", |(path, _)| path);
-    let lower_path = path.to_ascii_lowercase();
-    if lower_path.split('/').any(|part| {
-        part == "tests" || part == "test" || part.starts_with("test_") || part.ends_with("_test.rs")
-    }) {
-        return false;
-    }
-    let name = component
-        .name
-        .split_once('#')
-        .map_or(component.name.as_str(), |(_, symbol)| symbol)
-        .to_ascii_lowercase();
-    !matches!(
-        name.as_str(),
-        "call"
-            | "json"
-            | "test"
-            | "tests"
-            | "module"
-            | "struct"
-            | "impl"
-            | "function"
-            | "class"
-            | "def"
-            | "use"
-            | "import"
-            | "return"
-            | "async"
-            | "await"
-            | "fn"
-            | "let"
-            | "const"
-            | "pub"
-            | "crate"
-            | "self"
-            | "new"
-            | "default"
-            | "build"
-            | "from"
-    )
 }
 
 /// The style for each role, and for a behaviour the review has findings in.

@@ -2684,6 +2684,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2732,6 +2733,7 @@ mod tests {
         let mut gateway = GatewayModel {
             budget: None,
             review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2847,6 +2849,7 @@ mod tests {
             request_timeout_ms: 120_000,
             budget: None,
             review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
         };
@@ -2902,6 +2905,7 @@ mod tests {
         let gateway = GatewayModel {
             budget: None,
             review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,

@@ -97,9 +97,7 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
         let executive = summary.executive_summary.trim();
         let sentence = if executive.is_empty() && proposal.complete() {
             "The review found no actionable issues.".to_string()
-        } else if executive.is_empty() {
-            "No actionable findings were reported in the available review results.".to_string()
-        } else if contains_run_diagnostics(executive) {
+        } else if executive.is_empty() || contains_run_diagnostics(executive) {
             "No actionable findings were reported in the available review results.".to_string()
         } else {
             bounded_sentence(executive, 50)

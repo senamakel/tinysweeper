@@ -358,10 +358,12 @@ async fn review_group(
 
     // Only model proposals enter this filter. Scanner facts are merged later
     // and never depend on a model's ability to confirm them.
+    let round_one_candidates = outcome.findings.len();
     let filtered = Falsifier::new(llm.model().as_ref(), config)
         .filter_with(LaneId::Security, outcome.findings, &evidence, &looked_up)
         .await;
     let mut findings = filtered.findings;
+    let round_one_survivors = findings.len();
     let mut rejected = filtered.rejected;
     let mut spend = outcome.spend;
     spend.merge(filtered.spend);
@@ -374,7 +376,8 @@ async fn review_group(
         let mut metrics = crate::lanes::coverage::Metrics::start(
             round_one_usage,
             round_one_elapsed,
-            findings.len(),
+            round_one_candidates,
+            round_one_survivors,
         );
 
         for pass_index in 1..config.review.passes {
@@ -403,7 +406,7 @@ async fn review_group(
                     // The graph returned no scoped accounting. Count the
                     // attempt, but do not borrow usage from the lane-wide
                     // cumulative tally shared by concurrent groups.
-                    metrics.record(Usage::default(), Duration::ZERO, 0);
+                    metrics.record(Usage::default(), Duration::ZERO, 0, 0);
                     metrics.stop(crate::lanes::coverage::StopReason::Failed);
                     break;
                 }
@@ -415,7 +418,7 @@ async fn review_group(
             looked_up.push_str(&coverage.looked_up);
 
             let Some(response) = coverage.response else {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             };
@@ -455,7 +458,7 @@ async fn review_group(
             }
 
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if !had_proposals && had_raw_proposals {
                     crate::lanes::coverage::StopReason::PlacementFailure
                 } else if had_proposals {
@@ -466,6 +469,7 @@ async fn review_group(
                 break;
             }
 
+            let candidate_count = new_findings.len();
             let filtered = Falsifier::new(llm.model().as_ref(), config)
                 .filter_with(LaneId::Security, new_findings, &evidence, &looked_up)
                 .await;
@@ -473,12 +477,17 @@ async fn review_group(
             rejected.extend(filtered.rejected);
             let new_findings = filtered.findings;
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, candidate_count, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::NonSurviving);
                 break;
             }
 
-            metrics.record(coverage_usage, coverage_elapsed, new_findings.len());
+            metrics.record(
+                coverage_usage,
+                coverage_elapsed,
+                candidate_count,
+                new_findings.len(),
+            );
             added_by_coverage += new_findings.len();
             confirmed.extend(new_findings.clone());
             findings.extend(new_findings);

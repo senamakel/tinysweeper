@@ -319,6 +319,12 @@ max_tokens = 16000
 # cheap tier cost more than the expensive one, which is the entire reason the
 # tier exists. `tinysweeper doctor` warns when the two are configured together.
 reasoning_effort = "medium"
+# Per-role settings keep reviewer judgment at medium effort while the factual
+# falsifier and narrative summary use less reasoning. Setting the global value
+# to `off` remains a kill switch for every role.
+reviewer_reasoning_effort = "medium"
+falsify_reasoning_effort = "low"
+summary_reasoning_effort = "low"
 # Who enforces the response schema, and the reason the model above is usable at
 # all.
 #

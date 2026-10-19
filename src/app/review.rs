@@ -2604,6 +2604,122 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    /// A panel model whose lane calls can be held at a barrier or delayed to
+    /// expose scheduling decisions made by the complete review path.
+    struct ReviewSchedulingModel {
+        inner: MockModel,
+        barrier: Option<Arc<tokio::sync::Barrier>>,
+        barrier_arrivals: std::sync::atomic::AtomicUsize,
+        critique_delay: std::time::Duration,
+        security_delay: std::time::Duration,
+    }
+
+    impl ReviewSchedulingModel {
+        fn new() -> Self {
+            Self {
+                inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})),
+                barrier: None,
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
+                critique_delay: std::time::Duration::ZERO,
+                security_delay: std::time::Duration::ZERO,
+            }
+        }
+
+        async fn schedule(&self, request: &crate::ports::model::ModelRequest) {
+            let delay = match request.schema_name.as_str() {
+                "tinysweeper_critique" => self.critique_delay,
+                "tinysweeper_security" => self.security_delay,
+                _ => return,
+            };
+            if let Some(barrier) = &self.barrier {
+                let arrival = self
+                    .barrier_arrivals
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if arrival < 2 {
+                    barrier.wait().await;
+                }
+            }
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Model for ReviewSchedulingModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            self.schedule(&request).await;
+            self.inner.complete(request).await
+        }
+
+        async fn review(
+            &self,
+            request: crate::ports::model::ModelRequest,
+            tree: &dyn crate::ports::tree::TreeReader,
+            policy: &crate::config::types::LookupPolicy,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            self.schedule(&request).await;
+            self.inner.review(request, tree, policy).await
+        }
+    }
+
+    fn scheduling_config() -> Config {
+        let mut config = config();
+        config.review.lanes = vec!["critique".into(), "security".into()];
+        config.review.passes = 1;
+        config.models.agentic_reviewers = false;
+        config.summary.enabled = false;
+        config.wireframe.enabled = false;
+        config.overview.enabled = false;
+        config
+    }
+
+    #[tokio::test]
+    async fn enabled_lanes_overlap_in_the_review_path() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            review(&forge, model_trait, &config, &repo(), 7),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "the critique and security model calls must both reach the barrier"
+        );
+        let proposal = result.unwrap().expect("review succeeds");
+        assert_eq!(proposal.lanes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn lane_results_keep_the_configured_order_when_completion_times_differ() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.critique_delay = std::time::Duration::from_millis(40);
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        // `enabled_lanes` defines the canonical lane order independently of
+        // the order in which config names are supplied.
+        config.review.lanes = vec!["security".into(), "critique".into()];
+
+        let proposal = review(&forge, model_trait, &config, &repo(), 7)
+            .await
+            .expect("review succeeds");
+
+        assert_eq!(
+            proposal.lanes.iter().map(|lane| lane.lane).collect::<Vec<_>>(),
+            vec![LaneId::Critique, LaneId::Security]
+        );
+    }
+
     #[derive(Clone)]
     struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
     impl std::io::Write for TimingLogWriter {

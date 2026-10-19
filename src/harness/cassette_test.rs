@@ -183,7 +183,7 @@ async fn review_replay_reissues_queries_and_reconstructs_identical_evidence_offl
     assert_eq!(live.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     let recorded_lookups = recording_tree.recorded();
-    assert_eq!(recorded_lookups.len(), 2);
+    assert_eq!(recorded_lookups.len(), 3);
     let replay_tree = crate::ports::tree::MockTree::from_recorded(recorded_lookups);
     let replay = Arc::new(Cassette::replay(dir.path(), Mode::Strict).expect("loads"));
     let replay_cap = crate::flows::caps::ModelCapability::new(replay.clone(), models);

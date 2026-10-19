@@ -2710,7 +2710,7 @@ mod tests {
         models.fallback.clear();
         models.agentic_reviewers = false;
         models.structured_output = crate::config::types::StructuredOutput::JsonObject;
-        let mut adapter = GatewayModel::with_key(&models, "fixture".into());
+        let adapter = GatewayModel::with_key(&models, "fixture".into());
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
         timing.record(|record| record.head_sha = "abc123".into());
         let observed = ObservedModel {

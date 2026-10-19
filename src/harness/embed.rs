@@ -245,8 +245,11 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
         use openhuman_embed::complete::PhysicalDispatchStatus;
 
         let usage = outcome.usage.as_ref();
+        let model = outcome
+            .answered_model
+            .as_deref()
+            .unwrap_or(&self.requested_model);
         if let Some(usage) = usage {
-            let model = outcome.answered_model.as_deref().unwrap_or("unknown");
             self.history
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
@@ -262,7 +265,7 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                     .filter(|cost| cost.is_finite() && *cost >= 0.0)
                     .unwrap_or_else(|| {
                         crate::harness::pricing::completion_cost(
-                            &self.requested_model,
+                            model,
                             usage.input_tokens,
                             usage.cached_tokens,
                             usage.output_tokens,
@@ -275,10 +278,6 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
             calls_errored: u64::from(!provider_responded),
             ..Usage::default()
         };
-        let model = outcome
-            .answered_model
-            .as_deref()
-            .unwrap_or(&self.requested_model);
         tracing::dispatcher::with_default(&self.dispatch, || {
             self.span.in_scope(|| {
                 tracing::info!(target: "tinysweeper::model", model, lane = %self.lane,

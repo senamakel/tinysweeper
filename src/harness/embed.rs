@@ -1155,9 +1155,9 @@ mod tests {
         let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
         assert_eq!(lines.matches("model call").count(), 2, "{lines}");
         assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
-        assert!(lines.contains("repo=\"owner/repo\""), "{lines}");
+        assert!(lines.contains("repo=owner/repo"), "{lines}");
         assert!(lines.contains("pr=7"), "{lines}");
-        assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
+        assert!(lines.contains("head_sha=abc123"), "{lines}");
         assert!(lines.contains("mode=\"Incremental\""), "{lines}");
     }
 
@@ -1658,9 +1658,9 @@ mod tests {
         let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
         assert_eq!(lines.matches("model call").count(), 2, "{lines}");
         assert_eq!(lines.matches("latency_ms=").count(), 2, "{lines}");
-        assert!(lines.contains("repo=\"owner/repo\""), "{lines}");
+        assert!(lines.contains("repo=owner/repo"), "{lines}");
         assert!(lines.contains("pr=7"), "{lines}");
-        assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
+        assert!(lines.contains("head_sha=abc123"), "{lines}");
         assert!(lines.contains("mode=\"Incremental\""), "{lines}");
     }
 

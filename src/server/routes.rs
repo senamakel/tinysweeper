@@ -327,6 +327,22 @@ pub async fn serve_with_model_factory(
         in_flight: Arc::new(std::sync::Mutex::new(InFlightRegistry::default())),
     };
 
+    // Status retry is independent of review permits and review ownership. A
+    // failed or interrupted check POST stays attached to the accepted job and
+    // is retried on a bounded durable claim after restart or API recovery.
+    let retry_jobs = state.review_jobs.clone();
+    let retry_factory = github_queue_status_client(state.auth.clone(), 0);
+    tokio::spawn(async move {
+        let mut poll = tokio::time::interval(std::time::Duration::from_secs(2));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            poll.tick().await;
+            if let Err(err) = publish_pending_queue_checks(retry_jobs.as_ref(), retry_factory.clone()).await {
+                tracing::warn!(%err, "queued review status retry failed; durable claim will expire for retry");
+            }
+        }
+    });
+
     let shutdown_state = state.clone();
     let manual_state = state.clone();
     let manual_auth = admin_auth.clone();
@@ -782,31 +798,38 @@ async fn publish_pending_queue_checks(
 ) -> Result<()> {
     let pending = jobs.claim_pending_checks(unix_time_ms(), 16).await?;
     if pending.is_empty() { return Ok(()); }
-    let clients = factory().await?;
+    let mut first_error = None;
     for check in pending {
-        let repo = RepoId::parse(&check.request.repo)
-            .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
-        let check_id = match clients.read.check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id).await? {
-            Some(id) => id,
-            None => clients.write.publish_check(&repo, status::queued(&check.check.head_sha, check.reviews_ahead, &check.check.external_id)).await?,
-        };
-        let _ = jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?;
+        let attempt = async {
+            let clients = factory(check.request.installation).await?;
+            let repo = RepoId::parse(&check.request.repo)
+                .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
+            let check_id = match clients.read.check_run_by_external_id(&repo, &check.check.head_sha, &check.check.external_id).await? {
+                Some(id) => id,
+                None => clients.write.publish_check(&repo, status::queued(&check.check.head_sha, check.reviews_ahead, &check.check.external_id)).await?,
+            };
+            let _ = jobs.record_queued_check_id(&check, check_id, unix_time_ms()).await?;
+            Ok::<(), Error>(())
+        }.await;
+        if let Err(err) = attempt {
+            first_error.get_or_insert(err);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Lazily mint a status-only GitHub client after admission policy allows its
 /// first use. The factory itself performs no token exchange or forge request.
 type QueueStatusClientFactory =
-    Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send>;
+    Arc<dyn Fn(u64) -> futures::future::BoxFuture<'static, Result<QueueStatusClients>> + Send + Sync>;
 
 struct QueueStatusClients {
     read: Arc<dyn crate::ports::forge::ForgeRead>,
     write: Arc<dyn ForgeWrite>,
 }
 
-fn github_queue_status_client(auth: Arc<AppAuth>, installation: u64) -> QueueStatusClientFactory {
-    Box::new(move || {
+fn github_queue_status_client(auth: Arc<AppAuth>, _installation: u64) -> QueueStatusClientFactory {
+    Arc::new(move |installation| {
         async move {
             let token = auth.installation_token(installation).await?;
             let read = crate::forge::github::GitHubRead::new(&token)?;
@@ -6350,7 +6373,7 @@ mod tests {
                 &webhook,
                 "delivery-7",
                 "pull_request",
-                Box::new(|| async { Err(Error::Forge("unused status client".into())) }.boxed()),
+                Arc::new(|_| async { Err(Error::Forge("unused status client".into())) }.boxed()),
             )
             .await
             .expect("webhook admitted durably"),
@@ -6489,7 +6512,8 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let forge = MockForge::new();
         let status_forge = forge.clone();
-        let status_client: QueueStatusClientFactory = Box::new(move || {
+        let status_client: QueueStatusClientFactory = Arc::new(move |_| {
+            let status_forge = status_forge.clone();
             async move { Ok(QueueStatusClients { read: Arc::new(status_forge.clone()), write: Arc::new(status_forge) }) }.boxed()
         });
         let action = Action::Review {

@@ -218,8 +218,11 @@ so a partial report cannot label unknown cost as fully settled.
 
 The per-review scope survives GatewayModel, OwnedModel and ObservedModel
 clones and every `scoped_budget` call. Add an object-safe
-`Model::with_review_execution(Arc<ReviewExecution>) -> Option<Arc<dyn Model>>`
-with default `None`; production wrappers forward it, Gateway installs the
+`Model::with_execution_control(Arc<dyn ModelExecutionControl>) -> Option<Arc<dyn Model>>`
+with default `None`. Define the public control/permit/refusal port types in
+`src/ports/model_execution.rs`; `ReviewExecution` implements that port rather
+than exposing a private app type through a public trait. Production wrappers
+forward it, Gateway installs the
 physical capability, MockModel implements the same admission at its actual
 canned-response dispatch. A legacy model uses an explicit adapter which gates
 its single logical dispatch; production adapters reporting physical support

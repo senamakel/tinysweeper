@@ -448,8 +448,9 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
     assert_eq!(queries.len(), 2);
     assert_eq!(queries[0]["query"]["kind"], "lookup");
     assert_eq!(queries[0]["query"]["query"]["kind"], "read");
+    assert_eq!(queries[0]["query"]["query"]["path"], "src/lib.rs");
     assert_eq!(queries[1]["query"]["kind"], "symbol");
-    assert_eq!(queries[1]["query"]["symbol"], "load_state");
+    assert_eq!(queries[1]["query"]["query"]["symbol"], "load_state");
     assert_eq!(take["usage"]["cost_usd"], 0.002);
 }
 
@@ -507,9 +508,7 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
             },
         );
     }
-    let mut gateway_model =
-        crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
-    gateway_model.budget = Some(crate::harness::budget::ledger(10.0));
+    let gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
     let (execution, control) = execution_control(1);
     let dir = tempfile::tempdir().expect("temporary cassette directory");
     let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), dir.path()));

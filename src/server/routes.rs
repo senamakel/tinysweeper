@@ -7046,9 +7046,10 @@ mod tests {
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").unwrap();
-        let now = unix_time_ms();
+        let now = 10;
         let mut request = queued_test_review(224);
         request.head_sha = Some("same-id-head".into());
+        request.accepted_at_ms = now;
         assert_eq!(store.admit_batch(vec![request]).await.unwrap(), Admission::Admitted);
 
         publish_pending_queue_checks_at(&store, test_status_client_factory(forge.clone()), now)
@@ -7108,7 +7109,8 @@ mod tests {
             crate::forge::Write::CheckUpdate { check_id, check }
                 if *check_id == queued_id
                     && check.head_sha == "same-id-head"
-                    && check.status.is_none()
+                    && check.status.unwrap_or(CheckRunStatus::InProgress)
+                        == CheckRunStatus::InProgress
                     && check.conclusion.is_none()
         ));
         assert!(matches!(

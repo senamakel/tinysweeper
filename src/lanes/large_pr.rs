@@ -3,6 +3,8 @@
 //! This module has no model or forge dependency. It receives the complete
 //! bounded diffstat and the already-prepared critique/security candidate
 //! groups, so callers can decide the review shape before paid work begins.
+//! Host-signal extraction from scanners, prior anchors and source text, plus
+//! hard-refusal precedence in the production caller, remain integration work.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -184,51 +186,266 @@ mod tests {
             .collect()
     }
 
+    fn changed_files(count: usize) -> Vec<ChangedFile> {
+        (0..count)
+            .map(|index| ChangedFile {
+                path: format!("src/file_{index:02}.rs"),
+                ..ChangedFile::default()
+            })
+            .collect()
+    }
+
     #[test]
     fn normal_mode_preserves_every_candidate_in_input_order() {
         let config = Config::default();
-        let files = [ChangedFile::default()];
-        let plan = plan(&config, &files, &[], candidates(2));
+        let files = changed_files(1);
+        let mut groups = candidates(2);
+        groups.reverse();
+        groups[1].risk.scanner = true;
+        let plan = plan(&config, &files, &[], groups);
 
         assert_eq!(plan.mode, ReviewMode::Normal);
         assert_eq!(plan.selected.len(), 2);
-        assert_eq!(plan.selected[0].group.label, "src/file_00.rs");
+        assert_eq!(
+            plan.selected
+                .iter()
+                .map(|candidate| candidate.group.label.as_str())
+                .collect::<Vec<_>>(),
+            ["src/file_01.rs", "src/file_00.rs"]
+        );
         assert!(plan.omitted.is_empty());
     }
 
     #[test]
-    fn large_plan_estimates_full_diffstat_and_selects_twelve_groups_across_lanes() {
+    fn large_plan_selects_exact_global_top_twelve_without_splitting_groups() {
         let config = Config::default();
-        let files: Vec<_> = (0..60)
-            .map(|index| ChangedFile {
-                path: format!("src/file_{index:02}.rs"),
-                additions: u64::from(index != 0),
-                deletions: if index == 0 { 2 } else { 1 },
-                patch: (index != 59).then_some("untrusted patch text".into()),
+        let group = |lane, label: &str, paths: &[&str], risk| PlannedGroup {
+            lane,
+            group: FileGroup {
+                label: label.into(),
+                paths: paths.iter().map(|path| (*path).into()).collect(),
+            },
+            risk,
+        };
+        let mut groups = vec![
+            group(
+                LaneId::Security,
+                "src/a_related.rs + src/a_test.rs",
+                &["src/a_related.rs", "src/a_test.rs"],
+                RiskScore {
+                    scanner: true,
+                    changed_lines: 100,
+                    ..RiskScore::default()
+                },
+            ),
+            group(
+                LaneId::Critique,
+                "src/z_scan.rs",
+                &["src/z_scan.rs"],
+                RiskScore {
+                    scanner: true,
+                    ..RiskScore::default()
+                },
+            ),
+            group(
+                LaneId::Critique,
+                "src/a_prior.rs",
+                &["src/a_prior.rs"],
+                RiskScore {
+                    prior_finding: true,
+                    ..RiskScore::default()
+                },
+            ),
+            group(
+                LaneId::Security,
+                "src/auth/session.rs",
+                &["src/auth/session.rs"],
+                RiskScore {
+                    sensitive: true,
+                    ..RiskScore::default()
+                },
+            ),
+            group(
+                LaneId::Critique,
+                "src/api.rs",
+                &["src/api.rs"],
+                RiskScore {
+                    public_api: true,
+                    ..RiskScore::default()
+                },
+            ),
+        ];
+        groups.extend((0..20).map(|index| {
+            let path = format!("src/file_{index:02}.rs");
+            group(LaneId::Security, &path, &[&path], RiskScore::default())
+        }));
+        groups.push(group(
+            LaneId::Critique,
+            "src/zz_related.rs + src/zz_test.rs",
+            &["src/zz_related.rs", "src/zz_test.rs"],
+            RiskScore::default(),
+        ));
+        let files = groups
+            .iter()
+            .flat_map(|candidate| candidate.group.paths.iter())
+            .enumerate()
+            .map(|(index, path)| ChangedFile {
+                path: path.clone(),
+                additions: u64::from(index == 0),
+                deletions: u64::from(index == 0),
+                patch: (path != "src/zz_test.rs").then_some("untrusted patch text".into()),
                 ..ChangedFile::default()
             })
-            .collect();
-        let plan = plan(&config, &files, &[], candidates(60));
+            .collect::<Vec<_>>();
+        // Deliberately scramble input order: large selection must rank across
+        // lanes, not keep a per-lane prefix or inherit preparation order.
+        groups.reverse();
+        let plan = plan(&config, &files, &[], groups);
 
         assert_eq!(plan.mode, ReviewMode::Large);
-        assert_eq!(plan.estimate.files, 60);
-        assert_eq!(plan.estimate.changed_lines, 120);
-        assert_eq!(plan.estimate.groups, 60);
-        assert_eq!(plan.selected.len(), 12);
-        assert_eq!(plan.omitted.values().map(Vec::len).sum::<usize>(), 48);
+        assert_eq!(plan.estimate.files, 28);
+        assert_eq!(plan.estimate.changed_lines, 2);
+        assert_eq!(plan.estimate.groups, 26);
+        assert_eq!(
+            plan.selected
+                .iter()
+                .map(|candidate| candidate.group.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "src/a_related.rs + src/a_test.rs",
+                "src/z_scan.rs",
+                "src/a_prior.rs",
+                "src/auth/session.rs",
+                "src/api.rs",
+                "src/file_00.rs",
+                "src/file_01.rs",
+                "src/file_02.rs",
+                "src/file_03.rs",
+                "src/file_04.rs",
+                "src/file_05.rs",
+                "src/file_06.rs",
+            ]
+        );
+        assert_eq!(
+            plan.selected[0].group.paths,
+            ["src/a_related.rs", "src/a_test.rs"]
+        );
+        let omitted_security = (7..20)
+            .map(|index| format!("src/file_{index:02}.rs"))
+            .collect::<std::collections::BTreeSet<_>>();
+        let omitted_critique = ["src/zz_related.rs", "src/zz_test.rs"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            plan.omitted
+                .get(&LaneId::Security)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            omitted_security
+        );
+        assert_eq!(
+            plan.omitted
+                .get(&LaneId::Critique)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            omitted_critique
+        );
+        assert_eq!(plan.selected.iter().filter(|g| g.lane == LaneId::Security).count(), 9);
+        assert_eq!(plan.selected.iter().filter(|g| g.lane == LaneId::Critique).count(), 3);
     }
 
     #[test]
     fn disabled_large_mode_keeps_normal_group_order() {
         let mut config = Config::default();
         config.review.large_pr.enabled = false;
-        let files: Vec<_> = (0..60).map(|_| ChangedFile::default()).collect();
+        let files = changed_files(60);
         let mut groups = candidates(2);
-        groups[0].risk.scanner = true;
+        groups.reverse();
+        groups[1].risk.scanner = true;
         let plan = plan(&config, &files, &[], groups);
 
         assert_eq!(plan.mode, ReviewMode::Normal);
-        assert_eq!(plan.selected[0].group.label, "src/file_00.rs");
+        assert_eq!(
+            plan.selected
+                .iter()
+                .map(|candidate| candidate.group.label.as_str())
+                .collect::<Vec<_>>(),
+            ["src/file_01.rs", "src/file_00.rs"]
+        );
+    }
+
+    #[test]
+    fn each_size_threshold_switches_at_its_inclusive_boundary() {
+        let mut config = Config::default();
+        config.review.large_pr.changed_lines = u64::MAX;
+        config.review.large_pr.groups = usize::MAX;
+        assert_eq!(
+            plan(&config, &changed_files(29), &[], Vec::new()).mode,
+            ReviewMode::Normal
+        );
+        assert_eq!(
+            plan(&config, &changed_files(30), &[], Vec::new()).mode,
+            ReviewMode::Large
+        );
+
+        config.review.large_pr.files = usize::MAX;
+        config.review.large_pr.changed_lines = 2_000;
+        for (lines, expected) in [(1_999, ReviewMode::Normal), (2_000, ReviewMode::Large)] {
+            let files = [ChangedFile {
+                additions: lines,
+                ..ChangedFile::default()
+            }];
+            assert_eq!(plan(&config, &files, &[], Vec::new()).mode, expected);
+        }
+
+        config.review.large_pr.changed_lines = u64::MAX;
+        config.review.large_pr.groups = 24;
+        for (count, expected) in [(23, ReviewMode::Normal), (24, ReviewMode::Large)] {
+            assert_eq!(
+                plan(&config, &[], &[], candidates(count)).mode,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn deletion_only_missing_patch_diffstat_triggers_large_mode() {
+        let mut config = Config::default();
+        config.review.large_pr.files = usize::MAX;
+        config.review.large_pr.groups = usize::MAX;
+        let files = [ChangedFile {
+            path: "src/removed.rs".into(),
+            additions: 0,
+            deletions: 2_000,
+            patch: None,
+            ..ChangedFile::default()
+        }];
+        let plan = plan(&config, &files, &[], Vec::new());
+
+        assert_eq!(plan.mode, ReviewMode::Large);
+        assert_eq!(plan.estimate.changed_lines, 2_000);
+    }
+
+    #[test]
+    fn changed_line_estimates_saturate_at_u64_max() {
+        let mut config = Config::default();
+        config.review.large_pr.files = usize::MAX;
+        config.review.large_pr.changed_lines = u64::MAX;
+        config.review.large_pr.groups = usize::MAX;
+        let files = [ChangedFile {
+            additions: u64::MAX,
+            deletions: u64::MAX,
+            ..ChangedFile::default()
+        }];
+        let plan = plan(&config, &files, &[], Vec::new());
+
+        assert_eq!(plan.estimate.changed_lines, u64::MAX);
+        assert_eq!(plan.mode, ReviewMode::Large);
     }
 
     #[test]
@@ -325,5 +542,43 @@ mod tests {
         );
 
         assert_eq!(plan.selected[0].lane, LaneId::Security);
+    }
+
+    #[test]
+    fn equal_highest_member_risk_uses_total_group_lines_before_path() {
+        let mut config = Config::default();
+        config.review.large_pr.files = 1;
+        let files = [
+            ChangedFile {
+                path: "src/a_small.rs".into(),
+                additions: 5,
+                ..ChangedFile::default()
+            },
+            ChangedFile {
+                path: "src/z_large.rs".into(),
+                additions: 200,
+                ..ChangedFile::default()
+            },
+        ];
+        let planned = |path: &str| PlannedGroup {
+            lane: LaneId::Critique,
+            group: FileGroup {
+                label: path.into(),
+                paths: vec![path.into()],
+            },
+            risk: RiskScore {
+                changed_lines: 50,
+                ..RiskScore::default()
+            },
+        };
+        let plan = plan(
+            &config,
+            &files,
+            &[],
+            vec![planned("src/z_large.rs"), planned("src/a_small.rs")],
+        );
+
+        assert_eq!(plan.mode, ReviewMode::Large);
+        assert_eq!(plan.selected[0].group.label, "src/z_large.rs");
     }
 }

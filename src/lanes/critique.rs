@@ -1869,6 +1869,23 @@ fn helper() {
     }
 
     #[tokio::test]
+    async fn a_low_risk_group_without_candidates_uses_one_reviewer_call() {
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+
+        run_with(model, &config_with_passes(2), &large_diffs()).await;
+
+        assert_eq!(
+            handle.calls(),
+            1,
+            "an empty first-pass result on an ordinary group must not buy another look"
+        );
+    }
+
+    #[tokio::test]
     async fn adaptive_requests_keep_path_rules_and_redaction_guidance() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![

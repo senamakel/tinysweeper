@@ -335,10 +335,10 @@ fn the_built_in_defaults_are_valid() {
 }
 
 #[test]
-fn review_passes_defaults_to_three_adaptive_attempts() {
+fn review_passes_defaults_to_two_adaptive_attempts() {
     let config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
 
-    assert_eq!(config.review.passes, 3);
+    assert_eq!(config.review.passes, 2);
 }
 
 #[test]

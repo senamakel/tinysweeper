@@ -1964,8 +1964,9 @@ mod tests {
 
         // A first Pending poll alone could still be stuck before the HTTP
         // boundary. Observe the actual fake-provider request while the root
-        // reservation is held; the two intentionally fresh child ledgers are
-        // the positive control for this leak detector.
+        // reservation is held; under the old `scoped_budget` implementation,
+        // the two lane scopes receive independent ledgers and are the positive
+        // control for this leak detector.
         let leaked_http_under_hold = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if !gateway.requests().is_empty() {

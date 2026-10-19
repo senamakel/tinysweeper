@@ -100,6 +100,8 @@ impl<T> Drop for TurnGuard<T> {
 pub(crate) struct ReviewResources {
     pub(crate) model_budget: Option<ModelBudget>,
     pub(crate) lookup_budget: Arc<LookupBudget>,
+    pub(crate) dispatch_admission:
+        Option<Arc<dyn openhuman_embed::budget::PhysicalDispatchAdmission>>,
 }
 
 /// Run one bounded reviewer using only host repository tools.
@@ -126,6 +128,7 @@ pub async fn review(
         ReviewResources {
             model_budget: budget,
             lookup_budget: LookupBudget::new(policy),
+            dispatch_admission: None,
         },
         observer,
     )
@@ -146,6 +149,7 @@ pub(crate) async fn review_accounted(
     let ReviewResources {
         model_budget: budget,
         lookup_budget,
+        dispatch_admission,
     } = resources;
     if !policy.enabled || policy.rounds == 0 || policy.per_round == 0 || policy.max_chars == 0 {
         return Err(Error::Model(
@@ -254,6 +258,9 @@ pub(crate) async fn review_accounted(
         }
         if let Some(budget) = budget {
             turn = turn.budget(budget);
+        }
+        if let Some(admission) = dispatch_admission {
+            turn = turn.dispatch_admission(admission);
         }
         turn.send().await
     }

@@ -2,8 +2,9 @@
 
 use crate::error::Error;
 use crate::ports::model::Usage;
+use crate::ports::model_execution::ModelExecutionRefusal;
 use openhuman_embed::CoreError;
-use openhuman_embed::budget::Budget;
+use openhuman_embed::budget::{Budget, DispatchRefusalReason};
 
 /// Provider counters are untrusted; aggregation must not wrap paid usage.
 pub(crate) fn accumulate_usage(total: &mut Usage, usage: Usage) {
@@ -48,6 +49,37 @@ impl ReviewFailure {
         ledger: Option<&Budget>,
         estimate: Usage,
     ) -> Self {
+        if let CoreError::DispatchAdmission { source, usage, .. } = &error {
+            let refusal = match source.reason() {
+                DispatchRefusalReason::CallLimit => ModelExecutionRefusal::CallLimit,
+                DispatchRefusalReason::Deadline => ModelExecutionRefusal::SoftDeadline,
+                DispatchRefusalReason::Cancelled => ModelExecutionRefusal::Cancelled,
+            };
+            let accounting_complete = usage
+                .as_ref()
+                .is_some_and(|usage| usage.cost_usd.is_some_and(|cost| cost.is_finite() && cost >= 0.0));
+            let usage = usage.as_ref().map(|usage| {
+                Box::new(Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
+                    cached_tokens: usage.cached_tokens,
+                    cost_usd: usage
+                        .cost_usd
+                        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                        .unwrap_or_default(),
+                    ..Usage::default()
+                })
+            });
+            return Self {
+                error: Error::ModelExecutionRefused {
+                    refusal,
+                    usage,
+                    accounting_complete,
+                },
+                usage: None,
+            };
+        }
         if let CoreError::BudgetExceeded { source, .. } = &error {
             let committed = source
                 .snapshot

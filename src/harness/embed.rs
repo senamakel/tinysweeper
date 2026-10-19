@@ -105,6 +105,7 @@ impl CompletionObserver for ModelCallObserver {
 struct AgenticCallObserver {
     downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
 }
@@ -124,14 +125,19 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             ..
         } = event
         {
-            let model = answered_model
-                .as_deref()
-                .or(requested_model.as_deref())
-                .unwrap_or("unknown");
             let provider_responded =
                 matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
+            self.counts.record_raw(
+                provider_responded,
+                was_refused,
+                usage.as_ref().map(RawPhysicalDispatchUsage::from),
+            );
+            let model = answered_model
+                .as_deref()
+                .or(requested_model.as_deref())
+                .unwrap_or("unknown");
             let observed_usage = Usage {
                 input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
@@ -236,6 +242,39 @@ struct PhysicalDispatchCountSnapshot {
     accounting_complete: bool,
 }
 
+#[derive(Clone, Copy)]
+struct RawPhysicalDispatchUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cached_tokens: u64,
+    cost_usd: Option<f64>,
+}
+
+impl From<&openhuman_embed::complete::PhysicalDispatchUsage> for RawPhysicalDispatchUsage {
+    fn from(usage: &openhuman_embed::complete::PhysicalDispatchUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
+impl From<&openhuman_embed::observe::ObservedUsage> for RawPhysicalDispatchUsage {
+    fn from(usage: &openhuman_embed::observe::ObservedUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
 impl Default for PhysicalDispatchCountSnapshot {
     fn default() -> Self {
         Self {
@@ -259,6 +298,19 @@ impl PhysicalDispatchCounts {
         succeeded: bool,
         refused: bool,
         usage: Option<&openhuman_embed::complete::PhysicalDispatchUsage>,
+    ) {
+        self.record_raw(
+            succeeded,
+            refused,
+            usage.map(RawPhysicalDispatchUsage::from),
+        );
+    }
+
+    fn record_raw(
+        &self,
+        succeeded: bool,
+        refused: bool,
+        usage: Option<RawPhysicalDispatchUsage>,
     ) {
         let mut counts = self
             .0

@@ -836,7 +836,7 @@ async fn publish_pending_queue_checks_with_clock<F>(
     now: F,
 ) -> Result<()>
 where
-    F: Fn() -> i64 + Copy + Send + Sync,
+    F: Fn() -> i64 + Send + Sync,
 {
     let mut first_error = None;
     for _ in 0..QUEUE_STATUS_DRAIN_BATCH {

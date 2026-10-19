@@ -6875,6 +6875,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn headless_review_delivery_is_durable_when_status_metadata_is_unavailable() {
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.expect("review permit"));
+        }
+        assert_eq!(permits.available_permits(), 0);
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let unavailable: QueueStatusClientFactory = Arc::new(|_| {
+            async { Err(Error::Forge("simulated status metadata outage".into())) }.boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 78,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: None,
+        };
+
+        let admission = admit_webhook_review(
+            &store,
+            &action,
+            "headless-metadata-outage",
+            "issue_comment",
+            unavailable,
+        )
+        .await
+        .expect("metadata failure leaves the webhook accepted");
+
+        assert_eq!(admission, Some(Admission::Admitted));
+        let durable = store.snapshot_for_test();
+        assert_eq!(durable.unfinished.len(), 1);
+        assert_eq!(durable.unfinished[0].accepted_ids[0].0, "webhook:headless-metadata-outage");
+        assert_eq!(durable.unfinished[0].request.head_sha, None);
+        assert!(durable.unfinished[0].status_reconcile_reserved);
+        assert_eq!(permits.available_permits(), 0);
+        drop(held);
+    }
+
+    #[tokio::test]
     async fn superseded_check_without_recovered_id_gets_terminal_status_and_releases_outbox() {
         use crate::forge::MockForge;
         use crate::forge::types::CheckConclusion;

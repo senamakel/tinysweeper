@@ -52,6 +52,10 @@ Model-call events include `latency_ms` alongside token usage and model ID.
 
 ## Bounded review scheduling
 
+Separate review and triage pools, queued check identity and status recovery,
+including the status-only pre-permit ordering, are documented in
+[Review queue status and capacity](review-queue-status.md).
+
 Webhook and manual reviews are atomically admitted to one bounded Mongo
 scheduler document before the server acknowledges them. The 256 queued and
 four running records are durable; the in-memory channel carries wakeup hints

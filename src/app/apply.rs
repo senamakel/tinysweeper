@@ -17,6 +17,73 @@ use crate::ports::forge::{ForgeRead, ForgeWrite};
 use crate::ports::review_state::ReviewStateStore;
 use crate::{MARKER_PREFIX, VERSION};
 
+/// Publish the deterministic queued status already authorized by server admission.
+///
+/// This exception carries only a server-decided status plan. It does not accept
+/// contributor-authored content or a model proposal.
+#[cfg(feature = "serve")]
+pub async fn publish_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    head_sha: &str,
+    reviews_ahead: usize,
+    external_id: &str,
+) -> Result<u64> {
+    write
+        .publish_check(
+            repo,
+            crate::server::status::queued(head_sha, reviews_ahead, external_id),
+        )
+        .await
+}
+
+/// Transition the previously published queue check under the same status-only write boundary.
+#[cfg(feature = "serve")]
+pub async fn start_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    check_id: u64,
+    head_sha: &str,
+) -> Result<()> {
+    write
+        .update_check(repo, check_id, crate::server::status::in_progress(head_sha))
+        .await
+}
+
+/// Conclude a detached queued check after its review job was superseded.
+#[cfg(feature = "serve")]
+pub async fn retire_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    check_id: u64,
+    head_sha: &str,
+) -> Result<()> {
+    write
+        .update_check(
+            repo,
+            check_id,
+            crate::server::status::queued_review_incomplete(head_sha, None),
+        )
+        .await
+}
+
+/// Publish a decided terminal status when a superseded queued run has no
+/// recoverable ID. This remains a status-only write plan from server policy.
+#[cfg(feature = "serve")]
+pub async fn publish_superseded_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    head_sha: &str,
+    external_id: &str,
+) -> Result<u64> {
+    write
+        .publish_check(
+            repo,
+            crate::server::status::queued_review_incomplete(head_sha, Some(external_id)),
+        )
+        .await
+}
+
 /// Whether a review proposal was published against the live pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDisposition {
@@ -135,6 +202,8 @@ pub async fn apply(
                     conclusion: Some(lane.conclusion),
                     title: title_for(lane.findings.len(), lane.coverage.as_ref()),
                     summary: render_lane_summary(lane),
+                    status: None,
+                    external_id: None,
                     images: vec![],
                 },
             )
@@ -627,6 +696,8 @@ pub async fn settle_e2e(
                     VERSION,
                     true,
                 ),
+                status: None,
+                external_id: None,
                 images: vec![],
             },
         )

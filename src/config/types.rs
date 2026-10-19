@@ -222,6 +222,9 @@ pub struct Config {
     pub version: u32,
     /// The preset this config builds on, if any.
     pub preset: Option<String>,
+    /// Operator-owned server process limits. Repository overlays must preserve
+    /// the deployment's values rather than changing global worker pools.
+    pub server: Server,
     /// Review behaviour and the noise gates.
     pub review: Review,
     /// Which paths are reviewed at all.
@@ -270,6 +273,29 @@ pub struct Config {
     pub preview: Preview,
     /// ASCII wireframes of the UI screens and modals a pull request touches.
     pub wireframe: Wireframe,
+}
+
+/// Global worker pools configured by the operator at server startup.
+///
+/// This section is data in `.tinysweeper.toml`, but it is not repository
+/// review policy: remote per-repository overlays must keep the deployment's
+/// values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Server {
+    /// Maximum concurrent pull request reviews.
+    pub review_concurrency: usize,
+    /// Maximum concurrent issue and pull request triage jobs.
+    pub triage_concurrency: usize,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            review_concurrency: 4,
+            triage_concurrency: 2,
+        }
+    }
 }
 
 /// The public, agent-facing MCP surface.

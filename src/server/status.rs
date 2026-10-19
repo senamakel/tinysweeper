@@ -16,15 +16,21 @@
 //!
 //! ## One check, three states
 //!
-//! `tinysweeper/review` is created in-progress when the delivery is accepted,
-//! and the same run — by id, never a second POST — is concluded afterwards:
+//! `tinysweeper/review` is created queued when the delivery is accepted,
+//! transitioned in-place when a review permit is acquired, and concluded by
+//! the same run by ID during normal transitions:
 //!
 //! | State | Conclusion | Meaning |
 //! |---|---|---|
-//! | in progress | `None` | accepted, lanes running |
+//! | queued | `None` | accepted, waiting for a review permit |
+//! | in progress | `None` | permit acquired, lanes may run |
 //! | concluded | `Success` | the lanes ran and the review did not request changes |
 //! | concluded | `Neutral` | the lanes ran and the review requested changes |
 //! | concluded | `ActionRequired` | the review could not run — see [`failure`] |
+//!
+//! If a queued POST response is lost, the status worker first tries to recover
+//! its ID by external identity. GitHub does not enforce uniqueness for that
+//! identity, so retries cannot guarantee exactly-once remote creation.
 //!
 //! `Success` here is deliberately *not* a statement about the code. It means
 //! the review completed; whether the code is any good is what the lane checks
@@ -56,7 +62,7 @@ use crate::forge::types::{CheckConclusion, CheckRun};
 /// verdict, and a review that has not finished — or never reached the lanes at
 /// all — has no verdict to report; reusing `tinysweeper/critique` here would
 /// overwrite a real result from an earlier push with a liveness signal.
-pub const CHECK_NAME: &str = "tinysweeper/review";
+pub const CHECK_NAME: &str = crate::forge::types::REVIEW_CHECK_NAME;
 
 /// Coverage aggregated across every lane in one review proposal.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -117,6 +123,26 @@ pub fn in_progress(head_sha: &str) -> CheckRun {
                   on the code, and it will conclude either way — including if the review \
                   fails, which it will say explicitly rather than disappearing."
             .to_string(),
+        status: None,
+        external_id: None,
+        images: vec![],
+    }
+}
+
+/// The check published for an accepted review before it has a review permit.
+///
+/// The pinned head and deterministic external ID let the durable scheduler
+/// recover the same check after a process restart. This helper does not grant
+/// review ownership or authorize any paid work.
+pub fn queued(head_sha: &str, reviews_ahead: usize, external_id: &str) -> CheckRun {
+    CheckRun {
+        name: CHECK_NAME.to_string(),
+        head_sha: head_sha.to_string(),
+        conclusion: None,
+        status: Some(crate::forge::types::CheckRunStatus::Queued),
+        external_id: Some(external_id.to_string()),
+        title: format!("Queued — {reviews_ahead} reviews ahead"),
+        summary: "tinysweeper accepted this pull request for review. It is waiting for a review permit; no review work has started yet.".into(),
         images: vec![],
     }
 }
@@ -197,6 +223,8 @@ pub fn completed(
              tinysweeper ran, nothing more — each lane publishes its own check with its \
              own verdict, and those are what gate the merge."
         ),
+        status: None,
+        external_id: None,
         images: vec![],
     }
 }
@@ -223,6 +251,25 @@ pub fn not_reviewed(head_sha: &str) -> CheckRun {
                   Nothing is wrong with the code, and nothing was checked. Use the \
                   repository's **Manual review** workflow to review it anyway."
             .to_string(),
+        status: None,
+        external_id: None,
+        images: vec![],
+    }
+}
+
+/// Conclude a queued review whose completion could not be confirmed.
+///
+/// A failed in-progress status update does not prove that paid review work
+/// never began, so this neutral result makes no claim about what was checked.
+pub fn queued_review_incomplete(head_sha: &str, external_id: Option<&str>) -> CheckRun {
+    CheckRun {
+        name: CHECK_NAME.to_string(),
+        head_sha: head_sha.to_string(),
+        conclusion: Some(CheckConclusion::Neutral),
+        title: "Review incomplete".to_string(),
+        summary: "tinysweeper could not confirm completion of this queued review. Work may have started before the run stopped. This status makes no judgment about the code.".to_string(),
+        status: None,
+        external_id: external_id.map(str::to_string),
         images: vec![],
     }
 }
@@ -234,6 +281,32 @@ mod tests {
     use crate::config::types::LaneId;
     use crate::forge::MockForge;
     use crate::forge::types::CheckConclusion;
+
+    #[test]
+    fn queued_check_is_pinned_and_names_its_durable_wait_position() {
+        let check = queued("head-123", 3, "review:job-123:head-123");
+
+        assert_eq!(check.name, CHECK_NAME);
+        assert_eq!(check.head_sha, "head-123");
+        assert_eq!(check.conclusion, None);
+        assert_eq!(
+            check.status,
+            Some(crate::forge::types::CheckRunStatus::Queued)
+        );
+        assert_eq!(
+            check.external_id.as_deref(),
+            Some("review:job-123:head-123")
+        );
+        assert_eq!(check.title, "Queued — 3 reviews ahead");
+    }
+
+    #[test]
+    fn existing_pending_check_helper_keeps_legacy_in_progress_default() {
+        let check = in_progress("head-123");
+
+        assert_eq!(check.status, None);
+        assert_eq!(check.conclusion, None);
+    }
 
     fn file_lane(id: &str, reviewed: &[&str], unanswered: &[&str]) -> LaneProposal {
         LaneProposal {

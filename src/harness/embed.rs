@@ -2163,8 +2163,9 @@ mod tests {
         .await;
         model.base_url = gateway.base_url.clone();
         model.fallbacks = vec!["c".into()];
-        model.budget_prices.get_mut("b").unwrap().output = 5000.0;
-        model.budget = Some(crate::harness::budget::ledger(10.0));
+        // This fixture isolates execution admission and missing provider
+        // usage; the fallback model has no configured monetary price bound.
+        model.budget = None;
         model.structured_output = StructuredOutput::JsonObject;
 
         let started_at = Instant::now();

@@ -702,10 +702,6 @@ impl ReviewSchedulerState {
     }
 }
 
-fn accepted_id_count(records: &[ScheduledReview]) -> usize {
-    records.iter().map(|record| record.accepted_ids.len()).sum()
-}
-
 fn new_uncoalesced_count(records: &[ScheduledReview], requests: &[ReviewRequest]) -> usize {
     let mut keys = records
         .iter()

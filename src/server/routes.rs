@@ -2962,6 +2962,20 @@ fn review_lease(repo: &str, number: u64, mode: Mode, head: Option<&str>) -> Stri
     }
 }
 
+/// A delayed incremental delivery may resolve to a head already completed by
+/// a newer delivery. Only the authoritative head check can suppress that
+/// duplicate; webhook SHA values remain hints.
+async fn confirmed_head_is_terminal(
+    jobs: &dyn ReviewJobStore,
+    owned: &OwnedReview,
+    mode: Mode,
+) -> Result<bool> {
+    if mode == Mode::Full {
+        return Ok(false);
+    }
+    jobs.head_is_terminal(owned, unix_time_ms()).await
+}
+
 fn review_lease_holder(run: &Run) -> String {
     run.owned.as_ref().map_or_else(
         || "server".to_owned(),
@@ -3057,11 +3071,7 @@ impl ReviewRun<'_> {
         // authoritative head was just confirmed under the durable owner; stop
         // here so that hint cannot reopen status or spend another model call.
         if let Some(owned) = &run.owned
-            && run.mode == Mode::Incremental
-            && state
-                .review_jobs
-                .head_is_terminal(owned, unix_time_ms())
-                .await?
+            && confirmed_head_is_terminal(state.review_jobs.as_ref(), owned, run.mode).await?
         {
             return Ok(InnerReview::Complete(None));
         }
@@ -4087,6 +4097,77 @@ mod tests {
         assert!(model.requests().is_empty(), "the old provider request never starts");
         assert!(store.owns(&owned, 102).await.unwrap(), "the old owner keeps its slot until yield acknowledgement");
         assert!(!store.should_continue(&owned, 102).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_delayed_old_delivery_does_not_rerun_or_republish_a_completed_live_head() {
+        use crate::forge::{MockForge, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest};
+        use serde_json::json;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let mut request = queued_test_review(7);
+        request.head_sha = Some("head-a-delayed".into());
+        store.admit_batch(vec![request.clone()]).await.unwrap();
+        let newer = store.claim_next("newer-worker", 10).await.unwrap().unwrap();
+        assert!(store.confirm_head(&newer, "head-b-live", 11).await.unwrap());
+        assert_eq!(store.begin_paid(&newer, 12).await.unwrap(), PaidStart::Started);
+        assert!(store
+            .finish(&newer, TerminalOutcome::Published, 13, 13)
+            .await
+            .unwrap());
+
+        request.id = crate::ports::review_job::ReviewJobId("delayed-a".into());
+        request.delivery = Some("delayed-a".into());
+        request.accepted_at_ms = 14;
+        store.admit_batch(vec![request]).await.unwrap();
+        let delayed = store.claim_next("delayed-worker", 15).await.unwrap().unwrap();
+        assert!(store.confirm_head(&delayed, "head-b-live", 16).await.unwrap());
+
+        let forge = MockForge::new();
+        let model = MockModel::silent();
+        let terminal = confirmed_head_is_terminal(&store, &delayed, Mode::Incremental)
+            .await
+            .expect("the confirmed head outcome is durable");
+        if !terminal {
+            model
+                .complete(ModelRequest {
+                    model: "test".into(),
+                    messages: vec![Message::user("review the live head")],
+                    schema: json!({"type": "object"}),
+                    schema_name: "review".into(),
+                    max_tokens: 16,
+                })
+                .await
+                .unwrap();
+            forge
+                .publish_check(
+                    &RepoId::parse("owner/repo").unwrap(),
+                    crate::forge::CheckRun {
+                        name: "tinysweeper/review".into(),
+                        head_sha: "head-b-live".into(),
+                        conclusion: Some(crate::forge::CheckConclusion::Success),
+                        title: "Reviewed".into(),
+                        summary: "Reviewed".into(),
+                        images: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(terminal, "the live head, not delayed A's hint, controls the decision");
+        assert!(model.requests().is_empty(), "published B is not sent to the model again");
+        assert!(forge.writes().is_empty(), "the delayed delivery publishes no duplicate check");
+        assert!(store
+            .finish(&delayed, TerminalOutcome::Declined, 17, 17)
+            .await
+            .unwrap());
+        assert!(store.snapshot_for_test().terminal.iter().all(|record| {
+            record.id.0 != "delayed-a" || record.outcome == TerminalOutcome::Published
+        }));
     }
 
     #[tokio::test]

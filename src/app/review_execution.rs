@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_wakes_a_capacity_waiter_without_refunding_committed_calls() {
+    async fn cancellation_wakes_a_waiter_blocked_by_uncommitted_capacity() {
         let started_at = Instant::now();
         let execution = Arc::new(ReviewExecution::new(options(
             ReviewMode::Large,
@@ -567,10 +567,27 @@ mod tests {
         let mut waiting = tokio::task::JoinSet::new();
         let waiting_control = Arc::clone(&control);
         waiting.spawn(async move {
-            started_tx.send(()).expect("waiting task started");
-            waiting_control.acquire().await
+            use std::future::Future;
+
+            let mut started_tx = Some(started_tx);
+            let mut acquire = Box::pin(waiting_control.acquire());
+            std::future::poll_fn(|context| {
+                let result = acquire.as_mut().poll(context);
+                if result.is_pending()
+                    && let Some(started_tx) = started_tx.take()
+                {
+                    started_tx
+                        .send(())
+                        .expect("acquire was polled while capacity was held");
+                }
+                result
+            })
+            .await
         });
-        started_rx.await.expect("waiter reached its acquire call");
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .expect("waiter polls acquire under the held reservation")
+            .expect("waiter reached its acquire call");
         assert!(
             tokio::time::timeout(Duration::from_millis(25), waiting.join_next())
                 .await

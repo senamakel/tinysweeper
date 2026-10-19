@@ -252,6 +252,7 @@ pub struct MockForge {
     writes: Arc<Mutex<Vec<Write>>>,
     next_id: Arc<Mutex<u64>>,
     fail_check_publishes: Arc<Mutex<usize>>,
+    fail_after_check_publishes: Arc<Mutex<usize>>,
     /// When true, every write is dropped rather than recorded as applied.
     ///
     /// Reads still work. This is what `--dry-run` sets.
@@ -276,6 +277,12 @@ impl MockForge {
     /// Fail the next `count` check-run creates before recording a remote write.
     pub fn fail_next_check_publishes(&self, count: usize) {
         *self.fail_check_publishes.lock().expect("mock failure lock") = count;
+    }
+
+    /// Record the next `count` check-run creates remotely, then return an error
+    /// to model a lost response after the forge accepted the write.
+    pub fn fail_after_check_publishes(&self, count: usize) {
+        *self.fail_after_check_publishes.lock().expect("mock failure lock") = count;
     }
 
     /// A forge serving `state`.
@@ -808,6 +815,11 @@ impl ForgeWrite for MockForge {
                 .insert((check.head_sha.clone(), external_id.clone()), id);
         }
         self.record(Write::Check(check));
+        let mut failures = self.fail_after_check_publishes.lock().expect("mock lost-response lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(Error::Forge("simulated lost check-run response".into()));
+        }
         Ok(id)
     }
 

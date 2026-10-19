@@ -7263,6 +7263,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_terminal_post_response_loss_recovers_without_duplicate_post() {
+        use crate::forge::MockForge;
+        use crate::forge::types::{CheckConclusion, CheckRunStatus};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        forge.fail_after_check_publishes(1);
+        let client_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = client_forge.clone();
+            async move {
+                Ok(QueueStatusClients { read: Arc::new(forge.clone()), write: Arc::new(forge) })
+            }.boxed()
+        });
+        let action = |head: &str| Action::Review {
+            repo: "owner/repo".into(),
+            number: 83,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some(head.into()),
+        };
+        assert_eq!(
+            admit_webhook_review(&store, &action("lost-a"), "lost-a-delivery", "pull_request", factory.clone())
+                .await.expect("A is durably accepted"),
+            Some(Admission::Admitted)
+        );
+        assert_eq!(
+            admit_webhook_review(&store, &action("lost-b"), "lost-b-delivery", "pull_request", factory.clone())
+                .await.expect("B supersedes A"),
+            Some(Admission::Admitted)
+        );
+        let retired = store.snapshot_for_test().retired_checks[0].clone();
+        assert!(retired.check.check_id.is_none(), "ambiguous response leaves recovery intent durable");
+
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        ).await.expect("external ID recovery and terminal patch complete");
+
+        let writes = forge.writes();
+        let terminal_posts = writes.iter().filter(|write| matches!(
+            write,
+            crate::forge::Write::Check(check)
+                if check.head_sha == "lost-a"
+                    && check.conclusion == Some(CheckConclusion::Neutral)
+        )).count();
+        assert_eq!(terminal_posts, 1, "recovery finds the accepted terminal POST");
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CheckUpdate { check_id, check }
+                if *check_id == 1
+                    && check.head_sha == "lost-a"
+                    && check.conclusion == Some(CheckConclusion::Neutral)
+        )));
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::Check(check)
+                if check.head_sha == "lost-b" && check.status == Some(CheckRunStatus::Queued)
+        )));
+        assert!(store.snapshot_for_test().retired_checks.is_empty());
+    }
+
+    #[tokio::test]
     async fn triage_work_runs_while_every_review_permit_is_occupied() {
         use crate::forge::MockForge;
         use crate::forge::types::Issue;

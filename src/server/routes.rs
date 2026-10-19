@@ -918,16 +918,8 @@ fn finish_control_timing(
     timing: &crate::review_timing::ReviewTiming,
     disposition: WorkerDisposition,
 ) -> WorkerDisposition {
-    match disposition {
-        WorkerDisposition::Yielded | WorkerDisposition::Terminal(TerminalOutcome::Superseded) => {
-            timing.finish("superseded")
-        }
-        WorkerDisposition::Terminal(TerminalOutcome::Published) => timing.finish("success"),
-        WorkerDisposition::Terminal(TerminalOutcome::Deadline) => timing.finish("deadline"),
-        WorkerDisposition::Terminal(TerminalOutcome::Exhausted) => timing.finish("failure"),
-        WorkerDisposition::Terminal(TerminalOutcome::Declined) => timing.finish("declined"),
-        WorkerDisposition::Deferred(_) | WorkerDisposition::OwnershipLost => {}
-    }
+    let _ = timing;
+
     disposition
 }
 

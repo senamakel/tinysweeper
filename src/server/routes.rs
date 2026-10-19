@@ -891,18 +891,16 @@ async fn record_owned_disposition(
 ) -> Option<Result<bool>> {
     match disposition {
         WorkerDisposition::Terminal(TerminalOutcome::Deadline) => {
-            Some(finish_or_yield(store, owned, now_ms, || {
+            finish_or_yield(store, owned, now_ms, || {
                 store.finish_deadline(owned, now_ms)
             })
-            .await)
+            .await
         }
         WorkerDisposition::Terminal(outcome) => {
-            Some(
-                finish_or_yield(store, owned, now_ms, || {
-                    store.finish(owned, outcome, now_ms, now_ms)
-                })
-                .await,
-            )
+            finish_or_yield(store, owned, now_ms, || {
+                store.finish(owned, outcome, now_ms, now_ms)
+            })
+            .await
         }
         WorkerDisposition::Deferred(not_before_ms) => {
             store.defer(owned, now_ms, not_before_ms).await

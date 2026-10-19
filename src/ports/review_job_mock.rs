@@ -91,6 +91,37 @@ impl ReviewJobStore for MockReviewJobStore {
             .claim_pending_checks(now_ms, limit))
     }
 
+    async fn claim_pending_metadata(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewMetadata>> {
+        Ok(self.state.lock().expect("state").claim_pending_metadata(now_ms, limit))
+    }
+
+    async fn metadata_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.state.lock().expect("state").metadata_claim_current(pending, now_ms))
+    }
+
+    async fn resolve_pending_metadata(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        let head_sha = head_sha.to_owned();
+        Ok(self.state.lock().expect("state").resolve_pending_metadata(
+            &pending, &head_sha, open, draft, now_ms,
+        ))
+    }
+
     async fn record_queued_check_id(
         &self,
         pending: &crate::ports::review_job::PendingReviewCheck,

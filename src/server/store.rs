@@ -174,6 +174,39 @@ impl ReviewJobStore for Store {
             .await
     }
 
+    async fn claim_pending_metadata(
+        &self,
+        _now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::ports::review_job::PendingReviewMetadata>> {
+        self.change_review_scheduler(move |state, now_ms| state.claim_pending_metadata(now_ms, limit))
+            .await
+    }
+
+    async fn metadata_claim_current(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let state = self.review_scheduler_state().await?;
+        Ok(state.metadata_claim_current(pending, self.server_now_ms().await?))
+    }
+
+    async fn resolve_pending_metadata(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        _now_ms: i64,
+    ) -> Result<bool> {
+        let pending = pending.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.resolve_pending_metadata(&pending, &head_sha, open, draft, now_ms)
+        }).await
+    }
+
     async fn record_queued_check_id(
         &self,
         pending: &crate::ports::review_job::PendingReviewCheck,

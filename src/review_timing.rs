@@ -27,7 +27,7 @@ pub(crate) const PHASES: &[&str] = &[
 ];
 
 /// Classify a review error for timing and operator dashboards.
-#[cfg(any(feature = "serve", test))]
+#[cfg(feature = "serve")]
 pub(crate) fn outcome_for_error(error: &crate::error::Error) -> &'static str {
     if matches!(error, crate::error::Error::Timeout { .. }) {
         "deadline"

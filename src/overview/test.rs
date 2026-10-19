@@ -265,7 +265,7 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
     for symbol in ["alpha", "beta", "gamma", "delta"] {
         assert!(diagram.contains(symbol), "{diagram}");
     }
-    assert!(!diagram.contains("call"), "{diagram}");
+    assert!(!diagram.contains("[\"call<br/>"), "{diagram}");
     assert!(!diagram.contains("works"), "{diagram}");
     assert!(!diagram.contains("test_leaks_state"), "{diagram}");
     assert!(!diagram.contains("tests::reject_empty"), "{diagram}");

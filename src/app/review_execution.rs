@@ -52,6 +52,7 @@ struct ExecutionState {
     committed_calls: usize,
     reserved_calls: usize,
     physical_usage: Usage,
+    cancelled: bool,
 }
 
 struct ExecutionInner {
@@ -102,6 +103,7 @@ impl ReviewExecution {
                     committed_calls: 0,
                     reserved_calls: 0,
                     physical_usage: Usage::default(),
+                    cancelled: false,
                 }),
             }),
         }
@@ -152,9 +154,17 @@ impl ReviewExecution {
         }
     }
 
-    /// Test scaffold for the owner cancellation signal. Admission enforcement
-    /// remains intentionally absent until the behavioral tests are compiled.
-    pub(crate) fn cancel(&self) {}
+    /// Cancel this review's remaining execution and wake pending acquisitions.
+    pub(crate) fn cancel(&self) {
+        let mut state = lock(&self.inner.state);
+        if !state.cancelled {
+            state.cancelled = true;
+            drop(state);
+            self.inner
+                .availability_generation
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -169,6 +179,10 @@ impl ModelExecutionControl for ReviewExecution {
 
             {
                 let mut state = lock(&self.inner.state);
+                if state.cancelled {
+                    return Err(ModelExecutionRefusal::Cancelled);
+                }
+
                 if (self.inner._now)() >= self.inner.soft_deadline {
                     return Err(ModelExecutionRefusal::SoftDeadline);
                 }
@@ -205,6 +219,7 @@ const PERMIT_RESERVED: u8 = 0;
 const PERMIT_COMMITTED: u8 = 1;
 const PERMIT_REFUSED: u8 = 2;
 const PERMIT_RELEASED: u8 = 3;
+const PERMIT_CANCELLED: u8 = 4;
 
 struct ReviewDispatchPermit {
     inner: Arc<ExecutionInner>,
@@ -216,6 +231,7 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         match self.state.load(Ordering::Acquire) {
             PERMIT_COMMITTED => return Ok(()),
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
+            PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_RESERVED => {}
             _ => return Err(ModelExecutionRefusal::SoftDeadline),
         }
@@ -224,8 +240,14 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         match self.state.load(Ordering::Acquire) {
             PERMIT_COMMITTED => return Ok(()),
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
+            PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_RESERVED => {}
             _ => return Err(ModelExecutionRefusal::SoftDeadline),
+        }
+
+        if state.cancelled {
+            self.state.store(PERMIT_CANCELLED, Ordering::Release);
+            return Err(ModelExecutionRefusal::Cancelled);
         }
 
         if (self.inner._now)() >= self.inner.soft_deadline {
@@ -545,9 +567,11 @@ mod tests {
         execution.cancel();
 
         let result = permit.mark_dispatched();
+        let repeated_result = permit.mark_dispatched();
         drop(permit);
         let snapshot = execution.snapshot();
         assert_eq!(result, Err(ModelExecutionRefusal::Cancelled));
+        assert_eq!(repeated_result, Err(ModelExecutionRefusal::Cancelled));
         assert_eq!(snapshot.committed_calls, 0);
         assert_eq!(snapshot.reserved_calls, 0);
     }
@@ -629,6 +653,9 @@ mod tests {
             .expect("commit before cancellation");
 
         execution.cancel();
+        permit
+            .mark_dispatched()
+            .expect("an already committed dispatch stays idempotent after cancellation");
         drop(permit);
 
         assert_eq!(

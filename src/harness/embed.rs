@@ -567,7 +567,7 @@ impl GatewayModel {
         } else {
             self.routing_for(model)
         };
-        let options = provider_options(&self.reasoning_effort, &routing);
+        let options = provider_options(self.effort_for(request), &routing);
         let physical = Arc::new(PhysicalModelObserver {
             lane: request.schema_name.clone(),
             output_cap: base,
@@ -921,6 +921,15 @@ fn langfuse_client() -> Option<Arc<crate::harness::langfuse::LangfuseExporter>> 
 }
 
 impl GatewayModel {
+    /// The request override travels unchanged across routes and repairs; `None`
+    /// retains the deployment-wide setting used by existing callers.
+    fn effort_for<'a>(&'a self, request: &'a ModelRequest) -> &'a str {
+        request
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or(&self.reasoning_effort)
+    }
+
     /// The routing for one call: the model's own route when it has one,
     /// otherwise the ladder-wide pin with the first-party-vendor bypass.
     fn routing_for(&self, model: &str) -> std::borrow::Cow<'_, ProviderRouting> {
@@ -1295,6 +1304,9 @@ mod tests {
         Models {
             agentic_reviewers: false,
             reasoning_effort: "high".into(),
+            reviewer_reasoning_effort: "medium".into(),
+            falsify_reasoning_effort: "low".into(),
+            summary_reasoning_effort: "low".into(),
             structured_output: StructuredOutput::Schema,
             gateway: "openrouter".into(),
             base_url: "https://openrouter.ai/api/v1".into(),

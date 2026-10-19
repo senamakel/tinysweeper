@@ -265,6 +265,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+
     use crate::ports::model_execution::ModelExecutionControl;
 
     fn options(

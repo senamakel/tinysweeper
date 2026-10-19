@@ -80,11 +80,18 @@ overlay reads:
 | `TINYSWEEPER_PREVIEW_TOKEN` | What the UI preview action in other repositories' CI authenticates with (`templates/ui-preview/README.md`). Unset means no `/preview` routes. Pairs with `[preview] enabled` and `public_base_url` in `.tinysweeper.toml`, and optionally `models.vision`. |
 | `TINYSWEEPER_MCP_TOKEN` | Dedicated bearer for `/mcp`. Unset means the MCP router is not mounted. Keep it separate from the admin and preview credentials. |
 | `TINYSWEEPER_ALLOWED_ORG` | Organisation manual reviews are bounded to. Defaults to `tinyhumansai`. |
-| `LANGFUSE_*` | Optional tracing; see the README. |
+| `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Optional direct Langfuse export; provide all three. `LANGFUSE_ENVIRONMENT` tags traces. Alternatively set `TINYHUMANS_LANGFUSE_PROXY_URL` and `TINYHUMANS_AUTH_TOKEN` for the authenticated proxy. |
+| `SENTRY_DSN` | Optional server error reporting. Create a Sentry project for the deployed server and set its DSN here; never commit the DSN. |
 
 `.env` is the only file on the box that is not in git; `.tinysweeper.toml` is
 tracked. Back `.env` up somewhere with the same care as the App's private key,
 because it *is* the deployment.
+
+To enable external tracing, provision a Langfuse project and put its endpoint
+and keys in `.env` (or use the authenticated proxy variables above). To enable
+Sentry reporting, provision a server project and set `SENTRY_DSN`. Restart the
+server after changing these values. Keep all DSNs and keys in `.env` or the
+operator's secret manager; the repository contains no production credentials.
 
 ## Rolling a new image
 

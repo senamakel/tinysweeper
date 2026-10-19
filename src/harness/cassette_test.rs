@@ -578,6 +578,11 @@ async fn a_recording_replays_the_same_answer_the_same_cost_and_the_same_model() 
             .with_usage(Usage {
                 input_tokens: 1_200,
                 output_tokens: 300,
+                reasoning_tokens: 0,
+                calls_attempted: 0,
+                calls_succeeded: 0,
+                calls_refused: 0,
+                calls_errored: 0,
                 cached_tokens: 900,
                 embed_tokens: 0,
                 cost_usd: 0.000_15,
@@ -680,6 +685,11 @@ async fn cost_usd_sums_every_answer_served_recorded_or_replayed() {
     let live = Arc::new(MockModel::always(answer()).with_usage(Usage {
         input_tokens: 100,
         output_tokens: 20,
+        reasoning_tokens: 0,
+        calls_attempted: 0,
+        calls_succeeded: 0,
+        calls_refused: 0,
+        calls_errored: 0,
         cached_tokens: 0,
         embed_tokens: 0,
         cost_usd: 0.01,

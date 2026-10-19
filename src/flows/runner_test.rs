@@ -129,6 +129,11 @@ async fn accounted_runs_report_only_their_own_usage() {
     let usage = Usage {
         input_tokens: 100,
         output_tokens: 10,
+        reasoning_tokens: 0,
+        calls_attempted: 0,
+        calls_succeeded: 0,
+        calls_refused: 0,
+        calls_errored: 0,
         cached_tokens: 80,
         embed_tokens: 0,
         cost_usd: 0.01,
@@ -187,6 +192,11 @@ async fn concurrent_accounted_runs_do_not_claim_each_others_usage() {
     let usage = Usage {
         input_tokens: 100,
         output_tokens: 10,
+        reasoning_tokens: 0,
+        calls_attempted: 0,
+        calls_succeeded: 0,
+        calls_refused: 0,
+        calls_errored: 0,
         cached_tokens: 80,
         embed_tokens: 0,
         cost_usd: 0.01,

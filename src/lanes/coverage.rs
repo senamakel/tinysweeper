@@ -303,6 +303,11 @@ mod tests {
         let round_one = Usage {
             input_tokens: 100,
             output_tokens: 10,
+            reasoning_tokens: 0,
+            calls_attempted: 0,
+            calls_succeeded: 0,
+            calls_refused: 0,
+            calls_errored: 0,
             cached_tokens: 80,
             embed_tokens: 0,
             cost_usd: 0.01,
@@ -310,6 +315,11 @@ mod tests {
         let round_two = Usage {
             input_tokens: 50,
             output_tokens: 5,
+            reasoning_tokens: 0,
+            calls_attempted: 0,
+            calls_succeeded: 0,
+            calls_refused: 0,
+            calls_errored: 0,
             cached_tokens: 40,
             embed_tokens: 0,
             cost_usd: 0.005,

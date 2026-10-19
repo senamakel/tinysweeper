@@ -440,7 +440,10 @@ fn execution_refusal_with_counts(
             ..Usage::default()
         })
     });
-    let accounting_complete = has_physical_calls && counts.accounting_complete;
+    // The default snapshot is complete; with no dispatch this means the
+    // refusal happened before any paid work. `Some(false)` stays reserved for
+    // a known usage lower bound whose dispatched-call accounting is partial.
+    let accounting_complete = counts.accounting_complete;
 
     Error::ModelExecutionRefused {
         refusal,

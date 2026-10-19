@@ -63,10 +63,13 @@ pub enum Error {
         refusal: crate::ports::model_execution::ModelExecutionRefusal,
         /// Actual provider usage observed before the refusal, when any.
         usage: Option<Box<crate::ports::model::Usage>>,
-        /// Whether every paid dispatch represented in `usage` reported
-        /// complete tokens and a known cost. `Usage` has no unknown-cost
-        /// representation, so this marker prevents a zero placeholder from
-        /// being mistaken for an actual zero-dollar total.
+        /// Whether accounting covers every paid dispatch in the whole
+        /// logical operation. `None` plus `true` means no paid physical call
+        /// occurred; `None` plus `false` means a call may have been paid but
+        /// its usage is unknown. `Some(false)` retains known lower-bound usage
+        /// when a dispatched call omitted tokens or cost. `Usage` has no
+        /// unknown-cost representation, so this marker prevents a zero
+        /// placeholder from being mistaken for an actual zero-dollar total.
         accounting_complete: bool,
     },
 

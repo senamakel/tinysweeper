@@ -311,6 +311,261 @@ impl Cassette {
             record_prompts: self.record_prompts,
         }
     }
+
+    fn make_take(
+        &self,
+        key: String,
+        request: &ModelRequest,
+        response: &ModelResponse,
+        review_context: Option<ReviewContext>,
+    ) -> Take {
+        Take {
+            key,
+            model_requested: request.model.clone(),
+            model_answered: response.model.clone(),
+            schema_name: request.schema_name.clone(),
+            usage: response.usage,
+            value: response.value.clone(),
+            review_context,
+            prompt: self.record_prompts.then(|| {
+                request
+                    .messages
+                    .iter()
+                    .map(|message| RecordedMessage {
+                        role: role_name(message).to_string(),
+                        content: message.content.clone(),
+                        images: message.images.clone(),
+                    })
+                    .collect()
+            }),
+        }
+    }
+
+    fn record_error(&self, error: &Error) {
+        let mut state = self.state.lock().expect("cassette lock");
+        match error {
+            Error::ModelExecutionRefused {
+                usage,
+                accounting_complete,
+                ..
+            } => {
+                if let Some(usage) = usage {
+                    state.spend.usage.add(**usage);
+                }
+                if !accounting_complete {
+                    state.unreported_errors += 1;
+                }
+            }
+            _ => {
+                if let Some(usage) = error.usage() {
+                    state.spend.usage.add(usage);
+                } else {
+                    state.unreported_errors += 1;
+                }
+            }
+        }
+    }
+
+    fn record_miss(&self) {
+        self.state.lock().expect("cassette lock").misses += 1;
+    }
+}
+
+fn cassette_miss(dir: &Path, request: &ModelRequest, key: &str) -> Error {
+    tracing::warn!(schema = %request.schema_name, model = %request.model, %key, "cassette miss");
+    Error::Model(format!(
+        "cassette miss in {}: no recorded answer for a `{}` call to `{}` (key {key}). \
+         The prompt changed since this was recorded — re-record the corpus, or replay \
+         loosely and accept that the numbers describe the old prompt.",
+        dir.display(),
+        request.schema_name,
+        request.model,
+    ))
+}
+
+fn review_key(
+    request: &ModelRequest,
+    revision: Option<&str>,
+    policy: &crate::config::types::LookupPolicy,
+) -> Result<String> {
+    let policy = serde_json::to_value(policy)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"tinysweeper-cassette-review-v1\0");
+    hasher.update(key(request).as_bytes());
+    hasher.update(b"\0policy\0");
+    hasher.update(canonical_schema(&policy).to_string().as_bytes());
+    hasher.update(b"\0revision\0");
+    if let Some(revision) = revision {
+        hasher.update(b"known\0");
+        hasher.update(revision.as_bytes());
+    } else {
+        hasher.update(b"unknown");
+    }
+    Ok(hex_digest(&hasher.finalize()))
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct QueryRecordingTree<'a> {
+    inner: &'a dyn crate::ports::tree::TreeReader,
+    recorded: Mutex<Vec<RecordedQuery>>,
+}
+
+impl<'a> QueryRecordingTree<'a> {
+    fn new(inner: &'a dyn crate::ports::tree::TreeReader) -> Self {
+        Self {
+            inner,
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn recorded(&self) -> Vec<RecordedQuery> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn record(&self, query: RecordedTreeQuery, result: &Result<crate::ports::tree::Found>) {
+        let fingerprint = match result {
+            Ok(found) => {
+                let canonical = canonical_schema(
+                    &serde_json::to_value(found).expect("Found always serializes"),
+                );
+                hex_digest(&Sha256::digest(
+                    serde_json::to_vec(&canonical).expect("canonical Found serializes"),
+                ))
+            }
+            Err(_) => "failed".into(),
+        };
+        self.recorded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(RecordedQuery {
+                query,
+                result: fingerprint,
+            });
+    }
+}
+
+#[async_trait]
+impl crate::ports::tree::TreeReader for QueryRecordingTree<'_> {
+    async fn lookup(
+        &self,
+        lookup: &crate::ports::tree::Lookup,
+    ) -> Result<crate::ports::tree::Found> {
+        let result = self.inner.lookup(lookup).await;
+        self.record(RecordedTreeQuery::Lookup(lookup.clone()), &result);
+        result
+    }
+
+    async fn explore(
+        &self,
+        query: &crate::ports::tree::TreeQuery,
+    ) -> Result<crate::ports::tree::Found> {
+        let recorded = match query {
+            crate::ports::tree::TreeQuery::List { path, limit } => RecordedTreeQuery::List {
+                path: path.clone(),
+                limit: *limit,
+            },
+            crate::ports::tree::TreeQuery::Symbol { symbol, limit } => RecordedTreeQuery::Symbol {
+                symbol: symbol.clone(),
+                limit: *limit,
+            },
+            crate::ports::tree::TreeQuery::History {
+                commit,
+                path,
+                start,
+                end,
+            } => RecordedTreeQuery::History {
+                commit: commit.clone(),
+                path: path.clone(),
+                start: *start,
+                end: *end,
+            },
+        };
+        let result = self.inner.explore(query).await;
+        self.record(recorded, &result);
+        result
+    }
+
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+
+    fn revision(&self) -> Option<String> {
+        self.inner.revision()
+    }
+}
+
+struct QueryReplayTree<'a> {
+    inner: &'a dyn crate::ports::tree::TreeReader,
+}
+
+impl<'a> QueryReplayTree<'a> {
+    fn new(inner: &'a dyn crate::ports::tree::TreeReader) -> Self {
+        Self { inner }
+    }
+
+    async fn reissue(&self, expected: &RecordedQuery) -> Result<()> {
+        use crate::ports::tree::TreeQuery;
+
+        let result = match &expected.query {
+            RecordedTreeQuery::Lookup(lookup) => self.inner.lookup(lookup).await,
+            RecordedTreeQuery::List { path, limit } => {
+                self.inner
+                    .explore(&TreeQuery::List {
+                        path: path.clone(),
+                        limit: *limit,
+                    })
+                    .await
+            }
+            RecordedTreeQuery::Symbol { symbol, limit } => {
+                self.inner
+                    .explore(&TreeQuery::Symbol {
+                        symbol: symbol.clone(),
+                        limit: *limit,
+                    })
+                    .await
+            }
+            RecordedTreeQuery::History {
+                commit,
+                path,
+                start,
+                end,
+            } => {
+                self.inner
+                    .explore(&TreeQuery::History {
+                        commit: commit.clone(),
+                        path: path.clone(),
+                        start: *start,
+                        end: *end,
+                    })
+                    .await
+            }
+        };
+        let matches = match (expected.result.as_str(), result) {
+            ("failed", Err(_)) => true,
+            ("failed", Ok(_)) => false,
+            (expected_digest, Ok(found)) => {
+                let canonical = canonical_schema(
+                    &serde_json::to_value(found).expect("Found always serializes"),
+                );
+                let actual = hex_digest(&Sha256::digest(
+                    serde_json::to_vec(&canonical).expect("canonical Found serializes"),
+                ));
+                actual == expected_digest
+            }
+            (_, Err(_)) => false,
+        };
+        if matches {
+            Ok(())
+        } else {
+            Err(Error::Model("cassette review source changed".into()))
+        }
+    }
 }
 
 #[async_trait]
@@ -326,36 +581,11 @@ impl Model for Cassette {
             let response = match inner.complete(request.clone()).await {
                 Ok(response) => response,
                 Err(error) => {
-                    let mut state = self.state.lock().expect("cassette lock");
-                    if let Some(usage) = error.usage() {
-                        // A refusal reports usage without an answering model.
-                        // Count its known charge without inventing attribution.
-                        state.spend.usage.add(usage);
-                    } else {
-                        state.unreported_errors += 1;
-                    }
+                    self.record_error(&error);
                     return Err(error);
                 }
             };
-            let take = Take {
-                key,
-                model_requested: request.model.clone(),
-                model_answered: response.model.clone(),
-                schema_name: request.schema_name.clone(),
-                usage: response.usage,
-                value: response.value.clone(),
-                prompt: self.record_prompts.then(|| {
-                    request
-                        .messages
-                        .iter()
-                        .map(|message| RecordedMessage {
-                            role: role_name(message).to_string(),
-                            content: message.content.clone(),
-                            images: message.images.clone(),
-                        })
-                        .collect()
-                }),
-            };
+            let take = self.make_take(key, &request, &response, None);
             let mut state = self.state.lock().expect("cassette lock");
             state.recorded.push(take);
             state.served += 1;
@@ -395,10 +625,17 @@ impl Model for Cassette {
 
         // Loose: fall back to call order, which survives a cosmetic edit.
         match self.ordered.get(cursor) {
-            Some(take) => {
+            Some(take) if take.review_context.is_none() => {
                 state.loose_hits += 1;
                 state.spend.record(&take.model_answered, take.usage);
                 Ok(replayed(take))
+            }
+            Some(_) => {
+                state.misses += 1;
+                Err(Error::Model(
+                    "cassette method mismatch: completion cannot replay a repository-aware review"
+                        .into(),
+                ))
             }
             None => Err(Error::Model(format!(
                 "cassette in {} is exhausted: the run made {} calls, the recording holds {}",
@@ -416,9 +653,88 @@ impl Model for Cassette {
     }
 
     fn review_reports_physical_calls(&self) -> bool {
-        // Cassette uses Model's default review implementation, which routes
-        // review through this complete method.
-        self.complete_reports_physical_calls()
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.review_reports_physical_calls())
+    }
+
+    async fn review(
+        &self,
+        request: ModelRequest,
+        tree: &dyn crate::ports::tree::TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        let revision = tree.revision();
+        let key = review_key(&request, revision.as_deref(), policy)?;
+        if self.mode == Mode::Record {
+            let inner = self
+                .inner
+                .as_ref()
+                .ok_or_else(|| Error::Model("cassette is recording with no model".into()))?;
+            let traced = QueryRecordingTree::new(tree);
+            let response = match inner.review(request.clone(), &traced, policy).await {
+                Ok(response) => response,
+                Err(error) => {
+                    self.record_error(&error);
+                    return Err(error);
+                }
+            };
+            let take = self.make_take(
+                key,
+                &request,
+                &response,
+                Some(ReviewContext {
+                    policy: policy.clone(),
+                    revision,
+                    queries: traced.recorded(),
+                }),
+            );
+            let mut state = self.state.lock().expect("cassette lock");
+            state.recorded.push(take);
+            state.served += 1;
+            state.spend.record(&response.model, response.usage);
+            return Ok(response);
+        }
+
+        let (take, loose) = {
+            let mut state = self.state.lock().expect("cassette lock");
+            let cursor = state.served;
+            state.served += 1;
+            if let Some(take) = self.takes.get(&key) {
+                (Some(take.clone()), false)
+            } else if self.mode == Mode::Loose {
+                match self.ordered.get(cursor) {
+                    Some(take) if take.review_context.is_some() => (Some(take.clone()), true),
+                    _ => (None, false),
+                }
+            } else {
+                (None, false)
+            }
+        };
+        let Some(take) = take else {
+            self.record_miss();
+            return Err(cassette_miss(&self.dir, &request, &key));
+        };
+        let Some(context) = &take.review_context else {
+            self.record_miss();
+            return Err(Error::Model(
+                "cassette method mismatch: review needs a repository-aware take".into(),
+            ));
+        };
+
+        let replay_tree = QueryReplayTree::new(tree);
+        for query in &context.queries {
+            replay_tree.reissue(query).await.map_err(|_| {
+                self.record_miss();
+                Error::Model("cassette review source or query sequence changed".into())
+            })?;
+        }
+        let mut state = self.state.lock().expect("cassette lock");
+        if loose {
+            state.loose_hits += 1;
+        }
+        state.spend.record(&take.model_answered, take.usage);
+        Ok(replayed(&take))
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {

@@ -211,31 +211,31 @@ async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_fai
     );
 }
 
-#[tokio::test]
-async fn published_head_is_not_retired_as_not_reviewed_when_owner_yields() {
-    let store = MockReviewJobStore::default();
+#[test]
+fn published_head_is_not_retired_as_not_reviewed_when_owner_yields() {
+    let mut state = ReviewSchedulerState::default();
     let mut first = request("published-head-a", 10);
     first.head_sha = Some("head-a".into());
-    assert_eq!(store.admit_batch(vec![first.clone()]).await.unwrap(), Admission::Admitted);
-    let pending = store.claim_pending_checks(10, 1).await.unwrap().pop().unwrap();
-    assert!(store.record_queued_check_id(&pending, 78, 11).await.unwrap());
-    let owned = store.claim_next("review-worker", 12).await.unwrap().unwrap();
-    assert!(store.confirm_head(&owned, "head-a", 13).await.unwrap());
-    assert_eq!(store.begin_paid(&owned, 14).await.unwrap(), super::PaidStart::Started);
+    assert_eq!(state.admit_batch(vec![first.clone()], 10), Admission::Admitted);
+    let pending = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&pending, 78, 11));
+    let owned = state.claim_next("review-worker", 12).unwrap();
+    assert!(state.confirm_head(&owned, "head-a", 13));
+    assert_eq!(state.begin_paid(&owned, 14), super::PaidStart::Started);
 
     let mut next = first;
     next.id = ReviewJobId("push-head-b".into());
     next.delivery = Some("push-head-b".into());
     next.head_sha = Some("head-b".into());
-    assert_eq!(store.admit_batch(vec![next], 15).await.unwrap(), Admission::Admitted);
-    assert!(!store.should_continue(&owned, 16).await.unwrap());
-    assert!(store.finish_with_yield(&owned, TerminalOutcome::Published, 17).await.unwrap());
+    assert_eq!(state.admit_batch(vec![next], 15), Admission::Admitted);
+    assert!(!state.should_continue(&owned, 16));
+    assert!(state.finish_with_yield(&owned, TerminalOutcome::Published, 17));
 
     assert!(
-        store.snapshot_for_test().retired_checks.is_empty(),
+        state.retired_checks.is_empty(),
         "a published head's queued/in-progress status must not be overwritten as NotReviewed"
     );
-    assert_eq!(store.unfinished(), 1, "the newer accepted head remains resumable");
+    assert_eq!(state.unfinished.len(), 1, "the newer accepted head remains resumable");
 }
 
 #[test]

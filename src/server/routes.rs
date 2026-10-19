@@ -5248,6 +5248,7 @@ mod tests {
 
         let run = Run {
             mode: Mode::Incremental,
+            timing: crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             slot: Arc::new(std::sync::Mutex::new(None)),
             deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
             expected_head: Some("head-b".into()),

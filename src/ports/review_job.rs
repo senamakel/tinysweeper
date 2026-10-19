@@ -20,6 +20,8 @@ pub const MAX_REVIEW_PAID_ATTEMPTS: u32 = 5;
 pub const REVIEW_OWNER_TTL_MS: i64 = 45_000;
 /// Short bounded owner claim for a queued status write, independent of review ownership.
 pub const QUEUE_STATUS_CLAIM_TTL_MS: i64 = 30_000;
+/// Bound active and detached check identities well below the BSON scheduler cap.
+pub const MAX_REVIEW_STATUS_RECORDS: usize = 512;
 /// How long terminal delivery IDs remain deduped.
 pub const REVIEW_TOMBSTONE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 /// Upper bound for any persisted identifier or descriptive field.
@@ -153,12 +155,27 @@ pub struct ReviewCheckRecord {
 /// A queued status publication claimed from the durable scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingReviewCheck {
-    /// Job metadata used only for status publication.
-    pub request: ReviewRequest,
-    /// Check identity and fenced publication claim.
+    /// Repository whose check status is being changed.
+    pub repo: String,
+    /// Installation for the server-owned check write.
+    pub installation: u64,
+    /// Check identity and fenced write claim.
     pub check: ReviewCheckRecord,
     /// Number of eligible earlier accepted jobs at claim time.
     pub reviews_ahead: usize,
+    /// True when this identity is detached and must be concluded, never created.
+    pub retired: bool,
+}
+
+/// A stale check retained until GitHub acknowledges a terminal status.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RetiredReviewCheck {
+    /// Repository in owner/name form.
+    pub repo: String,
+    /// GitHub App installation that owns the check.
+    pub installation: u64,
+    /// Check identity and durable retry state.
+    pub check: ReviewCheckRecord,
 }
 
 /// Terminal result retained as a dedupe tombstone.
@@ -276,6 +293,9 @@ pub struct ReviewSchedulerState {
     /// Bounded recent history of terminal heads.
     #[serde(default)]
     pub head_history: Vec<HeadTerminalTombstone>,
+    /// Detached check cleanup that survives removal of its review job.
+    #[serde(default)]
+    pub retired_checks: Vec<RetiredReviewCheck>,
 }
 
 impl ReviewSchedulerState {
@@ -331,9 +351,11 @@ impl ReviewSchedulerState {
                 .position(|id| *id == self.unfinished[index].request.id)
                 .unwrap_or(0);
             claims.push(PendingReviewCheck {
-                request: self.unfinished[index].request.clone(),
+                repo: self.unfinished[index].request.repo.clone(),
+                installation: self.unfinished[index].request.installation,
                 check,
                 reviews_ahead,
+                retired: false,
             });
         }
         claims

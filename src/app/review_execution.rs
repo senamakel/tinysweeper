@@ -293,6 +293,18 @@ mod tests {
 
     use crate::ports::model_execution::ModelExecutionControl;
 
+    struct LegacyOpaqueMockModel(crate::harness::mock::MockModel);
+
+    #[async_trait::async_trait]
+    impl Model for LegacyOpaqueMockModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+            self.0.complete(request).await
+        }
+    }
+
     fn options(
         mode: ReviewMode,
         max_calls: Option<usize>,
@@ -754,7 +766,8 @@ mod tests {
             started_at,
             started_at + Duration::from_secs(900),
         ));
-        let model: Arc<dyn Model> = Arc::new(crate::harness::mock::MockModel::new());
+        let model: Arc<dyn Model> =
+            Arc::new(LegacyOpaqueMockModel(crate::harness::mock::MockModel::new()));
         let control: Arc<dyn ModelExecutionControl> = Arc::new(execution);
 
         assert!(model.with_execution_control(control).is_none());

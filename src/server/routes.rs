@@ -4601,6 +4601,7 @@ mod tests {
         let check_id = check_id.expect("cold recovery must open a local status slot");
 
         let disposition = finalize_exhausted_review(
+            &crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             || async {
                 if store.owns(&recovered, now_ms).await? {
                     Ok(())
@@ -4734,6 +4735,7 @@ mod tests {
             .expect("replacement opens its own status");
 
         let disposition = finalize_exhausted_review(
+            &crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             || async {
                 if store.owns(&stale, stale_check_time).await? {
                     Ok(())

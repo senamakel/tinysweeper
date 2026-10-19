@@ -55,6 +55,10 @@ pub struct ModelExecutionTerminalUsage {
 /// Raw terminal observation for one dispatched physical provider call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelExecutionTerminal {
+    /// Configured model requested for this physical dispatch.
+    pub requested_model: String,
+    /// Model that answered, when the provider identified it.
+    pub answered_model: Option<String>,
     /// How the physical provider call ended.
     pub outcome: ModelExecutionTerminalOutcome,
     /// Raw provider usage, kept optional so an absent report stays unknown.

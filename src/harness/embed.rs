@@ -1348,6 +1348,10 @@ impl Model for GatewayModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::model_execution::{
+        ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+        ModelExecutionTerminal, ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+    };
 
     #[test]
     fn physical_admission_reasons_keep_their_neutral_meaning() {
@@ -1396,7 +1400,7 @@ mod tests {
         }
 
         fn on_terminal(&self, terminal: crate::ports::model_execution::ModelExecutionTerminal) {
-            self.terminals.lock().unwrap().push(terminal);
+            self.terminals.lock().unwrap().push(terminal.clone());
             self.inner.on_terminal(terminal);
         }
     }
@@ -1419,10 +1423,17 @@ mod tests {
     }
 
     fn raw_terminal(
+        requested_model: &str,
+        answered_model: Option<&str>,
         outcome: crate::ports::model_execution::ModelExecutionTerminalOutcome,
         usage: Option<crate::ports::model_execution::ModelExecutionTerminalUsage>,
     ) -> crate::ports::model_execution::ModelExecutionTerminal {
-        crate::ports::model_execution::ModelExecutionTerminal { outcome, usage }
+        crate::ports::model_execution::ModelExecutionTerminal {
+            requested_model: requested_model.into(),
+            answered_model: answered_model.map(str::to_owned),
+            outcome,
+            usage,
+        }
     }
 
     impl crate::ports::model::ModelCallObserver for RecordedModelCalls {
@@ -1927,6 +1938,193 @@ mod tests {
             max_tokens: 100,
         };
         (model, gateway, request)
+    }
+
+    #[tokio::test]
+    async fn direct_gateway_reports_raw_terminals_without_a_timing_observer() {
+        let (model, gateway, request) = admission_fixture().await;
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+
+        model.complete(request).await.expect("the response succeeds");
+
+        assert_eq!(gateway.requests().len(), 1);
+        let expected = raw_terminal(
+            ModelExecutionTerminalOutcome::Succeeded,
+            Some(ModelExecutionTerminalUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.0021),
+            }),
+        );
+        assert_eq!(*control.terminals.lock().unwrap(), vec![expected]);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminals, vec![expected]);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn agentic_gateway_reports_raw_terminals_without_a_timing_observer() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::tree::{MockTree, TreeReader};
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let read = Reply {
+            status: 200,
+            body: json!({
+                "id":"raw-agentic-read",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"read-1","type":"function","function":{"name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()}
+                }]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let gateway = FakeGateway::start(vec![
+            read,
+            Reply::completion(
+                "b",
+                r#"{"summary":"would continue"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        config.provider = ProviderRouting {
+            order: vec!["pinned-provider".into()],
+            allow_fallbacks: false,
+            last_resort_unpinned: true,
+            unpinned_vendors: vec![],
+        };
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Read source.")],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let error = model
+            .review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            )
+            .await
+            .expect_err("the second model dispatch is refused at the shared cap");
+
+        assert!(matches!(
+            error,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        assert_eq!(gateway.requests().len(), 1);
+        let expected = raw_terminal(
+            ModelExecutionTerminalOutcome::Succeeded,
+            Some(ModelExecutionTerminalUsage {
+                input_tokens: 12,
+                output_tokens: 3,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.001),
+            }),
+        );
+        assert_eq!(*control.terminals.lock().unwrap(), vec![expected]);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminals, vec![expected]);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn a_committed_gateway_call_without_a_terminal_keeps_usage_unknown() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let reply = Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+        );
+        let (gateway, release) = FakeGateway::start_paused(vec![reply]).await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = Arc::new(
+            model
+                .with_execution_control(control.clone())
+                .expect("the Gateway keeps the supplied execution control"),
+        );
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Read source.")],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
+        let waiting = tokio::spawn(async move { model.complete(request).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the paid request reaches the fake Gateway");
+        assert_eq!(execution.snapshot().committed_calls, 1);
+
+        waiting.abort();
+        let _ = waiting.await;
+        release.add_permits(1);
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert!(!snapshot.physical_accounting_complete);
+        assert!(
+            snapshot.physical_terminals.is_empty()
+                || snapshot.physical_terminals.iter().all(|terminal| {
+                    terminal.usage.is_none()
+                        || terminal
+                            .usage
+                            .is_some_and(|usage| usage.cost_usd.is_none())
+                }),
+            "a cancelled call cannot claim an exact provider charge"
+        );
     }
 
     #[tokio::test]

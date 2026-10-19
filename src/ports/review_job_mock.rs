@@ -28,7 +28,7 @@ impl MockReviewJobStore {
     }
 
     /// Delay the control-plane check to exercise a local lease expiring in flight.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "serve"))]
     pub(crate) fn delay_should_continue(&self, delay: std::time::Duration) {
         *self
             .should_continue_delay

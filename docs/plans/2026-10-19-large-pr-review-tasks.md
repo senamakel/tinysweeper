@@ -250,7 +250,7 @@ uncommitted reservation; committed calls remain spent. In normal mode there
 is no count ceiling, but the absolute soft clock is still enforced. #229 later
 adds the separate eight-slot semaphore to the same acquire/permit lifetime.
 
-Change `src/harness/{embed.rs,mock.rs}`, `harness/agentic/mod.rs`,
+Change `src/harness/{embed.rs,mock.rs,cassette.rs}`, `harness/agentic/mod.rs`,
 `src/app/review.rs::ObservedModel` and `src/server/routes.rs::OwnedModel` to
 preserve/forward this scope through clones, monetary re-scoping and worker
 moves. Add the explicit control to agentic `ReviewResources`, call the Embed
@@ -258,6 +258,51 @@ Turn builder before the task is spawned, and capture #221 timing context too.
 MockModel admits immediately before recording/consuming a canned response;
 a refusal consumes no cassette and increments no dispatch count. A production
 Gateway call is gated only upstream, not once again at its outer complete API.
+
+Cassette is an explicit integration task, not an assumed generic wrapper:
+change `src/harness/cassette.rs` and `cassette_test.rs` after merging the #235
+repository-aware recording implementation (or coordinate against that branch).
+Record forwards `with_execution_control` to its inner, rebuilding Cassette with
+that controlled inner while sharing state, takes, ordered responses, directory
+and prompt-recording policy. Its `scoped_budget` clones retain the same control.
+Record delegates `complete_reports_physical_calls` and
+`review_reports_physical_calls` independently and exactly to the effective
+inner; Strict/Loose replay return false for both, regardless of stored usage.
+`review` Record still uses QueryRecordingTree and records actual queries, but
+calls the controlled inner.review; no fallback bypass or fresh control scope.
+Unsupported Record+Large fails before calling the inner even for extraction.
+Replay consumes no provider count/events; an explicit logical replay adapter
+can enforce deterministic scheduling separately from historic usage.
+
+Cassette red/green tests: Record with a repair-capable fake Gateway and limit
+one receives exactly one HTTP request; Record repository-aware review with a
+two-turn fake and limit one preserves the first paid turn and performs no
+second request; record tree queries still match the real review path. Repeat
+after `scoped_budget` and execution-control wrapping in both orders; assert
+shared ceiling, exact complete/review physical flags, shared records, no
+logical/physical double count. Test Strict/Loose replay flags remain false and
+emit zero physical events, and unsupported Record+Large performs zero inner
+calls or instruction extraction. Run `cargo test -j1 --locked cassette` and
+`cargo test -j1 --locked --features harness cassette_dispatch`.
+
+Before first paid consumer, split `src/knowledge/mod.rs::gather` into pure
+pinned-document metadata loading and a subsequent explicit extraction helper;
+retain old gather as a delegator for other entry points. Move review planning
+between those two phases, install control, then permit extraction. Keep pinned
+knowledge availability if extraction is refused. Tests in knowledge/mod.rs and
+`app/review_large_pr_test.rs` enable AGENTS extraction, summary and retrieval:
+unsupported Large must fail before any corresponding model invocation, while
+a supported scope counts extraction against the same global max_calls ceiling.
+
+Normal compatibility test uses an opaque custom Model returning None from
+with_execution_control: an already-started logical future can remain pending,
+but the scheduler starts no group/logical request after soft time, preserves
+answered siblings, cancels pending work at drain cutoff and publishes truthful
+partial Neutral. Do not assert physical invocations inside that opaque future.
+A separate production Gateway+Record test proves the stronger physical cutoff,
+including hidden repair/agent turns. Document the distinction on the public
+model trait and options without forcing every existing Normal test model to
+implement the new optional method. Unknown Large is always fail closed.
 
 Use a separate usage accumulator in ReviewExecution and forward the existing
 #221 physical terminal observer into it. Keep it available with timing disabled.
@@ -351,7 +396,8 @@ precedence, while overall coverage stays partial and approval stays forbidden.
 Update `docs/modules/lanes/README.md` with a linked focused `large-pr.md`,
 `docs/modules/app/README.md`, `docs/modules/server/README.md`, and config
 reference if present. Document defaults, large-mode selection, exact physical
-boundary, normal-mode soft stop, reasons/coverage, Full behavior and retained
+boundary, normal-mode scheduling/cancellation stop, production physical cutoff and opaque
+custom-backend limitation, reasons/coverage, Full behavior and retained
 hard deadline. Every Markdown file remains <=500 lines. No GitBook site or
 preview URL is introduced.
 

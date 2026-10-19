@@ -20,7 +20,9 @@ Current source constraints:
 
 - `app/review.rs::review_with_tree_observed_at_head` in #221 owns context,
   scanners, lane calls, summary, threads and wireframes. Lanes currently await
-  sequentially. Public review entry points must keep their existing behavior.
+  sequentially. Preserve public entry-point signatures and ordinary result
+  compatibility; the new soft scheduling stop deliberately changes long-running
+  reviews. Backend-specific physical guarantees are defined below.
 - `lanes/fanout.rs::per_unit` eagerly creates every unit future and uses
   `join_all` with eight permits. Timing out that whole future loses completed
   results. Merely limiting its input is insufficient for the soft deadline.
@@ -89,9 +91,14 @@ mechanical checks, using the same `GroupBounds` and graph as execution. Extract
 that preparation into shared lane-local helpers; do not maintain a second
 approximation which can select different groups. Planning makes no model call.
 Load host prior findings, run scanners and read the existing graph before the
-first paid model call, then finalize this plan. The execution scope may collect
-metadata earlier, but its mode/count ceiling is frozen before any paid dispatch;
-knowledge extraction, tests, summary and every other model consumer share it.
+first paid model call, then finalize this plan. `knowledge::gather` currently
+reads pinned documents and calls `Extractor::extract` in the same function.
+Split that production path into a pure pinned-document/metadata read followed
+by explicit paid extraction; keep `gather` as a compatibility delegator for
+other callers. Neither candidate planning nor its configuration lookup calls
+the extractor. Freeze mode/count ceiling, reject unsupported Large adapters,
+and install the shared scope before invoking paid extraction, retrieval models,
+lanes, tests, summary, threads or wireframes. No consumer gets an early bypass.
 Normal mode retains all groups, existing passes/council policy and ordering.
 
 For large mode, stable-sort all eligible critique/security groups together by
@@ -147,7 +154,9 @@ buffered stream) that admits ranked groups lazily. Keep `per_unit` for existing
 normal callers/tests, delegating to the unlimited scheduling policy. Return
 completed `FileReview`s immediately into the retained result accumulator.
 Before polling a new group, check the shared soft deadline and selected set.
-At soft deadline, freeze admission for every lane and every physical dispatch.
+At soft deadline, stop scheduling new groups in every mode/backend. Production
+Gateway paths additionally freeze every physical dispatch through the gate;
+the opaque custom-backend compatibility limit is defined below.
 Drain existing groups for at most `min(drain_seconds, hard_deadline - now -
 5 seconds)`; drop unfinished group futures at that cutoff, naming every member
 unanswered. If there is no safe remaining interval, cancel immediately.
@@ -157,8 +166,10 @@ Do not sleep for 720 real seconds in a test.
 The soft rule applies in normal mode too: a small PR with slow providers must
 publish partial answers instead of waiting for the server's hard timeout.
 Large mode additionally limits the selected set and physical calls. For
-already-running groups, no new provider call starts after soft deadline; a
-currently admitted provider call may finish during the drain interval.
+already-running production Gateway groups, no new physical provider call starts
+after soft deadline; a currently admitted provider call may finish during the
+drain interval. Opaque custom backends retain the bounded cancellation contract
+below, without a false claim about their internal provider invocations.
 A stopped lane does not discard the group's successfully completed siblings.
 
 The lane loop may remain sequential in #228. Schedule selected critique and
@@ -233,13 +244,38 @@ with default `None`. Define the public control/permit/refusal port types in
 than exposing a private app type through a public trait. Production wrappers
 forward it, Gateway installs the
 physical capability, MockModel implements the same admission at its actual
-canned-response dispatch. A test-only legacy model may use an explicit adapter with a proven one-call
-dispatch contract. An unknown adapter which cannot install execution control
-must fail closed before paid work in large mode; never assume a logical
-`complete` call is a single physical call. Gateway always supports the control.
-Production adapters reporting physical support must not additionally count
-at the outer wrapper. Add a capability flag if
-necessary; do not guess from whether any callbacks happened to arrive.
+canned-response dispatch. Cassette recording must forward control and the exact inner complete/review
+physical capability flags through `scoped_budget` and every derived clone;
+recording repository queries must not create an ungated `inner.review` route.
+Both Strict and Loose replay report physical capability false: historical
+response usage is replayed data, not current physical provider dispatch. Replay
+may use an explicit deterministic logical admission adapter to exercise offline
+scheduling while retaining those false physical flags. Record mode whose inner
+cannot honor control must fail closed in Large before any paid extraction or
+model request; it must never fall back from missing `review` support to an
+ungated live completion. Recording and playback share cassette storage/cursors,
+not separate execution ceilings or invented physical events.
+
+For production Gateway, all modes require the physical control to survive all
+wrappers, including Cassette Record, OwnedModel and ObservedModel. An adapter
+which advertises physical support but loses control is a configuration error,
+not an invitation to fall back to counting logical calls. Do not count again at
+the outer wrapper. A test-only backend with a proven one-dispatch contract can
+use the explicit logical adapter; its scope counts that dispatch exactly once.
+
+Unknown opaque custom models returning `None` from `with_execution_control`
+remain compatible in Normal mode: new group admission stops at the absolute
+soft deadline, completed answers are retained, and unfinished logical futures
+are canceled at the bounded drain cutoff. No new host logical model request
+(including postprocessing) is started after soft time. Because a preexisting
+opaque backend may internally retry or delegate while its already-started
+logical future drains, do not claim a physical cutoff/count guarantee inside
+it. Document that limitation on the public model port and execution options;
+unknown backend telemetry remains unknown rather than fabricated physical
+counts. The Normal scheduling/partial-publication guarantee is unchanged.
+Unknown Large always fails closed before any paid work, including knowledge
+extraction and summary. Public signatures and default trait implementations
+stay compatible; ordinary Normal custom models need no new required method.
 
 ## Interfaces reserved for adjacent leaves
 

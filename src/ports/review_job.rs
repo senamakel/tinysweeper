@@ -144,6 +144,10 @@ pub struct ReviewCheckRecord {
     /// Whether GitHub acknowledged the queued publication.
     #[serde(default)]
     pub published: bool,
+    /// Set durably immediately before POST so retirement can distinguish
+    /// never-attempted work from an ambiguous external write.
+    #[serde(default)]
+    pub post_attempted: bool,
     /// Durable short claim preventing concurrent retry workers from posting.
     #[serde(default)]
     pub write_claim_until_ms: i64,

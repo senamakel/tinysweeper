@@ -128,6 +128,61 @@ fn unowned_coalescing_detaches_the_old_queued_check_until_terminal_ack() {
 }
 
 #[test]
+fn ambiguous_retired_post_survives_restart_and_empty_recovery_reads() {
+    let mut state = ReviewSchedulerState::default();
+    let mut first = request("ambiguous-status-a", 10);
+    first.head_sha = Some("head-a".into());
+    state.admit_batch(vec![first], 10);
+    let old = state.claim_pending_checks(10, 1).pop().unwrap();
+    let mut next = request("ambiguous-status-b", 12);
+    next.head_sha = Some("head-b".into());
+    state.admit_batch(vec![next], 12);
+    let retired = state.claim_pending_checks(12, 2).into_iter().find(|claim| claim.retired).unwrap();
+    assert!(retired.check.check_id.is_none());
+    // The POST for A may have succeeded, but an initially empty external_id
+    // recovery read is not evidence that it did not.
+    assert_eq!(state.retired_checks.len(), 1);
+
+    let bytes = serde_json::to_vec(&state).unwrap();
+    let mut recovered: ReviewSchedulerState = serde_json::from_slice(&bytes).unwrap();
+    let again = recovered.claim_pending_checks(
+        12 + super::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        2,
+    ).into_iter().find(|claim| claim.retired).unwrap();
+    assert_eq!(again.check.external_id, old.check.external_id);
+    assert!(recovered.record_queued_check_id(&again, 81, 13 + super::QUEUE_STATUS_CLAIM_TTL_MS));
+    assert!(recovered.complete_retired_check(&again, 14 + super::QUEUE_STATUS_CLAIM_TTL_MS));
+    assert!(recovered.retired_checks.is_empty());
+}
+
+#[test]
+fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
+    let check = super::ReviewCheckRecord {
+        head_sha: "h".repeat(super::REVIEW_JOB_FIELD_LIMIT),
+        external_id: "e".repeat(super::REVIEW_JOB_FIELD_LIMIT),
+        check_id: Some(1),
+        stage: super::ReviewCheckStage::Queued,
+        owner_generation: None,
+        published: true,
+        write_claim_until_ms: 0,
+        write_generation: 1,
+    };
+    let mut state = ReviewSchedulerState::default();
+    state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS)
+        .map(|_| super::RetiredReviewCheck {
+            repo: "r".repeat(super::REVIEW_JOB_FIELD_LIMIT),
+            installation: 1,
+            check: check.clone(),
+        })
+        .collect();
+    let encoded = bson::to_vec(&state).expect("bounded scheduler serializes");
+    assert!(encoded.len() < 2 * 1024 * 1024, "{} bytes", encoded.len());
+    let mut extra = request("overflow-status", 1);
+    extra.head_sha = Some("new-head".into());
+    assert_eq!(state.admit_batch(vec![extra], 1), Admission::Full);
+}
+
+#[test]
 fn owned_advisory_head_does_not_retire_the_current_check_until_yield() {
     let mut state = ReviewSchedulerState::default();
     let mut first = request("owned-status-a", 10);

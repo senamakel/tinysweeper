@@ -184,6 +184,32 @@ fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
     assert_eq!(state.admit_batch(vec![extra], 1), Admission::Full);
 }
 
+#[tokio::test]
+async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_failed() {
+    let store = MockReviewJobStore::default();
+    assert_eq!(
+        store.admit_batch(vec![request("published-with-status-outage", 10)]).await.unwrap(),
+        Admission::Admitted
+    );
+
+    // Model both status-only forge writes failing: the in-progress PATCH did
+    // not advance the durable stage from Queued, and the terminal PATCH could
+    // not acknowledge the published review either. Paid review work still ran
+    // and reached Published, so cleanup must not replace its check with the
+    // detached queue check's NotReviewed conclusion.
+    let pending = store.claim_pending_checks(10).await.unwrap().pop().unwrap();
+    assert!(store.record_queued_check_id(&pending, 77, 11).await.unwrap());
+    let owned = store.claim_next("review-worker", 12).await.unwrap().unwrap();
+    assert_eq!(owned.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
+    assert_eq!(store.begin_paid(&owned, 13).await.unwrap(), super::PaidStart::Started);
+    assert!(store.finish(&owned, TerminalOutcome::Published, 20, 20).await.unwrap());
+
+    assert!(
+        store.snapshot_for_test().retired_checks.is_empty(),
+        "the current published check must retain review truth after status API failures"
+    );
+}
+
 #[test]
 fn owned_advisory_head_does_not_retire_the_current_check_until_yield() {
     let mut state = ReviewSchedulerState::default();

@@ -59,7 +59,7 @@ pub async fn retire_queued_review_status(
     head_sha: &str,
 ) -> Result<()> {
     write
-        .update_check(repo, check_id, crate::server::status::not_reviewed(head_sha))
+        .update_check(repo, check_id, crate::server::status::queued_review_incomplete(head_sha, None))
         .await
 }
 
@@ -73,7 +73,10 @@ pub async fn publish_superseded_review_status(
     external_id: &str,
 ) -> Result<u64> {
     write
-        .publish_check(repo, crate::server::status::superseded_before_review(head_sha, external_id))
+        .publish_check(
+            repo,
+            crate::server::status::queued_review_incomplete(head_sha, Some(external_id)),
+        )
         .await
 }
 

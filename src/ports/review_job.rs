@@ -350,6 +350,13 @@ pub struct ReviewSchedulerState {
 }
 
 impl ReviewSchedulerState {
+    fn status_records_in_use(&self) -> usize {
+        self.retired_checks.len()
+            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
+            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count()
+            + self.unfinished.iter().filter(|record| record.metadata_resolution_pending).count()
+    }
+
     fn detach_checks_except(record: &mut ScheduledReview, keep_head: Option<&str>) -> Vec<RetiredReviewCheck> {
         Self::detach_checks_except_preserving(record, keep_head, None)
     }
@@ -722,10 +729,7 @@ impl ReviewSchedulerState {
         {
             return Admission::Full;
         }
-        let status_records = self.retired_checks.len()
-            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
-            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count()
-            + self.unfinished.iter().filter(|record| record.metadata_resolution_pending).count();
+        let status_records = self.status_records_in_use();
         let additional_status_records = requests.iter().filter(|request| {
             let existing = (request.mode == ReviewJobMode::Incremental).then(|| {
                 self.unfinished.iter().find(|record| {
@@ -1167,9 +1171,7 @@ impl ReviewSchedulerState {
             .review_checks
             .iter()
             .any(|check| check.head_sha == head_sha);
-        let status_count = self.retired_checks.len()
-            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>()
-            + self.unfinished.iter().filter(|record| record.status_reconcile_reserved).count();
+        let status_count = self.status_records_in_use();
         if !has_check
             && !self.unfinished[index].status_reconcile_reserved
             && status_count >= MAX_REVIEW_STATUS_RECORDS

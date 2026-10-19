@@ -253,20 +253,19 @@ pub fn not_reviewed(head_sha: &str) -> CheckRun {
     }
 }
 
-/// Conclude a superseded queued review that never obtained a check-run ID.
+/// Conclude a queued review whose completion could not be confirmed.
 ///
-/// This is posted only after recovery by the same head and external ID found
-/// no existing run. The outcome is neutral because no review ran; it does not
-/// imply that the code was inspected or that a prior review was withdrawn.
-pub fn superseded_before_review(head_sha: &str, external_id: &str) -> CheckRun {
+/// A failed in-progress status update does not prove that paid review work
+/// never began, so this neutral result makes no claim about what was checked.
+pub fn queued_review_incomplete(head_sha: &str, external_id: Option<&str>) -> CheckRun {
     CheckRun {
         name: CHECK_NAME.to_string(),
         head_sha: head_sha.to_string(),
         conclusion: Some(CheckConclusion::Neutral),
-        title: "Not reviewed — superseded before review".to_string(),
-        summary: "tinysweeper accepted this commit for review, but a newer commit replaced it before review began. No review ran and no code was checked.".to_string(),
+        title: "Review incomplete".to_string(),
+        summary: "tinysweeper could not confirm completion of this queued review. Work may have started before the run stopped. This status makes no judgment about the code.".to_string(),
         status: None,
-        external_id: Some(external_id.to_string()),
+        external_id: external_id.map(str::to_string),
         images: vec![],
     }
 }

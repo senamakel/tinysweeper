@@ -7326,7 +7326,11 @@ mod tests {
         }).expect("a terminal status is published for superseded A");
         assert_eq!(check.status, None, "terminal checks omit pending status");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
-        assert!(check.title.contains("superseded before review"));
+        assert_eq!(check.title, "Review incomplete");
+        assert!(check.summary.contains("could not confirm completion"));
+        assert!(check.summary.contains("Work may have started"));
+        assert!(!check.summary.contains("No review ran"));
+        assert!(!check.summary.contains("nothing was checked"));
         assert!(store.snapshot_for_test().retired_checks.is_empty());
     }
 

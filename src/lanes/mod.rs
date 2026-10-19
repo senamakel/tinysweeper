@@ -75,6 +75,10 @@ pub struct LaneInput<'a> {
     /// `crate::harness::prompt`. Empty when retrieval is off, degraded, or
     /// found nothing, in which case the lane reviews the diff alone.
     pub retrieved_context: &'a str,
+    /// Typed state of the index used for this review. The critique lane uses
+    /// this to keep unsupported unchanged-code claims from becoming
+    /// actionable when retrieval could not establish repository context.
+    pub retrieval_status: crate::retrieve::RetrievalStatus,
     /// One sentence saying a value was masked out of `diffs` before this lane
     /// ever saw it, from `crate::evidence::redact::Redactions::note`. Empty
     /// when nothing was redacted. Volatile and placed right after the diff
@@ -195,6 +199,16 @@ pub enum Anchoring {
 pub struct LaneOutcome {
     /// One or two sentences for the check-run summary.
     pub summary: String,
+    /// The model findings were reviewed without usable repository context.
+    ///
+    /// Only host lane code sets this bit; it is not part of any model schema.
+    /// The application keeps such findings visible as labeled, non-blocking
+    /// notes rather than treating their confidence as a repository-wide
+    /// verdict.
+    pub context_degraded: bool,
+    /// Whether this lane produced a completed result, including deterministic
+    /// policy checks that do not make a model call.
+    pub completed: bool,
     /// The findings, before the shared filtering pipeline runs.
     pub findings: Vec<Finding>,
     /// Titles of earlier findings this revision fixed.
@@ -328,6 +342,8 @@ impl LaneOutcome {
 
         Self {
             summary,
+            context_degraded: false,
+            completed: true,
             findings,
             resolved: parsed.resolved,
             spend,

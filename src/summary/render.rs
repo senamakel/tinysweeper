@@ -332,15 +332,35 @@ fn findings(out: &mut String, proposal: &Proposal) {
     let noted: Vec<_> = proposal
         .lanes
         .iter()
-        .flat_map(|lane| lane.noted.iter().filter(|finding| !finding.grouped))
+        .flat_map(|lane| {
+            lane.noted
+                .iter()
+                .filter(|finding| !finding.grouped)
+                .map(move |finding| (lane, finding))
+        })
         .collect();
     if !noted.is_empty() {
-        out.push_str("\n**Lower-confidence notes**\n");
-        for finding in noted {
+        let has_unverified = noted.iter().any(|(lane, _)| lane.context_degraded);
+        if has_unverified {
+            let only_unverified = noted.iter().all(|(lane, _)| lane.context_degraded);
+            if only_unverified {
+                out.push_str("\n**Unverified notes — repository context was unavailable; these are not actionable findings**\n");
+            } else {
+                out.push_str("\n**Notes**\n");
+            }
+        } else {
+            out.push_str("\n**Lower-confidence notes**\n");
+        }
+        for (lane, finding) in noted {
             let _ = writeln!(
                 out,
-                "- {} · {} — {} ({})",
+                "- {}{} · {} — {} ({})",
                 severity(finding.severity),
+                if lane.context_degraded {
+                    " · unverified"
+                } else {
+                    ""
+                },
                 finding.lane,
                 prose(&finding.title),
                 code_span(&finding.path)

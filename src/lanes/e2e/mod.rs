@@ -118,6 +118,7 @@ impl Lane for E2e {
             return Ok(LaneOutcome {
                 summary: "This repository has no end-to-end harness, and its policy requires one."
                     .into(),
+                completed: true,
                 findings: vec![missing_harness_finding(&inventory.source[0])],
                 ..LaneOutcome::default()
             });
@@ -418,6 +419,7 @@ mod lane_tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: evidence,
@@ -701,6 +703,7 @@ mod lane_tests {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "1 credential value was removed from this diff before you saw \
                                   it and appears as `<redacted, N chars>`.",

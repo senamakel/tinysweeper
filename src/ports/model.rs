@@ -49,18 +49,6 @@ pub(crate) async fn with_model_call_observer<F: std::future::Future>(
     MODEL_CALL_OBSERVER.scope(observer, future).await
 }
 
-/// Notify the active model-call observer when one is installed.
-pub(crate) fn observe_model_call(
-    usage: Usage,
-    succeeded: bool,
-    refused: bool,
-    latency: Duration,
-) -> bool {
-    MODEL_CALL_OBSERVER
-        .try_with(|observer| observer.completed(usage, succeeded, refused, latency))
-        .is_ok()
-}
-
 /// Clone the active observer for model work moved into a spawned agent task.
 #[allow(dead_code)] // The gateway's spawned agent bridge consumes this when the harness observer lands.
 pub(crate) fn current_model_call_observer() -> Option<Arc<dyn ModelCallObserver>> {

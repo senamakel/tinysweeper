@@ -2684,68 +2684,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observed_model_keeps_one_correlated_physical_call_log() {
-        use tracing::instrument::WithSubscriber;
-
-        struct LoggingAdapter;
-        #[async_trait::async_trait]
-        impl Model for LoggingAdapter {
-            async fn complete(
-                &self,
-                _request: crate::ports::model::ModelRequest,
-            ) -> Result<crate::ports::model::ModelResponse> {
-                tracing::info!(target: "tinysweeper::model", repo = "owner/repo", pr = 7,
-                    head_sha = "abc123", mode = "Incremental", latency_ms = 19, "model call");
-                crate::ports::model::observe_model_call(
-                    Usage {
-                        calls_attempted: 1,
-                        calls_succeeded: 1,
-                        ..Usage::default()
-                    },
-                    true,
-                    false,
-                    std::time::Duration::from_millis(19),
-                );
-                Ok(crate::ports::model::ModelResponse {
-                    value: json!({"ok": true}),
-                    model: "vendor/test".into(),
-                    usage: Usage::default(),
-                })
-            }
-        }
-
-        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let writer_bytes = bytes.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
-            .finish();
-        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
-        let model = ObservedModel {
-            inner: Arc::new(LoggingAdapter),
-            timing,
-        };
-        let request = crate::ports::model::ModelRequest {
-            model: "vendor/test".into(),
-            messages: vec![],
-            schema: json!({}),
-            schema_name: "answer".into(),
-            max_tokens: 8,
-        };
-        let call = model.complete(request).with_subscriber(subscriber);
-        call.await.expect("mock adapter completes");
-
-        let lines = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert_eq!(lines.matches("model call").count(), 1, "{lines}");
-        assert!(lines.contains("latency_ms=19"), "{lines}");
-        assert!(lines.contains("repo=\"owner/repo\""), "{lines}");
-        assert!(lines.contains("pr=7"), "{lines}");
-        assert!(lines.contains("head_sha=\"abc123\""), "{lines}");
-        assert!(lines.contains("mode=\"Incremental\""), "{lines}");
-    }
-
-    #[tokio::test]
     async fn deterministic_commits_outcome_is_answered_in_summary_evidence() {
         let config = Config::default();
         let pull_request = PullRequest {

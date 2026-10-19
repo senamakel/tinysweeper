@@ -18,6 +18,8 @@ use crate::ports::model::Usage;
 use crate::ports::model_execution::{
     ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
 };
+#[cfg(test)]
+use crate::ports::model_execution::ModelExecutionTerminal;
 
 /// Absolute review window and the operator limits applied to it.
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +42,7 @@ pub(crate) struct ReviewExecutionOptions {
 
 /// A snapshot of committed and currently reserved provider-call slots.
 #[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReviewExecutionSnapshot {
     /// Calls committed immediately before their provider invocation.
     pub committed_calls: usize,
@@ -48,6 +50,10 @@ pub(crate) struct ReviewExecutionSnapshot {
     pub reserved_calls: usize,
     /// Terminal physical usage received by this review scope.
     pub physical_usage: Usage,
+    /// Raw physical terminal callbacks received by this execution scope.
+    pub physical_terminals: Vec<ModelExecutionTerminal>,
+    /// Whether every committed call has a terminal with complete reported usage.
+    pub physical_accounting_complete: bool,
 }
 
 /// One model binding shared across every attempt of a review job.
@@ -120,6 +126,8 @@ struct ExecutionState {
     reserved_calls: usize,
     #[cfg(test)]
     physical_usage: Usage,
+    #[cfg(test)]
+    physical_terminals: Vec<ModelExecutionTerminal>,
     cancelled: bool,
     max_calls: Option<usize>,
 }
@@ -179,6 +187,8 @@ impl ReviewExecution {
                     reserved_calls: 0,
                     #[cfg(test)]
                     physical_usage: Usage::default(),
+                    #[cfg(test)]
+                    physical_terminals: Vec::new(),
                     cancelled: false,
                     max_calls: options.max_calls,
                 }),
@@ -258,10 +268,20 @@ impl ReviewExecution {
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> ReviewExecutionSnapshot {
         let state = lock(&self.inner.state);
+        let physical_accounting_complete = state.committed_calls == state.physical_terminals.len()
+            && state.physical_terminals.iter().all(|terminal| {
+                terminal.usage.is_some_and(|usage| {
+                    usage
+                        .cost_usd
+                        .is_some_and(|cost| cost.is_finite() && cost >= 0.0)
+                })
+            });
         ReviewExecutionSnapshot {
             committed_calls: state.committed_calls,
             reserved_calls: state.reserved_calls,
             physical_usage: state.physical_usage,
+            physical_terminals: state.physical_terminals.clone(),
+            physical_accounting_complete,
         }
     }
 
@@ -323,6 +343,11 @@ impl ModelExecutionControl for ReviewExecution {
                 _ = tokio::time::sleep_until(self.inner.soft_deadline) => {}
             }
         }
+    }
+
+    #[cfg(test)]
+    fn on_terminal(&self, terminal: ModelExecutionTerminal) {
+        lock(&self.inner.state).physical_terminals.push(terminal);
     }
 }
 

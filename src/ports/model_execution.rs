@@ -24,6 +24,43 @@ pub enum ModelExecutionRefusal {
     Cancelled,
 }
 
+/// Outcome of a physical provider dispatch, independent of any provider SDK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelExecutionTerminalOutcome {
+    /// The provider returned a response.
+    Succeeded,
+    /// The provider returned a refusal response.
+    Refused,
+    /// The provider call failed after dispatch began.
+    Failed,
+    /// The physical call was cancelled before returning a response.
+    Cancelled,
+}
+
+/// Usage reported by the provider for one physical dispatch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelExecutionTerminalUsage {
+    /// Input tokens reported by the provider.
+    pub input_tokens: u64,
+    /// Output tokens reported by the provider.
+    pub output_tokens: u64,
+    /// Reasoning tokens reported by the provider.
+    pub reasoning_tokens: u64,
+    /// Cached input tokens reported by the provider.
+    pub cached_tokens: u64,
+    /// Provider-reported charge, absent when the provider did not report it.
+    pub cost_usd: Option<f64>,
+}
+
+/// Raw terminal observation for one dispatched physical provider call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelExecutionTerminal {
+    /// How the physical provider call ended.
+    pub outcome: ModelExecutionTerminalOutcome,
+    /// Raw provider usage, kept optional so an absent report stays unknown.
+    pub usage: Option<ModelExecutionTerminalUsage>,
+}
+
 /// A review-scoped source of physical-dispatch permits.
 #[async_trait]
 pub trait ModelExecutionControl: Send + Sync {
@@ -37,6 +74,13 @@ pub trait ModelExecutionControl: Send + Sync {
     async fn acquire(
         &self,
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal>;
+
+    /// Observe a physical dispatch terminal before any host-side price estimate.
+    ///
+    /// This callback is independent of review timing, must not run while a
+    /// monetary-ledger lock is held, and is never called for a refusal before
+    /// provider dispatch. Controls that do not collect raw usage may ignore it.
+    fn on_terminal(&self, _terminal: ModelExecutionTerminal) {}
 }
 
 /// One reserved physical-dispatch slot.

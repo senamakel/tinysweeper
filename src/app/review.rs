@@ -2810,6 +2810,110 @@ mod tests {
 
     #[cfg(feature = "harness")]
     #[tokio::test]
+    async fn cancelling_an_inflight_agentic_dispatch_is_counted_once() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Message;
+        use crate::ports::tree::MockTree;
+        use tracing::{Instrument, instrument::WithSubscriber};
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let (gateway, releases) = FakeGateway::start_paused(vec![Reply::completion(
+            "deep",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
+        )])
+        .await;
+        let mut config = Config::default().models;
+        config.base_url = gateway.base_url.clone();
+        config.fallback.clear();
+        config.agentic_reviewers = true;
+        let adapter = GatewayModel::with_key(&config, "fixture".into());
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        timing.record(|record| record.head_sha = "abc123".into());
+        let observed = ObservedModel {
+            inner: Arc::new(adapter),
+            timing: timing.clone(),
+        };
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_log = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_log.clone()))
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let request = crate::ports::model::ModelRequest {
+            model: "deep".into(),
+            messages: vec![
+                Message::system("Review this evidence."),
+                Message::user("Check the implementation."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 32,
+        };
+        let running = observed
+            .review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            )
+            .with_subscriber(dispatch)
+            .instrument(tracing::info_span!(
+                "review",
+                repo = "owner/repo",
+                pr = 7,
+                head_sha = "abc123",
+                mode = "Incremental"
+            ));
+        let mut running = Box::pin(running);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut running => panic!("review completed before cancellation: {result:?}"),
+                _ = async {
+                    while gateway.requests().is_empty() {
+                        tokio::task::yield_now().await;
+                    }
+                } => (),
+            }
+        })
+        .await
+        .expect("the physical agentic dispatch started");
+        drop(running);
+        releases.add_permits(1);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if String::from_utf8_lossy(&log.lock().unwrap()).contains("model call") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the worker's physical cancellation terminal was drained");
+
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_errored, 1);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.calls_refused, 0);
+        let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert_eq!(lines.matches("model call").count(), 1, "{lines}");
+        assert!(lines.contains("repo=owner/repo"), "{lines}");
+        assert!(lines.contains("pr=7"), "{lines}");
+        assert!(lines.contains("head_sha=abc123"), "{lines}");
+        assert!(lines.contains("mode=Incremental"), "{lines}");
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
     async fn observed_gateway_dispatch_logs_once_with_review_correlation() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};

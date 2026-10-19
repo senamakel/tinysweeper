@@ -4512,6 +4512,12 @@ mod tests {
             "failure",
             "exhausted retries are a terminal failure, not cancellation"
         );
+        let record = timing.snapshot();
+        assert!(
+            record.phases_ms.values().sum::<u64>()
+                <= record.started.unwrap().elapsed().as_millis() as u64,
+            "phase durations exceed the exhausted review's wall time"
+        );
         assert!(matches!(
             record_owned_disposition(&store, &owned, disposition, now_ms).await,
             Some(Ok(true))
@@ -4532,6 +4538,20 @@ mod tests {
             conclusions[0].conclusion,
             Some(crate::forge::CheckConclusion::Neutral)
         );
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("outcome=failure"), "{line}");
+        for phase in crate::review_timing::PHASES {
+            assert!(line.contains(phase), "missing {phase}: {line}");
+        }
         assert_eq!(model.requests().len(), 5, "no sixth model call was made");
         assert_eq!(
             store.admit_batch(vec![request]).await.unwrap(),

@@ -218,15 +218,15 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
         }),
         dir.path(),
     );
-    let request = request("test/review-only", "inspect this change");
+    let review_request = request("test/review-only", "inspect this change");
     let policy = crate::config::types::LookupPolicy::default();
-    recorder.review(request.clone(), &ReviewTree, &policy).await.expect("records");
+    recorder.review(review_request.clone(), &ReviewTree, &policy).await.expect("records");
     recorder.flush().expect("flushes");
 
     let player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
     let mut changed_policy = policy.clone();
     changed_policy.rounds += 1;
-    assert!(player.review(request.clone(), &ReviewTree, &changed_policy).await.is_err());
+    assert!(player.review(review_request.clone(), &ReviewTree, &changed_policy).await.is_err());
     assert_eq!(player.strict_misses(), 1);
 
     struct DifferentRevision;
@@ -238,13 +238,13 @@ async fn review_context_policy_revision_and_method_are_part_of_strict_identity()
     }
     let revision_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
     assert!(revision_player
-        .review(request.clone(), &DifferentRevision, &policy)
+        .review(review_request.clone(), &DifferentRevision, &policy)
         .await
         .is_err());
     assert_eq!(revision_player.strict_misses(), 1);
 
     let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
-    assert!(method_player.complete(request).await.is_err());
+    assert!(method_player.complete(review_request).await.is_err());
     assert_eq!(method_player.strict_misses(), 1);
 
     struct SameRevisionDifferentSource;

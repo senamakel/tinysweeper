@@ -4673,7 +4673,7 @@ mod tests {
                     output_tokens: 1,
                     calls_attempted: 1,
                     calls_succeeded: 1,
-                    cost_usd: 0.25,
+                    cost_usd: 1.0,
                     ..Default::default()
                 },
             })

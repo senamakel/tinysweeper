@@ -14,6 +14,22 @@ struct ReviewBudgetProbe {
     completed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct PhysicalEventCounter(std::sync::atomic::AtomicUsize);
+
+impl crate::ports::model::ModelCallObserver for PhysicalEventCounter {
+    fn completed(
+        &self,
+        _usage: Usage,
+        succeeded: bool,
+        refused: bool,
+        _latency: std::time::Duration,
+    ) {
+        assert!(succeeded);
+        assert!(!refused);
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[async_trait::async_trait]
 impl Model for ReviewBudgetProbe {
     async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
@@ -33,17 +49,21 @@ impl Model for ReviewBudgetProbe {
             });
         }
         self.completed.fetch_add(1, Ordering::Relaxed);
+        let usage = Usage {
+            input_tokens: 2,
+            output_tokens: 1,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            cost_usd: 1.0,
+            ..Usage::default()
+        };
+        if let Some(observer) = crate::ports::model::current_model_call_observer() {
+            observer.completed(usage, true, false, std::time::Duration::ZERO);
+        }
         Ok(ModelResponse {
             value: answer(),
             model: "review-budget-probe".into(),
-            usage: Usage {
-                input_tokens: 2,
-                output_tokens: 1,
-                calls_attempted: 1,
-                calls_succeeded: 1,
-                cost_usd: 0.25,
-                ..Usage::default()
-            },
+            usage,
         })
     }
 
@@ -94,11 +114,15 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
             .expect("recording cassette retains the review root on lane rescope");
         assert!(root.complete_reports_physical_calls());
         assert!(!root.review_reports_physical_calls());
+        let physical_events =
+            Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
 
-        let first = root
-            .complete(request("probe", "first paid response"))
-            .await
-            .expect("the first response fits the review root");
+        let first = crate::ports::model::with_model_call_observer(
+            physical_events.clone(),
+            root.complete(request("probe", "first paid response")),
+        )
+        .await
+        .expect("the first response fits the review root");
         assert_eq!(first.value, answer());
         assert!(matches!(
             lane.complete(request("probe", "second paid response"))
@@ -106,10 +130,11 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
             Err(Error::Budget { .. })
         ));
         assert_eq!(completed.load(Ordering::Relaxed), 1);
+        assert_eq!(physical_events.0.load(Ordering::Relaxed), 1);
         assert_eq!(cassette.served(), 1);
         assert_eq!(cassette.spend().usage.input_tokens, 2);
         assert_eq!(cassette.spend().usage.output_tokens, 1);
-        assert_eq!(cassette.cost_usd(), 0.25);
+        assert_eq!(cassette.cost_usd(), 1.0);
         assert_eq!(
             cassette
                 .flush()
@@ -126,11 +151,14 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
         let replay = Cassette::replay(dir.path(), Mode::Strict).expect("strict replay loads");
         assert!(!replay.complete_reports_physical_calls());
         assert!(!replay.review_reports_physical_calls());
-        replay
-            .complete(request("probe", "first paid response"))
-            .await
-            .expect("replay serves the recorded response without another live call");
+        crate::ports::model::with_model_call_observer(
+            physical_events.clone(),
+            replay.complete(request("probe", "first paid response")),
+        )
+        .await
+        .expect("replay serves the recorded response without another live call");
         assert_eq!(completed.load(Ordering::Relaxed), 1);
+        assert_eq!(physical_events.0.load(Ordering::Relaxed), 1);
     }
 }
 

@@ -58,8 +58,8 @@ including the status-only pre-permit ordering, are documented in
 
 Webhook and manual reviews are atomically admitted to one bounded Mongo
 scheduler document before the server acknowledges them. Up to 260 unfinished
-records, queued or running, are durable; the in-memory channel carries wakeup hints
-only, and a polling dispatcher recovers work when a hint is lost or a process
+records, queued or running, are durable; the in-memory channel carries wakeup
+hints only, and a polling dispatcher recovers work when a hint is lost or a process
 restarts. Admission also reserves space for seven days of dedupe tombstones
 under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
 without acknowledging the delivery; GitHub does not retry automatically, so an
@@ -74,8 +74,8 @@ manual batch to be refused without partial jobs.
 
 `[server].review_concurrency` bounds the jobs holding a durable 45-second owner
 lease across the server fleet (four by default). A heartbeat extends the lease
-every 15 seconds. Generation checks fence
-claims, renewals, and completion; local expiry checks stop a paused process
+every 15 seconds. Generation checks fence claims, renewals, and completion;
+local expiry checks stop a paused process
 before it resumes model work, and model dispatches also verify ownership. A
 shutdown stops new claims and leaves unfinished jobs in Mongo for the next
 process. If shutdown lands while the initial status check is being opened, that

@@ -770,7 +770,7 @@ async fn admit_webhook_review(
     action: &Action,
     delivery: &str,
     event: &str,
-    _status_client: QueueStatusClientFactory,
+    status_client: QueueStatusClientFactory,
 ) -> Result<Option<Admission>> {
     let Action::Review {
         repo,
@@ -889,6 +889,7 @@ struct QueueStatusClients {
 
 fn github_queue_status_client(auth: Arc<AppAuth>, _installation: u64) -> QueueStatusClientFactory {
     Arc::new(move |installation| {
+        let auth = auth.clone();
         async move {
             let token = auth.installation_token(installation).await?;
             let read = crate::forge::github::GitHubRead::new(&token)?;

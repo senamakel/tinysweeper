@@ -278,6 +278,43 @@ async fn paid_starts_require_a_head_confirmed_from_the_live_forge_read() {
     );
 }
 
+#[test]
+fn legacy_paid_attempts_remain_consumed_when_the_live_head_is_first_confirmed() {
+    let mut state: ReviewSchedulerState = serde_json::from_value(serde_json::json!({
+        "revision": 0,
+        "unfinished": [{
+            "request": {
+                "id": "legacy-delivery",
+                "repo": "org/repo",
+                "number": 7,
+                "author": "contributor",
+                "installation": 1,
+                "head_sha": "untrusted-old-hint",
+                "delivery": "legacy-delivery",
+                "event": "pull_request",
+                "mode": "incremental",
+                "accepted_at_ms": 1
+            },
+            "owner": null,
+            "generation": 0,
+            "owner_until_ms": 0,
+            "not_before_ms": 0,
+            "paid_attempts": 5
+        }],
+        "terminal": []
+    }))
+    .expect("pre-supersession scheduler records deserialize with defaults");
+    state.normalize_legacy_records();
+    let owned = state.claim_next("recovered-worker", 10).unwrap();
+    assert!(state.confirm_head(&owned, "actual-live-head", 11));
+    assert_eq!(
+        state.begin_paid(&owned, 12),
+        PaidStart::Exhausted,
+        "the first authoritative SHA cannot grant five extra starts to a legacy job"
+    );
+    assert_eq!(state.incremental_heads[0].paid_attempts, 5);
+}
+
 #[tokio::test]
 async fn head_history_transitions_consume_reserved_capacity_without_overflow() {
     let store = MockReviewJobStore::default();

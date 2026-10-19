@@ -1255,37 +1255,58 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     };
 
     for lane_id in config.enabled_lanes() {
-        let lane: Box<dyn Lane> = match lane_id {
-            LaneId::Critique => Box::new(Critique::new(model.clone())),
-            LaneId::Security => Box::new(Security::new(model.clone())),
-            LaneId::Tests => Box::new(Tests::new(model.clone())),
-            LaneId::Commits => Box::new(Commits::new()),
-            LaneId::Description => Box::new(Description::new(model.clone())),
-            LaneId::E2e => Box::new(crate::lanes::e2e::E2e::new(model.clone())),
+        let lane_input = LaneInput {
+            config,
+            pull_request: &context.pull_request,
+            diffs: &diffs,
+            file_contents: &file_contents,
+            scan_findings: &scan_findings,
+            commits: &context.commits,
+            repo_policy: knowledge.pinned_text(),
+            extracted_rules: &knowledge.extracted_rules,
+            reviewed_evidence: &reviewed_evidence,
+            prior_findings: &prior_lines,
+            retrieval_status: retrieved.status.clone(),
+            retrieved_context: &retrieved_context,
+            redaction_note: &redaction_note,
+            e2e: e2e_evidence.as_ref(),
+            tree: Some(tree),
+            graph: graph_for_lanes,
         };
-
         let outcome = crate::review_timing::measure_lane_under(
             timing.as_ref(),
             lane_id.as_str(),
             Some(&lanes_span),
-            lane.run(LaneInput {
-                config,
-                pull_request: &context.pull_request,
-                diffs: &diffs,
-                file_contents: &file_contents,
-                scan_findings: &scan_findings,
-                commits: &context.commits,
-                repo_policy: knowledge.pinned_text(),
-                extracted_rules: &knowledge.extracted_rules,
-                reviewed_evidence: &reviewed_evidence,
-                prior_findings: &prior_lines,
-                retrieval_status: retrieved.status.clone(),
-                retrieved_context: &retrieved_context,
-                redaction_note: &redaction_note,
-                e2e: e2e_evidence.as_ref(),
-                tree: Some(tree),
-                graph: graph_for_lanes,
-            }),
+            async {
+                match lane_id {
+                    LaneId::Critique => {
+                        Critique::new(model.clone())
+                            .run_prepared(
+                                lane_input,
+                                critique_prepared.take().expect("critique was prepared"),
+                            )
+                            .await
+                    }
+                    LaneId::Security => {
+                        Security::new(model.clone())
+                            .run_prepared(
+                                lane_input,
+                                security_prepared.take().expect("security was prepared"),
+                            )
+                            .await
+                    }
+                    LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
+                    LaneId::Commits => Commits::new().run(lane_input).await,
+                    LaneId::Description => {
+                        Description::new(model.clone()).run(lane_input).await
+                    }
+                    LaneId::E2e => {
+                        crate::lanes::e2e::E2e::new(model.clone())
+                            .run(lane_input)
+                            .await
+                    }
+                }
+            },
         )
         .await?;
 
@@ -1619,6 +1640,50 @@ fn non_incremental_state(
         next.summary_transcript = transcript.to_vec();
     }
     next
+}
+
+fn large_review_candidates(
+    lane: LaneId,
+    groups: &[crate::lanes::grouping::FileGroup],
+    changed_files: &[crate::forge::types::ChangedFile],
+    diffs: &[FileDiff],
+    scanners: &[scan::types::Finding],
+    prior: &PriorReview,
+) -> Vec<crate::lanes::large_pr::PlannedGroup> {
+    use crate::lanes::large_pr::{PlannedGroup, RiskScore};
+
+    groups
+        .iter()
+        .map(|group| {
+            let risk = group
+                .paths
+                .iter()
+                .filter_map(|path| {
+                    let diff = diffs.iter().find(|diff| &diff.path == path)?;
+                    let size = changed_files
+                        .iter()
+                        .find(|file| &file.path == path)
+                        .map(|file| file.additions.saturating_add(file.deletions))
+                        .unwrap_or(0);
+                    let (sensitive, public_api) =
+                        crate::lanes::triage::large_review_signals(diff);
+                    Some(RiskScore {
+                        scanner: scanners.iter().any(|finding| &finding.path == path),
+                        prior_finding: prior.anchors.iter().any(|anchor| &anchor.path == path),
+                        sensitive,
+                        public_api,
+                        changed_lines: size.min(1_000) as u16,
+                    })
+                })
+                .max()
+                .unwrap_or_default();
+            PlannedGroup {
+                lane,
+                group: group.clone(),
+                risk,
+            }
+        })
+        .collect()
 }
 
 /// Walk the code graph out from this pull request's changed files, once.

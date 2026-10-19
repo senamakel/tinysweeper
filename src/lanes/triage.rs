@@ -41,6 +41,8 @@ pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
         .any(|segment| lower_path.contains(segment))
         || lower_path.starts_with("api/")
         || lower_path.starts_with("schema/")
+        || lower_path == "schema.json"
+        || lower_path.starts_with("schemas/")
         || [".h", ".hh", ".hpp", ".hxx"]
             .iter()
             .any(|suffix| lower_path.ends_with(suffix))
@@ -50,12 +52,6 @@ pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
             return false;
         }
         let text = line.text.trim_start();
-        if matches!(line.kind, LineKind::Removed) {
-            return text.starts_with("pub ")
-                && !text.starts_with("pub(crate)")
-                && !text.starts_with("pub(super)")
-                && !text.starts_with("pub(in ");
-        }
         (text.starts_with("pub ")
             && !text.starts_with("pub(crate)")
             && !text.starts_with("pub(super)")

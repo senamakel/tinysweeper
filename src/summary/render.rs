@@ -1098,4 +1098,87 @@ mod tests {
             "{rendered}"
         );
     }
+
+    #[test]
+    fn an_empty_review_has_a_compact_summary_and_collapsed_supporting_sections() {
+        let rendered = render(
+            &Config::default(),
+            &proposal(
+                ReviewSummary {
+                    executive_summary: "The change adds a retry to the sync loop.".into(),
+                    surface: crate::summary::types::ChangeSurface {
+                        production: 4,
+                        tests: 2,
+                        documentation: 1,
+                        configuration: 0,
+                    },
+                    ..ReviewSummary::default()
+                },
+                &[],
+            ),
+        );
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        assert!(visible.contains("**State:**"), "{visible}");
+        assert!(visible.contains("**Coverage:** 7 files reviewed."), "{visible}");
+        assert!(visible.contains("The change adds a retry to the sync loop."), "{visible}");
+        assert!(rendered.contains("<details>"), "{rendered}");
+        assert!(visible.len() <= 800, "{} chars outside details", visible.len());
+        assert!(!visible.contains("## Tests"), "{visible}");
+        assert!(!visible.contains("## Review snapshot"), "{visible}");
+    }
+
+    #[test]
+    fn lane_gaps_are_not_rendered_as_unreviewed_file_paths() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::Findings];
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "tests", "check_name": "tinysweeper/tests",
+                "conclusion": "neutral", "summary": "No answer.",
+                "unanswered": ["src/tested.rs"]
+            }],
+            "unreviewed": ["src/unread.rs"],
+            "summary": ReviewSummary::default(), "prior_findings": [],
+            "cost_usd": 0.0, "cached_tokens": 0
+        })).expect("proposal");
+
+        let rendered = render(&config, &proposal);
+        assert!(rendered.contains("not reviewed: `src/unread.rs`"), "{rendered}");
+        assert!(rendered.contains("tests reviewer did not respond"), "{rendered}");
+        assert!(!rendered.contains("Could not review: `src/tested.rs`"), "{rendered}");
+        assert!(!rendered.contains("tinysweeper/"), "{rendered}");
+    }
+
+    #[test]
+    fn findings_lead_with_a_location_problem_and_suggested_fix() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::Findings];
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "security", "check_name": "tinysweeper/security",
+                "conclusion": "failure", "summary": "Finding.",
+                "findings": [{
+                    "lane": "security", "severity": "high", "confidence": 0.99,
+                    "path": "src/hub.rs", "line": 42, "rule": "unsafe-default",
+                    "title": "Reject empty token", "body": "An empty token bypasses validation.",
+                    "suggestion": "if token.is_empty() { return Err(Error::MissingToken); }",
+                    "late": false, "aliases": [], "grouped": false, "review_pass": 1,
+                    "corroboration": 1
+                }]
+            }],
+            "summary": ReviewSummary::default(), "prior_findings": [],
+            "cost_usd": 0.0, "cached_tokens": 0
+        })).expect("proposal");
+
+        let rendered = render(&config, &proposal);
+        let section = rendered.split("## Findings").nth(1).expect("findings section");
+        assert!(section.contains("[`src/hub.rs:42`](https://github.com/acme/widget/blob/abcdef1234567890/src/hub.rs#L42)"), "{section}");
+        assert!(section.contains("An empty token bypasses validation."), "{section}");
+        assert!(section.contains("if token.is_empty()"), "{section}");
+    }
 }

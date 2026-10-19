@@ -370,48 +370,41 @@ async fn recording_cassette_review_reports_the_physical_path_it_uses() {
     let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
     let policy = crate::config::types::LookupPolicy::default();
 
-    // The probe's own review is logical-only. Cassette has no review override,
-    // so the trait default routes it through Cassette::complete and the inner
-    // model's physical completion path.
-    let logical = crate::ports::model::with_model_call_observer(
+    let completed_call = crate::ports::model::with_model_call_observer(
         physical_events.clone(),
-        inner.review(request("probe", "logical review"), &tree, &policy),
+        cassette.complete(request("probe", "physical completion")),
     )
     .await
-    .expect("the inner logical review succeeds");
-    assert_eq!(logical.usage.calls_attempted, 0);
-    assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 0);
+    .expect("recording completion uses the inner completion");
+    assert_eq!(completed_call.model, "review-budget-probe");
+    assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(
         physical_events.0.load(std::sync::atomic::Ordering::Relaxed),
-        0
+        1
     );
 
-    let recorded = crate::ports::model::with_model_call_observer(
+    let reviewed = crate::ports::model::with_model_call_observer(
         physical_events.clone(),
-        cassette.review(request("probe", "recorded review"), &tree, &policy),
+        cassette.review(request("probe", "logical review"), &tree, &policy),
     )
     .await
-    .expect("recording review uses the inner physical completion");
-    assert_eq!(recorded.value, answer());
+    .expect("recording review uses the inner logical review");
+    assert_eq!(reviewed.model, "review-budget-probe-logical-review");
     assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(
         physical_events.0.load(std::sync::atomic::Ordering::Relaxed),
         1,
-        "the effective completion path emits one physical event"
+        "review follows its own logical-only inner path"
     );
-    assert_eq!(cassette.served(), 1);
+    assert_eq!(cassette.served(), 2);
     assert_eq!(
         cassette
             .flush()
-            .expect("the review was recorded in the cassette"),
-        1
+            .expect("both methods were recorded in the cassette"),
+        2
     );
     assert!(cassette.complete_reports_physical_calls());
-    assert_eq!(
-        cassette.review_reports_physical_calls(),
-        cassette.complete_reports_physical_calls(),
-        "review defaults to the cassette's complete implementation"
-    );
+    assert!(!cassette.review_reports_physical_calls());
 }
 
 #[tokio::test]
@@ -454,6 +447,188 @@ async fn recording_review_forwards_actual_review_and_tree_queries() {
     assert_eq!(queries[1]["query"]["kind"], "symbol");
     assert_eq!(queries[1]["query"]["query"]["symbol"], "load_state");
     assert_eq!(take["usage"]["cost_usd"], 0.002);
+}
+
+#[tokio::test]
+async fn review_replay_reissues_queries_and_reconstructs_identical_evidence_offline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let live = Arc::new(ReviewOnlyModel {
+        reviews: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let source = ReviewTree;
+    let recording_tree = crate::ports::tree::RecordingTree::new(&source);
+    let recorder = Arc::new(Cassette::record(live.clone(), dir.path()));
+    let mut models = crate::config::types::Models::default();
+    models.agentic_reviewers = true;
+    models.budget_usd_per_pr = 1.0;
+    let live_cap = crate::flows::caps::ModelCapability::new(recorder.clone(), models.clone());
+    let call = crate::flows::panel::Call {
+        id: "reviewer".into(),
+        model: "test/review-only".into(),
+        system: "inspect".into(),
+        prompt: "change evidence".into(),
+        schema_name: "tinysweeper_critique".into(),
+    };
+    let schema = json!({"type": "object"});
+    let policy = crate::config::types::LookupPolicy::default();
+    let (live_response, live_evidence) = live_cap
+        .review(&call, &schema, &recording_tree, &policy)
+        .await
+        .expect("live review");
+    recorder.flush().expect("flushes actual review response");
+    assert_eq!(live.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let recorded_lookups = recording_tree.recorded();
+    assert_eq!(recorded_lookups.len(), 3);
+    let replay_tree = crate::ports::tree::MockTree::from_recorded(recorded_lookups);
+    let replay = Arc::new(Cassette::replay(dir.path(), Mode::Strict).expect("loads"));
+    let replay_cap = crate::flows::caps::ModelCapability::new(replay.clone(), models);
+    let (replayed_response, replayed_evidence) = replay_cap
+        .review(&call, &schema, &replay_tree, &policy)
+        .await
+        .expect("offline replay reissues source reads");
+
+    assert_eq!(replayed_response.value, live_response.value);
+    assert_eq!(replayed_response.usage, live_response.usage);
+    assert_eq!(replayed_evidence, live_evidence);
+    assert_eq!(replay.served(), 1);
+    assert_eq!(replay.strict_misses(), 0);
+    let falsification_request = |evidence: &str| {
+        let mut request = request("test/review-only", "falsify the finding");
+        request.messages.push(Message::user(evidence));
+        request
+    };
+    assert_eq!(
+        key(&falsification_request(&live_evidence)),
+        key(&falsification_request(&replayed_evidence)),
+        "source evidence keeps the downstream falsification prompt stable"
+    );
+}
+
+#[tokio::test]
+async fn loose_review_replay_reissues_queries_for_a_changed_prompt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = Cassette::record(
+        Arc::new(ReviewOnlyModel {
+            reviews: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        dir.path(),
+    );
+    let policy = crate::config::types::LookupPolicy::default();
+    recorder
+        .review(
+            request("test/review-only", "original prompt"),
+            &ReviewTree,
+            &policy,
+        )
+        .await
+        .expect("records review");
+    recorder.flush().expect("flushes review");
+
+    let replay = Cassette::replay(dir.path(), Mode::Loose).expect("loads loose replay");
+    let response = replay
+        .review(
+            request("test/review-only", "changed prompt"),
+            &ReviewTree,
+            &policy,
+        )
+        .await
+        .expect("loose replay uses the review take by call order");
+
+    assert_eq!(response.value, answer());
+    assert_eq!(replay.loose_hits(), 1);
+    assert_eq!(replay.served(), 1);
+    assert_eq!(replay.strict_misses(), 0);
+}
+
+#[tokio::test]
+async fn review_policy_revision_method_and_source_are_part_of_strict_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = Cassette::record(
+        Arc::new(ReviewOnlyModel {
+            reviews: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        dir.path(),
+    );
+    let review_request = request("test/review-only", "inspect this change");
+    let policy = crate::config::types::LookupPolicy::default();
+    recorder
+        .review(review_request.clone(), &ReviewTree, &policy)
+        .await
+        .expect("records");
+    recorder.flush().expect("flushes");
+
+    let player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    let mut changed_policy = policy.clone();
+    changed_policy.rounds += 1;
+    assert!(
+        player
+            .review(review_request.clone(), &ReviewTree, &changed_policy)
+            .await
+            .is_err()
+    );
+    assert_eq!(player.strict_misses(), 1);
+
+    struct DifferentRevision;
+    #[async_trait::async_trait]
+    impl TreeReader for DifferentRevision {
+        async fn lookup(&self, _: &Lookup) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+
+        fn describe(&self) -> String {
+            "same reader".into()
+        }
+
+        fn revision(&self) -> Option<String> {
+            Some("b".repeat(40))
+        }
+    }
+    let revision_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(
+        revision_player
+            .review(review_request.clone(), &DifferentRevision, &policy)
+            .await
+            .is_err()
+    );
+    assert_eq!(revision_player.strict_misses(), 1);
+
+    let method_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(method_player.complete(review_request.clone()).await.is_err());
+    assert_eq!(method_player.strict_misses(), 1);
+
+    struct SameRevisionDifferentSource;
+    #[async_trait::async_trait]
+    impl TreeReader for SameRevisionDifferentSource {
+        async fn lookup(&self, _: &Lookup) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+
+        async fn explore(&self, _: &TreeQuery) -> Result<Found> {
+            Ok(Found::NotFound)
+        }
+
+        fn describe(&self) -> String {
+            "/different/absolute/archive".into()
+        }
+
+        fn revision(&self) -> Option<String> {
+            Some("a".repeat(40))
+        }
+    }
+    let source_player = Cassette::replay(dir.path(), Mode::Strict).expect("loads");
+    assert!(
+        source_player
+            .review(
+                review_request,
+                &SameRevisionDifferentSource,
+                &policy,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(source_player.strict_misses(), 1);
+    assert_eq!(source_player.cost_usd(), 0.0);
 }
 
 #[cfg(feature = "harness")]

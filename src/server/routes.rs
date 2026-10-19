@@ -4963,6 +4963,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        publish_test_queued_statuses(&store, unix_time_ms()).await;
         let first = store
             .claim_next("first-owner", unix_time_ms())
             .await
@@ -5020,6 +5021,7 @@ mod tests {
                 .unwrap(),
             Admission::Admitted
         );
+        publish_test_queued_statuses(&normal_store, unix_time_ms()).await;
         let normal_owner = normal_store
             .claim_next("normal-owner", unix_time_ms())
             .await
@@ -5060,6 +5062,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
+        publish_test_queued_statuses(store.as_ref(), now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -5109,6 +5112,7 @@ mod tests {
         request.head_sha = Some("head-a".into());
         store.admit_batch(vec![request]).await.unwrap();
         let now = unix_time_ms();
+        publish_test_queued_statuses(&store, now).await;
         let owned = store
             .claim_next("slow-store-worker", now)
             .await
@@ -5167,6 +5171,7 @@ mod tests {
             store.admit_batch(requests).await.unwrap(),
             Admission::Admitted
         );
+        publish_test_queued_statuses(&store, now + 4).await;
 
         let owned = store
             .claim_next("burst-worker", now + 4)
@@ -5289,6 +5294,7 @@ mod tests {
         request_a.number = 7;
         request_a.head_sha = Some("head-a".into());
         store.admit_batch(vec![request_a.clone()]).await.unwrap();
+        publish_test_queued_statuses(store.as_ref(), now).await;
         let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
         assert_eq!(
@@ -5444,6 +5450,7 @@ mod tests {
         let mut request = queued_test_review(7);
         request.head_sha = Some("head-a-delayed".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        publish_test_queued_statuses(&store, now).await;
         let newer = store
             .claim_next("newer-worker", now)
             .await
@@ -5502,6 +5509,7 @@ mod tests {
         request.delivery = Some("delayed-a".into());
         request.accepted_at_ms = now + 4;
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        publish_test_queued_statuses(&store, now + 4).await;
         assert!(
             record_owned_disposition(
                 &store,
@@ -5611,6 +5619,7 @@ mod tests {
         let mut request = queued_test_review(84);
         request.head_sha = Some("head-b".into());
         store.admit_batch(vec![request.clone()]).await.unwrap();
+        publish_test_queued_statuses(&store, now).await;
         let active = store
             .claim_next("retrying-worker", now)
             .await
@@ -5635,6 +5644,7 @@ mod tests {
         request.head_sha = Some("head-a-older-hint".into());
         request.accepted_at_ms = now + 3;
         store.admit_batch(vec![request]).await.unwrap();
+        publish_test_queued_statuses(&store, now + 4).await;
         assert!(!store.should_continue(&active, now + 4).await.unwrap());
 
         let run = Run {
@@ -5755,6 +5765,7 @@ mod tests {
         first.number = 7;
         first.head_sha = Some("head-a".into());
         store.admit_batch(vec![first.clone()]).await.unwrap();
+        publish_test_queued_statuses(store.as_ref(), now).await;
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
@@ -5829,6 +5840,7 @@ mod tests {
             store.admit_batch(vec![request]).await.unwrap(),
             Admission::Admitted
         );
+        publish_test_queued_statuses(&store, 2).await;
         let starts = Arc::new(AtomicUsize::new(0));
         let mut now_ms = 2;
         for generation in 0..crate::ports::review_job::MAX_REVIEW_PAID_ATTEMPTS {
@@ -5917,6 +5929,7 @@ mod tests {
             Admission::Admitted
         );
         let now_ms = request.accepted_at_ms + 1;
+        publish_test_queued_statuses(&store, now_ms).await;
         let owned = store
             .claim_next("same-worker", now_ms)
             .await

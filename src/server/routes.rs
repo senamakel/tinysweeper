@@ -790,23 +790,6 @@ async fn admit_webhook_review(
     if delivery.is_empty() {
         return Err(Error::Forge("review delivery has no delivery ID".into()));
     }
-    let mut accepted_head = head_sha.clone();
-    if accepted_head.is_none() {
-        let metadata_clients = status_client(*installation).await?;
-        let metadata = metadata_clients
-            .read
-            .pull_request_metadata(
-                &RepoId::parse(repo).ok_or_else(|| {
-                    Error::Forge("review action has an invalid repository".into())
-                })?,
-                *number,
-            )
-            .await?;
-        if !metadata.open || metadata.draft {
-            return Ok(None);
-        }
-        accepted_head = Some(metadata.head_sha);
-    }
     let admission = jobs
         .admit_batch(vec![ReviewRequest {
             id: crate::ports::review_job::ReviewJobId(format!("webhook:{delivery}")),
@@ -814,7 +797,7 @@ async fn admit_webhook_review(
             number: *number,
             author: author.clone(),
             installation: *installation,
-            head_sha: accepted_head,
+            head_sha: head_sha.clone(),
             delivery: Some(delivery.to_owned()),
             event: event.to_owned(),
             mode: ReviewJobMode::Incremental,
@@ -844,11 +827,37 @@ async fn publish_pending_queue_checks_at(
     factory: QueueStatusClientFactory,
     now_ms: i64,
 ) -> Result<()> {
+    let pending_metadata = jobs.claim_pending_metadata(now_ms, 16).await?;
+    let mut first_error = None;
+    for pending in pending_metadata {
+        let attempt = async {
+            if !jobs.metadata_claim_current(&pending, unix_time_ms()).await? {
+                return Ok::<(), Error>(());
+            }
+            let clients = factory(pending.installation).await?;
+            let repo = RepoId::parse(&pending.repo)
+                .ok_or_else(|| Error::Forge("queued review has an invalid repository".into()))?;
+            let metadata = clients.read.pull_request_metadata(&repo, pending.number).await?;
+            if !jobs.metadata_claim_current(&pending, unix_time_ms()).await? {
+                return Ok(());
+            }
+            let _ = jobs.resolve_pending_metadata(
+                &pending,
+                &metadata.head_sha,
+                metadata.open,
+                metadata.draft,
+                unix_time_ms(),
+            ).await?;
+            Ok(())
+        }.await;
+        if let Err(err) = attempt {
+            first_error.get_or_insert(err);
+        }
+    }
     let pending = jobs.claim_pending_checks(now_ms, 16).await?;
     if pending.is_empty() {
-        return Ok(());
+        return first_error.map_or(Ok(()), Err);
     }
-    let mut first_error = None;
     for check in pending {
         let attempt = async {
             if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {

@@ -1002,7 +1002,8 @@ impl ReviewSchedulerState {
         let record = &mut self.unfinished[index];
         record.request.head_sha = Some(head_sha.to_owned());
         let detached = Self::detach_checks_except(record, Some(head_sha));
-        let check = if let Some(existing) = record.review_checks.iter().find(|check| check.head_sha == head_sha) {
+        let check = if let Some(existing) = record.review_checks.iter_mut().find(|check| check.head_sha == head_sha) {
+            existing.owner_generation = Some(owned.generation);
             existing.clone()
         } else {
             record.status_reconcile_reserved = false;

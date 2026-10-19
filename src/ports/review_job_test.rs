@@ -187,6 +187,7 @@ fn live_head_reconciliation_defers_atomically_at_status_capacity() {
     let pending = state.claim_pending_checks(10, 1).pop().unwrap();
     assert!(state.record_queued_check_id(&pending, 71, 11));
     let base_check = state.unfinished[0].review_checks[0].clone();
+    state.unfinished[0].status_reconcile_reserved = false;
     state.unfinished[0].review_checks.extend((0..super::MAX_REVIEW_STATUS_RECORDS - 1).map(|index| {
         let mut check = base_check.clone();
         check.head_sha = format!("padding-{index}");

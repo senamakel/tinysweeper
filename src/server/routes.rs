@@ -2563,7 +2563,6 @@ async fn open_status(
         }
         if existing.stage == crate::ports::review_job::ReviewCheckStage::Queued {
             let transitioned = async {
-                use crate::ports::forge::ForgeWrite;
                 if let Some(owned) = &existing.owned
                     && !state.review_jobs.check_transition_current(
                         owned, &existing.head_sha, existing.check_id, unix_time_ms(),

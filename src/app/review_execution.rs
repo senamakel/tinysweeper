@@ -1,13 +1,9 @@
 //! Review-wide execution scope for physical model dispatches.
 //!
-//! Test-only implementation of the review-wide dispatch gate. Production
-//! runtime wiring remains deferred; remove the `cfg(test)` gate when callers
-//! are integrated.
-
-#![cfg(test)]
+//! Review-wide execution limits and model bindings shared by one review job.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -45,6 +41,71 @@ pub(crate) struct ReviewExecutionSnapshot {
     pub reserved_calls: usize,
     /// Terminal physical usage received by this review scope.
     pub physical_usage: Usage,
+}
+
+/// One model binding shared across every attempt of a review job.
+#[derive(Clone)]
+pub(crate) struct ReviewModelBinding {
+    /// The root-budgeted and execution-controlled model when those hooks exist.
+    pub(crate) model: Arc<dyn Model>,
+    /// Whether the model supplied a shared review-level monetary root.
+    pub(crate) review_budget_bound: bool,
+    /// Whether physical dispatches are governed by this job's execution scope.
+    pub(crate) execution_control_bound: bool,
+}
+
+/// Clock, physical control and model binding retained for one logical review.
+///
+/// The bound model may own a reference to `execution`; execution never owns the
+/// context or model, so the binding cannot form an `Arc` cycle.
+pub(crate) struct ReviewRunContext {
+    execution: Arc<ReviewExecution>,
+    model: OnceLock<ReviewModelBinding>,
+}
+
+impl ReviewRunContext {
+    /// Create the shared scope from the run's original absolute clock window.
+    pub(crate) fn new(options: ReviewExecutionOptions) -> Self {
+        Self {
+            execution: Arc::new(ReviewExecution::new(options)),
+            model: OnceLock::new(),
+        }
+    }
+
+    /// Bind monetary and physical hooks once, before any paid model operation.
+    ///
+    /// A missing monetary hook preserves legacy behavior; Large-mode callers
+    /// require physical control separately, while the production Gateway
+    /// supplies the shared monetary root.
+    pub(crate) fn bind_model(
+        &self,
+        base: Arc<dyn Model>,
+        budget_usd: f64,
+    ) -> &ReviewModelBinding {
+        self.model.get_or_init(|| {
+            let rooted = base.with_review_budget(budget_usd);
+            let review_budget_bound = rooted.is_some();
+            let rooted = rooted.unwrap_or(base);
+            let execution: Arc<dyn ModelExecutionControl> = self.execution.clone();
+            let controlled = rooted.with_execution_control(execution);
+            let execution_control_bound = controlled.is_some();
+            ReviewModelBinding {
+                model: controlled.unwrap_or(rooted),
+                review_budget_bound,
+                execution_control_bound,
+            }
+        })
+    }
+
+    /// The model binding initialized for this job, if it has started an attempt.
+    pub(crate) fn model_binding(&self) -> Option<&ReviewModelBinding> {
+        self.model.get()
+    }
+
+    /// Shared physical execution control for this review job.
+    pub(crate) fn execution(&self) -> Arc<ReviewExecution> {
+        Arc::clone(&self.execution)
+    }
 }
 
 #[derive(Debug)]

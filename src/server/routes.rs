@@ -4418,6 +4418,12 @@ mod tests {
             .await
             .unwrap()
             .expect("accepted review is claimable");
+        assert!(
+            store
+                .confirm_head(&owned, "sha-7", now_ms)
+                .await
+                .expect("confirm the live head")
+        );
         let repo = RepoId::parse("owner/repo").expect("repo id");
         let forge = MockForge::new();
         let model = MockModel::silent();

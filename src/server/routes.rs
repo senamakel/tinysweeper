@@ -5369,7 +5369,8 @@ mod tests {
             permits.try_acquire().is_ok(),
             "A releases its permit on yield"
         );
-        seed_previously_published_queue_checks(&*store, unix_time_ms()).await;
+        let forge = MockForge::new();
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
 
         let owned_b = store
             .claim_next("worker-b", unix_time_ms())
@@ -5386,7 +5387,6 @@ mod tests {
             store.begin_paid(&owned_b, unix_time_ms()).await.unwrap(),
             PaidStart::Started
         );
-        let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").unwrap();
         let result = run_if_confirmed_head_needs_review(
             store.as_ref(),

@@ -53,7 +53,7 @@ pub struct ModelExecutionTerminalUsage {
 }
 
 /// Raw terminal observation for one dispatched physical provider call.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelExecutionTerminal {
     /// Configured model requested for this physical dispatch.
     pub requested_model: String,

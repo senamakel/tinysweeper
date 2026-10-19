@@ -1942,8 +1942,23 @@ mod tests {
 
     #[tokio::test]
     async fn direct_gateway_reports_raw_terminals_without_a_timing_observer() {
-        let (model, gateway, request) = admission_fixture().await;
-        let execution = execution_scope(Some(1));
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::error(503, "primary unavailable"),
+            Reply::completion(
+                "fallback",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(2));
         let control = Arc::new(RecordingExecutionControl {
             inner: Arc::clone(&execution),
             terminals: std::sync::Mutex::new(Vec::new()),
@@ -1951,24 +1966,39 @@ mod tests {
         let model = model
             .with_execution_control(control.clone())
             .expect("the Gateway keeps the supplied execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![CrateMessage::system("Review."), CrateMessage::user("Review source.")],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
 
         model.complete(request).await.expect("the response succeeds");
 
-        assert_eq!(gateway.requests().len(), 1);
-        let expected = raw_terminal(
-            ModelExecutionTerminalOutcome::Succeeded,
-            Some(ModelExecutionTerminalUsage {
-                input_tokens: 5,
-                output_tokens: 2,
-                reasoning_tokens: 0,
-                cached_tokens: 0,
-                cost_usd: Some(0.0021),
-            }),
-        );
-        assert_eq!(*control.terminals.lock().unwrap(), vec![expected]);
+        assert_eq!(gateway.requests().len(), 2);
+        let expected = vec![
+            raw_terminal("b", None, ModelExecutionTerminalOutcome::Failed, None),
+            raw_terminal(
+                "fallback",
+                Some("fallback"),
+                ModelExecutionTerminalOutcome::Succeeded,
+                Some(ModelExecutionTerminalUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: Some(0.0021),
+                }),
+            ),
+        ];
+        assert_eq!(*control.terminals.lock().unwrap(), expected);
         let snapshot = execution.snapshot();
-        assert_eq!(snapshot.committed_calls, 1);
-        assert_eq!(snapshot.physical_terminals, vec![expected]);
+        assert_eq!(snapshot.committed_calls, 2);
+        assert_eq!(snapshot.physical_terminals, expected);
         assert!(snapshot.physical_accounting_complete);
     }
 

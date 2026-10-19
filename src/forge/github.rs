@@ -1256,7 +1256,6 @@ impl ForgeRead for GitHubRead {
         // Read to exhaustion rather than truncated at the first page. A missing
         // check reads to the auto-merge gate as "not reported", so short data
         // would turn a red required check into a merge.
-        let expected_app_id = self.expected_app_id;
         read_all_pages(
             |page| async move {
                 let route = format!(
@@ -1292,6 +1291,7 @@ impl ForgeRead for GitHubRead {
         sha: &str,
         external_id: &str,
     ) -> Result<Option<u64>> {
+        let expected_app_id = self.expected_app_id;
         read_all_pages(
             |page| async move {
                 let route = format!(

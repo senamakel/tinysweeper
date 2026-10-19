@@ -1175,7 +1175,7 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .without_time()
             .with_ansi(false)
-            .with_current_span(true)
+            .with_span_list(true)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
         let dispatch = tracing::Dispatch::new(subscriber);
@@ -1686,7 +1686,7 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .without_time()
             .with_ansi(false)
-            .with_current_span(true)
+            .with_span_list(true)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
         let response = crate::ports::model::with_model_call_observer(calls.clone(), {

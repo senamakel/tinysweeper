@@ -3989,6 +3989,7 @@ mod tests {
             .await
             .unwrap()
             .expect("shutdown-interrupted work remains recoverable");
+        confirm_test_head(&store, &replacement, unix_time_ms()).await;
         assert!(matches!(
             store
                 .begin_paid(&replacement, unix_time_ms())
@@ -4176,6 +4177,7 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("each expired owner is recoverable");
+            confirm_test_head(&store, &owned, now_ms).await;
             let observed = starts.clone();
             assert!(matches!(
                 with_paid_review_attempt(&store, &owned, now_ms, || async move {
@@ -4193,6 +4195,7 @@ mod tests {
             .await
             .unwrap()
             .expect("the final check is made under an owned generation");
+        confirm_test_head(&store, &exhausted, now_ms).await;
         assert!(matches!(
             with_paid_review_attempt(&store, &exhausted, now_ms, || async {
                 starts.fetch_add(1, Ordering::SeqCst);
@@ -4385,6 +4388,7 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("each paid start has an owner");
+            confirm_test_head(&store, &owned, now_ms).await;
             assert!(matches!(
                 with_paid_review_attempt(&store, &owned, now_ms, || async {})
                     .await
@@ -4399,6 +4403,7 @@ mod tests {
             .await
             .unwrap()
             .expect("the fifth spent job remains recoverable until finalized");
+        confirm_test_head(&store, &recovered, now_ms).await;
         let repo = RepoId::parse("owner/repo").expect("repo id");
         let forge = MockForge::new();
         let model_starts = Arc::new(AtomicUsize::new(0));
@@ -4525,6 +4530,7 @@ mod tests {
             .await
             .unwrap()
             .expect("shutdown-deferred work remains queued");
+        confirm_test_head(&store, &replacement, now_ms + 5_000).await;
         assert!(matches!(
             with_paid_review_attempt(&store, &replacement, now_ms + 5_000, || async {})
                 .await

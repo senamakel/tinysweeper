@@ -431,7 +431,9 @@ mod tests {
             &self,
             _request: crate::ports::model::ModelRequest,
         ) -> crate::error::Result<crate::ports::model::ModelResponse> {
-            Err(crate::error::Error::Model("binding probe is not callable".into()))
+            Err(crate::error::Error::Model(
+                "binding probe is not callable".into(),
+            ))
         }
 
         fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn Model>> {

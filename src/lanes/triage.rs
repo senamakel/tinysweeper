@@ -456,36 +456,44 @@ mod tests {
 
     #[test]
     fn large_review_api_risk_covers_added_and_removed_public_declarations() {
-        let missing = [
+        let unprioritized = [
             ("src/lib.rs", "pub fn added_api() {}", false),
             ("src/lib.rs", "pub struct RemovedApi;", true),
             ("web/client.ts", "export const addedApi = true;", false),
-            (
-                "web/client.ts",
-                "export function removedApi() {}",
-                true,
-            ),
+            ("web/client.ts", "export function removedApi() {}", true),
             ("package.py", "__all__ = ['added_api']", false),
             ("package.py", "__all__ = ['removed_api']", true),
-        ] {
-            let (path, declaration, removed) = missing;
+        ]
+        .into_iter()
+        .filter_map(|(path, declaration, removed)| {
             let changed = if removed {
                 removed_diff(path, declaration)
             } else {
                 diff(path, declaration)
             };
-            assert!(large_review_signals(&changed).1,
-                "public API change should be prioritized: {path}: {declaration}");
-        }
+            (!large_review_signals(&changed).1).then_some((path, declaration))
+        })
+        .collect::<Vec<_>>();
+        assert!(
+            unprioritized.is_empty(),
+            "unprioritized public API changes: {unprioritized:?}"
+        );
     }
 
     #[test]
     fn large_review_api_risk_covers_root_and_nested_schema_paths() {
-        let unprioritized = ["schema.json", "schemas/root.yaml", "src/schemas/openapi.yaml"]
-            .into_iter()
-            .filter(|path| !large_review_signals(&diff(path, "{ } ")).1)
-            .collect::<Vec<_>>();
-        assert!(unprioritized.is_empty(), "unprioritized schema paths: {unprioritized:?}");
+        let unprioritized = [
+            "schema.json",
+            "schemas/root.yaml",
+            "src/schemas/openapi.yaml",
+        ]
+        .into_iter()
+        .filter(|path| !large_review_signals(&diff(path, "{ } ")).1)
+        .collect::<Vec<_>>();
+        assert!(
+            unprioritized.is_empty(),
+            "unprioritized schema paths: {unprioritized:?}"
+        );
     }
 
     #[test]

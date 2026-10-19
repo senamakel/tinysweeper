@@ -54,6 +54,9 @@ use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
 
+/// Confidence ceiling for critique model findings when retrieval is degraded.
+const DEGRADED_CONTEXT_CONFIDENCE_CAP: f64 = 0.7;
+
 /// The correctness lane.
 pub struct Critique {
     model: Arc<dyn Model>,
@@ -96,6 +99,14 @@ impl Lane for Critique {
         let fresh: Vec<&FileDiff> = replay::unreviewed(input.reviewed_evidence, input.diffs)
             .into_iter()
             .filter(|diff| !diff.changed_lines.is_empty())
+            .collect();
+        let mut covered_without_model: Vec<String> = input
+            .diffs
+            .iter()
+            .filter(|diff| {
+                !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
+            })
+            .map(|diff| diff.path.clone())
             .collect();
 
         // A mechanical rename is verified, not read. Every file the
@@ -155,6 +166,9 @@ impl Lane for Critique {
             input.config,
             input.config.models.budget_usd_per_pr,
         );
+        // Links between changed files are indexed once, then each group's
+        // falsifier gets only its own diff and mechanically related excerpts.
+        let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
 
         let outcome = per_unit(
             &groups,
@@ -164,13 +178,22 @@ impl Lane for Critique {
                 let llm = llm.clone();
                 let input = &input;
                 let changed_paths = &changed_paths;
+                let cross_file_evidence = &cross_file_evidence;
                 async move {
                     let group_diffs: Vec<FileDiff> = group
                         .paths
                         .iter()
                         .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
                         .collect();
-                    review_group(llm, input, changed_paths, &group.paths, &group_diffs).await
+                    review_group(
+                        llm,
+                        input,
+                        changed_paths,
+                        &group.paths,
+                        &group_diffs,
+                        cross_file_evidence,
+                    )
+                    .await
                 }
             },
         )
@@ -181,6 +204,16 @@ impl Lane for Critique {
         // rather than per file: `llm` is shared across the fan-out, so adding
         // it per file would multiply the bill by the file count.
         let mut outcome = outcome.into_outcome();
+        outcome.context_degraded = input.retrieval_status.is_degraded();
+        if let Some(sub) = &mechanical {
+            covered_without_model.extend(
+                sub.verified
+                    .iter()
+                    .filter(|path| Some(*path) != sample)
+                    .cloned(),
+            );
+        }
+        outcome.include_reviewed_paths(covered_without_model);
         outcome.spend.merge(llm.spend());
         if let Some(sub) = &mechanical {
             outcome.summary = format!("{} {}", outcome.summary.trim(), mechanical::note(sub));
@@ -216,9 +249,15 @@ async fn review_group(
     changed_paths: &[String],
     group_paths: &[String],
     group_diffs: &[FileDiff],
+    cross_file_evidence: &replay::CrossFileEvidenceIndex<'_>,
 ) -> Result<FileReview> {
     let config: &Config = input.config;
     let evidence = replay::render(group_diffs);
+    // Findings are confined to this group's paths, but contradictions can
+    // live in a mechanically related PR file (for example, a module added
+    // beside its declaration). The shared index keeps this bounded without
+    // replaying the complete PR diff for every group.
+    let falsifier_evidence = cross_file_evidence.render_for(group_diffs);
     let reviewers = council::reviewers(config, LaneId::Critique);
     let redaction_note = redaction_note(&evidence);
 
@@ -325,12 +364,13 @@ async fn review_group(
     // filter can only reject, so more inputs in one pass is identical semantics
     // at a fraction of the calls.
     let filtered = Falsifier::new(llm.model().as_ref(), config)
-        .filter_with(LaneId::Critique, findings, &evidence, &looked_up)
+        .filter_with(LaneId::Critique, findings, &falsifier_evidence, &looked_up)
         .await;
     spend.merge(filtered.spend);
 
     let mut findings = filtered.findings;
     let mut rejected = filtered.rejected;
+    let mut capped_for_degraded_context = 0usize;
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole
     // pull request's — a lane fans out per group, so a two-line group must
@@ -459,7 +499,12 @@ async fn review_group(
             // Falsify only what this pass added — free when empty, and it
             // never re-judges what round one's own pass already kept.
             let mut new_filtered = Falsifier::new(llm.model().as_ref(), config)
-                .filter_with(LaneId::Critique, new_findings, &evidence, &looked_up)
+                .filter_with(
+                    LaneId::Critique,
+                    new_findings,
+                    &falsifier_evidence,
+                    &looked_up,
+                )
                 .await;
             for finding in &mut new_filtered.findings {
                 finding.review_pass = pass_index + 1;
@@ -485,6 +530,18 @@ async fn review_group(
         metrics.emit(LaneId::Critique, group_paths);
     }
 
+    // The application's typed context-degraded path keeps these findings as
+    // non-blocking structured notes. A Likely cap makes that caveat visible
+    // in their confidence badge without allowing unsupported repository-wide
+    // claims to drive a check verdict or inline comment. Scanners have their
+    // own evidence and are outside this model-finding gate.
+    if input.retrieval_status.is_degraded() {
+        capped_for_degraded_context = findings.len();
+        for finding in &mut findings {
+            finding.confidence = finding.confidence.min(DEGRADED_CONTEXT_CONFIDENCE_CAP);
+        }
+    }
+
     Ok(FileReview {
         summary: summarise(
             summary.trim(),
@@ -493,6 +550,7 @@ async fn review_group(
             &rejected,
             &findings,
             added_by_coverage,
+            capped_for_degraded_context,
         ),
         findings,
         resolved,
@@ -559,6 +617,7 @@ fn prompt_inputs<'a>(
         focus_paths: group_paths,
         persona: reviewer.persona,
         retrieved_context: input.retrieved_context,
+        retrieval_status: Some(&input.retrieval_status),
         redaction_note,
         ..PromptInputs::new(LaneId::Critique, config)
     }
@@ -636,6 +695,7 @@ async fn place(
             return Err(crate::error::Error::Budget {
                 spent: spend.cost_usd(),
                 limit: config.models.budget_usd_per_pr,
+                usage: None,
             });
         }
 
@@ -738,30 +798,46 @@ fn summarise(
     rejected: &[Rejection],
     kept: &[Finding],
     added_by_coverage: usize,
+    capped_for_degraded_context: usize,
 ) -> String {
-    if kept.is_empty() && !rejected.is_empty() {
+    let summary = if capped_for_degraded_context > 0 {
+        let titles = kept
+            .iter()
+            .map(|finding| finding.title.trim())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if titles.is_empty() {
+            "No findings were reported. Retrieval was degraded, so model confidence was capped at Likely."
+                .to_string()
+        } else {
+            format!(
+                "Critique findings were capped at Likely confidence because retrieval was degraded: {titles}."
+            )
+        }
+    } else if kept.is_empty() && !rejected.is_empty() {
         let reasons: Vec<String> = rejected
             .iter()
             .map(|item| format!("{} — {}", item.title.trim(), item.reason.trim()))
             .collect();
-        return format!(
+        format!(
             "Nothing to report. {} finding{} raised and dropped as disproved by the diff: {}.",
             rejected.len(),
             plural(rejected.len()),
             reasons.join("; ")
-        );
-    }
-
-    let summary = if rejected.is_empty() {
+        )
+    } else if rejected.is_empty() {
         summary.to_string()
     } else {
-        format!(
-            "Surviving findings: {}.",
-            kept.iter()
-                .map(|finding| finding.title.trim())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
+        let titles = kept
+            .iter()
+            .map(|finding| finding.title.trim())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if titles.is_empty() {
+            "Nothing to report.".to_string()
+        } else {
+            format!("Surviving findings: {titles}.")
+        }
     };
     let rejected = rejected.len();
     let mut notes = Vec::new();
@@ -789,6 +865,12 @@ fn summarise(
             plural(added_by_coverage)
         ));
     }
+    if capped_for_degraded_context > 0 {
+        notes.push(format!(
+            "{capped_for_degraded_context} model finding{} retained at no more than Likely confidence because retrieval was degraded",
+            plural(capped_for_degraded_context)
+        ));
+    }
 
     if notes.is_empty() {
         return summary;
@@ -808,8 +890,30 @@ mod tests {
     use crate::forge::types::CheckConclusion;
     use crate::forge::types::PullRequest;
     use crate::harness::mock::MockModel;
+    use crate::ports::tree::{Found, Lookup};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[derive(Debug)]
+    struct CountingTree {
+        inner: crate::ports::tree::MockTree,
+        lookups: std::sync::Mutex<Vec<Lookup>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::tree::TreeReader for CountingTree {
+        async fn lookup(&self, lookup: &Lookup) -> crate::error::Result<Found> {
+            self.lookups
+                .lock()
+                .expect("lookup calls")
+                .push(lookup.clone());
+            self.inner.lookup(lookup).await
+        }
+
+        fn describe(&self) -> String {
+            "counting mock tree".into()
+        }
+    }
 
     fn config() -> Config {
         let mut config: Config = crate::config::DEFAULTS
@@ -862,6 +966,34 @@ fn helper() {
         diffs: &[FileDiff],
         file_contents: &BTreeMap<String, String>,
     ) -> LaneOutcome {
+        run_with_context(
+            model,
+            config,
+            diffs,
+            file_contents,
+            crate::retrieve::RetrievalStatus::Off,
+        )
+        .await
+    }
+
+    async fn run_with_context(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        file_contents: &BTreeMap<String, String>,
+        retrieval_status: crate::retrieve::RetrievalStatus,
+    ) -> LaneOutcome {
+        run_with_context_and_tree(model, config, diffs, file_contents, retrieval_status, None).await
+    }
+
+    async fn run_with_context_and_tree(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        file_contents: &BTreeMap<String, String>,
+        retrieval_status: crate::retrieve::RetrievalStatus,
+        tree: Option<&dyn crate::ports::tree::TreeReader>,
+    ) -> LaneOutcome {
         let pr = pull_request();
         Critique::new(Arc::new(model))
             .run(LaneInput {
@@ -875,6 +1007,37 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree,
+                graph: None,
+            })
+            .await
+            .expect("lane runs")
+    }
+
+    async fn run_with_prior(
+        model: MockModel,
+        config: &Config,
+        diffs: &[FileDiff],
+        prior: &[String],
+    ) {
+        let pr = pull_request();
+        Critique::new(Arc::new(model))
+            .run(LaneInput {
+                config,
+                pull_request: &pr,
+                diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: prior,
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -882,7 +1045,7 @@ fn helper() {
                 graph: None,
             })
             .await
-            .expect("lane runs")
+            .expect("lane runs");
     }
 
     /// A finding anchored the way the schema now asks for: by quotation.
@@ -896,6 +1059,366 @@ fn helper() {
             "severity": "high",
             "confidence": 0.9
         })
+    }
+
+    #[tokio::test]
+    async fn a_degraded_index_keeps_unsupported_unchanged_code_at_likely_confidence() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    let ready = true;\n }\n",
+        )];
+        let response = json!({
+            "summary": "The old branch is broken.",
+            "findings": [{
+                "path": "src/main.rs",
+                "existing_code": "fn main() {",
+                "rule": "bad-caller",
+                "title": "Handle the old caller",
+                "body": "The unchanged caller uses an incompatible contract.",
+                "severity": "critical",
+                "confidence": 0.99
+            }]
+        });
+        let model = MockModel::new()
+            .then(response)
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+        assert!(outcome.summary.contains("capped at Likely confidence"));
+        assert!(!outcome.summary.contains("old branch is broken"));
+    }
+
+    #[tokio::test]
+    async fn disputed_prior_finding_reaches_the_next_model_request_as_disputed() {
+        let config = config();
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let prior = [
+            "[disputed by maintainer; verify against current-head evidence] high — Close the socket on the error path"
+                .to_string(),
+        ];
+
+        run_with_prior(model, &config, &diffs(), &prior).await;
+
+        let request = handle.requests().pop().expect("critique model request");
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(prompt.contains("[disputed by maintainer"));
+        assert!(prompt.contains("the earlier claim is not evidence"));
+        assert!(prompt.contains("independently supports the concern"));
+    }
+
+    #[tokio::test]
+    async fn degraded_retrieval_keeps_findings_grounded_on_changed_lines() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    let ready = true;\n }\n",
+        )];
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The new value is unused.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "    let ready = true;",
+                    "rule": "unused-value",
+                    "title": "Use the ready value",
+                    "body": "The changed value is never read.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(!outcome.findings[0].late);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_retrieval_caps_changed_signature_claims_about_unavailable_callers() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/parser.rs",
+            "@@ -1,1 +1,1 @@\n-pub fn parse() -> i32 { 1 }\n+pub fn parse(input: i32) -> i32 { input }\n",
+        )];
+        let lookup = Lookup::Read {
+            path: "src/parser.rs".into(),
+            start: Some(1),
+            end: Some(1),
+        };
+        let caller_search = Lookup::Search {
+            pattern: "parse(".into(),
+            glob: None,
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [
+                (
+                    lookup.key(),
+                    Found::Unavailable {
+                        reason: "cold index".into(),
+                    },
+                ),
+                (
+                    caller_search.key(),
+                    Found::Unavailable {
+                        reason: "cold index cannot search callers".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "An unchanged caller still uses the old signature.",
+                "findings": [{
+                    "path": "src/parser.rs",
+                    "existing_code": "pub fn parse(input: i32) -> i32 { input }",
+                    "rule": "stale-caller",
+                    "title": "Update callers of parse",
+                    "body": "An unchanged caller still invokes parse with the old argument shape.",
+                    "severity": "critical",
+                    "confidence": 0.99
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(
+            outcome.findings.len(),
+            1,
+            "the finding stays visible: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
+    }
+
+    #[tokio::test]
+    async fn degraded_retrieval_caps_readable_unchanged_anchor_without_caller_evidence() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/main.rs",
+            "@@ -1,2 +1,3 @@\n fn main() {\n+    helper();\n }\n",
+        )];
+        let anchor_read = Lookup::Read {
+            path: "src/main.rs".into(),
+            start: Some(1),
+            end: Some(1),
+        };
+        let caller_search = Lookup::Search {
+            pattern: "fn helper(".into(),
+            glob: None,
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [
+                (
+                    anchor_read.key(),
+                    Found::Text {
+                        text: "1 fn main() {".into(),
+                        start: 1,
+                        end: 1,
+                        total: 3,
+                    },
+                ),
+                (
+                    caller_search.key(),
+                    Found::Unavailable {
+                        reason: "cold index cannot search callers".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The existing call needs a guard.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "fn main() {",
+                    "rule": "unsafe-caller",
+                    "title": "Guard the existing caller",
+                    "body": "The unchanged caller assumes an invalid contract.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+        let model_handle = model.clone();
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(outcome.findings[0].late);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+        assert_eq!(outcome.findings[0].severity, Severity::High);
+        let request = model_handle
+            .requests()
+            .into_iter()
+            .find(|request| request.schema_name == "tinysweeper_critique")
+            .expect("the critique request");
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            prompt.contains("cold index cannot search callers"),
+            "{prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_degraded_claim_about_an_existing_declared_module_is_still_capped() {
+        let config = config();
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let tree =
+            crate::ports::tree::MockTree::from_files([("src/foo/mod.rs", "pub fn foo() {}\n")]);
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The declared module is missing.",
+                "findings": [{
+                    "path": "src/lib.rs",
+                    "existing_code": "pub mod foo;",
+                    "rule": "missing-module",
+                    "title": "Add the missing foo module",
+                    "body": "The module file is absent.",
+                    "severity": "critical",
+                    "confidence": 0.99
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.findings[0].severity, Severity::Critical);
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_lookups_do_not_trigger_post_review_tree_reads() {
+        let mut config = config();
+        config.lookup.enabled = false;
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let tree = CountingTree {
+            inner: crate::ports::tree::MockTree::from_files([(
+                "src/foo/mod.rs",
+                "pub fn foo() {}\n",
+            )]),
+            lookups: std::sync::Mutex::new(Vec::new()),
+        };
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "The declared module is missing.",
+                "findings": [{
+                    "path": "src/lib.rs",
+                    "existing_code": "pub mod foo;",
+                    "rule": "missing-module",
+                    "title": "Add the missing foo module",
+                    "body": "The module file is absent.",
+                    "severity": "critical",
+                    "confidence": 0.99
+                }]
+            }))
+            .then(json!({"incorrect": []}));
+
+        let outcome = run_with_context_and_tree(
+            model,
+            &config,
+            &diffs,
+            &BTreeMap::new(),
+            crate::retrieve::RetrievalStatus::Cold,
+            Some(&tree),
+        )
+        .await;
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        let lookups = tree.lookups.lock().expect("lookup calls");
+        assert!(
+            lookups.is_empty(),
+            "disabled lookup policy must prevent post-review reads: {lookups:?}"
+        );
+        assert_eq!(
+            outcome.findings[0].confidence,
+            DEGRADED_CONTEXT_CONFIDENCE_CAP
+        );
     }
 
     /// A finding in the pre-positioning shape, still accepted so a proposal
@@ -1039,6 +1562,203 @@ fn helper() {
             "the rejection reason replaces the prose it disproved: {}",
             outcome.summary
         );
+    }
+
+    #[derive(Debug, Default)]
+    struct AddedModuleModel {
+        requests: std::sync::Mutex<Vec<crate::ports::model::ModelRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::model::Model for AddedModuleModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+            use crate::ports::model::{ModelResponse, Usage};
+
+            let prompt = request
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let value = if request.schema_name.contains("falsify") {
+                if prompt.contains("src/foo.rs") && prompt.contains("pub fn foo()") {
+                    json!({"incorrect": [{"index": 1, "reason": "the pull request adds src/foo.rs with the module implementation"}]})
+                } else {
+                    json!({"incorrect": []})
+                }
+            } else if request.schema_name.contains("critique")
+                && prompt.contains("The file is `src/lib.rs`")
+            {
+                json!({
+                    "summary": "The module file is missing.",
+                    "findings": [{
+                        "path": "src/lib.rs",
+                        "existing_code": "pub mod foo;",
+                        "rule": "missing-module",
+                        "title": "Add the missing foo module",
+                        "body": "The declared module has no source file.",
+                        "severity": "critical",
+                        "confidence": 0.99
+                    }]
+                })
+            } else {
+                json!({"summary": "Nothing to report.", "findings": []})
+            };
+            self.requests
+                .lock()
+                .expect("record requests")
+                .push(request.clone());
+            Ok(ModelResponse {
+                value,
+                model: request.model,
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_added_module_file_falsifies_a_missing_module_claim_across_groups() {
+        let mut config = config();
+        config.grouping.enabled = false;
+        let pr = pull_request();
+        let diffs = vec![
+            parse_file_patch(
+                "src/lib.rs",
+                "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+            ),
+            parse_file_patch("src/foo.rs", "@@ -0,0 +1,1 @@\n+pub fn foo() {}\n"),
+            parse_file_patch(
+                "docs/unrelated.md",
+                &format!("@@ -0,0 +1,1 @@\n+{}\n", "unrelated context ".repeat(4_000)),
+            ),
+        ];
+        let tree = crate::ports::tree::MockTree::from_files([("src/foo.rs", "pub fn foo() {}\n")]);
+        let model = Arc::new(AddedModuleModel::default());
+
+        let outcome = Critique::new(model.clone())
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            })
+            .await
+            .expect("lane runs");
+
+        assert!(outcome.findings.is_empty(), "{outcome:?}");
+        let requests = model.requests.lock().expect("recorded requests");
+        let falsifier = requests
+            .iter()
+            .find(|request| request.schema_name.contains("falsify"))
+            .expect("the false finding reaches falsification");
+        let falsifier_prompt = falsifier
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            falsifier_prompt.contains("src/foo.rs") && falsifier_prompt.contains("pub fn foo()"),
+            "falsification must see the added file even though another group owns it: {falsifier_prompt}"
+        );
+        assert!(
+            !falsifier_prompt.contains("unrelated context"),
+            "cross-file falsification must not replay unrelated PR files: {falsifier_prompt}"
+        );
+        assert!(
+            falsifier_prompt.len() < 20_000,
+            "cross-file evidence must have a deterministic byte ceiling: {} bytes",
+            falsifier_prompt.len()
+        );
+        assert!(
+            requests.iter().any(|request| {
+                request.schema_name.contains("critique")
+                    && request
+                        .messages
+                        .iter()
+                        .any(|message| message.content.contains("pub fn foo()"))
+            }),
+            "the module declaration's seed must read the new file from the head tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_degraded_missing_module_claim_is_capped_without_a_successful_head_read() {
+        let mut config = config();
+        config.grouping.enabled = false;
+        let pr = pull_request();
+        let diffs = vec![parse_file_patch(
+            "src/lib.rs",
+            "@@ -1,1 +1,2 @@\n fn existing() {}\n+pub mod foo;\n",
+        )];
+        let module_rs = Lookup::Read {
+            path: "src/foo.rs".into(),
+            start: None,
+            end: None,
+        };
+        let module_mod_rs = Lookup::Read {
+            path: "src/foo/mod.rs".into(),
+            start: None,
+            end: None,
+        };
+        let tree = crate::ports::tree::MockTree::from_recorded(
+            [
+                (module_rs.key(), Found::NotFound),
+                (
+                    module_mod_rs.key(),
+                    Found::Unavailable {
+                        reason: "the index is cold".into(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let model = Arc::new(AddedModuleModel::default());
+
+        let outcome = Critique::new(model)
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Cold,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            })
+            .await
+            .expect("lane runs");
+
+        assert_eq!(outcome.findings.len(), 1, "{outcome:?}");
+        assert!(
+            outcome.findings[0].confidence <= DEGRADED_CONTEXT_CONFIDENCE_CAP,
+            "a changed `pub mod` anchor does not prove the external module exists: {outcome:?}"
+        );
+        assert!(outcome.summary.contains("capped at Likely confidence"));
     }
 
     /// How many changed lines a group needs to clear [`COVERAGE_PASS_MIN_LINES`].
@@ -1729,6 +2449,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -1789,6 +2510,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: &reviewed,
                 prior_findings: &["Close the socket on the error path".to_string()],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -1848,6 +2570,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -1897,6 +2620,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,
@@ -2038,6 +2762,7 @@ fn helper() {
                 extracted_rules: &[],
                 reviewed_evidence: "",
                 prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
                 retrieved_context: "",
                 redaction_note: "",
                 e2e: None,

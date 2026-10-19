@@ -288,7 +288,8 @@ mod tests {
         // that is actively harmful.
         assert!(!is_transient(&Error::Budget {
             spent: 4.25,
-            limit: 4.0
+            limit: 4.0,
+            usage: None,
         }));
         assert!(!is_transient(&Error::Config("bad preset".into())));
         assert!(!is_transient(&Error::ReviewLimit {

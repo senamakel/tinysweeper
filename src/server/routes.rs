@@ -1,9 +1,10 @@
 //! The axum application: routes, and the worker that does the actual work.
 //!
-//! A delivery is acknowledged and queued, never handled inline. GitHub gives a
-//! webhook ten seconds and a review takes minutes, so handling one in the
-//! request would guarantee a timeout — and a timeout means GitHub redelivers,
-//! which means a second review of the same event. Acknowledge fast, work later.
+//! Review work is durably queued rather than run in the webhook request.
+//! Admission may resolve minimal live metadata and publish a queued check inline;
+//! durable status intents retry independently if that status-only work fails.
+//! GitHub gives a webhook ten seconds and does not automatically redeliver failed
+//! requests, so accepted work must survive even when acknowledgment is lost.
 
 use std::sync::Arc;
 

@@ -903,7 +903,7 @@ fn github_queue_status_client(auth: Arc<AppAuth>, _installation: u64) -> QueueSt
         let auth = auth.clone();
         async move {
             let token = auth.installation_token(installation).await?;
-            let read = crate::forge::github::GitHubRead::new(&token)?;
+            let read = crate::forge::github::GitHubRead::for_app(&token, auth.app_id()?)?;
             let write = crate::forge::github::GitHubWrite::new(&token)?;
             Ok(QueueStatusClients {
                 read: Arc::new(read),

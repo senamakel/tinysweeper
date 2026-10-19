@@ -701,6 +701,7 @@ fn type_names_from_json(raw: &serde_json::Value) -> Vec<String> {
 /// Read-only GitHub access.
 pub struct GitHubRead {
     client: Octocrab,
+    expected_app_id: Option<u64>,
 }
 
 impl GitHubRead {
@@ -753,6 +754,15 @@ impl GitHubRead {
     pub fn new(token: &str) -> Result<Self> {
         Ok(Self {
             client: client(token)?,
+            expected_app_id: None,
+        })
+    }
+
+    /// Build a read client that can recover only checks created by this app.
+    pub fn for_app(token: &str, app_id: u64) -> Result<Self> {
+        Ok(Self {
+            client: client(token)?,
+            expected_app_id: Some(app_id),
         })
     }
 
@@ -1292,6 +1302,9 @@ impl ForgeRead for GitHubRead {
                     .filter(|item| {
                         item["name"].as_str() == Some(crate::server::status::CHECK_NAME)
                             && item["external_id"].as_str() == Some(external_id)
+                            && self.expected_app_id.is_none_or(|app_id| {
+                                item["app"]["id"].as_u64() == Some(app_id)
+                            })
                     })
                     .filter_map(|item| item["id"].as_u64())
                     .collect::<Vec<_>>()

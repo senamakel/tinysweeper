@@ -2771,6 +2771,14 @@ mod tests {
         config.budget_prices.insert(
             "deep".into(),
             crate::config::types::BudgetPriceBound {
+                input: 100.0,
+                cached: 0.0,
+                output: 100.0,
+            },
+        );
+        config.budget_prices.insert(
+            "deep".into(),
+            crate::config::types::BudgetPriceBound {
                 input: 0.0,
                 cached: 0.0,
                 output: 100.0,

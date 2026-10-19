@@ -1289,7 +1289,10 @@ impl ForgeRead for GitHubRead {
             |items| {
                 items
                     .iter()
-                    .filter(|item| item["external_id"].as_str() == Some(external_id))
+                    .filter(|item| {
+                        item["name"].as_str() == Some(crate::server::status::CHECK_NAME)
+                            && item["external_id"].as_str() == Some(external_id)
+                    })
                     .filter_map(|item| item["id"].as_u64())
                     .collect::<Vec<_>>()
             },

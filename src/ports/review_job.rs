@@ -1552,6 +1552,31 @@ pub trait ReviewJobStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<PendingReviewCheck>>;
 
+    /// Claim headless accepted work for status-only live metadata resolution.
+    async fn claim_pending_metadata(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<PendingReviewMetadata>>;
+
+    /// Revalidate a metadata claim after the narrow Forge read.
+    async fn metadata_claim_current(
+        &self,
+        pending: &PendingReviewMetadata,
+        now_ms: i64,
+    ) -> Result<bool>;
+
+    /// Resolve a metadata claim, producing a queue hint or terminally declining
+    /// a still-current closed/draft job.
+    async fn resolve_pending_metadata(
+        &self,
+        pending: &PendingReviewMetadata,
+        head_sha: &str,
+        open: bool,
+        draft: bool,
+        now_ms: i64,
+    ) -> Result<bool>;
+
     /// Record an acknowledged queued check only if its durable write claim is still current.
     async fn record_queued_check_id(
         &self,

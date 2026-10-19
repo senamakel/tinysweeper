@@ -33,6 +33,19 @@ Current source constraints:
 - `ModelCapability::{new,with_budget}` makes fresh monetary lane scopes.
   Gateway `scoped_budget` replaces its monetary ledger. A count scope must
   survive these calls; it must not be reconstructed per lane or pass.
+- The monetary scope has the same review-wide lifetime requirement. Binding a
+  `scoped_budget` once at review entry is insufficient: each
+  `ModelCapability::{new,with_budget}` scopes again, and each Gateway
+  `scoped_budget` currently starts an independent ledger. After confirming the
+  exact merged Embed API, retain a distinct optional review-root `Budget` on
+  `GatewayModel`. When bound, derive each lane's budget with `Budget::child`
+  using that lane's limits, so root and ancestor reservations/settlement stay
+  shared while lane caps remain local. When unbound, keep existing fresh-scope
+  behavior, including `a_fresh_budget_scope...` compatibility coverage. Bind
+  the review root before paid knowledge extraction; lanes and direct summary,
+  thread and wireframe model calls must use root-bound models. This records the
+  reviewed integration constraint; exact wrapper/API details remain subject to
+  the dependency review and must not be guessed from an unmerged API.
 - #221 observes physical dispatches inside Embed and TinyAgents, separately
   from logical completion usage. Its observer callbacks cannot refuse a call.
   Existing `ModelBudget` bounds tokens and money, not physical call count.

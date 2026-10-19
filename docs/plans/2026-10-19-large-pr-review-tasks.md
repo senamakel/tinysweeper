@@ -262,6 +262,10 @@ Gateway call is gated only upstream, not once again at its outer complete API.
 Cassette is an explicit integration task, not an assumed generic wrapper:
 change `src/harness/cassette.rs` and `cassette_test.rs` after merging the #235
 repository-aware recording implementation (or coordinate against that branch).
+Do not wait for all of #235 or its production health criteria: if its wrapper
+work has not landed, extract/land that narrowly scoped prerequisite first, or
+implement the same forwarding against the current wrapper and require #235
+to preserve it when its repository-aware review method lands.
 Record forwards `with_execution_control` to its inner, rebuilding Cassette with
 that controlled inner while sharing state, takes, ordered responses, directory
 and prompt-recording policy. Its `scoped_budget` clones retain the same control.

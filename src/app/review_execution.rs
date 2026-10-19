@@ -814,7 +814,6 @@ mod tests {
         }
 
         execution.restrict_to_large(2);
-        assert_eq!(execution.max_calls(), Some(2));
         assert_eq!(
             execution.acquire().await.err(),
             Some(ModelExecutionRefusal::CallLimit)

@@ -1352,6 +1352,7 @@ mod tests {
         ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal, ModelExecutionTerminal,
         ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
     };
+    use crate::ports::tree::TreeReader;
 
     #[test]
     fn physical_admission_reasons_keep_their_neutral_meaning() {
@@ -2042,7 +2043,7 @@ mod tests {
     #[tokio::test]
     async fn agentic_gateway_reports_raw_terminals_without_a_timing_observer() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
-        use crate::ports::tree::{MockTree, TreeReader};
+        use crate::ports::tree::MockTree;
 
         let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
         let read = Reply {

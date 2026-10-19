@@ -20,7 +20,7 @@ use openhuman_embed::complete::{
     ChatMessage, Completer, CompletionObserver, CompletionRequest, CompletionTrace, ResponseFormat,
 };
 use openhuman_embed::routing::{
-    CompletionAttempt, CompletionLadder, CompletionRung, TruncationRetry,
+    CompletionLadder, CompletionRung, TruncationRetry,
 };
 use serde_json::json;
 
@@ -375,20 +375,6 @@ fn answered_model(raw: Option<&serde_json::Value>) -> Option<&str> {
     (!model.is_empty()).then_some(model)
 }
 
-/// Keep the output estimator trained on every billed physical attempt,
-/// including partial structured replies that caused a retry or refusal.
-fn record_output_attempts(
-    history: &crate::harness::budget::OutputHistory,
-    lane: &str,
-    attempts: &[CompletionAttempt],
-) {
-    for attempt in attempts {
-        if let (Some(usage), Some(cap)) = (&attempt.usage, attempt.max_tokens) {
-            history.record(lane, &attempt.requested_model, usage.output_tokens, cap);
-        }
-    }
-}
-
 /// One crate message as the completion API wants it.
 ///
 /// Images ride on user messages only: the OpenAI-compatible format has no
@@ -604,7 +590,6 @@ impl GatewayModel {
                 true,
             )?);
         }
-        let call_started = std::time::Instant::now();
         let result = ladder.complete(completion).await.map_err(|error| {
             for attempt in &error.attempts {
                 let model = attempt
@@ -870,28 +855,6 @@ impl GatewayModel {
         )
         .await
     }
-}
-
-fn log_model_attempt(
-    model: &str,
-    cap: Option<u32>,
-    ladder_elapsed_ms: u64,
-    usage: &openhuman_embed::complete::CompletionUsage,
-    finish_reason: Option<&str>,
-    reported_cost_usd: Option<f64>,
-) {
-    tracing::info!(
-        model,
-        cap,
-        ladder_elapsed_ms,
-        input_tokens = usage.input_tokens,
-        cached_tokens = usage.cached_tokens,
-        output_tokens = usage.output_tokens,
-        reasoning_tokens = usage.reasoning_tokens,
-        ?finish_reason,
-        reported_cost_usd,
-        "model attempt"
-    );
 }
 
 /// How many times a truncated answer is retried with a doubled ceiling before

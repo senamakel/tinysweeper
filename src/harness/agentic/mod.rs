@@ -25,6 +25,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::OnceCell;
+use tracing::{Instrument, instrument::WithSubscriber};
 
 // Embed turns have deep futures; isolate them on the documented large stacks
 // rather than imposing a Tokio construction requirement on every consumer.

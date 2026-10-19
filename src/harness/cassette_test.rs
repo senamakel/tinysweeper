@@ -126,7 +126,7 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
             .scoped_budget(8.0)
             .expect("recording cassette retains the review root on lane rescope");
         assert!(root.complete_reports_physical_calls());
-        assert!(!root.review_reports_physical_calls());
+        assert!(root.review_reports_physical_calls());
         let physical_events =
             Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
 
@@ -222,6 +222,7 @@ async fn recording_cassette_review_reports_the_physical_path_it_uses() {
             .expect("the review was recorded in the cassette"),
         1
     );
+    assert!(cassette.complete_reports_physical_calls());
     assert_eq!(
         cassette.review_reports_physical_calls(),
         cassette.complete_reports_physical_calls(),

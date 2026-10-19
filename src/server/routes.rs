@@ -4785,6 +4785,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_model_preserves_dispatch_control_and_lease_across_rescoping() {
+        use crate::harness::mock::MockModel;
         use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
         use crate::ports::model::Message;
         use crate::ports::model_execution::ModelExecutionRefusal;

@@ -2691,7 +2691,7 @@ mod tests {
     #[tokio::test]
     async fn observed_model_preserves_dispatch_control_across_budget_binding_orders() {
         use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
-        use crate::ports::model::Message;
+        use crate::ports::model::{Message, ModelRequest};
         use crate::ports::model_execution::ModelExecutionRefusal;
 
         for scope_first in [false, true] {

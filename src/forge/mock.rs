@@ -820,13 +820,14 @@ impl ForgeWrite for MockForge {
                 .check_run_ids
                 .insert((check.head_sha.clone(), external_id.clone()), id);
         }
+        let terminal = check.conclusion.is_some();
         self.record(Write::Check(check));
         let mut failures = self.fail_after_check_publishes.lock().expect("mock lost-response lock");
         if *failures > 0 {
             *failures -= 1;
             return Err(Error::Forge("simulated lost check-run response".into()));
         }
-        if check.conclusion.is_some() {
+        if terminal {
             let mut failures = self.fail_after_terminal_check_publishes.lock().expect("mock terminal-response lock");
             if *failures > 0 {
                 *failures -= 1;

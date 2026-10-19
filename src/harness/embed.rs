@@ -1031,6 +1031,15 @@ mod tests {
                 .unwrap()
                 .push((usage, succeeded, refused, latency));
         }
+
+        fn correlation(&self) -> crate::ports::model::ModelCallContext {
+            crate::ports::model::ModelCallContext {
+                repo: "owner/repo".into(),
+                pr: 7,
+                head_sha: "abc123".into(),
+                mode: "Incremental".into(),
+            }
+        }
     }
 
     impl std::io::Write for LogBytes {

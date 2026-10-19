@@ -101,6 +101,44 @@ fn queued_status_claims_cannot_publish_or_adopt_a_superseded_head() {
     assert_ne!(replacement.check.external_id, old_claim.check.external_id);
 }
 
+#[test]
+fn one_queued_check_id_survives_in_progress_completion_and_scheduler_restart() {
+    let mut state = ReviewSchedulerState::default();
+    assert_eq!(state.admit_batch(vec![request("same-check", 10)], 10), Admission::Admitted);
+    let status_claim = state.claim_pending_checks(10, 1).pop().unwrap();
+    assert!(state.record_queued_check_id(&status_claim, 77, 11));
+
+    let owner = state.claim_next("worker-a", 12).unwrap();
+    assert_eq!(owner.review_check.as_ref().unwrap().check_id, Some(77));
+    assert_eq!(owner.review_check.as_ref().unwrap().stage, super::ReviewCheckStage::Queued);
+    assert!(state.set_check_stage(
+        &owner,
+        "sha",
+        77,
+        super::ReviewCheckStage::InProgress,
+        13,
+    ));
+
+    let persisted = serde_json::to_vec(&state).unwrap();
+    let mut recovered: ReviewSchedulerState = serde_json::from_slice(&persisted).unwrap();
+    let replacement = recovered
+        .claim_next("worker-b", 12 + REVIEW_OWNER_TTL_MS + 1)
+        .unwrap();
+    let resumed_check = replacement.review_check.as_ref().unwrap();
+    assert_eq!(resumed_check.check_id, Some(77));
+    assert_eq!(resumed_check.stage, super::ReviewCheckStage::InProgress);
+    assert!(recovered.set_check_stage(
+        &replacement,
+        "sha",
+        77,
+        super::ReviewCheckStage::Completed,
+        13 + REVIEW_OWNER_TTL_MS + 1,
+    ));
+    let check = &recovered.unfinished[0].review_checks[0];
+    assert_eq!(check.check_id, Some(77));
+    assert_eq!(check.stage, super::ReviewCheckStage::Completed);
+}
+
 #[tokio::test]
 async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
     let store = MockReviewJobStore::default();

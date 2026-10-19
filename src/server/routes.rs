@@ -1583,7 +1583,8 @@ async fn triage_inner(
     let repo_id =
         RepoId::parse(repo).ok_or_else(|| Error::Forge(format!("`{repo}` is not owner/name")))?;
 
-    let plan = with_triage_permit(&state.triage_permits, || async {
+    let triage_pool = triage_permit_pool(&state.permits, &state.triage_permits);
+    let plan = with_triage_permit(&triage_pool, || async {
         // Keyed on the issue rather than a SHA — an issue has no head commit — so
         // two deliveries for the same edit cannot both pay for a triage.
         let lease = format!("{repo}#issue-{number}");
@@ -1609,6 +1610,11 @@ async fn triage_inner(
         "issue triaged"
     );
     Ok(())
+}
+
+fn triage_permit_pool(review_pool: &Arc<Semaphore>, triage_pool: &Arc<Semaphore>) -> Arc<Semaphore> {
+    let _ = review_pool;
+    triage_pool.clone()
 }
 
 async fn with_triage_permit<T, F, Fut>(pool: &Arc<Semaphore>, work: F) -> Result<T>
@@ -6772,7 +6778,8 @@ mod tests {
         let observed = triage_ran.clone();
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            with_triage_permit(&triage_pool, || async move {
+            let selected = triage_permit_pool(&review_pool, &triage_pool);
+            with_triage_permit(&selected, || async move {
                 observed.store(true, Ordering::SeqCst);
                 Ok(())
             }),

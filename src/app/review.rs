@@ -2771,14 +2771,6 @@ mod tests {
         config.budget_prices.insert(
             "deep".into(),
             crate::config::types::BudgetPriceBound {
-                input: 100.0,
-                cached: 0.0,
-                output: 100.0,
-            },
-        );
-        config.budget_prices.insert(
-            "deep".into(),
-            crate::config::types::BudgetPriceBound {
                 input: 0.0,
                 cached: 0.0,
                 output: 100.0,
@@ -2837,6 +2829,14 @@ mod tests {
         config.base_url = gateway.base_url.clone();
         config.fallback.clear();
         config.agentic_reviewers = true;
+        config.budget_prices.insert(
+            "deep".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 100.0,
+                cached: 0.0,
+                output: 100.0,
+            },
+        );
         let adapter = GatewayModel::with_key(&config, "fixture".into())
             .scoped_budget(1.0)
             .expect("gateway supports budget scopes");

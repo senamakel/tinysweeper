@@ -2774,6 +2774,195 @@ mod tests {
         }
     }
 
+    fn large_execution_scope(
+        started_at: tokio::time::Instant,
+        hard_deadline: tokio::time::Instant,
+        max_calls: usize,
+    ) -> Arc<crate::app::review_execution::ReviewExecution> {
+        Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline,
+                mode: crate::lanes::large_pr::ReviewMode::Large,
+                max_calls: Some(max_calls),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ))
+    }
+
+    fn observed_control_request() -> crate::ports::model::ModelRequest {
+        crate::ports::model::ModelRequest {
+            model: "probe".into(),
+            messages: vec![crate::ports::model::Message::user("observe this call")],
+            schema: json!({"type":"object"}),
+            schema_name: "observed-execution-control".into(),
+            max_tokens: 16,
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_model_counts_typed_call_limit_without_double_counting_usage() {
+        use crate::harness::mock::execution_test_support::{DispatchProbe, execution_control};
+        use crate::ports::model_execution::ModelExecutionRefusal;
+
+        let mock = MockModel::silent().with_usage(Usage {
+            input_tokens: 2,
+            output_tokens: 1,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            cost_usd: 1.0,
+            ..Usage::default()
+        });
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
+        let observed: Arc<dyn Model> = Arc::new(ObservedModel {
+            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            timing: timing.clone(),
+        });
+        let (execution, control) = execution_control(1);
+        let observed = observed
+            .with_execution_control(control)
+            .expect("observed model forwards the dispatch control");
+
+        assert!(observed.complete(observed_control_request()).await.is_ok());
+        assert!(matches!(
+            observed.complete(observed_control_request()).await,
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            })
+        ));
+
+        assert_eq!(mock.calls(), 1);
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_succeeded, 1);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.usage.input_tokens, 2);
+        assert_eq!(record.usage.output_tokens, 1);
+        assert_eq!(record.usage.cost_usd, 1.0);
+    }
+
+    #[tokio::test]
+    async fn observed_model_counts_expired_execution_deadline_without_a_dispatch() {
+        use crate::harness::mock::execution_test_support::DispatchProbe;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use std::time::Duration;
+
+        let now = tokio::time::Instant::now();
+        let started_at = now - Duration::from_secs(90);
+        let execution = large_execution_scope(
+            started_at,
+            now + Duration::from_secs(10),
+            4,
+        );
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let mock = MockModel::silent();
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
+        let observed: Arc<dyn Model> = Arc::new(ObservedModel {
+            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            timing: timing.clone(),
+        });
+        let observed = observed
+            .with_execution_control(control)
+            .expect("observed model forwards the dispatch control");
+
+        assert!(matches!(
+            observed.complete(observed_control_request()).await,
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::SoftDeadline,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 0);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.calls_refused, 1);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.usage, Usage::default());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_pending_observed_dispatch_counts_no_terminal_call() {
+        use crate::harness::mock::execution_test_support::DispatchProbe;
+        use crate::ports::model_execution::ModelExecutionControl;
+        use std::future::Future;
+        use std::task::Poll;
+        use std::time::Duration;
+
+        let (execution, control) =
+            crate::harness::mock::execution_test_support::execution_control(1);
+        let held = control.acquire().await.expect("reserve the only call slot");
+        let mock = MockModel::silent();
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Large");
+        let observed: Arc<dyn Model> = Arc::new(ObservedModel {
+            inner: Arc::new(DispatchProbe::new(mock.clone())),
+            timing: timing.clone(),
+        });
+        let observed = observed
+            .with_execution_control(control)
+            .expect("observed model forwards the dispatch control");
+        let future = observed.complete(observed_control_request());
+        let mut future = Box::pin(future);
+        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+        let mut pending_tx = Some(pending_tx);
+        let mut waiter = tokio::spawn(async move {
+            std::future::poll_fn(|cx| match future.as_mut().poll(cx) {
+                Poll::Pending => {
+                    if let Some(pending_tx) = pending_tx.take() {
+                        let _ = pending_tx.send(());
+                    }
+                    Poll::Pending
+                }
+                ready => ready,
+            })
+            .await
+        });
+        let pending = tokio::time::timeout(Duration::from_secs(2), pending_rx).await;
+        if !matches!(pending, Ok(Ok(()))) {
+            waiter.abort();
+            let _ = waiter.await;
+            drop(held);
+            panic!("observed acquire did not reach Pending while its slot was reserved");
+        }
+
+        execution.cancel();
+        let result = match tokio::time::timeout(Duration::from_secs(2), &mut waiter).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(join_error)) => {
+                drop(held);
+                panic!("observed acquire task failed: {join_error}");
+            }
+            Err(_) => {
+                waiter.abort();
+                let _ = waiter.await;
+                drop(held);
+                panic!("cancellation did not wake the pending observed acquire");
+            }
+        };
+        drop(held);
+        assert!(matches!(
+            result,
+            Err(Error::ModelExecutionRefused {
+                refusal: crate::ports::model_execution::ModelExecutionRefusal::Cancelled,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 0);
+        assert_eq!(record.calls_succeeded, 0);
+        assert_eq!(record.calls_refused, 0);
+        assert_eq!(record.calls_errored, 0);
+        assert_eq!(record.usage, Usage::default());
+    }
+
     #[test]
     fn maintainer_disputed_findings_keep_their_status_in_prompt_annotations() {
         let title = "Reject the stale caller contract".to_string();

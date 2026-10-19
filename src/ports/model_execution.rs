@@ -61,6 +61,11 @@ pub struct ModelExecutionTerminal {
     pub answered_model: Option<String>,
     /// How the physical provider call ended.
     pub outcome: ModelExecutionTerminalOutcome,
+    /// Whether the provider reported a refusal response.
+    ///
+    /// This is separate from `outcome`: a refusal response can still be a
+    /// successfully completed provider dispatch.
+    pub refused: bool,
     /// Raw provider usage, kept optional so an absent report stays unknown.
     pub usage: Option<ModelExecutionTerminalUsage>,
 }

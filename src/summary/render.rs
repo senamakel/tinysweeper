@@ -1391,7 +1391,7 @@ mod tests {
                     "lane": "security", "severity": "high", "confidence": 0.99,
                     "path": "src/hub.rs", "line": 42, "rule": "unsafe-default",
                     "title": "Reject empty token", "body": "An empty token bypasses validation.",
-                "suggestion": "if token.is_empty() { return Err(Error::MissingToken); }",
+                    "suggestion": "if token.is_empty() { return Err(Error::MissingToken); }\n</details>\n```",
                     "late": false, "aliases": [], "grouped": false, "review_pass": 1,
                     "corroboration": 1
                 }]
@@ -1412,5 +1412,9 @@ mod tests {
             "{section}"
         );
         assert!(section.contains("if token.is_empty()"), "{section}");
+        assert!(
+            section.contains("**Suggested fix:**\n````\nif token.is_empty() { return Err(Error::MissingToken); }\n</details>\n````"),
+            "{section}"
+        );
     }
 }

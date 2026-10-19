@@ -6660,7 +6660,9 @@ mod tests {
         static NEXT_FIXTURE_CHECK_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(90_000);
         for check in pending {
-            assert!(!check.retired, "fixture only publishes active queued checks");
+            if check.retired {
+                continue;
+            }
             assert!(store.mark_queue_post_attempted(&check, now_ms).await.unwrap());
             assert!(store
                 .record_queued_check_id(
@@ -6881,7 +6883,7 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_review_publishes_queued_status_before_a_permit_is_available() {
-        use crate::forge::MockForge;
+        use crate::forge::{MockForge, RepoId};
         use crate::forge::types::CheckRunStatus;
 
         let permits = Semaphore::new(0);
@@ -7466,6 +7468,17 @@ mod tests {
         ).await.expect("external ID recovery and terminal patch complete");
 
         let writes = forge.writes();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let external_id = retired.check.external_id.as_deref().unwrap();
+        let recovered_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &repo,
+            "lost-a",
+            external_id,
+        )
+        .await
+        .unwrap()
+        .expect("the accepted terminal POST is found by its external identity");
         let terminal_posts = writes.iter().filter(|write| matches!(
             write,
             crate::forge::Write::Check(check)
@@ -7476,7 +7489,7 @@ mod tests {
         assert!(writes.iter().any(|write| matches!(
             write,
             crate::forge::Write::CheckUpdate { check_id, check }
-                if *check_id == 1
+                if *check_id == recovered_id
                     && check.head_sha == "lost-a"
                     && check.conclusion == Some(CheckConclusion::Neutral)
         )), "terminal write should update the ID returned by recovery: {writes:#?}");

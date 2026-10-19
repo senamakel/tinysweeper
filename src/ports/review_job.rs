@@ -532,7 +532,10 @@ impl ReviewSchedulerState {
             repo,
             number,
             head_sha: head_sha.to_owned(),
-            paid_attempts: 0,
+            // Legacy records counted paid starts before authoritative head
+            // confirmation existed. Preserve that conservative count on the
+            // first confirmed head; only a later confirmed transition resets it.
+            paid_attempts: self.unfinished[index].paid_attempts,
             deadline_hit: false,
             terminal_outcome: None,
         });

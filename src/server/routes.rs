@@ -924,9 +924,27 @@ where
         return Ok(Some(WorkerDisposition::OwnershipLost));
     }
     if matches!(err, Error::ReviewSuperseded) {
-        // The historical top-of-retry path let this error fall through to the
-        // generic failure budget; the live owner must instead acknowledge it.
-        let _ = (jobs, owned, local_owner_valid);
+        if !local_owner_valid() {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        let Some(owned) = owned else {
+            return Ok(Some(WorkerDisposition::Terminal(
+                TerminalOutcome::Superseded,
+            )));
+        };
+        let owns = jobs.owns(owned, unix_time_ms()).await?;
+        if !local_owner_valid() || !owns {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        let should_continue = jobs.should_continue(owned, unix_time_ms()).await?;
+        if !local_owner_valid() {
+            return Ok(Some(WorkerDisposition::OwnershipLost));
+        }
+        return Ok(Some(if should_continue {
+            WorkerDisposition::Terminal(TerminalOutcome::Superseded)
+        } else {
+            WorkerDisposition::Yielded
+        }));
     }
     Ok(None)
 }
@@ -2125,16 +2143,10 @@ impl Run {
     async fn check_work(&self, state: &AppState) -> Result<()> {
         self.check_owner(state).await?;
         if let Some(owned) = &self.owned {
-            let should_continue = state
-                .review_jobs
-                .should_continue(owned, unix_time_ms())
-                .await?;
-            if !self.local_owner_valid() {
-                return Err(Error::ReviewOwnershipLost);
-            }
-            if !should_continue {
-                return Err(Error::ReviewSuperseded);
-            }
+            check_owned_work(state.review_jobs.as_ref(), owned, || {
+                self.local_owner_valid()
+            })
+            .await?;
         }
         Ok(())
     }
@@ -2146,6 +2158,24 @@ impl Run {
                 .as_ref()
                 .is_some_and(|until| tokio::time::Instant::now() >= *until.borrow())
     }
+}
+
+async fn check_owned_work<Valid>(
+    jobs: &dyn ReviewJobStore,
+    owned: &OwnedReview,
+    local_owner_valid: Valid,
+) -> Result<()>
+where
+    Valid: Fn() -> bool,
+{
+    let should_continue = jobs.should_continue(owned, unix_time_ms()).await?;
+    if !local_owner_valid() {
+        return Err(Error::ReviewOwnershipLost);
+    }
+    if !should_continue {
+        return Err(Error::ReviewSuperseded);
+    }
+    Ok(())
 }
 
 async fn check_owner_after_await<F, Fut>(locally_valid: F, ownership_check: Fut) -> Result<()>
@@ -4763,8 +4793,12 @@ mod tests {
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        let boundary_error = check_owned_work(&store, &active, || run.local_owner_valid())
+            .await
+            .expect_err("the production retry-boundary check sees the durable yield");
+        assert!(matches!(boundary_error, Error::ReviewSuperseded));
         let disposition =
-            classify_retry_boundary_error(&Error::ReviewSuperseded, &store, Some(&active), || {
+            classify_retry_boundary_error(&boundary_error, &store, Some(&active), || {
                 run.local_owner_valid()
             })
             .await

@@ -2129,7 +2129,7 @@ mod tests {
                 cost_usd: Some(0.001),
             }),
         );
-        assert_eq!(*control.terminals.lock().unwrap(), vec![expected]);
+        assert_eq!(*control.terminals.lock().unwrap(), vec![expected.clone()]);
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.committed_calls, 1);
         assert_eq!(snapshot.physical_terminals, vec![expected]);

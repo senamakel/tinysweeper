@@ -5441,7 +5441,7 @@ mod tests {
                     )
                     .await?;
                 Ok(InnerReview::Complete(Some((
-                    queued_b_id,
+                    usize::try_from(queued_b_id).expect("check ID fits the completion receipt"),
                     false,
                     status::ReviewCoverage::default(),
                 ))))

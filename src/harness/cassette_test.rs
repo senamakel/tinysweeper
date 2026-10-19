@@ -6,7 +6,90 @@ use serde_json::json;
 
 use super::*;
 use crate::harness::mock::MockModel;
-use crate::ports::model::Message;
+use crate::ports::model::{Message, ModelResponse};
+use crate::ports::tree::{Found, Lookup, TreeQuery, TreeReader};
+
+struct ReviewOnlyModel {
+    reviews: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Model for ReviewOnlyModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(Error::Model("the test requires Model::review".into()))
+    }
+
+    async fn review(
+        &self,
+        _request: ModelRequest,
+        tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.reviews
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tree.lookup(&Lookup::Read {
+            path: "src/lib.rs".into(),
+            start: Some(1),
+            end: Some(2),
+        })
+        .await?;
+        tree.explore(&TreeQuery::Symbol {
+            symbol: "load_state".into(),
+            limit: 3,
+        })
+        .await?;
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/review-only".into(),
+            usage: Usage {
+                input_tokens: 17,
+                output_tokens: 5,
+                cost_usd: 0.002,
+                ..Usage::default()
+            },
+        })
+    }
+}
+
+struct ReviewTree;
+
+#[async_trait::async_trait]
+impl TreeReader for ReviewTree {
+    async fn lookup(&self, lookup: &Lookup) -> Result<Found> {
+        Ok(match lookup {
+            Lookup::Read { path, .. } if path == "src/lib.rs" => Found::Text {
+                text: "1: pub fn load_state() {}\n2: // source".into(),
+                start: 1,
+                end: 2,
+                total: 2,
+            },
+            _ => Found::NotFound,
+        })
+    }
+
+    async fn explore(&self, query: &TreeQuery) -> Result<Found> {
+        Ok(match query {
+            TreeQuery::Symbol { symbol, .. } if symbol == "load_state" => Found::Hits {
+                hits: vec![crate::ports::tree::Hit {
+                    path: "src/lib.rs".into(),
+                    line: 1,
+                    text: "pub fn load_state() {}".into(),
+                }],
+                truncated: false,
+                skipped: vec![],
+            },
+            _ => Found::NotFound,
+        })
+    }
+
+    fn describe(&self) -> String {
+        "test tree".into()
+    }
+
+    fn revision(&self) -> Option<String> {
+        Some("a".repeat(40))
+    }
+}
 
 #[derive(Clone, Default)]
 struct ReviewBudgetProbe {
@@ -312,6 +395,185 @@ async fn recording_cassette_review_reports_the_physical_path_it_uses() {
         cassette.complete_reports_physical_calls(),
         "review defaults to the cassette's complete implementation"
     );
+}
+
+#[tokio::test]
+async fn recording_review_forwards_actual_review_and_tree_queries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let live = Arc::new(ReviewOnlyModel {
+        reviews: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let recorder = Cassette::record(live.clone(), dir.path());
+    let policy = crate::config::types::LookupPolicy::default();
+
+    let response = recorder
+        .review(
+            request("test/review-only", "inspect this change"),
+            &ReviewTree,
+            &policy,
+        )
+        .await
+        .expect("records through Model::review");
+
+    assert_eq!(response.model, "test/review-only");
+    assert_eq!(live.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(recorder.flush().expect("flushes"), 1);
+    let path = std::fs::read_dir(dir.path())
+        .expect("cassette directory")
+        .next()
+        .expect("one take")
+        .expect("take entry")
+        .path();
+    let take: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("take file"))
+            .expect("take json");
+    let context = &take["review_context"];
+    assert_eq!(context["revision"], "a".repeat(40));
+    let queries = context["queries"].as_array().expect("recorded queries");
+    assert_eq!(queries.len(), 2);
+    assert_eq!(queries[0]["query"]["kind"], "lookup");
+    assert_eq!(queries[0]["query"]["query"]["kind"], "read");
+    assert_eq!(queries[1]["query"]["kind"], "symbol");
+    assert_eq!(queries[1]["query"]["symbol"], "load_state");
+    assert_eq!(take["usage"]["cost_usd"], 0.002);
+}
+
+#[cfg(feature = "serve")]
+#[tokio::test]
+async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads() {
+    use crate::harness::fake_gateway::{FakeGateway, Reply};
+    use crate::harness::mock::execution_test_support::execution_control;
+    use crate::harness::provider_routing::ProviderRouting;
+    use crate::lanes::large_pr::ReviewMode;
+    use crate::ports::model::{Model, ModelRequest};
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use crate::ports::tree::MockTree;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::Instant;
+
+    let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+    let gateway = FakeGateway::start(vec![
+        Reply {
+            status: 200,
+            body: json!({
+                "id":"cassette-agentic-admission",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"read-1","type":"function","function":{
+                        "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
+                    }
+                }]} ,"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        },
+        Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":16,"completion_tokens":4,"cost":0.002}),
+        ),
+    ])
+    .await;
+    let mut config = crate::config::types::Models::default();
+    config.agentic_reviewers = true;
+    config.base_url = gateway.base_url.clone();
+    config.fallback = vec!["fallback".into()];
+    config.provider = ProviderRouting {
+        order: vec!["pinned-provider".into()],
+        allow_fallbacks: false,
+        last_resort_unpinned: true,
+        unpinned_vendors: vec![],
+    };
+    for model in ["b", "fallback"] {
+        config.budget_prices.insert(
+            model.into(),
+            crate::config::types::BudgetPriceBound {
+                input: 0.0,
+                cached: 0.0,
+                output: 100.0,
+            },
+        );
+    }
+    let mut gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
+    gateway_model.budget = Some(crate::harness::budget::ledger(10.0));
+    let started_at = Instant::now();
+    let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + std::time::Duration::from_secs(60),
+            mode: ReviewMode::Large,
+            max_calls: Some(1),
+            soft_deadline_percent: 80,
+            drain_seconds: 30,
+        },
+    ));
+    let (_execution, control) = execution_control(1);
+    let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), tempfile::tempdir().unwrap()));
+    let model: Arc<dyn Model> = cassette.clone();
+    let model = model
+        .with_execution_control(control)
+        .expect("recording forwards the shared physical execution control");
+    let tree = CountingReviewTree {
+        inner: MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]),
+        lookups: AtomicUsize::new(0),
+    };
+    let physical_events = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
+    let request = ModelRequest {
+        model: "b".into(),
+        messages: vec![Message::system("Review this evidence."), Message::user("Check the implementation.")],
+        schema: json!({
+            "type":"object", "additionalProperties":false,
+            "properties":{"summary":{"type":"string"}}, "required":["summary"]
+        }),
+        schema_name: "review".into(),
+        max_tokens: 128,
+    };
+    let result = crate::ports::model::with_model_call_observer(
+        physical_events.clone(),
+        model.review(request, &tree, &crate::config::types::LookupPolicy::default()),
+    )
+    .await;
+
+    assert_eq!(tree.lookups.load(Ordering::SeqCst), 1);
+    assert_eq!(gateway.requests().len(), 1);
+    assert_eq!(execution.snapshot().committed_calls, 1);
+    let refusal = result.expect_err("the next agentic turn exceeds the physical call cap");
+    assert!(matches!(
+        refusal,
+        Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::CallLimit,
+            ..
+        }
+    ));
+    let usage = refusal.usage().expect("the paid read remains reportable");
+    assert_eq!(usage.input_tokens, 12);
+    assert_eq!(usage.output_tokens, 3);
+    assert_eq!(usage.calls_attempted, 1);
+    assert_eq!(usage.calls_succeeded, 1);
+    assert_eq!(usage.cost_usd, 0.001);
+    assert_eq!(refusal.usage_accounting_complete(), Some(true));
+    assert_eq!(physical_events.0.load(Ordering::Relaxed), 1);
+}
+
+#[cfg(feature = "serve")]
+struct CountingReviewTree {
+    inner: crate::ports::tree::MockTree,
+    lookups: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(feature = "serve")]
+#[async_trait::async_trait]
+impl TreeReader for CountingReviewTree {
+    async fn lookup(&self, query: &Lookup) -> Result<Found> {
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.lookup(query).await
+    }
+
+    fn describe(&self) -> String {
+        "cassette agentic review tree".into()
+    }
 }
 
 fn request(model: &str, prompt: &str) -> ModelRequest {

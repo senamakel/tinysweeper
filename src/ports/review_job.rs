@@ -277,15 +277,17 @@ pub struct ReviewSchedulerState {
 impl ReviewSchedulerState {
     /// Claim a bounded batch of queued-check publications without claiming review work.
     pub fn claim_pending_checks(&mut self, now_ms: i64, limit: usize) -> Vec<PendingReviewCheck> {
-        let mut ordered = self.unfinished.iter().enumerate().collect::<Vec<_>>();
-        ordered.sort_by_key(|(_, job)| (job.enqueued_at_ms, job.request.id.0.clone()));
+        let mut ordered = self.unfinished.iter().enumerate()
+            .map(|(index, job)| (index, job.enqueued_at_ms, job.request.id.0.clone()))
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(_, accepted_at, id)| (*accepted_at, id.clone()));
         let eligible = ordered
             .iter()
-            .filter(|(_, job)| job.request.head_sha.is_some() || !job.review_checks.is_empty())
-            .map(|(_, job)| job.request.id.clone())
+            .filter(|(index, _, _)| self.unfinished[*index].request.head_sha.is_some() || !self.unfinished[*index].review_checks.is_empty())
+            .map(|(index, _, _)| self.unfinished[*index].request.id.clone())
             .collect::<Vec<_>>();
         let mut claims = Vec::new();
-        for (index, job) in ordered {
+        for (index, _, _) in ordered {
             if claims.len() >= limit { break; }
             let Some(check_index) = self.unfinished[index].review_checks.iter().position(|check|
                 !check.published && check.write_claim_until_ms <= now_ms

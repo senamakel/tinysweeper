@@ -159,7 +159,11 @@ pub struct ChangeMap {
 impl ChangeMap {
     /// Whether at least four changed, non-test symbols make a diagram useful.
     pub fn worth_drawing(&self) -> bool {
-        !self.links.is_empty()
+        self.changed()
+            .filter(|component| is_drawable_changed_symbol(component))
+            .count()
+            >= 4
+            && !self.links.is_empty()
     }
 
     /// The behaviours the change edits.

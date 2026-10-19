@@ -226,7 +226,7 @@ async fn recording_cassette_preserves_review_root_and_recording_state_across_sco
             .scoped_budget(8.0)
             .expect("recording cassette retains the review root on lane rescope");
         assert!(root.complete_reports_physical_calls());
-        assert!(root.review_reports_physical_calls());
+        assert!(!root.review_reports_physical_calls());
         let physical_events =
             Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
 
@@ -1231,4 +1231,117 @@ async fn unreported_refusal_charge_remains_explicitly_unknown() {
     assert_eq!(recorder.cost_usd(), 0.0);
     assert!(recorder.has_unreported_usage());
     assert!(recorder.spend().models.is_empty());
+}
+
+struct IncompleteTypedRefusalModel;
+
+#[async_trait::async_trait]
+impl Model for IncompleteTypedRefusalModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(Error::ModelExecutionRefused {
+            refusal: crate::ports::model_execution::ModelExecutionRefusal::Cancelled,
+            usage: None,
+            accounting_complete: false,
+        })
+    }
+}
+
+#[tokio::test]
+async fn typed_refusal_without_usage_stays_unknown_when_accounting_is_incomplete() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let recorder = Cassette::record(Arc::new(IncompleteTypedRefusalModel), dir.path());
+    let refusal = recorder
+        .complete(request("requested-model", "review"))
+        .await
+        .expect_err("the model refuses");
+
+    assert_eq!(refusal.usage(), None);
+    assert_eq!(refusal.usage_accounting_complete(), None);
+    assert_eq!(recorder.cost_usd(), 0.0);
+    assert!(recorder.has_unreported_usage());
+}
+
+#[cfg(feature = "harness")]
+#[tokio::test]
+async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
+    use crate::harness::fake_gateway::{FakeGateway, Reply};
+    use crate::harness::mock::execution_test_support::execution_control;
+    use crate::config::types::StructuredOutput;
+    use crate::ports::model::{Model, ModelRequest};
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+    let gateway = FakeGateway::start(vec![
+        Reply::completion(
+            "b",
+            "{broken",
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+        ),
+        Reply::completion(
+            "b",
+            "{still broken",
+            "stop",
+            json!({"prompt_tokens":7,"completion_tokens":3}),
+        ),
+    ])
+    .await;
+    let mut config = crate::config::types::Models::default();
+    config.base_url = gateway.base_url.clone();
+    config.structured_output = StructuredOutput::JsonObject;
+    config.budget_prices.insert(
+        "b".into(),
+        crate::config::types::BudgetPriceBound {
+            input: 0.0,
+            cached: 0.0,
+            output: 5_000.0,
+        },
+    );
+    let gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
+    let (execution, control) = execution_control(2);
+    let dir = tempfile::tempdir().expect("temporary cassette directory");
+    let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), dir.path()));
+    let model: Arc<dyn Model> = cassette.clone();
+    let model = model
+        .with_execution_control(control)
+        .expect("cassette forwards execution control");
+    let events = Arc::new(ModelEventCounter::default());
+    let result = crate::ports::model::with_model_call_observer(
+        events.clone(),
+        model.complete(ModelRequest {
+            model: "b".into(),
+            messages: vec![Message::system("Return an object."), Message::user("bad JSON")],
+            schema: json!({"type":"object"}),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        }),
+    )
+    .await;
+
+    assert_eq!(gateway.requests().len(), 2);
+    assert_eq!(execution.snapshot().committed_calls, 2);
+    let refusal = result.expect_err("the third repair dispatch exceeds the cap");
+    assert!(matches!(
+        refusal,
+        Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::CallLimit,
+            ..
+        }
+    ));
+    let usage = refusal.usage().expect("known dispatch usage is retained");
+    assert_eq!(usage.input_tokens, 12);
+    assert_eq!(usage.output_tokens, 5);
+    assert_eq!(usage.calls_attempted, 2);
+    assert_eq!(usage.calls_succeeded, 2);
+    assert_eq!(usage.cost_usd, 0.125);
+    assert_eq!(refusal.usage_accounting_complete(), Some(false));
+    assert_eq!(cassette.spend().usage.input_tokens, 12);
+    assert_eq!(cassette.spend().usage.output_tokens, 5);
+    assert_eq!(cassette.cost_usd(), 0.125);
+    assert!(cassette.has_unreported_usage());
+    let events = events.0.lock().expect("model event lock");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].cost_usd, 0.125);
+    assert_eq!(events[1].input_tokens, 7);
+    assert_eq!(events[1].cost_usd, 0.0);
 }

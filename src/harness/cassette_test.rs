@@ -409,11 +409,13 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
 
 struct ConcurrentScopedModel {
     calls: Arc<std::sync::atomic::AtomicUsize>,
+    start: Arc<tokio::sync::Barrier>,
 }
 
 #[async_trait::async_trait]
 impl Model for ConcurrentScopedModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.start.wait().await;
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if request
             .messages
@@ -445,6 +447,7 @@ impl Model for ConcurrentScopedModel {
         assert!(budget_usd > 0.0);
         Some(Arc::new(Self {
             calls: self.calls.clone(),
+            start: self.start.clone(),
         }))
     }
 }
@@ -454,6 +457,7 @@ async fn concurrent_scoped_clones_share_recorded_takes_and_usage_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
     let model = Arc::new(ConcurrentScopedModel {
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        start: Arc::new(tokio::sync::Barrier::new(3)),
     });
     let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
     let first_scope = recorder.scoped_budget(1.0).expect("first scoped model");

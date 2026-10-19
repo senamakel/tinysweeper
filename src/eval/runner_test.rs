@@ -92,6 +92,17 @@ fn config() -> Config {
         .unwrap()
 }
 
+#[test]
+fn replay_tree_exposes_the_fixture_head_revision() {
+    let recorded = crate::ports::tree::MockTree::from_recorded(Vec::new());
+    let head = "b".repeat(40);
+    let tree = CaseRevisionTree {
+        inner: &recorded,
+        revision: head.clone(),
+    };
+    assert_eq!(tree.revision().as_deref(), Some(head.as_str()));
+}
+
 /// A model that reports the real defect on the added line.
 fn finder() -> Arc<MockModel> {
     Arc::new(MockModel::always(json!({

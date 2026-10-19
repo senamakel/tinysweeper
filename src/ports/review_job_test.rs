@@ -81,6 +81,26 @@ fn queued_check_identity_keeps_head_and_stage_separate_from_paid_head_state() {
     );
 }
 
+#[test]
+fn queued_status_claims_cannot_publish_or_adopt_a_superseded_head() {
+    let mut state = ReviewSchedulerState::default();
+    assert_eq!(state.admit_batch(vec![request("push-a", 10)], 10), Admission::Admitted);
+    let old_claim = state.claim_pending_checks(10, 1).pop().unwrap();
+
+    let mut newer = request("push-b", 20);
+    newer.head_sha = Some("new-head".into());
+    assert_eq!(state.admit_batch(vec![newer], 20), Admission::Admitted);
+    assert!(!state.queued_check_claim_current(&old_claim, 20));
+    assert!(!state.record_queued_check_id(&old_claim, 91, 20));
+
+    let replacement = state
+        .claim_pending_checks(20 + super::QUEUE_STATUS_CLAIM_TTL_MS, 1)
+        .pop()
+        .unwrap();
+    assert_eq!(replacement.check.head_sha, "new-head");
+    assert_ne!(replacement.check.external_id, old_claim.check.external_id);
+}
+
 #[tokio::test]
 async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
     let store = MockReviewJobStore::default();

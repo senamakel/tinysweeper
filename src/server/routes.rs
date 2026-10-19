@@ -864,17 +864,13 @@ async fn publish_pending_queue_checks_at(
                     if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
                         return Ok(());
                     }
-                    clients
-                        .write
-                        .publish_check(
-                            &repo,
-                            status::queued(
-                                &check.check.head_sha,
-                                check.reviews_ahead,
-                                &check.check.external_id,
-                            ),
-                        )
-                        .await?
+                    crate::app::apply::publish_queued_review_status(
+                        clients.write.as_ref(),
+                        &repo,
+                        &check.check.head_sha,
+                        check.reviews_ahead,
+                        &check.check.external_id,
+                    ).await?
                 }
             };
             let _ = jobs
@@ -1584,29 +1580,23 @@ async fn triage_inner(
     let repo_id =
         RepoId::parse(repo).ok_or_else(|| Error::Forge(format!("`{repo}` is not owner/name")))?;
 
-    let permit = state
-        .triage_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|err| Error::Forge(err.to_string()))?;
+    let plan = with_triage_permit(&state.triage_permits, || async {
+        // Keyed on the issue rather than a SHA — an issue has no head commit — so
+        // two deliveries for the same edit cannot both pay for a triage.
+        let lease = format!("{repo}#issue-{number}");
+        if !state.store.claim_lease(&lease, "server").await? {
+            tracing::debug!(%lease, "another worker holds this triage");
+            return Ok(None);
+        }
 
-    // Keyed on the issue rather than a SHA — an issue has no head commit — so
-    // two deliveries for the same edit cannot both pay for a triage.
-    let lease = format!("{repo}#issue-{number}");
-    if !state.store.claim_lease(&lease, "server").await? {
-        tracing::debug!(%lease, "another worker holds this triage");
-        return Ok(());
-    }
-
-    let outcome = triage_and_apply(state, &repo_id, number, installation).await;
-
-    if let Err(err) = state.store.release_lease(&lease).await {
-        tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
-    }
-    drop(permit);
-
-    let plan = outcome?;
+        let outcome = triage_and_apply(state, &repo_id, number, installation).await;
+        if let Err(err) = state.store.release_lease(&lease).await {
+            tracing::error!(%err, %lease, "could not release the lease; it will expire on its own");
+        }
+        outcome.map(Some)
+    })
+    .await?;
+    let Some(plan) = plan else { return Ok(()); };
     tracing::info!(
         %repo,
         number,
@@ -1616,6 +1606,19 @@ async fn triage_inner(
         "issue triaged"
     );
     Ok(())
+}
+
+async fn with_triage_permit<T, F, Fut>(pool: &Arc<Semaphore>, work: F) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let _permit = pool
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| Error::Forge(err.to_string()))?;
+    work().await
 }
 
 /// Read the issue, decide, then publish with a token minted afterwards.
@@ -6629,6 +6632,100 @@ mod tests {
             check.external_id.is_some(),
             "status identity is recoverable"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_queued_status_retries_while_all_review_slots_are_held() {
+        use crate::forge::MockForge;
+        use crate::forge::types::CheckRunStatus;
+
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.expect("review permit"));
+        }
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let forge = MockForge::new();
+        forge.fail_next_check_publishes(1);
+        let status_forge = forge.clone();
+        let factory: QueueStatusClientFactory = Arc::new(move |_| {
+            let forge = status_forge.clone();
+            async move {
+                Ok(QueueStatusClients {
+                    read: Arc::new(forge.clone()),
+                    write: Arc::new(forge),
+                })
+            }
+            .boxed()
+        });
+        let action = Action::Review {
+            repo: "owner/repo".into(),
+            number: 44,
+            author: "contributor".into(),
+            installation: 1,
+            head_sha: Some("accepted-head".into()),
+        };
+        assert_eq!(
+            admit_webhook_review(
+                &store,
+                &action,
+                "delivery-status-retry",
+                "pull_request",
+                factory.clone(),
+            )
+            .await
+            .expect("status failure leaves accepted work durable"),
+            Some(Admission::Admitted)
+        );
+        assert!(forge.checks().is_empty());
+        let external_id = store.snapshot_for_test().unfinished[0].review_checks[0]
+            .external_id
+            .clone();
+
+        publish_pending_queue_checks_at(
+            &store,
+            factory,
+            unix_time_ms() + crate::ports::review_job::QUEUE_STATUS_CLAIM_TTL_MS + 1,
+        )
+        .await
+        .expect("status drainer retries without another delivery");
+        assert_eq!(permits.available_permits(), 0);
+        let queued = forge.checks().remove(status::CHECK_NAME).expect("queued check published");
+        assert_eq!(queued.status, Some(CheckRunStatus::Queued));
+        assert_eq!(queued.external_id.as_deref(), Some(external_id.as_str()));
+        let durable = store.snapshot_for_test();
+        assert_eq!(durable.unfinished[0].review_checks[0].external_id, external_id);
+        assert!(durable.unfinished[0].review_checks[0].published);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn triage_work_runs_while_every_review_permit_is_occupied() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let review_pool = Arc::new(Semaphore::new(MAX_CONCURRENT_REVIEWS));
+        let mut review_permits = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REVIEWS {
+            review_permits.push(review_pool.clone().acquire_owned().await.expect("review permit"));
+        }
+        assert_eq!(review_pool.available_permits(), 0);
+
+        let triage_pool = Arc::new(Semaphore::new(2));
+        let triage_ran = Arc::new(AtomicBool::new(false));
+        let observed = triage_ran.clone();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            with_triage_permit(&triage_pool, || async move {
+                observed.store(true, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .await
+        .expect("triage is not queued behind reviews")
+        .expect("triage permit acquired");
+        assert!(triage_ran.load(Ordering::SeqCst), "the triage work body ran");
+        assert_eq!(review_pool.available_permits(), 0);
+        drop(review_permits);
     }
 
     #[tokio::test]

@@ -17,6 +17,26 @@ use crate::ports::forge::{ForgeRead, ForgeWrite};
 use crate::ports::review_state::ReviewStateStore;
 use crate::{MARKER_PREFIX, VERSION};
 
+/// Publish the deterministic queued status already authorized by server admission.
+///
+/// This exception carries only a server-decided status plan. It does not accept
+/// contributor-authored content or a model proposal.
+#[cfg(feature = "serve")]
+pub async fn publish_queued_review_status(
+    write: &dyn ForgeWrite,
+    repo: &RepoId,
+    head_sha: &str,
+    reviews_ahead: usize,
+    external_id: &str,
+) -> Result<u64> {
+    write
+        .publish_check(
+            repo,
+            &crate::server::status::queued(head_sha, reviews_ahead, external_id),
+        )
+        .await
+}
+
 /// Whether a review proposal was published against the live pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDisposition {

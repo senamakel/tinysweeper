@@ -1465,6 +1465,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
         Some(
             "version = 1\nunknown_root = true\n[review]\nunknown_review = true\n\
              [models.provider]\nunknown_provider = true\n\
+             [review.large_pr]\nunknown_limit = true\n\
              [lanes.custom]\nunknown_lane = true\n",
         ),
         &[],
@@ -1475,6 +1476,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
     for key in [
         "unknown_root",
         "review.unknown_review",
+        "review.large_pr.unknown_limit",
         "models.provider.unknown_provider",
         "lanes.custom.unknown_lane",
     ] {

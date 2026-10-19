@@ -273,6 +273,20 @@ impl ReviewJobStore for Store {
         .await
     }
 
+    async fn reconcile_live_check(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        _now_ms: i64,
+    ) -> Result<crate::ports::review_job::ReconciledReviewCheck> {
+        let owned = owned.clone();
+        let head_sha = head_sha.to_owned();
+        self.change_review_scheduler(move |state, now_ms| {
+            state.reconcile_live_check(&owned, &head_sha, now_ms)
+        })
+        .await
+    }
+
     async fn head_is_terminal(&self, owned: &OwnedReview, _now_ms: i64) -> Result<bool> {
         let state = self.review_scheduler_state().await?;
         Ok(state.head_is_terminal(owned, self.server_now_ms().await?))

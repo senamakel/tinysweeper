@@ -178,6 +178,19 @@ pub struct RetiredReviewCheck {
     pub check: ReviewCheckRecord,
 }
 
+/// Result of atomically confirming paid-head state and reconciling status identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconciledReviewCheck {
+    /// The current live head has a published queued check and may proceed.
+    Ready(ReviewCheckRecord),
+    /// The current live head has a durable status intent awaiting publication.
+    Pending(ReviewCheckRecord),
+    /// The bounded status capacity is full; defer without spending paid work.
+    CapacityDeferred,
+    /// The caller no longer owns the durable review generation.
+    OwnershipLost,
+}
+
 /// Terminal result retained as a dedupe tombstone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -966,6 +979,60 @@ impl ReviewSchedulerState {
         true
     }
 
+    /// Confirm the live head, retire stale status identities, and ensure its
+    /// queued check in one scheduler mutation. Paid-head authority remains in
+    /// `confirm_head`; status identity is maintained separately.
+    pub fn reconcile_live_check(
+        &mut self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        now_ms: i64,
+    ) -> ReconciledReviewCheck {
+        let Some(index) = self.unfinished.iter().position(|record| {
+            owns(record, owned) && record.owner_until_ms > now_ms
+        }) else {
+            return ReconciledReviewCheck::OwnershipLost;
+        };
+        let has_check = self.unfinished[index]
+            .review_checks
+            .iter()
+            .any(|check| check.head_sha == head_sha);
+        let status_count = self.retired_checks.len()
+            + self.unfinished.iter().map(|record| record.review_checks.len()).sum::<usize>();
+        if !has_check && status_count >= MAX_REVIEW_STATUS_RECORDS {
+            return ReconciledReviewCheck::CapacityDeferred;
+        }
+        if !self.confirm_head(owned, head_sha, now_ms) {
+            return ReconciledReviewCheck::OwnershipLost;
+        }
+        let record = &mut self.unfinished[index];
+        record.request.head_sha = Some(head_sha.to_owned());
+        let detached = Self::detach_checks_except(record, Some(head_sha));
+        let check = if let Some(existing) = record.review_checks.iter().find(|check| check.head_sha == head_sha) {
+            existing.clone()
+        } else {
+            let check = ReviewCheckRecord {
+                head_sha: head_sha.to_owned(),
+                external_id: queued_check_external_id(&record.request.id, head_sha),
+                check_id: None,
+                stage: ReviewCheckStage::Queued,
+                owner_generation: Some(owned.generation),
+                published: false,
+                write_claim_until_ms: 0,
+                write_generation: 0,
+            };
+            record.review_checks.push(check.clone());
+            check
+        };
+        let ready = check.published && check.check_id.is_some();
+        self.retired_checks.extend(detached);
+        if ready {
+            ReconciledReviewCheck::Ready(check)
+        } else {
+            ReconciledReviewCheck::Pending(check)
+        }
+    }
+
     /// Whether a confirmed incremental head already has a terminal result.
     pub fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> bool {
         self.unfinished
@@ -1092,43 +1159,48 @@ impl ReviewSchedulerState {
     /// to the queue with the latest hint. Accepted IDs and paid-start history
     /// remain attached to it.
     pub fn defer_yield(&mut self, owned: &OwnedReview, now_ms: i64) -> bool {
-        let Some(record) = self
-            .unfinished
-            .iter_mut()
-            .find(|record| owns(record, owned) && record.owner_until_ms > now_ms)
-        else {
+        let Some(index) = self.unfinished.iter().position(|record| {
+            owns(record, owned) && record.owner_until_ms > now_ms && record.yield_requested
+        }) else {
             return false;
         };
-        if !record.yield_requested {
-            return false;
-        }
-        record.owner = None;
-        record.owner_until_ms = 0;
-        record.not_before_ms = now_ms;
-        record.request.head_sha = record.latest_head_hint.clone();
-        record.yield_requested = false;
+        let head = self.unfinished[index].latest_head_hint.clone();
+        let detached = {
+            let record = &mut self.unfinished[index];
+            record.owner = None;
+            record.owner_until_ms = 0;
+            record.not_before_ms = now_ms;
+            record.request.head_sha = head.clone();
+            record.yield_requested = false;
+            Self::detach_checks_except(record, head.as_deref())
+        };
+        self.retired_checks.extend(detached);
         true
     }
 
     /// Return the current owner's request to pending with bounded backoff.
     pub fn defer(&mut self, owned: &OwnedReview, now_ms: i64, not_before_ms: i64) -> bool {
-        let Some(record) = self
-            .unfinished
-            .iter_mut()
-            .find(|record| owns(record, owned))
-        else {
+        let Some(index) = self.unfinished.iter().position(|record| owns(record, owned)) else {
             return false;
         };
-        if record.owner_until_ms <= now_ms {
+        if self.unfinished[index].owner_until_ms <= now_ms {
             return false;
         }
-        record.owner = None;
-        record.owner_until_ms = 0;
-        record.not_before_ms = not_before_ms;
-        if record.yield_requested {
-            record.request.head_sha = record.latest_head_hint.clone();
-            record.yield_requested = false;
-        }
+        let head = self.unfinished[index].yield_requested.then(|| self.unfinished[index].latest_head_hint.clone());
+        let detached = {
+            let record = &mut self.unfinished[index];
+            record.owner = None;
+            record.owner_until_ms = 0;
+            record.not_before_ms = not_before_ms;
+            if let Some(head) = head {
+                record.request.head_sha = head.clone();
+                record.yield_requested = false;
+                Self::detach_checks_except(record, head.as_deref())
+            } else {
+                Vec::new()
+            }
+        };
+        self.retired_checks.extend(detached);
         true
     }
 
@@ -1316,6 +1388,14 @@ pub trait ReviewJobStore: Send + Sync {
 
     /// Confirm the live head fetched from Forge after the review gate and lease.
     async fn confirm_head(&self, owned: &OwnedReview, head_sha: &str, now_ms: i64) -> Result<bool>;
+
+    /// Reconcile a live SHA with its durable status identity under the same owner fence.
+    async fn reconcile_live_check(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        now_ms: i64,
+    ) -> Result<ReconciledReviewCheck>;
 
     /// Whether the confirmed head already has a terminal result.
     async fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool>;

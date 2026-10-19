@@ -170,6 +170,19 @@ impl ReviewJobStore for MockReviewJobStore {
             .confirm_head(owned, head_sha, now_ms))
     }
 
+    async fn reconcile_live_check(
+        &self,
+        owned: &OwnedReview,
+        head_sha: &str,
+        now_ms: i64,
+    ) -> Result<crate::ports::review_job::ReconciledReviewCheck> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .reconcile_live_check(owned, head_sha, now_ms))
+    }
+
     async fn head_is_terminal(&self, owned: &OwnedReview, now_ms: i64) -> Result<bool> {
         Ok(self
             .state

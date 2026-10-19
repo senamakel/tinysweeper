@@ -24,7 +24,22 @@ checking the soft clock only before that wait admits a late provider call.
 Add a neutral optional synchronous `BeforeDispatch` hook in
 `crates/tinyinference-llm/src/model/budget.rs`, with a public builder on
 `BudgetedModel` and a default absent hook preserving all existing callers.
-Its method returns the existing engine Result without request content. Invoke
+Exact new interface (in the existing budget module):
+
+```rust
+pub trait BeforeDispatch: Send + Sync {
+    fn check(&self) -> crate::Result<()>;
+}
+// New field: Option<Arc<dyn BeforeDispatch>>, initialized to None by new().
+// New builder on BudgetedModel<State>:
+pub fn before_dispatch(mut self, hook: Arc<dyn BeforeDispatch>) -> Self {
+    self.before_dispatch = Some(hook);
+    self
+}
+```
+
+Keep the existing constructor, ModelBudget struct literal fields and serde
+spend types unchanged; Debug must not reveal the hook internals. Invoke
 it after monetary `admit` and immediately before the inner model invocation,
 for both invoke and stream construction. If it refuses, explicitly settle the
 already-owned monetary reservation with `Spend::default()`; return before
@@ -137,7 +152,9 @@ Change these source files, with focused sibling tests:
 
 - `crates/openhuman-core/src/agent/tinyagents/budget.rs`: re-export neutral
   admission types; forward admission independently of optional monetary budget.
-  Keep existing `ModelBudget` literal callers source-compatible.
+  Keep existing `ModelBudget` literal callers source-compatible. All added host-environment
+  fields get absent defaults; update internal literals explicitly. No serialized
+  wire payload gains a trait object or a required field.
 - `crates/openhuman-core/src/inference/host_runtime/ops/complete_once.rs`:
   add a controlled entry point with typed admission errors; old
   `complete_once{,_observed}` delegate and retain their String error API.
@@ -171,7 +188,11 @@ limit one; server receives exactly one), `fallback_cannot_bypass_admission`,
 `truncation_retry_consumes_dispatch_slot`,
 `agent_second_turn_refusal_preserves_first_turn_usage`, and
 `cancel_before_dispatch_has_zero_physical_events`.
-A pre-admission rejection is not a physical event. A 400 compatibility retry
+A pre-admission rejection emits zero physical attempts and zero physical
+usage/cost, plus one host policy-refusal counter when a policy actually refuses;
+a canceled waiter emits no fabricated refusal. Forward one refusal accounting
+event without synthesizing a second logical fallback/physical attempt.
+A 400 compatibility retry
 inside one concrete ChatModel invocation retains #221's one-call definition.
 
 Focused gates: Embed completer/controlled-admission tests, core touched

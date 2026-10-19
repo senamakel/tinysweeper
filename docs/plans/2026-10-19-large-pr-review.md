@@ -233,9 +233,12 @@ with default `None`. Define the public control/permit/refusal port types in
 than exposing a private app type through a public trait. Production wrappers
 forward it, Gateway installs the
 physical capability, MockModel implements the same admission at its actual
-canned-response dispatch. A legacy model uses an explicit adapter which gates
-its single logical dispatch; production adapters reporting physical support
-must not additionally count at the outer wrapper. Add a capability flag if
+canned-response dispatch. A test-only legacy model may use an explicit adapter with a proven one-call
+dispatch contract. An unknown adapter which cannot install execution control
+must fail closed before paid work in large mode; never assume a logical
+`complete` call is a single physical call. Gateway always supports the control.
+Production adapters reporting physical support must not additionally count
+at the outer wrapper. Add a capability flag if
 necessary; do not guess from whether any callbacks happened to arrive.
 
 ## Interfaces reserved for adjacent leaves

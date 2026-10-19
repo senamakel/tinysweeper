@@ -118,6 +118,24 @@ fn golden_draws_the_behavioural_flow_around_the_change() {
 }
 
 #[test]
+fn mermaid_requires_four_changed_behaviours_before_drawing() {
+    let map = ChangeMap {
+        components: vec![
+            Component { name: "a#one".into(), role: Role::Changed, files: 1, additions: 0, deletions: 0, findings: 0, worst: None, paths: vec![] },
+            Component { name: "b#two".into(), role: Role::Changed, files: 1, additions: 0, deletions: 0, findings: 0, worst: None, paths: vec![] },
+        ],
+        links: vec![Link { from: 0, to: 1, relation: FlowRelation::Calls, weight: 1 }],
+        files: 2,
+        additions: 0,
+        deletions: 0,
+        folded: 0,
+        graph: GraphStatus::Walked { nodes: 2 },
+    };
+
+    assert!(mermaid::flowchart(&map).is_none());
+}
+
+#[test]
 fn file_imports_do_not_masquerade_as_behavioural_flow() {
     let diffs = [diff("src/order.rs", "settle")];
     let walk = Neighbourhood {

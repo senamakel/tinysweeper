@@ -118,6 +118,7 @@ impl Lane for E2e {
             return Ok(LaneOutcome {
                 summary: "This repository has no end-to-end harness, and its policy requires one."
                     .into(),
+                completed: true,
                 findings: vec![missing_harness_finding(&inventory.source[0])],
                 ..LaneOutcome::default()
             });

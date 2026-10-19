@@ -169,6 +169,7 @@ fn empty_body_outcome(pr: &PullRequest, files: usize) -> LaneOutcome {
     LaneOutcome {
         summary: "The pull request has no description.".into(),
         context_degraded: false,
+        completed: true,
         findings: vec![Finding {
             lane: LaneId::Description,
             severity: Severity::High,

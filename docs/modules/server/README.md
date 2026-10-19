@@ -36,6 +36,47 @@ receives GitHub credentials; write-token ordering remains independent of model
 construction. Credentials and provider policy are fixed for the server's
 lifetime; restart to pick up a rotated model key.
 
+## Bounded review scheduling
+
+Webhook and manual reviews are atomically admitted to one bounded Mongo
+scheduler document before the server acknowledges them. The 256 queued and
+four running records are durable; the in-memory channel carries wakeup hints
+only, and a polling dispatcher recovers work when a hint is lost or a process
+restarts. Admission also reserves space for seven days of dedupe tombstones
+under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
+without acknowledging the delivery; GitHub does not retry automatically, so an
+operator must redeliver that overflowed event. Manual batches are admitted
+atomically, or refused as a whole. Other webhook actions keep their existing
+dispatch path.
+
+The manual endpoint checks durable capacity before resolving installations or
+pull requests. Its final whole-batch admission is still authoritative, so a
+concurrent admission can fill the scheduler after the preflight and cause the
+manual batch to be refused without partial jobs.
+
+At most four jobs may hold a durable 45-second owner lease across the server
+fleet. A heartbeat extends the lease every 15 seconds. Generation checks fence
+claims, renewals, and completion; local expiry checks stop a paused process
+before it resumes model work, and model dispatches also verify ownership. A
+shutdown stops new claims and leaves unfinished jobs in Mongo for the next
+process. If shutdown lands while the initial status check is being opened, that
+accepted job is deferred and remains available to the next owner. Terminal
+outcomes remain deduped for seven days. GitHub publication
+still uses the app's live-head and idempotency checks because a process can
+crash between a GitHub write and recording its outcome. A job has five durable
+paid-work starts across restarts; recovery after the fifth opens or resumes
+the status check, then concludes it as **Not reviewed** before recording the
+terminal tombstone. No further index or model work runs for an exhausted job.
+
+When a pull-request event supplies its head SHA, the worker claims that SHA
+before minting a read token or fetching live PR state. A comment request has no
+SHA, so it claims a provisional per-PR key before reading and gating the live
+PR, then claims that revision before indexing. Manual reviews currently resolve
+their pull request numbers and SHAs before enqueueing, so the response can list
+the queued reviews. If a head moved, the worker transfers its lease to the new
+SHA. The app checks the leased SHA again immediately after loading review
+context and skips before any model call if the context moved in the meantime.
+
 ## The write-token boundary
 
 `AGENTS.md` says the model never holds a write token. The two-job Actions split
@@ -69,9 +110,9 @@ thin review for a late one, and a late review is the one nobody reads.
 Webhook routing ignores a pull request event when GitHub supplies a non-open
 state or `merged: true`. Comment deliveries use the issue-shaped PR reference;
 when it includes a closed state, a mention is ignored before it is queued.
-Some trigger payloads have no state, so the worker reads the live pull request
-again before indexing, claiming a review lease, opening a check, or starting
-the lanes. This also protects `/admin/reviews`: its queued head can close while
+Some trigger payloads have no state, so the worker claims its supplied revision
+before reading the live pull request, then applies this gate before indexing,
+opening a check, or starting the lanes. This also protects `/admin/reviews`: its queued head can close while
 waiting for a worker, and a manual request follows the same live-state gate.
 After the lanes return, `app::apply` reads live state again before its first
 write, so a pull request merged while a model call was running receives no
@@ -272,7 +313,10 @@ Two decisions worth knowing:
 The escape hatch for when a review has to be redone wholesale. The body is
 `{"number": 12}` for one pull request, or `{}` for every open one — capped at 20
 per request, because each queued review is model spend. Reviews run off the
-request path; the response says which were queued, not what they found.
+request path; the response says which were queued, not what they found. If all
+review permits are occupied, the endpoint returns `503` before minting an
+installation token or reading pull request state. Queue slots for an expanded
+request are reserved together, so an overflow cannot partially enqueue it.
 
 **What "full" means.** The run sets `review.incremental = false` for itself and
 changes nothing else. That single flag gates all three halves of the incremental

@@ -206,6 +206,9 @@ pub struct LaneOutcome {
     /// notes rather than treating their confidence as a repository-wide
     /// verdict.
     pub context_degraded: bool,
+    /// Whether this lane produced a completed result, including deterministic
+    /// policy checks that do not make a model call.
+    pub completed: bool,
     /// The findings, before the shared filtering pipeline runs.
     pub findings: Vec<Finding>,
     /// Titles of earlier findings this revision fixed.
@@ -340,6 +343,7 @@ impl LaneOutcome {
         Self {
             summary,
             context_degraded: false,
+            completed: true,
             findings,
             resolved: parsed.resolved,
             spend,

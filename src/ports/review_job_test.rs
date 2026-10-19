@@ -47,6 +47,15 @@ async fn seed_published_queue_checks(store: &MockReviewJobStore, now_ms: i64) {
     }
 }
 
+async fn claim_after_queue_ack(
+    store: &MockReviewJobStore,
+    owner: &str,
+    now_ms: i64,
+) -> crate::error::Result<Option<super::OwnedReview>> {
+    seed_published_queue_checks(store, now_ms).await;
+    store.claim_next(owner, now_ms).await
+}
+
 #[test]
 fn legacy_scheduled_reviews_deserialize_with_empty_status_identity() {
     let mut state = ReviewSchedulerState::default();
@@ -1026,6 +1035,19 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
             .unwrap(),
         Admission::Duplicate
     );
+}
+
+#[tokio::test]
+async fn an_unpublished_queued_check_blocks_review_claims() {
+    let store = MockReviewJobStore::default();
+    assert_eq!(
+        store.admit_batch(vec![request("queued-check-gate", 10)]).await.unwrap(),
+        Admission::Admitted
+    );
+    assert!(store.claim_next("before-ack", 11).await.unwrap().is_none());
+
+    seed_published_queue_checks(&store, 12).await;
+    assert!(store.claim_next("after-ack", 13).await.unwrap().is_some());
 }
 
 #[tokio::test]

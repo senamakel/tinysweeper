@@ -2687,7 +2687,7 @@ mod tests {
         let mut proposal = proposal("abc123", vec![]);
         proposal.summary = Some(crate::summary::ReviewSummary {
             executive_summary: "The change adds a request guard.".into(),
-            file_coverage: Some(crate::summary::types::FileReviewCoverage {
+            file_coverage: Some(crate::summary::FileReviewCoverage {
                 reviewed: 2,
                 total: 3,
                 unreviewed: vec!["README.md".into()],
@@ -2698,7 +2698,8 @@ mod tests {
             .await
             .expect("applies");
 
-        let body = match &overview_comments(&forge)[0] {
+        let posted = overview_comments(&forge);
+        let body = match &posted[0] {
             Write::Comment { body, .. } => body.clone(),
             write => panic!("expected new hub comment, got {write:?}"),
         };

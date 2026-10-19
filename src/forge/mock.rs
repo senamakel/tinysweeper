@@ -251,6 +251,7 @@ pub struct MockForge {
         Arc<Mutex<std::collections::BTreeMap<u64, std::collections::VecDeque<PullRequest>>>>,
     writes: Arc<Mutex<Vec<Write>>>,
     next_id: Arc<Mutex<u64>>,
+    fail_check_publishes: Arc<Mutex<usize>>,
     /// When true, every write is dropped rather than recorded as applied.
     ///
     /// Reads still work. This is what `--dry-run` sets.
@@ -270,6 +271,11 @@ impl MockForge {
     /// An empty forge.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Fail the next `count` check-run creates before recording a remote write.
+    pub fn fail_next_check_publishes(&self, count: usize) {
+        *self.fail_check_publishes.lock().expect("mock failure lock") = count;
     }
 
     /// A forge serving `state`.
@@ -774,6 +780,12 @@ impl ForgeRead for MockForge {
 #[async_trait]
 impl ForgeWrite for MockForge {
     async fn publish_check(&self, _repo: &RepoId, check: CheckRun) -> Result<u64> {
+        let mut failures = self.fail_check_publishes.lock().expect("mock failure lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(Error::Forge("simulated check-run publication failure".into()));
+        }
+        drop(failures);
         let id = self.allocate_id();
         if let Some(external_id) = check.external_id.as_ref() {
             self.state.lock().expect("mock state lock").check_run_ids.insert((check.head_sha.clone(), external_id.clone()), id);

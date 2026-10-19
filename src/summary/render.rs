@@ -73,33 +73,45 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     let summary = proposal.summary.as_ref().cloned().unwrap_or_default();
     let mut body = String::with_capacity(8_192);
     let _ = write!(body, "{MARKER}\n\n# Tiny Sweeper review\n\n");
-    let executive = if summary.executive_summary.trim().is_empty() {
-        "Tiny Sweeper completed its review. The deterministic snapshot and lane details below are the authoritative result."
-    } else {
-        summary.executive_summary.trim()
-    };
-    let _ = writeln!(body, "{}\n", prose(executive));
-    let _ = writeln!(body, "**State:** {}  ", state(proposal));
-    let _ = writeln!(body, "**Priority:** {}  ", priority(proposal));
-    let _ = write!(body, "**Reviewed head:** `{}`", short(&proposal.head_sha));
-    // Zero is "never stamped" — a proposal written before the field existed —
-    // and rendering it would date the review to 1970.
-    if summary.updated_at_epoch > 0 {
-        let _ = write!(
+    let show_findings = config.summary.sections.contains(&SummarySection::Findings);
+    let has_findings = show_findings && has_finding_signal(proposal);
+    if has_findings {
+        findings(&mut body, proposal);
+        let _ = writeln!(
             body,
-            "  \n**Updated:** {}",
-            iso8601_utc(summary.updated_at_epoch)
+            "\n**Verdict:** {} · **Priority:** {}",
+            state(proposal),
+            priority(proposal)
         );
+        coverage_line(&mut body, proposal, &summary);
+        lane_gaps(&mut body, proposal);
+    } else {
+        let _ = writeln!(
+            body,
+            "**Verdict:** {} · **Priority:** {}",
+            state(proposal),
+            priority(proposal)
+        );
+        coverage_line(&mut body, proposal, &summary);
+        lane_gaps(&mut body, proposal);
+        let executive = summary.executive_summary.trim();
+        let sentence = if executive.is_empty() {
+            "The review found no actionable issues."
+        } else {
+            first_sentence(executive)
+        };
+        let _ = writeln!(body, "{}\n", prose(sentence));
     }
-    body.push('\n');
 
+    body.push_str("<details>\n<summary>Diagnostics and supporting details</summary>\n\n");
     for section in &config.summary.sections {
         match section {
             SummarySection::Snapshot => snapshot(&mut body, proposal, &summary),
             SummarySection::Changes => changes(&mut body, &summary),
             SummarySection::Features => features(&mut body, proposal, &summary),
             SummarySection::Tests => tests(&mut body, proposal, &summary),
-            SummarySection::Findings => findings(&mut body, proposal),
+            SummarySection::Findings if !has_findings => findings(&mut body, proposal),
+            SummarySection::Findings => {}
             SummarySection::BeforeMerge => before_merge(&mut body, proposal),
             SummarySection::Flow if config.overview.enabled => flow(&mut body, proposal),
             SummarySection::Flow => {}
@@ -107,12 +119,84 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
             SummarySection::RunDetails => run_details(&mut body, proposal, &summary),
         }
     }
+    body.push_str("</details>\n");
     let _ = write!(
         body,
         "\n![tinysweeper {VERSION}](https://img.shields.io/badge/tinysweeper-{}-8b949e?style=flat-square)\n",
         VERSION.replace('-', "--")
     );
     body
+}
+
+fn first_sentence(text: &str) -> &str {
+    let text = text.lines().next().unwrap_or(text).trim();
+    for (index, character) in text.char_indices() {
+        if matches!(character, '.' | '!' | '?')
+            && text[index + character.len_utf8()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            return &text[..index + character.len_utf8()];
+        }
+    }
+    text
+}
+
+fn has_finding_signal(proposal: &Proposal) -> bool {
+    proposal.findings().next().is_some()
+        || proposal.prior_findings.iter().any(|title| {
+            !proposal.reported().any(|finding| finding.title == *title)
+        })
+        || proposal.overflowed().next().is_some()
+        || proposal.lanes.iter().any(|lane| !lane.noted.is_empty() || !lane.resolved.is_empty())
+}
+
+fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    if let Some(coverage) = &summary.file_coverage {
+        let _ = write!(
+            out,
+            "**Coverage:** Reviewed {} of {} files",
+            coverage.reviewed, coverage.total
+        );
+        if !coverage.unreviewed.is_empty() {
+            let _ = write!(
+                out,
+                "; not reviewed: {}",
+                code_list(coverage.unreviewed.iter().map(String::as_str))
+            );
+        }
+        out.push_str(".  \n");
+    } else if !proposal.unreviewed.is_empty() {
+        let _ = writeln!(
+            out,
+            "**Coverage:** File coverage is unavailable; not reviewed: {}.",
+            code_list(proposal.unreviewed.iter().map(String::as_str))
+        );
+    } else {
+        out.push_str("**Coverage:** File coverage is unavailable.  \n");
+    }
+}
+
+fn lane_gaps(out: &mut String, proposal: &Proposal) {
+    let gaps: Vec<_> = proposal
+        .lanes
+        .iter()
+        .filter(|lane| lane.unanswered.iter().any(|item| item == &lane.check_name))
+        .collect();
+    if gaps.is_empty() {
+        return;
+    }
+    let names = gaps
+        .iter()
+        .map(|lane| lane.lane.to_string())
+        .collect::<Vec<_>>();
+    let _ = writeln!(
+        out,
+        "**Lane gaps:** The {} reviewer{} did not respond.  ",
+        prose(&names.join(", ")),
+        if names.len() == 1 { "" } else { "s" }
+    );
 }
 
 fn snapshot(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {

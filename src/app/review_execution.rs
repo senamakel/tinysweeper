@@ -124,7 +124,10 @@ impl ReviewExecution {
         self.inner.soft_deadline
     }
 
-    /// The mode frozen for this review.
+    /// The mode used when this execution scope was created.
+    ///
+    /// A later per-head plan may tighten the job's call ceiling without
+    /// changing this initial scope mode.
     pub(crate) fn mode(&self) -> ReviewMode {
         self.inner.mode
     }
@@ -134,7 +137,8 @@ impl ReviewExecution {
         self.inner.drain_seconds
     }
 
-    /// The fixed physical-call ceiling, if this mode has one.
+    /// The effective physical-call ceiling, tightened monotonically by later
+    /// Large-mode plans when the scope began in Normal mode.
     pub(crate) fn max_calls(&self) -> Option<usize> {
         lock(&self.inner.state).max_calls
     }

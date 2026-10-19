@@ -2061,12 +2061,17 @@ mod tests {
         assert_eq!(gateway.requests().len(), 2);
 
         release.add_permits(2);
-        let mut succeeded = Vec::new();
-        while let Some(result) = calls.join_next().await {
-            let (id, response) = result.expect("model task");
-            response.expect("wide child and fresh review each fit one R reservation");
-            succeeded.push(id);
-        }
+        let mut succeeded = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut succeeded = Vec::new();
+            while let Some(result) = calls.join_next().await {
+                let (id, response) = result.expect("model task");
+                response.expect("wide child and fresh review each fit one R reservation");
+                succeeded.push(id);
+            }
+            succeeded
+        })
+        .await
+        .expect("released lane and review reservations finish promptly");
         succeeded.sort_unstable();
         assert_eq!(succeeded, [1, 2]);
         assert_eq!(gateway.requests().len(), 2);

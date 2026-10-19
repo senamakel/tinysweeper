@@ -869,8 +869,8 @@ where
             first_error.get_or_insert(err);
         }
     }
-    let claimed_checks = jobs.claim_pending_checks(now(), QUEUE_STATUS_DRAIN_BATCH).await?;
-    for check in claimed_checks {
+    for _ in 0..QUEUE_STATUS_DRAIN_BATCH {
+        let Some(check) = jobs.claim_pending_checks(now(), 1).await?.pop() else { break; };
         let attempt = tokio::time::timeout(QUEUE_STATUS_OPERATION_TIMEOUT, async {
             if !jobs.queued_check_claim_current(&check, now()).await? {
                 return Ok::<(), Error>(());

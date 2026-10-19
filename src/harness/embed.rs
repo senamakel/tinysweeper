@@ -1950,18 +1950,30 @@ mod tests {
         // cannot strand model tasks or paused HTTP responses.
         held.settle(Default::default());
         release.add_permits(3);
-        tokio::time::timeout(Duration::from_secs(3), async {
+        let results = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut results = Vec::new();
             while let Some(result) = calls.join_next().await {
-                result.expect("model call task");
+                results.push(result.expect("model call task"));
             }
+            results
         })
         .await
         .expect("all held calls finish after fixture cleanup");
 
+        let successful_calls = results.iter().filter(|result| result.is_ok()).count();
         assert_eq!(
-            writes_while_root_is_reserved, 0,
-            "lane scopes and direct completion must share the held review root"
+            (
+                writes_while_root_is_reserved,
+                successful_calls,
+                gateway.requests().len(),
+            ),
+            (0, 3, 3),
+            "all three callers must wait on the shared review root and dispatch after release"
         );
+        for result in results {
+            let response = result.expect("completion succeeds after the root hold is released");
+            assert_eq!(response.value["summary"], "checked");
+        }
     }
 
     fn review_reservation_micros(model: &GatewayModel, request: &ModelRequest) -> u64 {

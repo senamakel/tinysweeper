@@ -386,9 +386,12 @@ fn repeated_live_rebind_respects_headless_metadata_status_reservations() {
     let mut known = request("rebind-capacity", 10);
     known.head_sha = Some("head-a".into());
     let mut headless = request("headless-reserved-capacity", 11);
+    headless.number = 8;
     headless.head_sha = None;
     assert_eq!(state.admit_batch(vec![known], 10), Admission::Admitted);
     assert_eq!(state.admit_batch(vec![headless], 10), Admission::Admitted);
+    assert_eq!(state.unfinished.len(), 2, "the headless PR owns an independent reservation");
+    assert!(state.unfinished[1].metadata_resolution_pending);
 
     let base = state.unfinished[0].review_checks[0].clone();
     state.retired_checks = (0..super::MAX_REVIEW_STATUS_RECORDS - 4)

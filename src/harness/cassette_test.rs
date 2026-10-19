@@ -577,6 +577,52 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
 }
 
 #[cfg(feature = "harness")]
+#[tokio::test]
+async fn cancelled_cassette_dispatch_with_no_paid_call_is_not_unknown_usage() {
+    use crate::harness::fake_gateway::FakeGateway;
+    use crate::harness::mock::execution_test_support::execution_control;
+    use crate::ports::model::Model;
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let gateway = FakeGateway::start(vec![]).await;
+    let mut config = crate::config::types::Models::default();
+    config.base_url = gateway.base_url.clone();
+    let gateway_model = crate::harness::embed::GatewayModel::with_key(&config, "fixture".into());
+    let (execution, control) = execution_control(1);
+    execution.cancel();
+    let dir = tempfile::tempdir().expect("temporary cassette directory");
+    let cassette = Arc::new(Cassette::record(Arc::new(gateway_model), dir.path()));
+    let model: Arc<dyn Model> = cassette.clone();
+    let model = model
+        .with_execution_control(control)
+        .expect("recording forwards the physical execution control");
+    let events = Arc::new(ModelEventCounter::default());
+    let result = crate::ports::model::with_model_call_observer(
+        events.clone(),
+        model.complete(request("b", "cancel before dispatch")),
+    )
+    .await;
+
+    assert!(gateway.requests().is_empty());
+    assert_eq!(execution.snapshot().committed_calls, 0);
+    assert_eq!(execution.snapshot().reserved_calls, 0);
+    assert!(events.0.lock().expect("model event lock").is_empty());
+    let refusal = result.expect_err("cancelled execution refuses before dispatch");
+    assert!(matches!(
+        &refusal,
+        Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::Cancelled,
+            usage: None,
+            accounting_complete: true,
+        }
+    ));
+    assert_eq!(refusal.usage(), None);
+    assert_eq!(refusal.usage_accounting_complete(), None);
+    assert!(!cassette.has_unreported_usage());
+    assert_eq!(cassette.served(), 0);
+}
+
+#[cfg(feature = "harness")]
 struct CountingReviewTree {
     inner: crate::ports::tree::MockTree,
     lookups: std::sync::atomic::AtomicUsize,

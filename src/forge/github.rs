@@ -908,6 +908,21 @@ fn verdicts_from_page(items: &[serde_json::Value]) -> Vec<ReviewVerdict> {
 
 #[async_trait]
 impl ForgeRead for GitHubRead {
+    async fn pull_request_metadata(
+        &self,
+        repo: &RepoId,
+        number: u64,
+    ) -> Result<PullRequestMetadata> {
+        let pr = self
+            .client
+            .pulls(&repo.owner, &repo.name)
+            .get(number)
+            .await
+            .map_err(api)?;
+
+        Ok(pull_request_metadata_from(pr, repo))
+    }
+
     async fn pull_request(&self, repo: &RepoId, number: u64) -> Result<PullRequest> {
         let pr = self
             .client

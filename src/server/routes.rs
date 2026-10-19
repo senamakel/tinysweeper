@@ -4935,6 +4935,22 @@ mod tests {
         }
     }
 
+    async fn confirm_test_head(
+        store: &dyn ReviewJobStore,
+        owned: &OwnedReview,
+        now_ms: i64,
+    ) {
+        let head_sha = owned
+            .request
+            .head_sha
+            .as_deref()
+            .expect("test review has a head hint to resolve");
+        assert!(
+            store.confirm_head(owned, head_sha, now_ms).await.unwrap(),
+            "test worker confirms its Forge-resolved head before paid work"
+        );
+    }
+
     #[tokio::test]
     async fn accepted_webhook_and_manual_reviews_recover_after_wakeup_loss() {
         use std::sync::atomic::{AtomicUsize, Ordering};

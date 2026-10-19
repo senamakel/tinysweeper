@@ -251,6 +251,16 @@ pub struct ScheduledReview {
     /// One bounded slot for a live SHA discovered after a delivery was accepted.
     #[serde(default = "default_true")]
     pub status_reconcile_reserved: bool,
+    /// A newly accepted delivery has no event SHA yet and still needs a narrow
+    /// metadata read before it can publish its UI-only queued check.
+    #[serde(default)]
+    pub metadata_resolution_pending: bool,
+    /// Fenced claim for the status-only live metadata lookup.
+    #[serde(default)]
+    pub metadata_claim_generation: u64,
+    /// Expiry for the status-only metadata lookup claim.
+    #[serde(default)]
+    pub metadata_claim_until_ms: i64,
 }
 
 fn default_true() -> bool {

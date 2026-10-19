@@ -598,11 +598,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_does_not_refund_a_committed_dispatch() {
+    async fn cancellation_after_commit_keeps_dispatch_spent_and_blocks_new_work() {
         let started_at = Instant::now();
         let execution = ReviewExecution::new(options(
             ReviewMode::Large,
-            Some(1),
+            Some(2),
             started_at,
             started_at + Duration::from_secs(100),
         ));
@@ -614,6 +614,10 @@ mod tests {
         execution.cancel();
         drop(permit);
 
+        assert_eq!(
+            execution.acquire().await.err(),
+            Some(ModelExecutionRefusal::Cancelled)
+        );
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.committed_calls, 1);
         assert_eq!(snapshot.reserved_calls, 0);

@@ -385,3 +385,143 @@ mod tests {
         );
     }
 }
+
+/// Shared physical-dispatch fixture for decorator regression tests.
+#[cfg(test)]
+pub(crate) mod execution_test_support {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+
+    use crate::app::review_execution::{ReviewExecution, ReviewExecutionOptions};
+    use crate::error::{Error, Result};
+    use crate::lanes::large_pr::ReviewMode;
+    use crate::ports::model::{Model, ModelRequest, ModelResponse};
+    use crate::ports::model_execution::{
+        ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+    };
+
+    use super::MockModel;
+
+    #[derive(Clone)]
+    pub(crate) struct DispatchProbe {
+        model: MockModel,
+        control: Option<Arc<dyn ModelExecutionControl>>,
+        review_remaining: Option<Arc<AtomicUsize>>,
+        lane_remaining: Option<Arc<AtomicUsize>>,
+    }
+
+    impl DispatchProbe {
+        pub(crate) fn new(model: MockModel) -> Self {
+            Self {
+                model,
+                control: None,
+                review_remaining: None,
+                lane_remaining: None,
+            }
+        }
+
+        fn with_control(&self, control: Arc<dyn ModelExecutionControl>) -> Self {
+            Self {
+                model: self.model.clone(),
+                control: Some(control),
+                review_remaining: self.review_remaining.clone(),
+                lane_remaining: self.lane_remaining.clone(),
+            }
+        }
+
+        fn consume(limit: &Option<Arc<AtomicUsize>>) -> bool {
+            limit.as_ref().is_none_or(|remaining| {
+                remaining
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    })
+                    .is_ok()
+            })
+        }
+
+        fn refusal(refusal: ModelExecutionRefusal) -> Error {
+            Error::ModelExecutionRefused {
+                refusal,
+                usage: None,
+                accounting_complete: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Model for DispatchProbe {
+        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+            let _permit: Option<Box<dyn ModelExecutionPermit>> = match &self.control {
+                Some(control) => Some(control.acquire().await.map_err(Self::refusal)?),
+                None => None,
+            };
+            if let Some(permit) = &_permit {
+                permit.mark_dispatched().map_err(Self::refusal)?;
+            }
+            if !Self::consume(&self.review_remaining) || !Self::consume(&self.lane_remaining) {
+                return Err(Error::Budget {
+                    spent: 1.0,
+                    limit: 1.0,
+                    usage: None,
+                });
+            }
+            let response = self.model.complete(request).await?;
+            if let Some(observer) = crate::ports::model::current_model_call_observer() {
+                observer.completed(response.usage, true, false, Duration::ZERO);
+            }
+            Ok(response)
+        }
+
+        fn complete_reports_physical_calls(&self) -> bool {
+            true
+        }
+
+        fn scoped_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(Self {
+                model: self.model.clone(),
+                control: self.control.clone(),
+                review_remaining: self.review_remaining.clone(),
+                lane_remaining: Some(Arc::new(AtomicUsize::new(
+                    limit_usd.floor().max(0.0) as usize,
+                ))),
+            }))
+        }
+
+        fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(Self {
+                model: self.model.clone(),
+                control: self.control.clone(),
+                review_remaining: Some(Arc::new(AtomicUsize::new(
+                    limit_usd.floor().max(0.0) as usize,
+                ))),
+                lane_remaining: self.lane_remaining.clone(),
+            }))
+        }
+
+        fn with_execution_control(
+            &self,
+            control: Arc<dyn ModelExecutionControl>,
+        ) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(self.with_control(control)))
+        }
+    }
+
+    pub(crate) fn execution_control(
+        max_calls: usize,
+    ) -> (Arc<ReviewExecution>, Arc<dyn ModelExecutionControl>) {
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(ReviewExecution::new(ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + Duration::from_secs(100),
+            mode: ReviewMode::Large,
+            max_calls: Some(max_calls),
+            soft_deadline_percent: 80,
+            drain_seconds: 30,
+        }));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        (execution, control)
+    }
+}

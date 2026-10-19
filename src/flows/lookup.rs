@@ -567,7 +567,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
             continue;
         }
         let text = line.text.as_str();
-        if text.trim().starts_with("#[") {
+        if block_comment_depth == 0 && text.trim().starts_with("#[") {
             if let Some(path) = rust_path_attribute(text) {
                 path_attribute = Some(path);
             } else {
@@ -575,6 +575,7 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                 // can change whether or where this declaration exists. Never
                 // turn those cases into evidence from Rust's default layout.
                 unsupported_attribute = true;
+                lexical_ambiguous = true;
             }
             continue;
         } else if !text.trim().is_empty() {
@@ -600,6 +601,12 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                     continue;
                 }
                 if rest.starts_with("//") {
+                    break;
+                }
+                if rest.starts_with('#') {
+                    // Attributes embedded after other tokens need a full Rust
+                    // parser to associate them with the right item.
+                    lexical_ambiguous = true;
                     break;
                 }
                 if let Some(end) = raw_string_end(text, cursor) {
@@ -732,6 +739,10 @@ fn added_module_paths(diff: &crate::evidence::diff::FileDiff) -> Vec<AddedModule
                         cursor = name_end;
                         continue;
                     }
+                    // The declaration may continue on a later line or use
+                    // syntax this resolver does not understand. Do not guess
+                    // a default path from an incomplete module item.
+                    lexical_ambiguous = true;
                     cursor = name_end.max(cursor + 3);
                     continue;
                 }

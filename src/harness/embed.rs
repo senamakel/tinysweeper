@@ -1946,29 +1946,31 @@ mod tests {
         })
         .await
         .expect("the first shared reservation reaches the paused provider");
-        let mut refused = 0;
-        while refused < 2 {
-            let result = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), calls.join_next())
                 .await
-                .expect("root-refused siblings finish promptly")
-                .expect("model task")
-                .expect("model result");
-            assert!(
-                matches!(result.1, Err(Error::Budget { .. })),
-                "only one R reservation fits the 2R - 1 review root: {result:?}"
-            );
-            refused += 1;
-        }
+                .is_err(),
+            "lane and direct calls wait on the shared live reservation"
+        );
         assert_eq!(gateway.requests().len(), 1);
 
         release.add_permits(1);
-        let (id, response) = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
-            .await
-            .expect("held provider response completes after release")
-            .expect("remaining model task")
-            .expect("model task result");
-        assert!(id < 3);
-        response.expect("one call fits the shared review root");
+        let results = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut successes = 0;
+            let mut refusals = 0;
+            while let Some(result) = calls.join_next().await {
+                let (_, response) = result.expect("model task");
+                match response {
+                    Ok(_) => successes += 1,
+                    Err(Error::Budget { .. }) => refusals += 1,
+                    Err(error) => panic!("unexpected completion failure: {error:?}"),
+                }
+            }
+            (successes, refusals)
+        })
+        .await
+        .expect("held response and monetary waiters finish after settlement");
+        assert_eq!(results, (1, 2));
         assert_eq!(gateway.requests().len(), 1);
     }
 

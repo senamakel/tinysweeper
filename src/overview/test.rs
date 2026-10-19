@@ -243,6 +243,8 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
             component("src/b.rs#beta", Role::Changed),
             component("src/c.rs#gamma", Role::Changed),
             component("src/d.rs#delta", Role::Changed),
+            component("src/lib.rs#test_leaks_state", Role::Changed),
+            component("src/lib.rs#tests::reject_empty", Role::Changed),
             component("src/caller.rs#call", Role::Impacted),
             component("tests/api.rs#works", Role::Impacted),
         ],
@@ -251,10 +253,13 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
             Link { from: 1, to: 2, relation: FlowRelation::Uses, weight: 1 },
             Link { from: 2, to: 3, relation: FlowRelation::Implements, weight: 1 },
             Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
-            Link { from: 5, to: 0, relation: FlowRelation::Tests, weight: 1 },
+            Link { from: 5, to: 0, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 4, to: 0, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 6, to: 0, relation: FlowRelation::Calls, weight: 1 },
+            Link { from: 7, to: 0, relation: FlowRelation::Tests, weight: 1 },
         ],
-        files: 4, additions: 4, deletions: 0, folded: 0,
-        graph: GraphStatus::Walked { nodes: 6 },
+        files: 6, additions: 6, deletions: 0, folded: 0,
+        graph: GraphStatus::Walked { nodes: 8 },
     };
 
     let diagram = mermaid::flowchart(&map).expect("four changed symbols");
@@ -263,7 +268,31 @@ fn four_changed_symbols_draw_without_test_or_keyword_nodes() {
     }
     assert!(!diagram.contains("call"), "{diagram}");
     assert!(!diagram.contains("works"), "{diagram}");
+    assert!(!diagram.contains("test_leaks_state"), "{diagram}");
+    assert!(!diagram.contains("tests::reject_empty"), "{diagram}");
     assert!(!diagram.contains("|tests|"), "{diagram}");
+}
+
+#[test]
+fn filtered_only_links_do_not_leave_a_disconnected_diagram() {
+    let component = |name: &str, role| Component {
+        name: name.into(), role, files: 1, additions: 1, deletions: 0,
+        findings: 0, worst: None, paths: vec![],
+    };
+    let map = ChangeMap {
+        components: vec![
+            component("src/a.rs#alpha", Role::Changed),
+            component("src/b.rs#beta", Role::Changed),
+            component("src/c.rs#gamma", Role::Changed),
+            component("src/d.rs#delta", Role::Changed),
+            component("src/lib.rs#tests::assert_valid", Role::Impacted),
+        ],
+        links: vec![Link { from: 4, to: 0, relation: FlowRelation::Tests, weight: 1 }],
+        files: 4, additions: 4, deletions: 0, folded: 0,
+        graph: GraphStatus::Walked { nodes: 5 },
+    };
+
+    assert!(mermaid::flowchart(&map).is_none());
 }
 
 #[test]

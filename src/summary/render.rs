@@ -1269,7 +1269,11 @@ mod tests {
             }],
             "summary": {
                 "executive_summary": "The change updates the request handler.",
-                "cache_chain_restarted": true
+                "cache_chain_restarted": true,
+                "tests": [{
+                    "kind": "regression", "behavior": "request handler",
+                    "assessment": "not executed per evidence", "citations": []
+                }]
             },
             "models": ["ladder/reviewer"],
             "prior_findings": [], "cost_usd": 0.0, "cached_tokens": 0

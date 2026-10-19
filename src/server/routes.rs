@@ -7021,7 +7021,7 @@ mod tests {
         }).expect("a terminal status is published for superseded A");
         assert_eq!(check.status, None, "terminal checks omit pending status");
         assert_eq!(check.conclusion, Some(CheckConclusion::Neutral));
-        assert!(check.summary.contains("superseded before review"));
+        assert!(check.title.contains("superseded before review"));
         assert!(store.snapshot_for_test().retired_checks.is_empty());
     }
 

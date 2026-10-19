@@ -22,6 +22,31 @@ fn request(id: &str, accepted_at_ms: i64) -> ReviewRequest {
     }
 }
 
+/// Simulate a prior status worker acknowledgement for reducer-only ownership
+/// tests. This does not exercise Forge publication or its retry path.
+async fn seed_published_queue_checks(store: &MockReviewJobStore, now_ms: i64) {
+    static NEXT_FIXTURE_CHECK_ID: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(120_000);
+    let pending = store
+        .claim_pending_checks(now_ms, super::QUEUE_STATUS_DRAIN_BATCH)
+        .await
+        .expect("fixture status claims succeed");
+    for check in pending {
+        if check.retired {
+            continue;
+        }
+        assert!(store.mark_queue_post_attempted(&check, now_ms).await.unwrap());
+        assert!(store
+            .record_queued_check_id(
+                &check,
+                NEXT_FIXTURE_CHECK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                now_ms,
+            )
+            .await
+            .unwrap());
+    }
+}
+
 #[test]
 fn legacy_scheduled_reviews_deserialize_with_empty_status_identity() {
     let mut state = ReviewSchedulerState::default();
@@ -320,8 +345,7 @@ async fn published_review_is_not_retired_as_not_reviewed_when_status_updates_fai
             .await
             .unwrap()
     );
-    let owned = store
-        .claim_next("review-worker", 12)
+    let owned = claim_after_queue_ack(&store, "review-worker", 12)
         .await
         .unwrap()
         .unwrap();
@@ -656,7 +680,7 @@ async fn incremental_pushes_for_one_pull_request_coalesce_before_claim() {
         1,
         "one pending incremental review per PR"
     );
-    let claimed = store.claim_next("worker", 20).await.unwrap().unwrap();
+    let claimed = claim_after_queue_ack(&store, "worker", 20).await.unwrap().unwrap();
     assert_eq!(claimed.request.head_sha.as_deref(), Some("head-b"));
     assert_eq!(
         claimed.accepted_ids.len(),
@@ -690,7 +714,7 @@ async fn a_burst_of_incremental_pushes_runs_only_the_last_queued_head() {
         Admission::Admitted
     );
 
-    let latest = store.claim_next("worker", 20).await.unwrap().unwrap();
+    let latest = claim_after_queue_ack(&store, "worker", 20).await.unwrap().unwrap();
     assert_eq!(latest.request.head_sha.as_deref(), Some("head-2"));
     assert_eq!(latest.accepted_ids.len(), 3);
 }
@@ -703,7 +727,7 @@ async fn an_out_of_order_older_head_hint_yields_without_stealing_the_owner() {
     newer.number = 7;
     newer.head_sha = Some("head-b".into());
     store.admit_batch(vec![newer.clone()]).await.unwrap();
-    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+    let active = claim_after_queue_ack(&store, "worker", 20).await.unwrap().unwrap();
 
     let mut delayed = newer;
     delayed.id = ReviewJobId("push-a-delayed".into());
@@ -718,7 +742,7 @@ async fn an_out_of_order_older_head_hint_yields_without_stealing_the_owner() {
     assert!(!store.should_continue(&active, 21).await.unwrap());
     assert_eq!(store.unfinished(), 1);
     assert!(store.defer_yield(&active, 22).await.unwrap());
-    let resumed = store.claim_next("worker-2", 23).await.unwrap().unwrap();
+    let resumed = claim_after_queue_ack(&store, "worker-2", 23).await.unwrap().unwrap();
     assert_eq!(resumed.request.head_sha.as_deref(), Some("head-a"));
     assert_eq!(resumed.accepted_ids.len(), 2);
 }
@@ -731,7 +755,7 @@ async fn delayed_old_hint_yields_but_confirming_the_live_head_keeps_its_paid_bud
     newer.number = 7;
     newer.head_sha = Some("head-b".into());
     store.admit_batch(vec![newer.clone()]).await.unwrap();
-    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+    let active = claim_after_queue_ack(&store, "worker", 20).await.unwrap().unwrap();
     assert!(store.confirm_head(&active, "head-b", 21).await.unwrap());
     assert_eq!(
         store.begin_paid(&active, 22).await.unwrap(),
@@ -746,7 +770,7 @@ async fn delayed_old_hint_yields_but_confirming_the_live_head_keeps_its_paid_bud
     assert!(!store.should_continue(&active, 23).await.unwrap());
     assert!(store.defer_yield(&active, 24).await.unwrap());
 
-    let resumed = store.claim_next("worker-2", 25).await.unwrap().unwrap();
+    let resumed = claim_after_queue_ack(&store, "worker-2", 25).await.unwrap().unwrap();
     assert!(store.confirm_head(&resumed, "head-b", 26).await.unwrap());
     assert_eq!(
         store.begin_paid(&resumed, 27).await.unwrap(),
@@ -768,7 +792,7 @@ async fn full_manual_review_is_not_yielded_by_incremental_pushes() {
     full.mode = ReviewJobMode::Full;
     full.head_sha = Some("head-a".into());
     store.admit_batch(vec![full.clone()]).await.unwrap();
-    let active = store.claim_next("worker", 20).await.unwrap().unwrap();
+    let active = claim_after_queue_ack(&store, "worker", 20).await.unwrap().unwrap();
 
     let mut incremental = full;
     incremental.id = ReviewJobId("push-b".into());
@@ -789,7 +813,7 @@ async fn a_deadline_is_terminal_for_the_confirmed_head_across_delivery_ids() {
     first.number = 7;
     first.head_sha = Some("head-a".into());
     store.admit_batch(vec![first.clone()]).await.unwrap();
-    let timed_out = store.claim_next("worker", 2).await.unwrap().unwrap();
+    let timed_out = claim_after_queue_ack(&store, "worker", 2).await.unwrap().unwrap();
     assert!(store.confirm_head(&timed_out, "head-a", 3).await.unwrap());
     assert_eq!(
         store.begin_paid(&timed_out, 4).await.unwrap(),
@@ -801,7 +825,7 @@ async fn a_deadline_is_terminal_for_the_confirmed_head_across_delivery_ids() {
     first.delivery = Some("push-a-redelivery".into());
     first.accepted_at_ms = 6;
     store.admit_batch(vec![first.clone()]).await.unwrap();
-    let retry = store.claim_next("worker-2", 7).await.unwrap().unwrap();
+    let retry = claim_after_queue_ack(&store, "worker-2", 7).await.unwrap().unwrap();
     assert!(store.confirm_head(&retry, "head-a", 8).await.unwrap());
     assert_eq!(
         store.begin_paid(&retry, 9).await.unwrap(),
@@ -819,7 +843,7 @@ async fn a_deadline_is_terminal_for_the_confirmed_head_across_delivery_ids() {
     first.head_sha = Some("head-b".into());
     first.accepted_at_ms = 10;
     store.admit_batch(vec![first]).await.unwrap();
-    let new_head = store.claim_next("worker-3", 11).await.unwrap().unwrap();
+    let new_head = claim_after_queue_ack(&store, "worker-3", 11).await.unwrap().unwrap();
     assert!(store.confirm_head(&new_head, "head-b", 12).await.unwrap());
     assert_eq!(
         store.begin_paid(&new_head, 13).await.unwrap(),
@@ -835,7 +859,7 @@ async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolut
     first.number = 7;
     first.head_sha = Some("head-a".into());
     store.admit_batch(vec![first.clone()]).await.unwrap();
-    let timed_out = store.claim_next("worker", 2).await.unwrap().unwrap();
+    let timed_out = claim_after_queue_ack(&store, "worker", 2).await.unwrap().unwrap();
     assert!(store.confirm_head(&timed_out, "head-a", 3).await.unwrap());
 
     first.id = ReviewJobId("push-b".into());
@@ -850,7 +874,7 @@ async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolut
         1,
         "both delivery IDs stay attached to recoverable work"
     );
-    let resumed = store.claim_next("worker-2", 6).await.unwrap().unwrap();
+    let resumed = claim_after_queue_ack(&store, "worker-2", 6).await.unwrap().unwrap();
     assert!(store.confirm_head(&resumed, "head-a", 7).await.unwrap());
     assert!(store.head_is_terminal(&resumed, 8).await.unwrap());
     assert_eq!(
@@ -872,7 +896,7 @@ async fn a_push_racing_the_deadline_preserves_the_marker_until_live_head_resolut
 async fn paid_starts_require_a_head_confirmed_from_the_live_forge_read() {
     let store = MockReviewJobStore::default();
     store.admit_batch(vec![request("push-a", 1)]).await.unwrap();
-    let owned = store.claim_next("worker", 2).await.unwrap().unwrap();
+    let owned = claim_after_queue_ack(&store, "worker", 2).await.unwrap().unwrap();
 
     assert_eq!(
         store.begin_paid(&owned, 3).await.unwrap(),
@@ -929,7 +953,7 @@ async fn head_history_transitions_consume_reserved_capacity_without_overflow() {
     let mut first = request("push-a", 1);
     first.head_sha = Some("head-a".into());
     store.admit_batch(vec![first.clone()]).await.unwrap();
-    let owner = store.claim_next("worker-a", 2).await.unwrap().unwrap();
+    let owner = claim_after_queue_ack(&store, "worker-a", 2).await.unwrap().unwrap();
     assert!(store.confirm_head(&owner, "head-a", 3).await.unwrap());
     assert!(
         store
@@ -963,7 +987,7 @@ async fn head_history_transitions_consume_reserved_capacity_without_overflow() {
         Admission::Full
     );
 
-    let owner = store.claim_next("worker-b", 6).await.unwrap().unwrap();
+    let owner = claim_after_queue_ack(&store, "worker-b", 6).await.unwrap().unwrap();
     assert!(store.confirm_head(&owner, "head-b", 7).await.unwrap());
     assert_eq!(
         store.snapshot_for_test().reserved_capacity(),
@@ -984,8 +1008,7 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
     );
     // A fresh worker has no channel state; it claims directly from the durable
     // scheduler record, the same path used by startup recovery and polling.
-    let recovered = store
-        .claim_next("process-a", 11)
+    let recovered = claim_after_queue_ack(&store, "process-a", 11)
         .await
         .unwrap()
         .expect("accepted work survives a lost wakeup");
@@ -995,7 +1018,7 @@ async fn accepted_jobs_recover_after_wakeup_loss_and_completed_jobs_stay_done() 
             .await
             .unwrap()
     );
-    assert!(store.claim_next("process-b", 13).await.unwrap().is_none());
+    assert!(claim_after_queue_ack(&store, "process-b", 13).await.unwrap().is_none());
     assert_eq!(
         store
             .admit_batch(vec![request("delivery-a", 14)])
@@ -1044,10 +1067,9 @@ async fn expired_owner_is_recovered_but_live_owner_and_stale_generation_are_fenc
         .admit_batch(vec![request("delivery-a", 1)])
         .await
         .unwrap();
-    let first = store.claim_next("process-a", 2).await.unwrap().unwrap();
-    assert!(store.claim_next("process-b", 3).await.unwrap().is_none());
-    let second = store
-        .claim_next("process-b", 2 + REVIEW_OWNER_TTL_MS)
+    let first = claim_after_queue_ack(&store, "process-a", 2).await.unwrap().unwrap();
+    assert!(claim_after_queue_ack(&store, "process-b", 3).await.unwrap().is_none());
+    let second = claim_after_queue_ack(&store, "process-b", 2 + REVIEW_OWNER_TTL_MS)
         .await
         .unwrap()
         .unwrap();
@@ -1074,18 +1096,16 @@ async fn live_lease_contention_defers_without_converting_it_to_a_success() {
         .admit_batch(vec![request("delivery-a", 1)])
         .await
         .unwrap();
-    let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
+    let claimed = claim_after_queue_ack(&store, "process-a", 2).await.unwrap().unwrap();
     assert!(store.defer(&claimed, 3, 10_000).await.unwrap());
     assert!(
-        store
-            .claim_next("process-b", 9_999)
+        claim_after_queue_ack(&store, "process-b", 9_999)
             .await
             .unwrap()
             .is_none()
     );
     assert!(
-        store
-            .claim_next("process-b", 10_000)
+        claim_after_queue_ack(&store, "process-b", 10_000)
             .await
             .unwrap()
             .is_some()
@@ -1105,16 +1125,14 @@ async fn running_claims_are_bounded_across_process_owners() {
     assert_eq!(store.admit_batch(jobs).await.unwrap(), Admission::Admitted);
     for index in 0..MAX_RUNNING_REVIEWS {
         assert!(
-            store
-                .claim_next(&format!("process-{index}"), 2)
+            claim_after_queue_ack(&store, &format!("process-{index}"), 2)
                 .await
                 .unwrap()
                 .is_some()
         );
     }
     assert!(
-        store
-            .claim_next("process-overflow", 3)
+        claim_after_queue_ack(&store, "process-overflow", 3)
             .await
             .unwrap()
             .is_none()
@@ -1128,7 +1146,7 @@ async fn only_a_live_generation_can_renew_or_finish() {
         .admit_batch(vec![request("delivery-a", 1)])
         .await
         .unwrap();
-    let first = store.claim_next("process-a", 2).await.unwrap().unwrap();
+    let first = claim_after_queue_ack(&store, "process-a", 2).await.unwrap().unwrap();
     assert!(store.renew(&first, 10_000).await.unwrap());
     assert!(store.owns(&first, 10_001).await.unwrap());
     assert!(
@@ -1143,8 +1161,7 @@ async fn only_a_live_generation_can_renew_or_finish() {
             .await
             .unwrap()
     );
-    let recovered = store
-        .claim_next("process-b", 10_000 + REVIEW_OWNER_TTL_MS)
+    let recovered = claim_after_queue_ack(&store, "process-b", 10_000 + REVIEW_OWNER_TTL_MS)
         .await
         .unwrap()
         .unwrap();
@@ -1174,7 +1191,7 @@ async fn terminal_deadlines_remain_deduped_for_seven_days() {
         .admit_batch(vec![request("delivery-a", 1)])
         .await
         .unwrap();
-    let claimed = store.claim_next("process-a", 2).await.unwrap().unwrap();
+    let claimed = claim_after_queue_ack(&store, "process-a", 2).await.unwrap().unwrap();
     store
         .finish(&claimed, TerminalOutcome::Exhausted, 3, 3)
         .await

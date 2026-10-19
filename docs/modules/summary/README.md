@@ -30,6 +30,18 @@ no provenance remain unknown. A sentence that explicitly names a non-answered
 lane or makes a collective claim about all lanes/reviewers is discarded,
 regardless of its wording or claimed verdict; unrelated sentences remain.
 
+The public comment stays short when a review has no findings: it shows the
+verdict, file coverage, and one summary sentence, then puts configured support
+sections under a collapsed details block. Findings appear first when present;
+each includes a link to its reviewed location, the problem, and any suggested
+fix. File gaps and whole-lane no-response messages use separate lines. New
+summaries carry reviewed and total file counts only when lane evidence supports
+them; an older proposal without that metadata reports coverage as unavailable.
+Models, cache continuity, and run diagnostics remain inside the collapsed
+details block. The Mermaid flow appears only when at least four changed,
+non-test symbols can be shown; test names and generic keyword nodes are left
+out.
+
 The structured schema restricts positive observations to the six known lane
 keys. If a reply still fails typed deserialization, generation makes one
 semantic repair request with the scrubbed rejected JSON fenced as untrusted

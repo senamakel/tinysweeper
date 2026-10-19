@@ -73,33 +73,49 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     let summary = proposal.summary.as_ref().cloned().unwrap_or_default();
     let mut body = String::with_capacity(8_192);
     let _ = write!(body, "{MARKER}\n\n# Tiny Sweeper review\n\n");
-    let executive = if summary.executive_summary.trim().is_empty() {
-        "Tiny Sweeper completed its review. The deterministic snapshot and lane details below are the authoritative result."
-    } else {
-        summary.executive_summary.trim()
-    };
-    let _ = writeln!(body, "{}\n", prose(executive));
-    let _ = writeln!(body, "**State:** {}  ", state(proposal));
-    let _ = writeln!(body, "**Priority:** {}  ", priority(proposal));
-    let _ = write!(body, "**Reviewed head:** `{}`", short(&proposal.head_sha));
-    // Zero is "never stamped" — a proposal written before the field existed —
-    // and rendering it would date the review to 1970.
-    if summary.updated_at_epoch > 0 {
-        let _ = write!(
+    let show_findings = config.summary.sections.contains(&SummarySection::Findings);
+    let has_findings = show_findings && has_finding_signal(proposal);
+    if has_findings {
+        findings(&mut body, proposal);
+        let _ = writeln!(
             body,
-            "  \n**Updated:** {}",
-            iso8601_utc(summary.updated_at_epoch)
+            "\n**Verdict:** {} · **Priority:** {}",
+            state(proposal),
+            priority(proposal)
         );
+        coverage_line(&mut body, proposal, &summary);
+        lane_gaps(&mut body, proposal);
+    } else {
+        let _ = writeln!(
+            body,
+            "**Verdict:** {} · **Priority:** {}",
+            state(proposal),
+            priority(proposal)
+        );
+        coverage_line(&mut body, proposal, &summary);
+        lane_gaps(&mut body, proposal);
+        let executive = summary.executive_summary.trim();
+        let sentence = if executive.is_empty() && proposal.complete() {
+            "The review found no actionable issues.".to_string()
+        } else if executive.is_empty() || contains_run_diagnostics(executive) {
+            "No actionable findings were reported in the available review results.".to_string()
+        } else {
+            bounded_sentence(executive, 50)
+        };
+        let _ = writeln!(body, "{}\n", prose(&sentence));
     }
-    body.push('\n');
 
+    body.push_str("<details>\n<summary>Diagnostics and supporting details</summary>\n\n");
+    summary_details(&mut body, &summary);
+    coverage_details(&mut body, proposal, &summary);
     for section in &config.summary.sections {
         match section {
             SummarySection::Snapshot => snapshot(&mut body, proposal, &summary),
             SummarySection::Changes => changes(&mut body, &summary),
             SummarySection::Features => features(&mut body, proposal, &summary),
             SummarySection::Tests => tests(&mut body, proposal, &summary),
-            SummarySection::Findings => findings(&mut body, proposal),
+            SummarySection::Findings if !has_findings => findings(&mut body, proposal),
+            SummarySection::Findings => {}
             SummarySection::BeforeMerge => before_merge(&mut body, proposal),
             SummarySection::Flow if config.overview.enabled => flow(&mut body, proposal),
             SummarySection::Flow => {}
@@ -107,12 +123,158 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
             SummarySection::RunDetails => run_details(&mut body, proposal, &summary),
         }
     }
+    body.push_str("</details>\n");
     let _ = write!(
         body,
         "\n![tinysweeper {VERSION}](https://img.shields.io/badge/tinysweeper-{}-8b949e?style=flat-square)\n",
         VERSION.replace('-', "--")
     );
     body
+}
+
+fn first_sentence(text: &str) -> &str {
+    let text = text.lines().next().unwrap_or(text).trim();
+    for (index, character) in text.char_indices() {
+        if matches!(character, '.' | '!' | '?')
+            && text[index + character.len_utf8()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            return &text[..index + character.len_utf8()];
+        }
+    }
+    text
+}
+
+fn contains_run_diagnostics(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["cache chain", "index is behind", "ladder/", "per evidence"]
+        .iter()
+        .any(|term| lower.contains(term))
+}
+
+fn bounded_sentence(text: &str, limit: usize) -> String {
+    let sentence = first_sentence(text);
+    let mut chars = sentence.chars();
+    let clipped: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{}…", clipped.trim_end())
+    } else {
+        clipped
+    }
+}
+
+fn bounded_paths(paths: &[String], shown: usize) -> String {
+    let listed = paths
+        .iter()
+        .take(shown)
+        .map(|path| {
+            let mut chars = path.chars();
+            let clipped: String = chars.by_ref().take(16).collect();
+            let path = if chars.next().is_some() {
+                format!("{}…", clipped)
+            } else {
+                clipped
+            };
+            code_span(&path)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = paths.len().saturating_sub(shown.min(paths.len()));
+    if remaining == 0 {
+        listed
+    } else if listed.is_empty() {
+        format!("{remaining} additional unreviewed files")
+    } else {
+        format!("{listed}, and {remaining} additional unreviewed files")
+    }
+}
+
+fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    let paths = summary
+        .file_coverage
+        .as_ref()
+        .map(|coverage| coverage.unreviewed.as_slice())
+        .filter(|paths| !paths.is_empty())
+        .or_else(|| (!proposal.unreviewed.is_empty()).then_some(proposal.unreviewed.as_slice()));
+    if let Some(paths) = paths {
+        out.push_str("\n**Unreviewed paths**\n\n");
+        for path in paths {
+            let _ = writeln!(out, "- {}", code_span(path));
+        }
+    }
+}
+
+fn summary_details(out: &mut String, summary: &ReviewSummary) {
+    let executive = summary.executive_summary.trim();
+    if !executive.is_empty() {
+        out.push_str("## Full summary\n\n");
+        out.push_str(&prose(executive));
+        out.push_str("\n\n");
+    }
+}
+
+fn has_finding_signal(proposal: &Proposal) -> bool {
+    proposal.findings().next().is_some()
+        || proposal
+            .prior_findings
+            .iter()
+            .any(|title| !proposal.reported().any(|finding| finding.title == *title))
+        || proposal.overflowed().next().is_some()
+        || proposal
+            .lanes
+            .iter()
+            .any(|lane| !lane.noted.is_empty() || !lane.resolved.is_empty())
+}
+
+fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    if let Some(coverage) = &summary.file_coverage {
+        let _ = write!(
+            out,
+            "**Coverage:** Reviewed {} of {} files",
+            coverage.reviewed, coverage.total
+        );
+        if !coverage.unreviewed.is_empty() {
+            let _ = write!(
+                out,
+                "; not reviewed: {}",
+                bounded_paths(&coverage.unreviewed, 2)
+            );
+        }
+        out.push_str(".  \n");
+    } else if !proposal.unreviewed.is_empty() {
+        let _ = writeln!(
+            out,
+            "**Coverage:** File coverage is unavailable; not reviewed: {}.",
+            bounded_paths(&proposal.unreviewed, 2)
+        );
+    } else {
+        out.push_str("**Coverage:** File coverage is unavailable.  \n");
+    }
+}
+
+fn lane_gaps(out: &mut String, proposal: &Proposal) {
+    let gaps: Vec<_> = proposal
+        .lanes
+        .iter()
+        .filter(|lane| {
+            !lane.completed && lane.unanswered.iter().any(|item| item == &lane.check_name)
+        })
+        .collect();
+    if gaps.is_empty() {
+        return;
+    }
+    let names = gaps
+        .iter()
+        .map(|lane| lane.lane.to_string())
+        .collect::<Vec<_>>();
+    let _ = writeln!(
+        out,
+        "**Lane gaps:** The {} reviewer{} did not respond.  ",
+        prose(&names.join(", ")),
+        if names.len() == 1 { "" } else { "s" }
+    );
 }
 
 fn snapshot(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
@@ -228,7 +390,10 @@ fn tests(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         );
     }
     for lane in &proposal.lanes {
-        if lane.lane == crate::config::types::LaneId::Tests && !lane.unanswered.is_empty() {
+        if lane.lane == crate::config::types::LaneId::Tests
+            && !lane.unanswered.is_empty()
+            && !lane.unanswered.iter().any(|item| item == &lane.check_name)
+        {
             let _ = writeln!(
                 out,
                 "- **Unreviewed:** {}",
@@ -258,9 +423,8 @@ fn carried_findings(out: &mut String, proposal: &Proposal) {
 
 /// Findings that qualified but did not fit the inline-comment budget.
 ///
-/// Compact on purpose — one line, title and location — because the budget
-/// exists to keep the conversation list short, and a long paragraph per
-/// overflowed finding would rebuild the wall of text here instead.
+/// Keep the finding's location, problem, and suggested fix visible even when
+/// its inline conversation missed the comment budget.
 fn over_budget(out: &mut String, proposal: &Proposal) {
     let over: Vec<_> = proposal.overflowed().collect();
     if over.is_empty() {
@@ -272,21 +436,7 @@ fn over_budget(out: &mut String, proposal: &Proposal) {
         over.len()
     );
     for finding in over {
-        let _ = writeln!(
-            out,
-            "- {} · {} — {} ({})",
-            severity(finding.severity),
-            finding.lane,
-            prose(&finding.title),
-            code_span(&format!(
-                "{}{}",
-                finding.path,
-                finding
-                    .line
-                    .map(|line| format!(":{line}"))
-                    .unwrap_or_default()
-            ))
-        );
+        render_finding(out, finding, proposal);
     }
 }
 
@@ -309,22 +459,7 @@ fn findings(out: &mut String, proposal: &Proposal) {
     }
     for lane in &proposal.lanes {
         for finding in &lane.findings {
-            let _ = writeln!(
-                out,
-                "- **{} · {} · {}** — {} ({})",
-                severity(finding.severity),
-                lane.lane,
-                prose(&finding.title),
-                prose(&concise(&finding.body)),
-                code_span(&format!(
-                    "{}{}",
-                    finding.path,
-                    finding
-                        .line
-                        .map(|line| format!(":{line}"))
-                        .unwrap_or_default()
-                ))
-            );
+            render_finding(out, finding, proposal);
         }
     }
     carried_findings(out, proposal);
@@ -349,22 +484,15 @@ fn findings(out: &mut String, proposal: &Proposal) {
                 out.push_str("\n**Notes**\n");
             }
         } else {
-            out.push_str("\n**Lower-confidence notes**\n");
+            out.push_str("\n**Advisory notes**\n");
         }
         for (lane, finding) in noted {
-            let _ = writeln!(
-                out,
-                "- {}{} · {} — {} ({})",
-                severity(finding.severity),
-                if lane.context_degraded {
-                    " · unverified"
-                } else {
-                    ""
-                },
-                finding.lane,
-                prose(&finding.title),
-                code_span(&finding.path)
-            );
+            if lane.context_degraded {
+                out.push_str("\n**Unverified note — ");
+                out.push_str(&prose(&finding.lane.to_string()));
+                out.push_str("**\n");
+            }
+            render_finding(out, finding, proposal);
         }
     }
     let resolved: Vec<_> = proposal
@@ -390,13 +518,50 @@ fn findings(out: &mut String, proposal: &Proposal) {
             prose(&pending.into_iter().cloned().collect::<Vec<_>>().join(", "))
         );
     }
-    if !proposal.unanswered().is_empty() {
-        let _ = writeln!(
-            out,
-            "\n**Could not review:** {}",
-            code_list(proposal.unanswered().into_iter())
-        );
+}
+
+fn render_finding(
+    out: &mut String,
+    finding: &crate::findings::types::Finding,
+    proposal: &Proposal,
+) {
+    let citation = crate::markdown::citation(
+        &format!(
+            "{}{}",
+            finding.path,
+            finding
+                .line
+                .map(|line| format!(":{line}"))
+                .unwrap_or_default()
+        ),
+        &proposal.repo,
+        &proposal.head_sha,
+    );
+    let _ = writeln!(
+        out,
+        "- **{}{}: {}** ({})  \n  **Problem:** {}  \n  **Suggested fix:**",
+        severity(finding.severity),
+        if finding.late { " · late" } else { "" },
+        prose(&finding.title),
+        citation,
+        prose(&concise(&finding.body))
+    );
+    if let Some(suggestion) = &finding.suggestion {
+        let block = crate::markdown::code_block(suggestion);
+        for line in block.lines() {
+            let _ = writeln!(out, "  {line}");
+        }
+    } else {
+        out.push_str("  No concrete fix was supplied.\n");
     }
+}
+
+fn unanswered_paths(lane: &crate::app::review::LaneProposal) -> Vec<&str> {
+    lane.unanswered
+        .iter()
+        .filter(|item| item.as_str() != lane.check_name.as_str())
+        .map(String::as_str)
+        .collect()
 }
 
 fn before_merge(out: &mut String, proposal: &Proposal) {
@@ -436,12 +601,17 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         }
         if !lane.unanswered.is_empty() {
             any = true;
-            let _ = writeln!(
-                out,
-                "- [ ] Complete the {} review for {}.",
-                lane.lane,
-                code_list(lane.unanswered.iter().map(String::as_str))
-            );
+            let paths = unanswered_paths(lane);
+            if paths.is_empty() {
+                let _ = writeln!(out, "- [ ] Complete the {} review.", lane.lane);
+            } else {
+                let _ = writeln!(
+                    out,
+                    "- [ ] Complete the {} review for {}.",
+                    lane.lane,
+                    code_list(paths.into_iter())
+                );
+            }
         }
     }
     if !proposal.unreviewed.is_empty() {
@@ -480,10 +650,15 @@ fn agent_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
             if lane.unanswered.is_empty() {
                 "all assigned evidence".into()
             } else {
-                format!(
-                    "incomplete; unanswered: {}",
-                    code_list(lane.unanswered.iter().map(String::as_str))
-                )
+                let paths = unanswered_paths(lane);
+                if paths.is_empty() {
+                    "no lane response".into()
+                } else {
+                    format!(
+                        "incomplete; unanswered files: {}",
+                        code_list(paths.into_iter())
+                    )
+                }
             }
         );
         if let Some(observations) = summary.positive_observations.get(&lane.lane) {
@@ -532,6 +707,13 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         proposal.cached_tokens,
         proposal.embed_tokens
     );
+    if summary.updated_at_epoch > 0 {
+        let _ = writeln!(
+            out,
+            "- **Updated:** {}",
+            iso8601_utc(summary.updated_at_epoch)
+        );
+    }
     if summary.cache_chain_restarted {
         out.push_str("- **Continuity:** summary cache chain restarted at the storage ceiling.\n");
     }
@@ -1117,5 +1299,196 @@ mod tests {
             rendered.contains("adds a retry to the sync loop"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn an_empty_review_has_a_compact_summary_and_collapsed_supporting_sections() {
+        let rendered = render(
+            &Config::default(),
+            &proposal(
+                ReviewSummary {
+                    executive_summary: "The change adds a retry to the sync loop.".into(),
+                    surface: crate::summary::types::ChangeSurface {
+                        production: 4,
+                        tests: 2,
+                        documentation: 1,
+                        configuration: 0,
+                    },
+                    file_coverage: Some(crate::summary::types::FileReviewCoverage {
+                        reviewed: 7,
+                        total: 7,
+                        unreviewed: vec![],
+                    }),
+                    ..ReviewSummary::default()
+                },
+                &[],
+            ),
+        );
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        assert!(visible.contains("**Verdict:**"), "{visible}");
+        assert!(
+            visible.contains("**Coverage:** Reviewed 7 of 7 files."),
+            "{visible}"
+        );
+        assert!(
+            visible.contains("The change adds a retry to the sync loop."),
+            "{visible}"
+        );
+        assert!(rendered.contains("<details>"), "{rendered}");
+        assert!(
+            visible.len() <= 800,
+            "{} chars outside details",
+            visible.len()
+        );
+        assert!(!visible.contains("## Tests"), "{visible}");
+        assert!(!visible.contains("## Review snapshot"), "{visible}");
+    }
+
+    #[test]
+    fn the_public_summary_stays_bounded_for_long_prose_and_many_unreviewed_paths() {
+        let long_paths: Vec<String> = (0..24)
+            .map(|index| format!("src/{index}/{}.rs", "deeply_nested_module".repeat(5)))
+            .collect();
+        let proposal = proposal(
+            ReviewSummary {
+                executive_summary: format!("{}.", "A long supported summary".repeat(60)),
+                ..ReviewSummary::default()
+            },
+            &[],
+        );
+        let mut proposal = proposal;
+        proposal.unreviewed = long_paths;
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        assert!(
+            visible.len() <= 800,
+            "{} chars outside details",
+            visible.len()
+        );
+        assert!(
+            rendered.contains("additional unreviewed files"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("src/23/"), "{rendered}");
+    }
+
+    #[test]
+    fn run_diagnostics_stay_inside_the_collapsed_block() {
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "critique", "check_name": "tinysweeper/critique",
+                "conclusion": "neutral", "summary": "The code index is behind.",
+                "findings": []
+            }],
+            "summary": {
+                "executive_summary": "The change updates the request handler. The index is behind.",
+                "cache_chain_restarted": true,
+                "tests": [{
+                    "kind": "regression", "behavior": "request handler",
+                    "assessment": "not executed per evidence", "citations": []
+                }]
+            },
+            "models": ["ladder/reviewer"],
+            "prior_findings": [], "cost_usd": 0.0, "cached_tokens": 0
+        }))
+        .expect("proposal");
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+
+        for term in ["cache chain", "index is behind", "ladder/", "per evidence"] {
+            assert!(
+                !visible.contains(term),
+                "{term} leaked outside details: {visible}"
+            );
+        }
+        assert!(rendered.contains("cache chain restarted"), "{rendered}");
+        assert!(rendered.contains("index is behind"), "{rendered}");
+        assert!(rendered.contains("ladder/reviewer"), "{rendered}");
+    }
+
+    #[test]
+    fn lane_gaps_are_not_rendered_as_unreviewed_file_paths() {
+        let config = Config::default();
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "tests", "check_name": "tinysweeper/tests",
+                "conclusion": "neutral", "summary": "No answer.",
+                "findings": [],
+                "unanswered": ["tinysweeper/tests", "src/tested.rs"]
+            }],
+            "unreviewed": ["src/unread.rs"],
+            "summary": ReviewSummary::default(), "prior_findings": [],
+            "cost_usd": 0.0, "cached_tokens": 0
+        }))
+        .expect("proposal");
+
+        let rendered = render(&config, &proposal);
+        assert!(
+            rendered.contains("not reviewed: `src/unread.rs`"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("tests reviewer did not respond"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("`src/tested.rs`"), "{rendered}");
+        assert!(!rendered.contains("tinysweeper/"), "{rendered}");
+    }
+
+    #[test]
+    fn findings_lead_with_a_location_problem_and_suggested_fix() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::Findings];
+        let proposal: Proposal = serde_json::from_value(json!({
+            "version": crate::app::review::PROPOSAL_VERSION,
+            "repo": "acme/widget", "number": 1, "head_sha": "abcdef1234567890",
+            "lanes": [{
+                "lane": "security", "check_name": "tinysweeper/security",
+                "conclusion": "failure", "summary": "Finding.",
+                "findings": [{
+                    "lane": "security", "severity": "high", "confidence": 0.99,
+                    "path": "src/hub.rs", "line": 42, "rule": "unsafe-default",
+                    "title": "Reject empty token", "body": "An empty token bypasses validation.",
+                    "suggestion": "if token.is_empty() { return Err(Error::MissingToken); }\n</details>\n```",
+                    "late": false, "aliases": [], "grouped": false, "review_pass": 1,
+                    "corroboration": 1
+                }]
+            }],
+            "summary": ReviewSummary::default(), "prior_findings": [],
+            "cost_usd": 0.0, "cached_tokens": 0
+        }))
+        .expect("proposal");
+
+        let rendered = render(&config, &proposal);
+        let section = rendered
+            .split("## Findings")
+            .nth(1)
+            .expect("findings section");
+        assert!(section.contains("[`src/hub.rs:42`](https://github.com/acme/widget/blob/abcdef1234567890/src/hub.rs#L42)"), "{section}");
+        assert!(
+            section.contains("An empty token bypasses validation."),
+            "{section}"
+        );
+        assert!(section.contains("if token.is_empty()"), "{section}");
+        let lines: Vec<_> = section.lines().collect();
+        let label = lines
+            .iter()
+            .position(|line| line.trim() == "**Suggested fix:**")
+            .expect("suggested-fix label");
+        assert_eq!(lines[label + 1].trim(), "````", "{section}");
+        assert_eq!(
+            lines[label + 2].trim(),
+            "if token.is_empty() { return Err(Error::MissingToken); }",
+            "{section}"
+        );
+        assert_eq!(lines[label + 3].trim(), "</details>", "{section}");
+        assert_eq!(lines[label + 4].trim(), "```", "{section}");
+        assert_eq!(lines[label + 5].trim(), "````", "{section}");
     }
 }

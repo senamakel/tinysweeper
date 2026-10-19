@@ -103,10 +103,10 @@ impl Drop for PendingModelCall {
             // itself was cancelled before it could report).
             if !self.physical
                 && self
-                .observer
-                .observed
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == 0
+                    .observer
+                    .observed
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    == 0
             {
                 self.observer
                     .completed(Usage::default(), false, false, std::time::Duration::ZERO);
@@ -2807,19 +2807,26 @@ mod tests {
         };
 
         let request = crate::ports::model::ModelRequest {
-                model: "deep".into(),
-                messages: vec![crate::ports::model::Message::user("Review this.")],
-                schema: json!({"type":"object"}),
-                schema_name: "critique".into(),
-                max_tokens: 32,
-            };
+            model: "deep".into(),
+            messages: vec![crate::ports::model::Message::user("Review this.")],
+            schema: json!({"type":"object"}),
+            schema_name: "critique".into(),
+            max_tokens: 32,
+        };
         let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
         let result = model
-            .review(request, &tree, &crate::config::types::LookupPolicy::default())
+            .review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            )
             .await;
 
         assert!(matches!(result, Err(Error::Budget { .. })));
-        assert!(gateway.requests().is_empty(), "budget refused before dispatch");
+        assert!(
+            gateway.requests().is_empty(),
+            "budget refused before dispatch"
+        );
         let record = timing.snapshot();
         assert_eq!(record.calls_attempted, 0);
         assert_eq!(record.calls_refused, 1);
@@ -2856,9 +2863,11 @@ mod tests {
                 policy: &crate::config::types::LookupPolicy,
             ) -> Result<ModelResponse> {
                 self.started.notify_one();
-                let permit = self.release.acquire().await.map_err(|_| {
-                    Error::Model("test admission gate closed".into())
-                })?;
+                let permit = self
+                    .release
+                    .acquire()
+                    .await
+                    .map_err(|_| Error::Model("test admission gate closed".into()))?;
                 permit.forget();
                 self.inner.review(request, tree, policy).await
             }
@@ -2908,7 +2917,10 @@ mod tests {
         }
         drop(running);
 
-        assert!(gateway.requests().is_empty(), "cancelled before provider admission");
+        assert!(
+            gateway.requests().is_empty(),
+            "cancelled before provider admission"
+        );
         let record = timing.snapshot();
         assert_eq!(record.calls_attempted, 0);
         assert_eq!(record.calls_succeeded, 0);
@@ -2946,7 +2958,7 @@ mod tests {
             },
         );
         let adapter = GatewayModel::with_key(&config, "fixture".into())
-            .scoped_budget(1.0)
+            .scoped_budget(1_000.0)
             .expect("gateway supports budget scopes");
         let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
         timing.record(|record| record.head_sha = "abc123".into());
@@ -2978,11 +2990,7 @@ mod tests {
             max_tokens: 32,
         };
         let running = observed
-            .review(
-                request,
-                &tree,
-                &policy,
-            )
+            .review(request, &tree, &policy)
             .with_subscriber(dispatch)
             .instrument(tracing::info_span!(
                 "review",

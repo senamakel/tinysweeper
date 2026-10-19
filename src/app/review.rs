@@ -2683,6 +2683,87 @@ mod tests {
         assert_eq!(record.calls_succeeded, 0);
     }
 
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn observed_gateway_dispatch_logs_once_with_review_correlation() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use tracing::{Instrument, instrument::WithSubscriber};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "deep",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
+            ),
+            Reply::completion(
+                "deep",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut models = Config::default().models;
+        models.base_url = gateway.base_url.clone();
+        models.fallback.clear();
+        models.agentic_reviewers = false;
+        models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        let mut adapter = GatewayModel::with_key(&models, "fixture".into());
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+        timing.record(|record| record.head_sha = "abc123".into());
+        let observed = ObservedModel {
+            inner: Arc::new(adapter),
+            timing: timing.clone(),
+        };
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        let request = crate::ports::model::ModelRequest {
+            model: "deep".into(),
+            messages: vec![
+                crate::ports::model::Message::system("Review."),
+                crate::ports::model::Message::user("Check this evidence."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "critique".into(),
+            max_tokens: 32,
+        };
+        observed
+            .complete(request)
+            .with_subscriber(tracing::Dispatch::new(subscriber))
+            .instrument(tracing::info_span!(
+                "review",
+                repo = "owner/repo",
+                pr = 7,
+                head_sha = "abc123",
+                mode = "Incremental"
+            ))
+            .await
+            .expect("mock gateway completes");
+
+        let record = timing.snapshot();
+        assert_eq!(record.calls_attempted, 2);
+        assert_eq!(record.calls_succeeded, 2);
+        assert_eq!(record.usage.input_tokens, 12);
+        assert_eq!(record.usage.output_tokens, 5);
+        let lines = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(lines.matches("model call").count(), 2, "{lines}");
+        assert!(lines.contains("latency_ms="), "{lines}");
+        assert!(lines.contains("repo=owner/repo"), "{lines}");
+        assert!(lines.contains("pr=7"), "{lines}");
+        assert!(lines.contains("head_sha=abc123"), "{lines}");
+        assert!(lines.contains("mode=Incremental"), "{lines}");
+    }
+
     #[tokio::test]
     async fn deterministic_commits_outcome_is_answered_in_summary_evidence() {
         let config = Config::default();

@@ -5680,7 +5680,8 @@ mod tests {
             .expect("owned retry yield")
             .expect("scheduler update")
         );
-        seed_previously_published_queue_checks(&store, now + 5).await;
+        let status_forge = MockForge::new();
+        publish_test_queued_statuses_through_forge(&store, status_forge, now + 5).await;
 
         let resumed = store
             .claim_next("replacement-worker", now + 6)
@@ -6656,11 +6657,17 @@ mod tests {
             .claim_pending_checks(now_ms, QUEUE_STATUS_DRAIN_BATCH)
             .await
             .expect("test status claims succeed");
-        for (index, check) in pending.into_iter().enumerate() {
+        static NEXT_FIXTURE_CHECK_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(90_000);
+        for check in pending {
             assert!(!check.retired, "fixture only publishes active queued checks");
             assert!(store.mark_queue_post_attempted(&check, now_ms).await.unwrap());
             assert!(store
-                .record_queued_check_id(&check, 90_000 + index as u64, now_ms)
+                .record_queued_check_id(
+                    &check,
+                    NEXT_FIXTURE_CHECK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    now_ms,
+                )
                 .await
                 .unwrap());
         }

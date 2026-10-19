@@ -169,6 +169,7 @@ fn ambiguous_retired_post_survives_restart_and_empty_recovery_reads() {
 }
 
 #[test]
+#[cfg(feature = "serve")]
 fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
     let check = super::ReviewCheckRecord {
         head_sha: "h".repeat(super::REVIEW_JOB_FIELD_LIMIT),

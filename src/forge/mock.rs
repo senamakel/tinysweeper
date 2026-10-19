@@ -1365,6 +1365,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn a_queued_review_check_can_be_updated_by_its_original_run_id() {
         let forge = MockForge::new();

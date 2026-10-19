@@ -4238,7 +4238,11 @@ mod tests {
             Admission::Admitted
         );
 
-        let owned = store.claim_next("burst-worker", now + 4).await.unwrap().unwrap();
+        let owned = store
+            .claim_next("burst-worker", now + 4)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(owned.accepted_ids.len(), 3);
         assert!(store.confirm_head(&owned, "head-c", now + 5).await.unwrap());
         assert_eq!(
@@ -4249,11 +4253,8 @@ mod tests {
         let model = MockModel::silent();
         let forge = MockForge::new();
         let repo = RepoId::parse("owner/repo").unwrap();
-        let result = run_if_confirmed_head_needs_review(
-            &store,
-            Some(&owned),
-            Mode::Incremental,
-            || async {
+        let result =
+            run_if_confirmed_head_needs_review(&store, Some(&owned), Mode::Incremental, || async {
                 model
                     .complete(ModelRequest {
                         model: "test".into(),
@@ -4281,10 +4282,9 @@ mod tests {
                     false,
                     status::ReviewCoverage::default(),
                 ))))
-            },
-        )
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap();
 
         assert!(matches!(result, InnerReview::Complete(Some(_))));
         assert_eq!(model.requests().len(), 1);
@@ -4295,11 +4295,205 @@ mod tests {
             &writes[0],
             crate::forge::Write::Check(check) if check.head_sha == "head-c"
         ));
-        assert!(store
-            .finish(&owned, TerminalOutcome::Published, now + 7, now + 7)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .finish(&owned, TerminalOutcome::Published, now + 7, now + 7)
+                .await
+                .unwrap()
+        );
         assert_eq!(store.snapshot_for_test().terminal.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_inflight_a_model_call_yields_then_only_b_publishes() {
+        use crate::forge::{MockForge, RepoId};
+        use crate::ports::forge::ForgeWrite;
+        use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Usage};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::sync::Notify;
+
+        struct CallTracker {
+            requests: Mutex<Vec<String>>,
+            a_started: Notify,
+            a_dropped: Arc<AtomicBool>,
+        }
+        struct ACallDrop(Arc<AtomicBool>);
+        impl Drop for ACallDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        #[async_trait::async_trait]
+        impl Model for CallTracker {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                let content = request
+                    .messages
+                    .iter()
+                    .map(|message| message.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.requests
+                    .lock()
+                    .expect("requests")
+                    .push(content.clone());
+                if content.contains("head-a") {
+                    let _drop = ACallDrop(self.a_dropped.clone());
+                    self.a_started.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                Ok(ModelResponse {
+                    value: serde_json::Value::Null,
+                    model: "test".into(),
+                    usage: Usage::default(),
+                })
+            }
+        }
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now = unix_time_ms();
+        let mut request_a = queued_test_review(83);
+        request_a.repo = "owner/repo".into();
+        request_a.number = 7;
+        request_a.head_sha = Some("head-a".into());
+        store.admit_batch(vec![request_a.clone()]).await.unwrap();
+        let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
+        assert_eq!(
+            store.begin_paid(&owned_a, now + 1).await.unwrap(),
+            PaidStart::Started
+        );
+
+        let a_dropped = Arc::new(AtomicBool::new(false));
+        let tracker = Arc::new(CallTracker {
+            requests: Mutex::new(Vec::new()),
+            a_started: Notify::new(),
+            a_dropped: a_dropped.clone(),
+        });
+        let guarded_a = OwnedModel {
+            inner: tracker.clone(),
+            jobs: store.clone(),
+            owned: owned_a.clone(),
+            owner_lost: None,
+            owner_until: None,
+        };
+        let permits = Arc::new(Semaphore::new(
+            crate::ports::review_job::MAX_RUNNING_REVIEWS,
+        ));
+        let mut held = Vec::new();
+        for _ in 0..crate::ports::review_job::MAX_RUNNING_REVIEWS {
+            held.push(permits.clone().acquire_owned().await.unwrap());
+        }
+        let worker_permit = held.pop().unwrap();
+        let jobs: Arc<dyn ReviewJobStore> = store.clone();
+        let a_started = tracker.a_started.notified();
+        let request_for_call = || ModelRequest {
+            model: "test".into(),
+            messages: vec![Message::user("review head-a")],
+            schema: serde_json::json!({"type": "object"}),
+            schema_name: "review".into(),
+            max_tokens: 16,
+        };
+        let worker = tokio::spawn(async move {
+            let result = select_review_control(
+                guarded_a.complete(request_for_call()),
+                jobs.as_ref(),
+                Some(&owned_a),
+                None,
+                None,
+            )
+            .await;
+            if matches!(result, Err(Error::ReviewSuperseded)) {
+                assert!(jobs.defer_yield(&owned_a, unix_time_ms()).await.unwrap());
+            }
+            drop(worker_permit);
+            result
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), a_started)
+            .await
+            .expect("A reaches the model provider before B arrives");
+
+        let mut request_b = request_a;
+        request_b.id = crate::ports::review_job::ReviewJobId("push-b".into());
+        request_b.delivery = Some("push-b".into());
+        request_b.head_sha = Some("head-b".into());
+        request_b.accepted_at_ms = now + 2;
+        store.admit_batch(vec![request_b]).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+                .await
+                .expect("B cancels the in-flight A provider future")
+                .unwrap(),
+            Err(Error::ReviewSuperseded)
+        ));
+        assert!(a_dropped.load(Ordering::SeqCst));
+        assert!(
+            permits.try_acquire().is_ok(),
+            "A releases its permit on yield"
+        );
+
+        let owned_b = store
+            .claim_next("worker-b", unix_time_ms())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .confirm_head(&owned_b, "head-b", unix_time_ms())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.begin_paid(&owned_b, unix_time_ms()).await.unwrap(),
+            PaidStart::Started
+        );
+        let forge = MockForge::new();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let result = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&owned_b),
+            Mode::Incremental,
+            || async {
+                tracker
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![Message::user("review head-b")],
+                        schema: serde_json::json!({"type": "object"}),
+                        schema_name: "review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
+                forge
+                    .publish_check(
+                        &repo,
+                        crate::forge::CheckRun {
+                            name: "tinysweeper/review".into(),
+                            head_sha: "head-b".into(),
+                            conclusion: Some(crate::forge::CheckConclusion::Success),
+                            title: "Reviewed B".into(),
+                            summary: "B replaced the yielded A".into(),
+                            images: vec![],
+                        },
+                    )
+                    .await?;
+                Ok(InnerReview::Complete(Some((
+                    1,
+                    false,
+                    status::ReviewCoverage::default(),
+                ))))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, InnerReview::Complete(Some(_))));
+        let requests = tracker.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("head-a"));
+        assert!(requests[1].contains("head-b"));
+        drop(requests);
+        assert!(matches!(
+            &forge.writes()[..],
+            [crate::forge::Write::Check(check)] if check.head_sha == "head-b"
+        ));
     }
 
     #[tokio::test]

@@ -10,12 +10,52 @@
 //! silently misbehaves when a model phrases something differently.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+
+/// Observe one settled model call without exposing its request or response.
+pub(crate) trait ModelCallObserver: Send + Sync {
+    /// Record safe accounting and elapsed time for one provider call.
+    fn completed(&self, usage: Usage, succeeded: bool, refused: bool, latency: Duration);
+
+    /// Correlate physical-call telemetry to its review without retaining content.
+    #[cfg(feature = "harness")]
+    fn correlation(&self) -> ModelCallContext {
+        ModelCallContext::default()
+    }
+}
+
+#[cfg(feature = "harness")]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ModelCallContext {
+    pub(crate) repo: String,
+    pub(crate) pr: u64,
+    pub(crate) head_sha: String,
+    pub(crate) mode: String,
+}
+
+tokio::task_local! {
+    static MODEL_CALL_OBSERVER: Arc<dyn ModelCallObserver>;
+}
+
+/// Run model work with an observer visible to physical model adapters.
+pub(crate) async fn with_model_call_observer<F: std::future::Future>(
+    observer: Arc<dyn ModelCallObserver>,
+    future: F,
+) -> F::Output {
+    MODEL_CALL_OBSERVER.scope(observer, future).await
+}
+
+/// Clone the active observer for model work moved into a spawned agent task.
+#[allow(dead_code)] // The gateway's spawned agent bridge consumes this when the harness observer lands.
+pub(crate) fn current_model_call_observer() -> Option<Arc<dyn ModelCallObserver>> {
+    MODEL_CALL_OBSERVER.try_with(Arc::clone).ok()
+}
 
 /// One message in a model conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +155,22 @@ pub struct Usage {
     pub input_tokens: u64,
     /// Generated tokens.
     pub output_tokens: u64,
+    /// Tokens spent reasoning, as reported by the provider.
+    pub reasoning_tokens: u64,
+    /// Physical provider dispatches represented by this accounting record.
+    /// Zero means the model adapter does not expose per-dispatch counts.
+    #[serde(default)]
+    pub calls_attempted: u64,
+    /// Dispatches that returned a provider response, even if later validation
+    /// rejected its contents.
+    #[serde(default)]
+    pub calls_succeeded: u64,
+    /// Requests refused before a provider response, including admission refusals.
+    #[serde(default)]
+    pub calls_refused: u64,
+    /// Dispatches that failed without a refusal.
+    #[serde(default)]
+    pub calls_errored: u64,
     /// Prompt tokens served from the provider's cache. The difference between
     /// a cheap re-review and a ruinous one.
     pub cached_tokens: u64,
@@ -135,6 +191,11 @@ impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.reasoning_tokens += other.reasoning_tokens;
+        self.calls_attempted += other.calls_attempted;
+        self.calls_succeeded += other.calls_succeeded;
+        self.calls_refused += other.calls_refused;
+        self.calls_errored += other.calls_errored;
         self.cached_tokens += other.cached_tokens;
         self.embed_tokens += other.embed_tokens;
         self.cost_usd += other.cost_usd;
@@ -198,6 +259,13 @@ pub trait Model: Send + Sync {
     /// Run one completion.
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse>;
 
+    /// Whether `complete` reports each physical provider dispatch through the
+    /// task-scoped [`ModelCallObserver`]. Adapters without a physical observer
+    /// keep the legacy one-result accounting fallback.
+    fn complete_reports_physical_calls(&self) -> bool {
+        false
+    }
+
     /// Review against a borrowed read-only repository. Offline models retain
     /// their completion behavior; live adapters may supply bounded tools.
     /// Implementations must enforce the lookup policy and redact repository
@@ -209,6 +277,13 @@ pub trait Model: Send + Sync {
         _policy: &crate::config::types::LookupPolicy,
     ) -> Result<ModelResponse> {
         self.complete(request).await
+    }
+
+    /// Whether `review` reports each physical provider dispatch. This is
+    /// separate from `complete` because agentic adapters may install physical
+    /// observation only when their scoped budget middleware is active.
+    fn review_reports_physical_calls(&self) -> bool {
+        self.complete_reports_physical_calls()
     }
 
     /// Create a fresh shared budget scope for a lane, when supported.
@@ -229,6 +304,11 @@ mod tests {
         total.add(Usage {
             input_tokens: 100,
             output_tokens: 10,
+            reasoning_tokens: 0,
+            calls_attempted: 3,
+            calls_succeeded: 1,
+            calls_refused: 1,
+            calls_errored: 1,
             cached_tokens: 80,
             embed_tokens: 0,
             cost_usd: 0.01,
@@ -236,6 +316,11 @@ mod tests {
         total.add(Usage {
             input_tokens: 50,
             output_tokens: 5,
+            reasoning_tokens: 0,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            calls_refused: 0,
+            calls_errored: 0,
             cached_tokens: 0,
             embed_tokens: 400,
             cost_usd: 0.02,
@@ -244,6 +329,10 @@ mod tests {
         assert_eq!(total.input_tokens, 150);
         assert_eq!(total.output_tokens, 15);
         assert_eq!(total.cached_tokens, 80);
+        assert_eq!(total.calls_attempted, 4);
+        assert_eq!(total.calls_succeeded, 2);
+        assert_eq!(total.calls_refused, 1);
+        assert_eq!(total.calls_errored, 1);
         assert_eq!(total.embed_tokens, 400);
         assert!((total.cost_usd - 0.03).abs() < f64::EPSILON);
     }

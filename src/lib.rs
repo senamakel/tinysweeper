@@ -35,6 +35,7 @@ pub mod position;
 pub mod pr_triage;
 pub mod preview;
 pub mod retrieve;
+pub(crate) mod review_timing;
 pub mod scan;
 pub mod sentry;
 #[cfg(feature = "serve")]

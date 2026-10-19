@@ -911,6 +911,26 @@ async fn record_owned_disposition(
     .into()
 }
 
+/// Record control-plane completion before the worker's timing guard is dropped.
+/// A superseding hint cancels this worker, but its terminal outcome describes
+/// the deliberate yield; a publication completed before that hint stays success.
+fn finish_control_timing(
+    timing: &crate::review_timing::ReviewTiming,
+    disposition: WorkerDisposition,
+) -> WorkerDisposition {
+    match disposition {
+        WorkerDisposition::Yielded | WorkerDisposition::Terminal(TerminalOutcome::Superseded) => {
+            timing.finish("superseded")
+        }
+        WorkerDisposition::Terminal(TerminalOutcome::Published) => timing.finish("success"),
+        WorkerDisposition::Terminal(TerminalOutcome::Deadline) => timing.finish("deadline"),
+        WorkerDisposition::Terminal(TerminalOutcome::Exhausted) => timing.finish("failure"),
+        WorkerDisposition::Terminal(TerminalOutcome::Declined) => timing.finish("declined"),
+        WorkerDisposition::Deferred(_) | WorkerDisposition::OwnershipLost => {}
+    }
+    disposition
+}
+
 async fn classify_retry_boundary_error<Valid>(
     err: &Error,
     jobs: &dyn ReviewJobStore,
@@ -971,6 +991,7 @@ where
 }
 
 async fn finalize_exhausted_review<CheckOwner, CheckOwnerFuture, Conclude, ConcludeFuture>(
+    timing: &crate::review_timing::ReviewTiming,
     check_owner: CheckOwner,
     conclude: Conclude,
 ) -> WorkerDisposition
@@ -984,6 +1005,7 @@ where
         return WorkerDisposition::OwnershipLost;
     }
     conclude().await;
+    timing.finish("failure");
     WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
 }
 
@@ -2020,6 +2042,7 @@ type StatusSlot = Arc<std::sync::Mutex<Option<ReviewStatus>>>;
 struct Run {
     mode: Mode,
     slot: StatusSlot,
+    timing: crate::review_timing::ReviewTiming,
     /// Fixed when the worker starts, not per attempt. Queue wait is measured
     /// separately and does not consume the execution deadline.
     deadline: tokio::time::Instant,
@@ -2086,6 +2109,14 @@ impl OwnedModel {
 
 #[async_trait::async_trait]
 impl Model for OwnedModel {
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
+    }
+
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         self.check_owner().await?;
         self.inner.complete(request).await
@@ -2583,6 +2614,7 @@ fn review_conclusion(
 /// failure is retried a few times, and a review that still cannot run says so
 /// on the pull request through a blocking check. See `server::failure` for why
 /// the log line alone was not enough.
+#[tracing::instrument(skip_all, fields(repo = %job.repo, pr = job.number, head_sha = tracing::field::Empty, mode = ?job.mode))]
 async fn handle_review(
     state: AppState,
     job: ReviewJob,
@@ -2601,6 +2633,8 @@ async fn handle_review(
         queued_at,
         owned,
     } = job;
+    let timing = crate::review_timing::ReviewTiming::new(repo.clone(), number, format!("{mode:?}"));
+    timing.record(|record| record.queue_wait_ms = queued_at.elapsed().as_millis() as u64);
     tracing::debug!(%repo, number, queue_wait_ms = queued_at.elapsed().as_millis(), "starting admitted review worker");
     let slot: StatusSlot = Arc::new(std::sync::Mutex::new(None));
     let Some(_registered) = InFlight::register(&state.in_flight, &slot) else {
@@ -2632,7 +2666,14 @@ async fn handle_review(
     // the queue behind reviews that arrived while it was failing.
     let permit = match queued_permit {
         Some(permit) => Ok(permit),
-        None => state.permits.clone().acquire_owned().await,
+        None => {
+            crate::review_timing::measure(
+                Some(&timing),
+                "permit",
+                state.permits.clone().acquire_owned(),
+            )
+            .await
+        }
     };
     let permit = match permit {
         Ok(permit) => permit,
@@ -2659,6 +2700,7 @@ async fn handle_review(
         mode,
         slot: slot.clone(),
         deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
+        timing: timing.clone(),
         expected_head,
         owned: owned.clone(),
         owner_lost: owner_lost.clone(),
@@ -2680,12 +2722,15 @@ async fn handle_review(
                 Ok(Some(WorkerDisposition::Yielded)) => {
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
                     drop(permit);
-                    return WorkerDisposition::Yielded;
+                    return finish_control_timing(&timing, WorkerDisposition::Yielded);
                 }
                 Ok(Some(WorkerDisposition::Terminal(TerminalOutcome::Superseded))) => {
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
                     drop(permit);
-                    return WorkerDisposition::Terminal(TerminalOutcome::Superseded);
+                    return finish_control_timing(
+                        &timing,
+                        WorkerDisposition::Terminal(TerminalOutcome::Superseded),
+                    );
                 }
                 Ok(Some(WorkerDisposition::OwnershipLost)) | Err(_) => {
                     drop(permit);
@@ -2694,7 +2739,7 @@ async fn handle_review(
                 Ok(Some(WorkerDisposition::Terminal(outcome))) => {
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
                     drop(permit);
-                    return WorkerDisposition::Terminal(outcome);
+                    return finish_control_timing(&timing, WorkerDisposition::Terminal(outcome));
                 }
                 Ok(Some(WorkerDisposition::Deferred(not_before_ms))) => {
                     drop(permit);
@@ -2738,11 +2783,14 @@ async fn handle_review(
                         };
                         close_status(&state, &slot, conclusion).await;
                         drop(permit);
-                        return if published {
-                            WorkerDisposition::Terminal(TerminalOutcome::Published)
-                        } else {
-                            WorkerDisposition::Yielded
-                        };
+                        return finish_control_timing(
+                            &timing,
+                            if published {
+                                WorkerDisposition::Terminal(TerminalOutcome::Published)
+                            } else {
+                                WorkerDisposition::Yielded
+                            },
+                        );
                     }
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;
@@ -2758,6 +2806,11 @@ async fn handle_review(
                 // pull requests.
                 drop(permit);
                 close_status(&state, &slot, conclusion).await;
+                if published {
+                    timing.finish("success");
+                } else if timing.snapshot().outcome == "cancelled" {
+                    timing.finish("declined");
+                }
                 return WorkerDisposition::Terminal(if published {
                     TerminalOutcome::Published
                 } else {
@@ -2776,6 +2829,7 @@ async fn handle_review(
             Ok(InnerReview::Exhausted) => {
                 drop(permit);
                 return finalize_exhausted_review(
+                    &timing,
                     || run.check_owner(&state),
                     || async { close_status(&state, &slot, Conclusion::NotReviewed).await },
                 )
@@ -2805,7 +2859,7 @@ async fn handle_review(
                             Ok(false) => {
                                 close_status(&state, &slot, Conclusion::NotReviewed).await;
                                 drop(permit);
-                                return WorkerDisposition::Yielded;
+                                return finish_control_timing(&timing, WorkerDisposition::Yielded);
                             }
                             Ok(true) => {}
                             Err(err) => {
@@ -2817,8 +2871,12 @@ async fn handle_review(
                     }
                     drop(permit);
                     close_status(&state, &slot, Conclusion::NotReviewed).await;
+                    timing.finish("superseded");
                     tracing::debug!(%repo, number, "head changed while preparing review context");
-                    return WorkerDisposition::Terminal(TerminalOutcome::Superseded);
+                    return finish_control_timing(
+                        &timing,
+                        WorkerDisposition::Terminal(TerminalOutcome::Superseded),
+                    );
                 }
                 // The lease is released inside `review_inner` on every path,
                 // including this one, so a retry re-claims it rather than
@@ -2855,6 +2913,7 @@ async fn handle_review(
     drop(permit);
 
     tracing::error!(%err, %repo, number, attempts = attempt, "review failed");
+    timing.finish(crate::review_timing::outcome_for_error(&err));
 
     // Two ways to report the same thing, and which one applies depends on how
     // far the review got. If a check is already open, concluding it in place is
@@ -2943,6 +3002,7 @@ async fn report_failure(
 /// draft, or a commit another worker is already reviewing — and is distinct
 /// from `Ok(Some(0))`, a review that ran and found nothing. Only the latter
 /// should tell a pull request it has been reviewed.
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, head_sha = tracing::field::Empty, mode = ?run.mode))]
 async fn review_inner(
     state: &AppState,
     repo: &str,
@@ -2954,6 +3014,7 @@ async fn review_inner(
     run.check_work(state).await?;
     let who = state.store.contributor(author).await?;
     if who.trust == Trust::Blocked {
+        run.timing.finish("declined");
         tracing::info!(%author, "blocked contributor; not reviewing");
         return Ok(InnerReview::Complete(None));
     }
@@ -3166,7 +3227,11 @@ impl ReviewRun<'_> {
         // a model, or minting a write token; drafts are recorded through delivery
         // claims and start their first workflow only once GitHub says they are
         // ready for review.
+        tracing::Span::current().record("head_sha", pull_request.head_sha.as_str());
+        run.timing
+            .record(|record| record.head_sha = pull_request.head_sha.clone());
         if pull_request.draft {
+            run.timing.finish("declined");
             tracing::debug!(%repo, number, "tracking draft pull request without reviewing");
             return Ok(InnerReview::Complete(None));
         }
@@ -3260,13 +3325,13 @@ impl ReviewRun<'_> {
             || async {
                 run.check_work(state).await?;
                 run.check(repo, number)?;
-                Ok(open_status(
+                Ok(crate::review_timing::measure(Some(&run.timing), "open_status", open_status(
                     state,
                     &run.slot,
                     repo_id,
                     &pull_request.head_sha,
                     installation,
-                )
+                ))
                 .await)
             },
             || async {
@@ -3284,13 +3349,11 @@ impl ReviewRun<'_> {
             // head: a config is acted on deterministically, so reading it from
             // the branch under review would let a pull request grade its own
             // exam. See `crate::config::remote`.
-            let overlay = crate::config::remote::overlay(
-                forge,
-                repo_id,
-                &pull_request.base_sha,
-                &state.config.config,
-            )
-            .await;
+            let overlay = crate::review_timing::measure(Some(&run.timing), "knowledge",
+                crate::config::remote::overlay(
+                    forge, repo_id, &pull_request.base_sha, &state.config.config,
+                ),
+            ).await;
             if let Some(source) = &overlay.source {
                 tracing::info!(%repo, source, "reviewing under the repository's own configuration");
             }
@@ -3368,7 +3431,8 @@ impl ReviewRun<'_> {
                             .await
                     })
                     .catch_unwind();
-                    tokio::time::timeout(PUBLISH_DEADLINE, publish)
+                    crate::review_timing::measure(Some(&run.timing), "publish",
+                        tokio::time::timeout(PUBLISH_DEADLINE, publish))
                         .await
                         .map_err(|_elapsed| {
                             Error::timeout(
@@ -3398,6 +3462,7 @@ impl ReviewRun<'_> {
             changes_requested,
             status::aggregate_coverage(&proposal),
         ) else {
+            run.timing.finish("superseded");
             // The head moved, or the PR closed/merged, after the lanes ran.
             // Leave the already-open umbrella check terminally NotReviewed;
             // neither count the attempt nor kick off automerge.
@@ -3492,6 +3557,7 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
 ///
 /// Holds no write credential: nothing in here runs after a model call has
 /// returned, so nothing in here may mint one.
+#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "checkout_and_review"))]
 async fn run_lanes(
     state: &AppState,
     config: &Config,
@@ -3535,6 +3601,7 @@ async fn run_lanes(
     // same policy, not the deployment's policy instead.
 
     let config = config_for(config, run.mode);
+    let config_ref = &config;
 
     // The deadline bounds the checkout and the lanes — everything that can
     // take minutes and nothing that must not be cut short. `timeout_at` drops
@@ -3542,77 +3609,79 @@ async fn run_lanes(
     // flight. The checkout sits inside it so that a deadline already in the
     // past — a retry after a slow failure — resolves at once, before a clone
     // is even started, which is the intended way of refusing the retry.
-    let review = async {
-        // The tree the reviewers may look things up in. A shallow checkout of
-        // the head when `[lookup].checkout` allows it — one commit, no history,
-        // no hooks, the same fetch the indexer makes — so search works and a
-        // read costs no API call; the forge reader behind it for what a shallow
-        // checkout lacks, such as a submodule that was not fetched. Read-only
-        // either way: the token here is the review-read one the forge already
-        // holds, and the checkout is deleted with the review.
-        let checkout = if config.lookup.enabled && config.lookup.checkout {
-            let head = forge.pull_request(repo, number).await?.head_sha;
-            match crate::indexer::fetch::Checkout::fetch(
-                &super::indexing::git_host(),
-                &repo.to_string(),
-                &head,
-                read_token,
+    // The tree the reviewers may look things up in. A shallow checkout of
+    // the head when `[lookup].checkout` allows it — one commit, no history,
+    // no hooks, the same fetch the indexer makes — so search works and a
+    // read costs no API call; the forge reader behind it for what a shallow
+    // checkout lacks, such as a submodule that was not fetched. Read-only
+    // either way: the token here is the review-read one the forge already
+    // holds, and the checkout is deleted with the review.
+    let review = checkout_then_review_before_deadline(
+        &run.timing,
+        run.deadline,
+        repo,
+        number,
+        || async {
+            if config_ref.lookup.enabled && config_ref.lookup.checkout {
+                let head = forge.pull_request(repo, number).await?.head_sha;
+                match crate::indexer::fetch::Checkout::fetch(
+                    &super::indexing::git_host(),
+                    &repo.to_string(),
+                    &head,
+                    read_token,
+                )
+                .await
+                {
+                    Ok(checkout) => {
+                        if !config_ref.retrieval.submodules.is_empty()
+                            && let Err(err) = checkout
+                                .fetch_submodules(
+                                    &super::indexing::git_host(),
+                                    read_token,
+                                    &config_ref.retrieval.submodules,
+                                )
+                                .await
+                        {
+                            tracing::warn!(%repo, %err, "submodules not fetched for the review's tree");
+                        }
+                        Ok::<Option<crate::indexer::fetch::Checkout>, Error>(Some(checkout))
+                    }
+                    Err(err) => {
+                        tracing::warn!(%repo, %err, "no checkout for the review; lookups read through the forge");
+                        Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
+                    }
+                }
+            } else {
+                Ok::<Option<crate::indexer::fetch::Checkout>, Error>(None)
+            }
+        },
+        |checkout| async move {
+            // The review chains the forge reader behind whatever it is given,
+            // so a path the shallow checkout lacks — a submodule that was not
+            // fetched — is still read through the API.
+            let dir_tree = checkout
+                .as_ref()
+                .map(|c| crate::ports::tree::DirTree::new(c.path()).at_revision(c.revision()));
+            let tree = dir_tree
+                .as_ref()
+                .map(|dir| dir as &dyn crate::ports::tree::TreeReader);
+
+            crate::app::review::review_with_tree_observed_at_head(
+                forge,
+                model,
+                config_ref.as_ref(),
+                repo,
+                number,
+                Some(&state.store),
+                state.knowledge.as_deref(),
+                retriever.as_ref(),
+                tree,
+                run.expected_head.as_deref(),
+                Some(run.timing.clone()),
             )
             .await
-            {
-                Ok(checkout) => {
-                    if !config.retrieval.submodules.is_empty()
-                        && let Err(err) = checkout
-                            .fetch_submodules(
-                                &super::indexing::git_host(),
-                                read_token,
-                                &config.retrieval.submodules,
-                            )
-                            .await
-                    {
-                        tracing::warn!(%repo, %err, "submodules not fetched for the review's tree");
-                    }
-                    Some(checkout)
-                }
-                Err(err) => {
-                    tracing::warn!(%repo, %err, "no checkout for the review; lookups read through the forge");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        // The review chains the forge reader behind whatever it is given, so a
-        // path the shallow checkout lacks — a submodule that was not fetched —
-        // is still read through the API.
-        let dir_tree = checkout
-            .as_ref()
-            .map(|c| crate::ports::tree::DirTree::new(c.path()).at_revision(c.revision()));
-        let tree = dir_tree
-            .as_ref()
-            .map(|dir| dir as &dyn crate::ports::tree::TreeReader);
-
-        crate::app::review::review_with_tree_at_head(
-            forge,
-            model,
-            &config,
-            repo,
-            number,
-            Some(&state.store),
-            state.knowledge.as_deref(),
-            retriever.as_ref(),
-            tree,
-            run.expected_head.as_deref(),
-        )
-        .await
-    };
-    let review = async {
-        tokio::time::timeout_at(run.deadline, review)
-            .await
-            .map_err(|_elapsed| {
-                Error::timeout(format!("the review of {repo}#{number}"), REVIEW_DEADLINE)
-            })?
-    };
+        },
+    );
     let proposal = select_review_control(
         review,
         state.review_jobs.as_ref(),
@@ -3664,6 +3733,96 @@ async fn wait_for_owner_fence(
             (None, None) => std::future::pending::<()>().await,
         }
     }
+}
+
+/// Enforce the server's review deadline and record it before cancellation
+/// drops the in-flight pipeline and its model futures.
+async fn review_before_deadline<F, T>(
+    timing: &crate::review_timing::ReviewTiming,
+    deadline: tokio::time::Instant,
+    repo: &RepoId,
+    number: u64,
+    future: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    match tokio::time::timeout_at(deadline, future).await {
+        Ok(result) => result,
+        Err(_) => {
+            timing.finish("deadline");
+            Err(Error::timeout(
+                format!("the review of {repo}#{number}"),
+                REVIEW_DEADLINE,
+            ))
+        }
+    }
+}
+
+/// Sequence the durable status gate, read-only review work, and publication.
+/// The route supplies closures so no model work starts before the status is
+/// open, and publication cannot start until checkout and review have returned.
+#[cfg(test)]
+async fn server_review_lifecycle<
+    Open,
+    OpenFuture,
+    Review,
+    ReviewFuture,
+    Publish,
+    PublishFuture,
+    R,
+    T,
+>(
+    timing: &crate::review_timing::ReviewTiming,
+    open_status: Open,
+    review: Review,
+    publish: Publish,
+) -> Result<Option<T>>
+where
+    Open: FnOnce() -> OpenFuture,
+    OpenFuture: std::future::Future<Output = Result<bool>>,
+    Review: FnOnce() -> ReviewFuture,
+    ReviewFuture: std::future::Future<Output = Result<R>>,
+    Publish: FnOnce(R) -> PublishFuture,
+    PublishFuture: std::future::Future<Output = Result<Option<T>>>,
+{
+    let go_on = crate::review_timing::measure(Some(timing), "open_status", open_status()).await?;
+    if !go_on {
+        return Ok(None);
+    }
+    let review = review().await?;
+    publish(review).await
+}
+
+/// Measure checkout separately while bounding checkout and review as one
+/// cancellable server stage. This is the production boundary used by both the
+/// route and MockForge/MockModel lifecycle tests.
+async fn checkout_then_review_before_deadline<
+    C,
+    R,
+    Checkout,
+    CheckoutFuture,
+    Review,
+    ReviewFuture,
+>(
+    timing: &crate::review_timing::ReviewTiming,
+    deadline: tokio::time::Instant,
+    repo: &RepoId,
+    number: u64,
+    checkout: Checkout,
+    review: Review,
+) -> Result<R>
+where
+    Checkout: FnOnce() -> CheckoutFuture,
+    CheckoutFuture: std::future::Future<Output = Result<C>>,
+    Review: FnOnce(C) -> ReviewFuture,
+    ReviewFuture: std::future::Future<Output = Result<R>>,
+{
+    let pipeline = async {
+        let checkout = crate::review_timing::measure(Some(timing), "checkout", checkout()).await?;
+        review(checkout).await
+    };
+    review_before_deadline(timing, deadline, repo, number, pipeline).await
 }
 
 /// Poll the durable control plane while model work is in flight. The provider
@@ -4049,6 +4208,318 @@ impl Previews for PreviewDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TimingLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct SlowMockModel(crate::harness::MockModel);
+
+    #[test]
+    fn control_plane_completion_records_yield_and_completed_publication() {
+        for (disposition, expected) in [
+            (WorkerDisposition::Yielded, "superseded"),
+            (
+                WorkerDisposition::Terminal(TerminalOutcome::Superseded),
+                "superseded",
+            ),
+            (
+                WorkerDisposition::Terminal(TerminalOutcome::Published),
+                "success",
+            ),
+        ] {
+            let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+            finish_control_timing(&timing, disposition);
+            assert_eq!(timing.snapshot().outcome, expected);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::model::Model for SlowMockModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            self.0.complete(request).await
+        }
+    }
+
+    #[test]
+    fn review_timing_classifies_deadline_errors_without_parsing_display_text() {
+        let timeout = Error::Timeout {
+            what: "review".into(),
+            seconds: 1,
+        };
+        let model = Error::Model("provider timed out".into());
+        assert_eq!(
+            crate::review_timing::outcome_for_error(&timeout),
+            "deadline"
+        );
+        assert_eq!(crate::review_timing::outcome_for_error(&model), "failure");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_server_deadline_records_the_cancelled_mock_review_lifecycle() {
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+
+        let mut config: crate::config::Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = false;
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                title: "review lifecycle fixture".into(),
+                body: "A fixture with a real changed file.".into(),
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(
+            7,
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                status: FileStatus::Modified,
+                patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                additions: 1,
+                ..ChangedFile::default()
+            }],
+        );
+        let forge = MockForge::with_state(state);
+        let repo = RepoId::parse("tinyhumansai/tinysweeper").unwrap();
+        let model = SlowMockModel(MockModel::always(serde_json::json!({
+            "summary": "Reviewed.", "findings": [], "resolved": []
+        })));
+        let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
+        let future = crate::app::review::review_with_tree_observed(
+            &forge,
+            Arc::new(model),
+            &config,
+            &repo,
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        );
+        let error = checkout_then_review_before_deadline(
+            &timing,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            &repo,
+            7,
+            || async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok::<(), Error>(())
+            },
+            |_| future,
+        )
+        .await
+        .expect_err("the server deadline cancels the delayed model call");
+        assert!(matches!(error, Error::Timeout { .. }));
+        let record = timing.snapshot();
+        assert_eq!(record.outcome, "deadline");
+        assert_eq!(record.head_sha, "abc123");
+        assert_eq!(record.files_total, 1);
+        assert_eq!(record.files_answered, 0);
+        assert_eq!(record.files_unanswered, 1);
+        assert!(record.phases_ms.contains_key("context"));
+        assert!(record.phases_ms["checkout"] > 0);
+        assert!(record.phases_ms["lanes"] > 0);
+        assert_eq!(record.calls_attempted, 1);
+        assert_eq!(record.calls_errored, 1);
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("review timing"), "{line}");
+        assert!(line.contains("outcome=deadline"), "{line}");
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        for phase in crate::review_timing::PHASES {
+            assert!(line.contains(phase), "missing {phase}: {line}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_forge_review_lifecycle_measures_each_success_stage() {
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
+
+        struct DelayedModel(MockModel);
+        #[async_trait::async_trait]
+        impl crate::ports::model::Model for DelayedModel {
+            async fn complete(
+                &self,
+                request: crate::ports::model::ModelRequest,
+            ) -> Result<crate::ports::model::ModelResponse> {
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                self.0.complete(request).await
+            }
+        }
+
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                head_sha: "abc123".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(
+            7,
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                status: FileStatus::Modified,
+                patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                additions: 1,
+                ..ChangedFile::default()
+            }],
+        );
+        let forge = MockForge::with_state(state);
+        let repo = RepoId::parse("tinyhumansai/tinysweeper").unwrap();
+        let mut config: crate::config::Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = false;
+        config.overview.enabled = false;
+        let model = Arc::new(DelayedModel(MockModel::always(serde_json::json!({
+            "summary": "Reviewed.", "findings": [], "resolved": []
+        }))));
+        let timing = crate::review_timing::ReviewTiming::new(repo.to_string(), 7, "Incremental");
+
+        let permits = Arc::new(Semaphore::new(1));
+        let mut held = Some(permits.clone().acquire_owned().await.unwrap());
+        let permit = {
+            let waiting = crate::review_timing::measure(
+                Some(&timing),
+                "permit",
+                permits.clone().acquire_owned(),
+            );
+            tokio::pin!(waiting);
+            tokio::select! {
+                _permit = &mut waiting => panic!("held semaphore should keep the permit pending"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(3)) => {}
+            }
+            drop(held.take());
+            waiting.await.unwrap()
+        };
+        drop(permit);
+        let published = server_review_lifecycle(
+            &timing,
+            || async {
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                let pr = forge.pull_request(&repo, 7).await?;
+                timing.record(|record| record.head_sha = pr.head_sha);
+                Ok(true)
+            },
+            || async {
+                checkout_then_review_before_deadline(
+                    &timing,
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                    &repo,
+                    7,
+                    || async {
+                        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                        Ok::<(), Error>(())
+                    },
+                    |_| async {
+                        crate::app::review::review_with_tree_observed(
+                            &forge,
+                            model,
+                            &config,
+                            &repo,
+                            7,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(timing.clone()),
+                        )
+                        .await
+                    },
+                )
+                .await
+                .map(|proposal| (config, proposal))
+            },
+            |(_config, proposal)| async {
+                crate::review_timing::measure(Some(&timing), "publish", async {
+                    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                    forge
+                        .publish_check(&repo, status::in_progress("abc123"))
+                        .await?;
+                    Ok(Some(proposal))
+                })
+                .await
+            },
+        )
+        .await
+        .expect("review lifecycle succeeds")
+        .expect("status check opens");
+        assert_eq!(published.head_sha, "abc123");
+        timing.finish("success");
+
+        let record = timing.snapshot();
+        assert_eq!(record.outcome, "success");
+        assert_eq!(record.head_sha, "abc123");
+        for phase in ["permit", "open_status", "checkout", "lanes", "publish"] {
+            assert!(
+                record.phases_ms[phase] > 0,
+                "{phase}: {:?}",
+                record.phases_ms
+            );
+        }
+        assert!(
+            record.phases_ms.values().sum::<u64>()
+                <= record.started.unwrap().elapsed().as_millis() as u64,
+            "phase durations overlap: {:?}",
+            record.phases_ms
+        );
+        assert_eq!(record.files_total, 1);
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("outcome=success"), "{line}");
+        for phase in crate::review_timing::PHASES {
+            assert!(line.contains(phase), "missing {phase}: {line}");
+        }
+    }
 
     #[tokio::test]
     async fn an_expired_owner_deadline_wins_before_the_review_future_is_polled() {
@@ -4785,6 +5256,7 @@ mod tests {
 
         let run = Run {
             mode: Mode::Incremental,
+            timing: crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             slot: Arc::new(std::sync::Mutex::new(None)),
             deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
             expected_head: Some("head-b".into()),
@@ -5133,7 +5605,9 @@ mod tests {
         .expect("an exhausted budget is a normal terminal result");
         assert!(matches!(exhausted, InnerReview::Exhausted));
 
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
         let disposition = finalize_exhausted_review(
+            &timing,
             || async {
                 if store.owns(&owned, now_ms).await? {
                     Ok(())
@@ -5153,6 +5627,17 @@ mod tests {
             &disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Exhausted)
         ));
+        assert_eq!(
+            timing.snapshot().outcome,
+            "failure",
+            "exhausted retries are a terminal failure, not cancellation"
+        );
+        let record = timing.snapshot();
+        assert!(
+            record.phases_ms.values().sum::<u64>()
+                <= record.started.unwrap().elapsed().as_millis() as u64,
+            "phase durations exceed the exhausted review's wall time"
+        );
         assert!(matches!(
             record_owned_disposition(&store, &owned, disposition, now_ms).await,
             Some(Ok(true))
@@ -5173,6 +5658,20 @@ mod tests {
             conclusions[0].conclusion,
             Some(crate::forge::CheckConclusion::Neutral)
         );
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("outcome=failure"), "{line}");
+        for phase in crate::review_timing::PHASES {
+            assert!(line.contains(phase), "missing {phase}: {line}");
+        }
         assert_eq!(model.requests().len(), 5, "no sixth model call was made");
         assert_eq!(
             store.admit_batch(vec![request]).await.unwrap(),
@@ -5244,6 +5743,7 @@ mod tests {
         let check_id = check_id.expect("cold recovery must open a local status slot");
 
         let disposition = finalize_exhausted_review(
+            &crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             || async {
                 if store.owns(&recovered, now_ms).await? {
                     Ok(())
@@ -5378,6 +5878,7 @@ mod tests {
             .expect("replacement opens its own status");
 
         let disposition = finalize_exhausted_review(
+            &crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             || async {
                 if store.owns(&stale, stale_check_time).await? {
                     Ok(())
@@ -6189,6 +6690,7 @@ mod tests {
         let spent = Run {
             mode: Mode::Incremental,
             slot: slot.clone(),
+            timing: crate::review_timing::ReviewTiming::new("o/r", 7, "Incremental"),
             deadline: now
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(now),
@@ -6207,6 +6709,7 @@ mod tests {
         let live = Run {
             mode: Mode::Incremental,
             slot,
+            timing: crate::review_timing::ReviewTiming::new("o/r", 7, "Incremental"),
             deadline: now + REVIEW_DEADLINE,
             expected_head: None,
             owned: None,

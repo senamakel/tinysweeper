@@ -1135,6 +1135,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_reads_only_the_fields_needed_for_queue_admission() {
+        let forge = MockForge::new().with_pull_request(
+            PullRequest {
+                number: 7,
+                author: "contributor".into(),
+                head_sha: "head-a".into(),
+                open: true,
+                draft: false,
+                ..PullRequest::default()
+            },
+            vec![],
+            vec![],
+        );
+
+        let metadata = forge
+            .pull_request_metadata(&repo(), 7)
+            .await
+            .expect("metadata is available");
+        assert_eq!(metadata.number, 7);
+        assert_eq!(metadata.author, "contributor");
+        assert_eq!(metadata.head_sha, "head-a");
+        assert!(metadata.open);
+        assert!(!metadata.draft);
+    }
+
+    #[tokio::test]
     async fn setting_an_issue_type_is_recorded_and_applied_to_state() {
         let forge = MockForge::new().with_issue(Issue {
             number: 5,

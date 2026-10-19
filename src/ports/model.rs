@@ -325,6 +325,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opaque_models_keep_the_default_review_budget_binding_absent() {
+        let model = crate::harness::mock::MockModel::new();
+
+        assert!(model.with_review_budget(1.0).is_none());
+    }
+
+    #[test]
     fn usage_accumulates_across_calls() {
         let mut total = Usage::default();
         total.add(Usage {

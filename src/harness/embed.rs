@@ -1860,6 +1860,216 @@ mod tests {
         assert_eq!(gateway.requests().len(), 1);
     }
 
+    fn review_reservation_micros(model: &GatewayModel, request: &ModelRequest) -> u64 {
+        let base = request.max_tokens;
+        let mut completion = model.completion_request(request);
+        completion.max_tokens = (base != 0).then(|| *truncation_ladder(base).last().unwrap());
+        crate::harness::budget::call_with_history(
+            &crate::harness::budget::ledger(10.0),
+            &completion,
+            0,
+            &model.budget_prices,
+            &request.schema_name,
+            &model.output_history,
+        )
+        .expect("fixture has a deterministic route bound")
+        .call
+        .cost_micros
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_budget_is_shared_by_two_lane_scopes_and_direct_completion() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        model.budget_prices.get_mut("b").unwrap().output = 20.0;
+        let reservation = review_reservation_micros(&model, &request);
+        assert_eq!(reservation, 1_000, "fixture's retry ladder reserves R");
+        let root_limit = (2 * reservation - 1) as f64 / 1_000_000.0;
+        let lane_limit = (2 * reservation) as f64 / 1_000_000.0;
+        let (gateway, release) = FakeGateway::start_paused(vec![Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({
+                "prompt_tokens":5,
+                "completion_tokens":2,
+                "cost": reservation as f64 / 1_000_000.0
+            }),
+        )])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        let root = model
+            .with_review_budget(root_limit)
+            .expect("Gateway binds one review-wide budget root");
+
+        let mut lane_models = models();
+        lane_models.budget_usd_per_pr = lane_limit;
+        let first = crate::flows::caps::ModelCapability::new(root.clone(), lane_models.clone())
+            .with_budget(lane_limit)
+            .model()
+            .clone();
+        let second = crate::flows::caps::ModelCapability::new(root.clone(), lane_models)
+            .with_budget(lane_limit)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (id, caller, mut request) in [
+            (0, first, request.clone()),
+            (1, second, request.clone()),
+            (2, root, request.clone()),
+        ] {
+            request.schema_name = format!("lane_{id}");
+            let barrier = Arc::clone(&barrier);
+            let started_tx = started_tx.clone();
+            calls.spawn(async move {
+                started_tx.send(()).expect("test receiver");
+                barrier.wait().await;
+                (id, caller.complete(request).await)
+            });
+        }
+        drop(started_tx);
+        for _ in 0..3 {
+            started_rx.recv().await.expect("model call task started");
+        }
+        barrier.wait().await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first shared reservation reaches the paused provider");
+        let mut refused = 0;
+        while refused < 2 {
+            let result = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
+                .await
+                .expect("root-refused siblings finish promptly")
+                .expect("model task")
+                .expect("model result");
+            assert!(
+                matches!(result.1, Err(Error::Budget { .. })),
+                "only one R reservation fits the 2R - 1 review root: {result:?}"
+            );
+            refused += 1;
+        }
+        assert_eq!(gateway.requests().len(), 1);
+
+        release.add_permits(1);
+        let (id, response) = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
+            .await
+            .expect("held provider response completes after release")
+            .expect("remaining model task")
+            .expect("model task result");
+        assert!(id < 3);
+        response.expect("one call fits the shared review root");
+        assert_eq!(gateway.requests().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_budget_children_enforce_lane_caps_and_fresh_roots_are_isolated() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        model.budget_prices.get_mut("b").unwrap().output = 20.0;
+        let reservation = review_reservation_micros(&model, &request);
+        assert_eq!(reservation, 1_000, "fixture's retry ladder reserves R");
+        let review_limit = reservation as f64 / 1_000_000.0;
+        let narrow_lane_limit = (reservation - 1) as f64 / 1_000_000.0;
+        let reply = || {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({
+                    "prompt_tokens":5,
+                    "completion_tokens":2,
+                    "cost": reservation as f64 / 1_000_000.0
+                }),
+            )
+        };
+        let (gateway, release) = FakeGateway::start_paused(vec![reply(), reply()]).await;
+        model.base_url = gateway.base_url.clone();
+        let first_review = model
+            .with_review_budget(review_limit)
+            .expect("first review binds its own budget root");
+        let second_review = model
+            .with_review_budget(review_limit)
+            .expect("second review binds an independent budget root");
+
+        let mut narrow_models = models();
+        narrow_models.budget_usd_per_pr = narrow_lane_limit;
+        let narrow_lane =
+            crate::flows::caps::ModelCapability::new(first_review.clone(), narrow_models)
+                .with_budget(narrow_lane_limit)
+                .model()
+                .clone();
+        let mut wide_models = models();
+        wide_models.budget_usd_per_pr = review_limit;
+        let wide_lane = crate::flows::caps::ModelCapability::new(first_review, wide_models)
+            .with_budget(review_limit)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (id, caller, mut request) in [
+            (0, narrow_lane, request.clone()),
+            (1, wide_lane, request.clone()),
+            (2, second_review, request.clone()),
+        ] {
+            request.schema_name = format!("review_{id}");
+            let barrier = Arc::clone(&barrier);
+            let started_tx = started_tx.clone();
+            calls.spawn(async move {
+                started_tx.send(()).expect("test receiver");
+                barrier.wait().await;
+                (id, caller.complete(request).await)
+            });
+        }
+        drop(started_tx);
+        for _ in 0..3 {
+            started_rx.recv().await.expect("model call task started");
+        }
+        barrier.wait().await;
+
+        let narrow_result = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
+            .await
+            .expect("tight lane cap refuses promptly")
+            .expect("model task")
+            .expect("model task result");
+        assert_eq!(narrow_result.0, 0);
+        assert!(matches!(narrow_result.1, Err(Error::Budget { .. })));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while gateway.requests().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wide lane and independent review each reach the provider");
+        assert_eq!(gateway.requests().len(), 2);
+
+        release.add_permits(2);
+        let mut succeeded = Vec::new();
+        while let Some(result) = calls.join_next().await {
+            let (id, response) = result.expect("model task");
+            response.expect("wide child and fresh review each fit one R reservation");
+            succeeded.push(id);
+        }
+        succeeded.sort_unstable();
+        assert_eq!(succeeded, [1, 2]);
+        assert_eq!(gateway.requests().len(), 2);
+    }
+
     fn pinned(order: &[&str], allow_fallbacks: bool) -> ProviderRouting {
         ProviderRouting {
             order: order.iter().map(|p| (*p).to_string()).collect(),

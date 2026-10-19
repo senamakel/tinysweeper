@@ -894,6 +894,12 @@ async fn publish_pending_queue_checks_at(
                         if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
                             return Ok(());
                         }
+                        if !jobs.mark_queue_post_attempted(&check, unix_time_ms()).await? {
+                            return Ok(());
+                        }
+                        if !jobs.queued_check_claim_current(&check, unix_time_ms()).await? {
+                            return Ok(());
+                        }
                         crate::app::apply::publish_queued_review_status(
                             clients.write.as_ref(),
                             &repo,

@@ -496,6 +496,21 @@ impl ReviewSchedulerState {
         })
     }
 
+    /// Persist that an active queued-check POST is about to cross the network boundary.
+    pub fn mark_queue_post_attempted(&mut self, pending: &PendingReviewCheck, now_ms: i64) -> bool {
+        if pending.retired || !self.queued_check_claim_current(pending, now_ms) {
+            return false;
+        }
+        let Some(check) = self.unfinished.iter_mut()
+            .flat_map(|job| job.review_checks.iter_mut())
+            .find(|check| check.external_id == pending.check.external_id)
+        else {
+            return false;
+        };
+        check.post_attempted = true;
+        true
+    }
+
     /// Acknowledge a detached check's terminal write and remove its outbox entry.
     pub fn complete_retired_check(&mut self, pending: &PendingReviewCheck, now_ms: i64) -> bool {
         if !pending.retired {
@@ -1384,6 +1399,9 @@ pub trait ReviewJobStore: Send + Sync {
         pending: &PendingReviewCheck,
         now_ms: i64,
     ) -> Result<bool>;
+
+    /// Persist a POST-attempt marker before sending an ambiguous external write.
+    async fn mark_queue_post_attempted(&self, pending: &PendingReviewCheck, now_ms: i64) -> Result<bool>;
 
     /// Remove a retired status only after its terminal GitHub write succeeds.
     async fn complete_retired_check(&self, pending: &PendingReviewCheck, now_ms: i64) -> Result<bool>;

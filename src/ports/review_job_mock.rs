@@ -112,6 +112,18 @@ impl ReviewJobStore for MockReviewJobStore {
         Ok(self.state.lock().expect("state").queued_check_claim_current(pending, now_ms))
     }
 
+    async fn mark_queue_post_attempted(
+        &self,
+        pending: &crate::ports::review_job::PendingReviewCheck,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .expect("state")
+            .mark_queue_post_attempted(pending, now_ms))
+    }
+
     async fn complete_retired_check(
         &self,
         pending: &crate::ports::review_job::PendingReviewCheck,

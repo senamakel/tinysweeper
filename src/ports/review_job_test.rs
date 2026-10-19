@@ -65,6 +65,7 @@ fn queued_check_identity_keeps_head_and_stage_separate_from_paid_head_state() {
         stage: super::ReviewCheckStage::Queued,
         owner_generation: None,
         published: false,
+        post_attempted: false,
         write_claim_until_ms: 0,
         write_generation: 0,
     };
@@ -164,6 +165,7 @@ fn retired_status_outbox_is_bounded_and_fits_under_the_bson_document_cap() {
         stage: super::ReviewCheckStage::Queued,
         owner_generation: None,
         published: true,
+        post_attempted: true,
         write_claim_until_ms: 0,
         write_generation: 1,
     };

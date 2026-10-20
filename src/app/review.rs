@@ -572,8 +572,8 @@ pub struct Proposal {
     /// Earlier findings not declared resolved on this pass.
     #[serde(default)]
     pub prior_findings: Vec<String>,
-    /// Paths that changed and that no lane could read, because the forge
-    /// supplied no diff for them.
+    /// Changed paths that remain unreviewed, whether their diffs were
+    /// unavailable or host-side selection/execution left a lane incomplete.
     ///
     /// Carried on the proposal rather than left in the summaries because it
     /// decides a *verdict*, not just what a check run says: an approval is a
@@ -800,17 +800,26 @@ fn partial_review_metadata(
         }
         for path in &lane.unanswered {
             if changed.contains(path.as_str()) {
-                omissions.insert(PartialReviewPath {
-                    path: path.clone(),
-                    lane: Some(lane.lane),
-                    reason: PartialReviewReason::Unanswered,
+                let has_specific_reason = omissions.iter().any(|omission: &PartialReviewPath| {
+                    omission.path == *path && omission.lane == Some(lane.lane)
                 });
+                if !has_specific_reason {
+                    omissions.insert(PartialReviewPath {
+                        path: path.clone(),
+                        lane: Some(lane.lane),
+                        reason: PartialReviewReason::Unanswered,
+                    });
+                }
             }
         }
     }
 
     let omitted: Vec<_> = omissions.into_iter().collect();
-    let mut unreviewed = unavailable_diffs.to_vec();
+    let mut unreviewed: Vec<_> = unavailable_diffs
+        .iter()
+        .filter(|path| changed.contains(path.as_str()))
+        .cloned()
+        .collect();
     let mut seen: BTreeSet<String> = unreviewed.iter().cloned().collect();
     for omission in &omitted {
         if seen.insert(omission.path.clone()) {

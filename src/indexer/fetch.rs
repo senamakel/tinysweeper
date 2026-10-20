@@ -667,13 +667,94 @@ async fn git_fetch(
     git_stdout(root, token, args).await.map(|_| ())
 }
 
+/// Add a worktree with a task that owns both the child and its registration.
+/// If the caller is cancelled, the task kills and reaps Git before its guard
+/// removes the partial admin directory.
+async fn git_worktree_add<F, Fut>(
+    mirror: &Path,
+    path: &str,
+    revision: &str,
+    registration: WorktreeRegistrationCleanup,
+    checkpoint: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let args = ["worktree", "add", "--quiet", "--detach", path, revision];
+    let mut command = git_command(mirror, "", &args);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|err| Error::Forge(format!("could not run git worktree add: {err}")))?;
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    let mut cancellation = CancelGitTask(Some(cancel_tx));
+    let worker = tokio::spawn(async move {
+        let mut registration = registration;
+        let status = tokio::select! {
+            result = child.wait() => result.map_err(|err| {
+                Error::Forge(format!("could not wait for git worktree add: {err}"))
+            })?,
+            _ = &mut cancel_rx => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                drop(registration);
+                return Err(Error::Forge("git worktree add was cancelled".to_string()));
+            }
+            _ = tokio::time::sleep(GIT_TIMEOUT) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                drop(registration);
+                return Err(Error::Forge("git worktree add timed out".to_string()));
+            }
+        };
+        if !status.success() {
+            return Err(Error::Forge(format!(
+                "git worktree add failed with status {status}"
+            )));
+        }
+        tokio::select! {
+            _ = checkpoint() => {
+                registration.disarm();
+                Ok(())
+            }
+            _ = &mut cancel_rx => {
+                drop(registration);
+                Err(Error::Forge("git worktree add setup was cancelled".to_string()))
+            }
+        }
+    });
+    let result = worker
+        .await
+        .map_err(|err| Error::Forge(format!("git worktree supervisor failed: {err}")))?;
+    cancellation.disarm();
+    result
+}
+
+struct CancelGitTask(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl CancelGitTask {
+    fn disarm(&mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for CancelGitTask {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 /// Run one git command in `root` and return what it printed.
 async fn git_stdout(root: &Path, token: &str, args: &[&str]) -> Result<String> {
-    let mut command = Command::new("git");
+    let mut command = git_command(root, token, args);
     command
-        .arg("-C")
-        .arg(root)
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

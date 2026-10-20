@@ -6615,8 +6615,8 @@ mod tests {
         use crate::app::review_execution::ReviewExecutionOptions;
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest, ReviewEvent};
         use crate::forge::{MockForge, MockState, RepoId, Write};
-        use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Usage};
-        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionPermit};
+        use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
+        use crate::ports::model_execution::ModelExecutionControl;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
         use tokio::sync::{oneshot, watch};
@@ -6653,7 +6653,7 @@ mod tests {
                 let path = paths
                     .iter()
                     .find(|path| prompt.contains(&format!("The file is `{path}`.")))
-                    .or_else(|| paths.iter().find(|path| prompt.contains(path)))
+                    .or_else(|| paths.iter().find(|path| prompt.contains(*path)))
                     .cloned()
                     .unwrap_or_else(|| "<no-isolated-path>".into());
                 self.attempts
@@ -6840,7 +6840,7 @@ mod tests {
         request.head_sha = Some("abc123".into());
         store.admit_batch(vec![request]).await.unwrap();
         seed_previously_published_queue_checks(&*store, now_ms).await;
-        publish_test_queued_statuses_through_forge(&store, forge.clone(), now_ms).await;
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms).await;
         let owned = store
             .claim_next("clock-worker", now_ms + 1)
             .await
@@ -6853,15 +6853,24 @@ mod tests {
                 .unwrap()
         );
 
+        let base_model: Arc<dyn Model> = model.clone();
+        let bound_model = run_context
+            .bind_model(base_model, config.models.budget_usd_per_pr)
+            .model
+            .clone();
+
         let (checkout_tx, checkout_rx) = oneshot::channel();
+        let (proposal_tx, proposal_rx) = oneshot::channel();
         let task = {
             let store = Arc::clone(&store);
             let owned = owned.clone();
             let forge = forge.clone();
-            let model: Arc<dyn Model> = model.clone();
+            let model = bound_model;
             let config = config.clone();
-            let repo = repo.clone();
+            let checkout_repo = repo.clone();
+            let review_repo = repo.clone();
             let context = Arc::clone(&run_context);
+            let proposal_tx = proposal_tx;
             tokio::spawn(async move {
                 review_with_paid_budget_and_status(
                     store.as_ref(),
@@ -6875,14 +6884,14 @@ mod tests {
                         let (proposal, findings) = checkout_then_review_before_deadline(
                             &timing,
                             hard_deadline,
-                            &repo,
+                            &checkout_repo,
                             7,
                             || async move {
                                 let _ = checkout_tx.send(());
                                 tokio::time::sleep(Duration::from_secs(75)).await;
                                 Ok::<(), Error>(())
                             },
-                            |_| async move {
+                            move |_| async move {
                                 assert_eq!(
                                     tokio::time::Instant::now(),
                                     started_at + Duration::from_secs(75)
@@ -6892,7 +6901,7 @@ mod tests {
                                         &forge,
                                         model,
                                         &config,
-                                        &repo,
+                                        &review_repo,
                                         7,
                                         None,
                                         None,
@@ -6913,7 +6922,8 @@ mod tests {
                                     crate::app::apply::requests_changes(&config, &proposal),
                                     status::aggregate_coverage(&proposal),
                                 );
-                                Ok::<_, Error>((proposal, result))
+                                let _ = proposal_tx.send(proposal);
+                                Ok::<_, Error>(result)
                             },
                         )
                         .await?;
@@ -6928,18 +6938,24 @@ mod tests {
             .await
             .expect("checkout starts in the paid attempt");
         tokio::time::advance(Duration::from_secs(75)).await;
-        while held_rx.borrow().len() < 8 {
-            held_rx
-                .changed()
-                .await
-                .expect("held requests remain observable");
+        for _ in 0..10_000 {
+            if held_rx.borrow().len() >= 8 {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
-        while !*falsified_rx.borrow() {
-            falsified_rx
-                .changed()
-                .await
-                .expect("the finding is falsified");
+        assert_eq!(
+            held_rx.borrow().len(),
+            8,
+            "eight calls are held inside the drain fixture"
+        );
+        for _ in 0..10_000 {
+            if *falsified_rx.borrow() {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
+        assert!(*falsified_rx.borrow(), "A's finding reaches its falsifier");
         assert_eq!(
             tokio::time::Instant::now(),
             started_at + Duration::from_secs(75)
@@ -6984,10 +7000,13 @@ mod tests {
         );
 
         tokio::time::advance(Duration::from_secs(1)).await;
-        let (completed, proposal) = task
+        let completed = task
             .await
             .expect("review worker task joins")
             .expect("review succeeds");
+        let proposal = proposal_rx
+            .await
+            .expect("the real App proposal reaches the publication assertion");
         assert_eq!(
             tokio::time::Instant::now(),
             started_at + Duration::from_secs(85)
@@ -7031,7 +7050,7 @@ mod tests {
         assert_eq!(usage.input_tokens, 18);
         assert_eq!(usage.output_tokens, 9);
         assert!((usage.cost_usd - 0.09).abs() < f64::EPSILON * 8.0);
-        assert_eq!(usage.calls_attempted, 10);
+        assert_eq!(usage.calls_attempted, 9);
         let attempts = model.attempts.lock().unwrap().clone();
         let committed = model.committed.lock().unwrap().clone();
         assert_eq!(

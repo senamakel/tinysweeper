@@ -287,6 +287,17 @@ pub trait Model: Send + Sync {
         self.complete_reports_physical_calls()
     }
 
+    /// Whether a controlled model reports each raw physical completion to its
+    /// review execution scope before applying any estimated price.
+    ///
+    /// This is separate from timing telemetry: adapters may report elapsed
+    /// calls without retaining provider-reported usage. A model returning
+    /// `true` must emit exactly one terminal callback per committed physical
+    /// completion through the bound [`ModelExecutionControl`].
+    fn reports_raw_completion_usage(&self) -> bool {
+        false
+    }
+
     /// Create a fresh shared budget scope for a lane, when supported.
     /// Replaces any prior scope rather than nesting ledgers. Offline models
     /// need no provider budget and keep returning `None`.

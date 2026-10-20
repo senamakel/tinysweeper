@@ -39,7 +39,6 @@ pub(crate) struct ReviewExecutionOptions {
 }
 
 /// A snapshot of committed and currently reserved provider-call slots.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReviewExecutionSnapshot {
     /// Calls committed immediately before their provider invocation.
@@ -53,6 +52,7 @@ pub(crate) struct ReviewExecutionSnapshot {
     /// Number of provider terminal callbacks received by this scope.
     pub physical_terminal_count: u64,
     /// Raw physical terminal callbacks received by this execution scope.
+    #[cfg(test)]
     pub physical_terminals: Vec<ModelExecutionTerminal>,
     /// Whether every committed call has a terminal with complete reported usage.
     pub physical_accounting_complete: bool,
@@ -355,7 +355,6 @@ impl ReviewExecution {
     }
 
     /// Snapshot the counters used when the proposal is finalized.
-    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> ReviewExecutionSnapshot {
         let state = lock(&self.inner.state);
         let physical_accounting_complete = state.physical_accounting.complete
@@ -367,6 +366,7 @@ impl ReviewExecution {
             physical_usage: state.physical_accounting.usage,
             physical_usage_by_model: state.physical_accounting.usage_by_model.clone(),
             physical_terminal_count: state.physical_accounting.terminal_count,
+            #[cfg(test)]
             physical_terminals: state.physical_terminals.clone(),
             physical_accounting_complete,
         }

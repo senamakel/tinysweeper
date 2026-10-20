@@ -658,6 +658,14 @@ impl Model for Cassette {
             .is_some_and(|inner| inner.review_reports_physical_calls())
     }
 
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.mode == Mode::Record
+            && self
+                .inner
+                .as_ref()
+                .is_some_and(|inner| inner.reports_raw_completion_usage())
+    }
+
     async fn review(
         &self,
         request: ModelRequest,

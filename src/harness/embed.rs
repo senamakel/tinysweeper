@@ -1268,6 +1268,10 @@ impl Model for GatewayModel {
         true
     }
 
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.execution_control.is_some()
+    }
+
     fn review_reports_physical_calls(&self) -> bool {
         // Controlled agentic turns report physical calls to the host observer;
         // budgeted turns also retain TinyAgents' existing physical wrapper.

@@ -2473,6 +2473,10 @@ impl Model for OwnedModel {
         self.inner.review_reports_physical_calls()
     }
 
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.inner.reports_raw_completion_usage()
+    }
+
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         self.check_owner().await?;
         self.inner.complete(request).await

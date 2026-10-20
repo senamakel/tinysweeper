@@ -4990,6 +4990,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_later_attempt_does_not_reuse_prior_proposal_usage() {
+        use crate::ports::model::{ModelRequest, ModelResponse};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FailSecondWireframe(AtomicUsize);
+
+        #[async_trait::async_trait]
+        impl Model for FailSecondWireframe {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                let value = match request.schema_name.as_str() {
+                    "tinysweeper_wireframe" => {
+                        if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                            return Err(Error::Model("transient wireframe failure".into()));
+                        }
+                        json!({"screens": []})
+                    }
+                    "tinysweeper_critique" => json!({"summary":"Fine.","findings":[]}),
+                    "tinysweeper_falsify" => json!({"incorrect": []}),
+                    _ => json!({"summary":"Fine.","findings":[]}),
+                };
+                Ok(ModelResponse {
+                    value,
+                    model: "fixture".into(),
+                    usage: Usage {
+                        input_tokens: 3,
+                        output_tokens: 2,
+                        calls_attempted: 1,
+                        calls_succeeded: 1,
+                        cost_usd: 0.01,
+                        ..Usage::default()
+                    },
+                })
+            }
+        }
+
+        let _callsite_registry_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut config = critique_config();
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        config.summary.enabled = false;
+        config.wireframe.enabled = true;
+        let model = Arc::new(FailSecondWireframe(AtomicUsize::new(0)));
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+
+        review_with_tree_observed(
+            &forge,
+            model.clone(),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        )
+        .await
+        .expect("the first proposal completes");
+        let failed = review_with_tree_observed(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        )
+        .await;
+        assert!(matches!(failed, Err(Error::Model(_))));
+        timing.finish("failure");
+
+        let expected_observed_cost = timing.snapshot().usage.cost_usd;
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(line.contains("usage_source=observed"), "{line}");
+        assert!(
+            line.contains(&format!("cost_usd={expected_observed_cost}")),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
     async fn terminal_timing_records_zero_yield_for_an_empty_one_pass_review() {
         let forge = forge_with(vec![rust_file()], vec![]);
         let mut config = critique_config();

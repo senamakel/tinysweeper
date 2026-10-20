@@ -27,6 +27,7 @@ use crate::harness::prompt::{self, PromptInputs};
 use crate::harness::schema;
 use crate::lanes::{
     Anchoring, Lane, LaneInput, LaneOutcome, aggregate_reviewer_responses, reviewer_responses,
+    stopped_by_execution_policy,
 };
 use crate::ports::model::Model;
 use crate::scan;
@@ -137,9 +138,25 @@ impl Lane for Description {
         // review, and an unreviewed lane that reports Success is what branch
         // protection approves — a live run against a real pull request is what
         // surfaced it, with every reviewer 404ing and the check still green.
+        let responses = match reviewer_responses(LaneId::Description, &reviewers, &answers) {
+            Ok(responses) => responses,
+            Err(err @ crate::error::Error::ModelExecutionRefused { refusal, .. }) => {
+                if let Some(outcome) = stopped_by_execution_policy(
+                    LaneId::Description,
+                    changed_paths,
+                    llm.spend(),
+                    refusal,
+                ) {
+                    return Ok(outcome);
+                }
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
+
         let Some(mut outcome) = aggregate_reviewer_responses(
             LaneId::Description,
-            reviewer_responses(LaneId::Description, &reviewers, &answers)?,
+            responses,
             input.diffs,
             Anchoring::Demote,
             input.config.council.corroboration,
@@ -200,6 +217,7 @@ fn empty_body_outcome(pr: &PullRequest, files: usize) -> LaneOutcome {
         skipped: None,
         pending: Vec::new(),
         unanswered: Vec::new(),
+        omissions: Vec::new(),
         coverage: None,
     }
 }

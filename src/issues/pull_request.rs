@@ -186,6 +186,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                omissions: vec![],
                 coverage: None,
                 overflow: vec![],
             }],
@@ -195,7 +196,10 @@ mod tests {
             cached_tokens: 0,
             embed_tokens: 0,
             models: vec![],
+            completion_accounting: None,
+            logical_usage: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
         }
     }

@@ -1148,6 +1148,7 @@ mod tests {
             overview: None,
             wireframe: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
             version: crate::app::review::PROPOSAL_VERSION,
             repo: "tinyhumansai/tinysweeper".into(),
@@ -1174,6 +1175,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                omissions: vec![],
                 coverage: None,
                 overflow: vec![],
             }],
@@ -1183,6 +1185,8 @@ mod tests {
             cached_tokens: 800,
             embed_tokens: 0,
             models: vec!["moonshotai/kimi-k3".into()],
+            completion_accounting: None,
+            logical_usage: None,
             threads: Default::default(),
         }
     }
@@ -2805,7 +2809,7 @@ mod tests {
         assert_eq!(
             public,
             format!(
-                "{}\n\n# Tiny Sweeper review\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
+                "{}\n\n# Tiny Sweeper review\n\n**Reviewed head:** `abc123`\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
                 crate::summary::MARKER,
                 crate::markdown::code_span("README.md")
             )
@@ -2944,6 +2948,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: outcome.unanswered,
+                omissions: outcome.omissions,
                 coverage: outcome.coverage,
                 overflow: vec![],
             }

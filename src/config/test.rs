@@ -353,6 +353,44 @@ fn review_passes_defaults_to_three_adaptive_attempts() {
 }
 
 #[test]
+fn large_pr_limits_default_to_the_operator_policy() {
+    let config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
+
+    assert!(config.review.large_pr.enabled);
+    assert_eq!(config.review.large_pr.files, 30);
+    assert_eq!(config.review.large_pr.changed_lines, 2_000);
+    assert_eq!(config.review.large_pr.groups, 24);
+    assert_eq!(config.review.large_pr.max_groups, 12);
+    assert_eq!(config.review.large_pr.max_calls, 48);
+    assert_eq!(config.review.large_pr.soft_deadline_percent, 80);
+    assert_eq!(config.review.large_pr.drain_seconds, 30);
+}
+
+#[test]
+fn large_pr_limits_must_be_positive_and_deadline_percent_is_bounded() {
+    let config = parse(
+        "version = 1\n[review.large_pr]\nfiles = 0\nchanged_lines = 0\ngroups = 0\n\
+         max_groups = 0\nmax_calls = 0\nsoft_deadline_percent = 96\ndrain_seconds = 0\n",
+    );
+    let joined = validate::validate(&config).join("\n");
+
+    for key in [
+        "files",
+        "changed_lines",
+        "groups",
+        "max_groups",
+        "max_calls",
+        "soft_deadline_percent",
+        "drain_seconds",
+    ] {
+        assert!(
+            joined.contains(&format!("review.large_pr.{key}")),
+            "{joined}"
+        );
+    }
+}
+
+#[test]
 fn recorded_eval_cassettes_are_ignored_by_default() {
     let config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
 
@@ -1441,6 +1479,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
         Some(
             "version = 1\nunknown_root = true\n[review]\nunknown_review = true\n\
              [models.provider]\nunknown_provider = true\n\
+             [review.large_pr]\nunknown_limit = true\n\
              [lanes.custom]\nunknown_lane = true\n",
         ),
         &[],
@@ -1451,6 +1490,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
     for key in [
         "unknown_root",
         "review.unknown_review",
+        "review.large_pr.unknown_limit",
         "models.provider.unknown_provider",
         "lanes.custom.unknown_lane",
     ] {

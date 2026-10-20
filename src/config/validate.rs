@@ -25,6 +25,7 @@ pub fn validate(config: &Config) -> Vec<String> {
     validate_version(config, &mut problems);
     validate_server(config, &mut problems);
     validate_review(config, &mut problems);
+    validate_large_pr(config, &mut problems);
     validate_paths(config, &mut problems);
     validate_models(config, &mut problems);
     validate_submodules(config, &mut problems);
@@ -224,6 +225,32 @@ fn validate_review(config: &Config, problems: &mut Vec<String>) {
         problems.push(format!(
             "`review.passes = {}` is out of range; expected a maximum adaptive depth from 1 through 3",
             review.passes
+        ));
+    }
+}
+
+fn validate_large_pr(config: &Config, problems: &mut Vec<String>) {
+    let policy = &config.review.large_pr;
+    for (key, value) in [
+        ("files", policy.files),
+        ("groups", policy.groups),
+        ("max_groups", policy.max_groups),
+        ("max_calls", policy.max_calls),
+    ] {
+        if value == 0 {
+            problems.push(format!("`review.large_pr.{key} = 0` must be positive"));
+        }
+    }
+    if policy.changed_lines == 0 {
+        problems.push("`review.large_pr.changed_lines = 0` must be positive".into());
+    }
+    if policy.drain_seconds == 0 {
+        problems.push("`review.large_pr.drain_seconds = 0` must be positive".into());
+    }
+    if !(1..=95).contains(&policy.soft_deadline_percent) {
+        problems.push(format!(
+            "`review.large_pr.soft_deadline_percent = {}` is out of range; expected 1 to 95",
+            policy.soft_deadline_percent
         ));
     }
 }

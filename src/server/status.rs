@@ -331,6 +331,7 @@ mod tests {
             usage: Default::default(),
             models: vec![],
             unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),
+            omissions: vec![],
             coverage: Some(crate::lanes::FileCoverage {
                 reviewed: reviewed.iter().map(|path| (*path).to_string()).collect(),
                 unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),
@@ -358,6 +359,7 @@ mod tests {
             summary: None,
             prior_findings: vec![],
             unreviewed: unreviewed.iter().map(|path| (*path).to_string()).collect(),
+            partial_review: None,
             skipped: None,
             cost_usd: 0.0,
             input_tokens: 0,
@@ -365,6 +367,8 @@ mod tests {
             cached_tokens: 0,
             embed_tokens: 0,
             models: vec![],
+            completion_accounting: None,
+            logical_usage: None,
             threads: Default::default(),
         }
     }

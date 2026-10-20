@@ -11,6 +11,7 @@ pub mod index;
 pub mod knowledge;
 pub mod manifest;
 pub mod model;
+pub mod model_execution;
 pub mod model_factory;
 pub mod review_job;
 pub mod review_job_mock;
@@ -25,6 +26,9 @@ pub use crate::ports::index::ChunkIndex;
 pub use crate::ports::knowledge::KnowledgeStore;
 pub use crate::ports::manifest::IndexManifest;
 pub use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Role, Usage};
+pub use crate::ports::model_execution::{
+    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+};
 pub use crate::ports::model_factory::{ModelFactory, ModelPurpose, StaticModelFactory};
 pub use crate::ports::review_job_mock::MockReviewJobStore;
 pub use crate::ports::review_state::ReviewStateStore;

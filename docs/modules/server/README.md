@@ -182,12 +182,14 @@ the lease release below it. Leases also carry a TTL in Mongo, which is the only
 thing that covers a killed process — a stranded lease would otherwise mean that
 pull request can never be reviewed again.
 
-`REVIEW_DEADLINE` bounds one review's wall clock, retries included. Each model
-call is capped on its own by the gateway client, but a review is dozens of
-them in sequence and nothing capped the sum: on 2026-09-15 one sat "in
-progress" for over two hours holding a permit. A review that misses it
-concludes its check as `ActionRequired` with "ran out of time", and is not
-retried: the deadline is the budget, and a retry would spend it again.
+`REVIEW_DEADLINE` is 900 seconds from the worker's permit acquisition, including
+metadata, checkout and retries. The default soft cutoff at 720 seconds stops new
+work; admitted groups drain for at most 30 seconds, ending at least five seconds
+before the hard deadline. A published partial review is terminal `Published`
+without requeueing or resetting paid attempts. A genuine hard timeout remains
+`ActionRequired` with "ran out of time" and is not retried. See
+[bounded review planning](../lanes/large-pr.md) for selection, coverage and
+Normal custom-model limitations.
 
 How it is enforced differs by phase, because cancellation is only safe where
 nothing non-idempotent is in flight:
@@ -374,7 +376,8 @@ operator did not ask for.
 
 The manual run takes its own lease (`…@{sha}!full`) rather than the webhook
 path's, since the ordinary review of that head has usually already happened and
-sharing the key would make the button a silent no-op.
+sharing the key would make the button a silent no-op. Full retains the same
+Large selection, shared call limit and original-clock deadline policy.
 
 **Installation.** A webhook delivery names the installation; an operator does
 not. The route asks GitHub which installation covers the repository, using the

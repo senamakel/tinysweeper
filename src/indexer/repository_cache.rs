@@ -332,6 +332,18 @@ mod tests {
             std::fs::read(second.path().join("README.md")).unwrap(),
             b"fixture head\n"
         );
+        assert!(first.path().join(".git").is_file());
+        let tree = crate::ports::tree::DirTree::new(first.path());
+        assert_eq!(
+            tree.lookup(&crate::ports::tree::Lookup::Read {
+                path: ".git".into(),
+                start: None,
+                end: None,
+            })
+            .await
+            .unwrap(),
+            crate::ports::tree::Found::NotFound
+        );
         assert_eq!(
             fetches.load(Ordering::SeqCst),
             1,
@@ -357,6 +369,79 @@ mod tests {
         assert_eq!(first.revision(), revision);
         assert_eq!(second.revision(), revision);
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_head_is_fetched_and_checked_out_from_the_existing_mirror() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let (remote, first_revision) = local_bare_repository(fixture.path());
+        let source = fixture.path().join("source");
+        std::fs::write(source.join("README.md"), "new fixture head\n").unwrap();
+        git(&["-C", source.to_str().unwrap(), "add", "README.md"]);
+        git(&[
+            "-C",
+            source.to_str().unwrap(),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "new fixture head",
+        ]);
+        let second_revision = git(&["-C", source.to_str().unwrap(), "rev-parse", "HEAD"]);
+        git(&[
+            "-C",
+            source.to_str().unwrap(),
+            "push",
+            "--quiet",
+            remote.to_str().unwrap(),
+            "HEAD",
+        ]);
+        let cache_root = fixture.path().join("cache");
+        let cache = RepositoryCache::at(&cache_root).expect("cache root");
+        let remote = remote.to_str().unwrap();
+        let fetches = AtomicUsize::new(0);
+        let old = cache
+            .checkout_from_url("acme/widgets", &first_revision, remote, "", &fetches)
+            .await
+            .expect("original head checkout");
+        let refreshed = cache
+            .checkout_from_url("acme/widgets", &second_revision, remote, "", &fetches)
+            .await
+            .expect("new head checkout");
+
+        assert_eq!(old.revision(), first_revision);
+        assert_eq!(refreshed.revision(), second_revision);
+        assert_eq!(
+            std::fs::read(refreshed.path().join("README.md")).unwrap(),
+            b"new fixture head\n"
+        );
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn read_credentials_are_not_persisted_in_the_mirror_configuration() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let (remote, revision) = local_bare_repository(fixture.path());
+        let root = fixture.path().join("cache");
+        let cache = RepositoryCache::at(&root).expect("cache root");
+        let token = "cache-token-must-not-persist";
+        cache
+            .checkout_from_url(
+                "acme/widgets",
+                &revision,
+                remote.to_str().unwrap(),
+                token,
+                &AtomicUsize::new(0),
+            )
+            .await
+            .expect("checkout with ephemeral read credential");
+
+        let config = std::fs::read_to_string(root.join("acme/widgets.git/config")).unwrap();
+        assert!(!config.contains(token));
+        assert!(!config.contains("http.extraHeader"));
     }
 
     #[test]

@@ -193,17 +193,6 @@ impl Checkout {
             .is_ok())
     }
 
-    #[cfg(test)]
-    pub(super) async fn fetch_from_url_for_test(
-        url: &str,
-        revision: &str,
-        token: &str,
-        fetch_count: &std::sync::atomic::AtomicUsize,
-    ) -> Result<Self> {
-        validate_revision(revision)?;
-        Self::fetch_url(url, revision, token, Some(fetch_count)).await
-    }
-
     /// Fetch allowed submodules recursively into this checkout, shallowly.
     ///
     /// Only submodules whose remote is on `host`: the read token rides on

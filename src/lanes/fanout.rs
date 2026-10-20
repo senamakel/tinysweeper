@@ -352,6 +352,38 @@ mod tests {
         assert_eq!(outcome.unanswered, vec!["bad.rs".to_string()]);
     }
 
+    #[test]
+    fn omitted_multifile_groups_keep_every_path_and_host_reason() {
+        let outcome = FanOut {
+            omitted: vec![OmittedGroup {
+                paths: vec!["src/a.rs".into(), "src/a_test.rs".into()],
+                reason: OmissionReason::SoftDeadline,
+            }],
+            ..FanOut::default()
+        }
+        .into_outcome();
+
+        assert!(!outcome.completed);
+        assert!(outcome.skipped.is_some());
+        assert_eq!(
+            outcome.unanswered,
+            ["src/a.rs".to_string(), "src/a_test.rs".to_string()]
+        );
+        assert_eq!(
+            outcome
+                .coverage
+                .expect("coverage records omissions")
+                .unanswered,
+            ["src/a.rs".to_string(), "src/a_test.rs".to_string()]
+        );
+        assert_eq!(outcome.omissions[0].reason, OmissionReason::SoftDeadline);
+        assert!(
+            outcome
+                .summary
+                .contains("not started before the soft deadline")
+        );
+    }
+
     #[tokio::test]
     async fn a_multi_file_groups_success_counts_every_member_file() {
         // Two two-file groups: the fan-out ran two conversations, but the

@@ -416,6 +416,17 @@ mod tests {
             omitted_critique
         );
         assert_eq!(
+            plan.omitted_groups[&LaneId::Critique]
+                .iter()
+                .map(|group| group.paths.as_slice())
+                .collect::<Vec<_>>(),
+            [&[
+                "src/zz_related.rs".to_string(),
+                "src/zz_test.rs".to_string()
+            ][..]],
+            "the omission record retains the original multi-file group"
+        );
+        assert_eq!(
             plan.selected
                 .iter()
                 .filter(|g| g.lane == LaneId::Security)

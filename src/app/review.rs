@@ -8,11 +8,9 @@
 //! module cannot construct a `ForgeWrite`, so no amount of confusion here can
 //! result in something being posted.
 
-use std::collections::VecDeque;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};

@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::forge::{PullRequest, RepoId};
 use crate::index::mongo::MongoIndex;
+use crate::indexer::repository_cache::RepositoryCache;
 use crate::ports::forge::ForgeRead as _;
 use crate::ports::forge::ForgeWrite;
 use crate::ports::knowledge::KnowledgeStore;
@@ -187,6 +188,8 @@ struct AppState {
     /// provider. `None` runs every review diff-only, which is what tinysweeper
     /// did before an index existed.
     index: Option<Arc<IndexBackend>>,
+    /// Shared server-owned Git mirrors for indexing and exact-head reviews.
+    repository_cache: RepositoryCache,
     /// Bounds concurrent indexing separately from concurrent reviewing: a
     /// delivery burst must not turn into a burst of full indexes.
     index_permits: Arc<Semaphore>,
@@ -289,7 +292,8 @@ pub async fn serve_with_model_factory(
     // reports a different width than `[embeddings]` declares is a startup
     // failure rather than a partial index discovered later. An operator who
     // configured no provider gets `None` and a log line saying so.
-    let index = match IndexBackend::open(&config.config).await? {
+    let repository_cache = RepositoryCache::from_env()?;
+    let index = match IndexBackend::open(&config.config, repository_cache.clone()).await? {
         Some(backend) => {
             tracing::info!(
                 signature = %backend.signature,
@@ -324,6 +328,7 @@ pub async fn serve_with_model_factory(
         accepting_reviews: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         review_queue,
         index: index.clone(),
+        repository_cache,
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
         triage_permits: Arc::new(Semaphore::new(triage_concurrency)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -3988,10 +3993,13 @@ impl ReviewRun<'_> {
                     Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                         state,
                         &overlay.config,
-                        repo_id,
-                        number,
+                        LaneTarget {
+                            repo: repo_id,
+                            number,
+                        },
                         forge,
                         read_token,
+                        &pull_request,
                         &run,
                     ))
                     .catch_unwind()
@@ -4147,6 +4155,13 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
         .any(|label| !label.is_empty() && pull_request.labels.contains(label))
 }
 
+/// Repository and pull request identity used by the review lanes.
+#[derive(Clone, Copy)]
+struct LaneTarget<'a> {
+    repo: &'a RepoId,
+    number: u64,
+}
+
 /// Run the checkout and the lanes under the deadline, and hand back what they
 /// produced for `review_inner` to publish uncancelled.
 ///
@@ -4160,16 +4175,20 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
 ///
 /// Holds no write credential: nothing in here runs after a model call has
 /// returned, so nothing in here may mint one.
-#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "checkout_and_review"))]
+#[tracing::instrument(
+    skip_all,
+    fields(repo = %target.repo, pr = target.number, phase = "checkout_and_review")
+)]
 async fn run_lanes(
     state: &AppState,
     config: &Config,
-    repo: &RepoId,
-    number: u64,
+    target: LaneTarget<'_>,
     forge: &crate::forge::github::GitHubRead,
     read_token: &str,
+    pull_request: &PullRequest,
     run: &Run,
 ) -> Result<(Config, crate::app::Proposal)> {
+    let LaneTarget { repo, number } = target;
     let binding = run
         .execution
         .bind_model(state.models.text(), config.models.budget_usd_per_pr);
@@ -4230,19 +4249,23 @@ async fn run_lanes(
         number,
         || async {
             if config_ref.lookup.enabled && config_ref.lookup.checkout {
-                let head = forge.pull_request(repo, number).await?.head_sha;
-                match crate::indexer::fetch::Checkout::fetch(
-                    &super::indexing::git_host(),
-                    &repo.to_string(),
-                    &head,
-                    read_token,
-                )
-                .await
+                let head = &pull_request.head_sha;
+                match state
+                    .repository_cache
+                    .checkout_for_diff(
+                        &super::indexing::git_host(),
+                        &repo.to_string(),
+                        head,
+                        &pull_request.base_sha,
+                        read_token,
+                    )
+                    .await
                 {
                     Ok(checkout) => {
                         if !config_ref.retrieval.submodules.is_empty()
                             && let Err(err) = checkout
-                                .fetch_submodules(
+                                .fetch_submodules_for_diff(
+                                    &pull_request.base_sha,
                                     &super::indexing::git_host(),
                                     read_token,
                                     &config_ref.retrieval.submodules,

@@ -492,14 +492,23 @@ async fn review_group(
         round_one_candidates,
         round_one_survivors,
     );
+    if execution_refusal.is_none() {
+        if let Some(observer) = input.pass_yield_observer {
+            observer.record_pass_yield(
+                LaneId::Critique,
+                1,
+                round_one_candidates,
+                round_one_survivors,
+            );
+        }
+    }
 
-    // Adaptive coverage passes. Gated on the group's own size, not the whole
-    // pull request's — a lane fans out per group, so a two-line group must
-    // not build a second prompt just because the change elsewhere is large.
+    // Candidate yield and deterministic high-risk files trigger an extra look;
+    // unrelated large files in the pull request do not affect this group.
     let mut added_by_coverage = 0usize;
     if execution_refusal.is_none()
         && config.review.passes > 1
-        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+        && (round_one_candidates > 0 || group_diffs.iter().any(crate::lanes::triage::high_risk))
     {
         // Fed cumulatively: the second coverage pass (pass 3) is told about
         // everything round one *and* the first coverage pass found, so it
@@ -633,6 +642,9 @@ async fn review_group(
             // Nothing new: a further pass over the same evidence would not
             // find more either, so stop rather than pay for one.
             if new_findings.is_empty() {
+                if let Some(observer) = input.pass_yield_observer {
+                    observer.record_pass_yield(LaneId::Critique, (pass_index + 1) as u8, 0, 0);
+                }
                 metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if had_proposals {
                     crate::lanes::coverage::StopReason::Duplicate
@@ -665,6 +677,16 @@ async fn review_group(
                 metrics.record(coverage_usage, coverage_elapsed, new_candidates, survivors);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
+            }
+
+            let survivors = new_filtered.findings.len();
+            if let Some(observer) = input.pass_yield_observer {
+                observer.record_pass_yield(
+                    LaneId::Critique,
+                    (pass_index + 1) as u8,
+                    new_candidates,
+                    survivors,
+                );
             }
 
             if new_filtered.findings.is_empty() {
@@ -715,25 +737,6 @@ async fn review_group(
         spend,
         execution_refusal,
     })
-}
-
-/// Minimum changed lines a group needs before adaptive coverage passes
-/// (`review.passes > 1`) are worth their extra calls.
-///
-/// Not configurable: a repository that wants coverage passes at all is opting
-/// into the per-pass cost already, and a second dial here would only let it
-/// re-enable the noise this threshold exists to avoid on the two-line groups
-/// that make up most pull requests. 40 is comfortably above what a rename or a
-/// one-line fix touches, and comfortably below what a group large enough to
-/// need a second reviewer look would be.
-const COVERAGE_PASS_MIN_LINES: usize = 40;
-
-/// How many lines this group's diffs changed, summed across every file in it.
-fn changed_lines(group_diffs: &[FileDiff]) -> usize {
-    group_diffs
-        .iter()
-        .map(|diff| diff.changed_lines.len())
-        .sum()
 }
 
 /// What one reviewer said about one group.
@@ -1938,8 +1941,8 @@ fn helper() {
         assert!(outcome.summary.contains("capped at Likely confidence"));
     }
 
-    /// How many changed lines a group needs to clear [`COVERAGE_PASS_MIN_LINES`].
-    const LARGE_LINES: usize = COVERAGE_PASS_MIN_LINES;
+    /// Keep the fixture large enough to exercise multi-pass prompt handling.
+    const LARGE_LINES: usize = 40;
 
     /// A synthetic patch whose group is large enough for a coverage pass to
     /// run at all — `diffs()` is deliberately two lines, so every coverage

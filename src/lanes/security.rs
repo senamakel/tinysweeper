@@ -534,21 +534,31 @@ async fn review_group(
     let mut rejected = filtered.rejected;
     let mut spend = outcome.spend;
     spend.merge(filtered.spend);
+    let mut metrics = crate::lanes::coverage::Metrics::start(
+        round_one_usage,
+        round_one_elapsed,
+        round_one_candidates,
+        round_one_survivors,
+    );
+    if execution_refusal.is_none() {
+        if let Some(observer) = pass_yield_observer {
+            observer.record_pass_yield(
+                LaneId::Security,
+                1,
+                round_one_candidates,
+                round_one_survivors,
+            );
+        }
+    }
 
     // Adaptive coverage uses the same strict anchoring and falsification as
     // round one, judging only new proposals against the evidence already read.
     let mut added_by_coverage = 0usize;
     if execution_refusal.is_none()
         && config.review.passes > 1
-        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+        && (round_one_candidates > 0 || group_diffs.iter().any(crate::lanes::triage::high_risk))
     {
         let mut confirmed = findings.clone();
-        let mut metrics = crate::lanes::coverage::Metrics::start(
-            round_one_usage,
-            round_one_elapsed,
-            round_one_candidates,
-            round_one_survivors,
-        );
 
         for pass_index in 1..config.review.passes {
             let reviewer = &reviewers[0];
@@ -655,6 +665,9 @@ async fn review_group(
             }
 
             if new_findings.is_empty() {
+                if let Some(observer) = pass_yield_observer {
+                    observer.record_pass_yield(LaneId::Security, (pass_index + 1) as u8, 0, 0);
+                }
                 metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if !had_proposals && had_raw_proposals {
                     crate::lanes::coverage::StopReason::PlacementFailure
@@ -681,6 +694,14 @@ async fn review_group(
                 break;
             }
             let new_findings = filtered.findings;
+            if let Some(observer) = pass_yield_observer {
+                observer.record_pass_yield(
+                    LaneId::Security,
+                    (pass_index + 1) as u8,
+                    candidate_count,
+                    new_findings.len(),
+                );
+            }
             if new_findings.is_empty() {
                 metrics.record(coverage_usage, coverage_elapsed, candidate_count, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::NonSurviving);
@@ -697,8 +718,8 @@ async fn review_group(
             confirmed.extend(new_findings.clone());
             findings.extend(new_findings);
         }
-        metrics.emit(LaneId::Security, group_paths);
     }
+    metrics.emit(LaneId::Security, group_paths);
 
     // The reviewer wrote its summary before filtering. Even a partial
     // rejection can make that prose assert a bug we have now disproved.
@@ -719,21 +740,6 @@ async fn review_group(
         spend,
         execution_refusal,
     })
-}
-
-/// Minimum changed lines a group needs before adaptive coverage passes
-/// (`review.passes > 1`) is worth its extra call — identical threshold and
-/// reasoning to `critique::COVERAGE_PASS_MIN_LINES`, kept as its own constant
-/// per lane rather than shared, so either lane's noise-control knobs can move
-/// independently of the other's.
-const COVERAGE_PASS_MIN_LINES: usize = 40;
-
-/// How many lines this group's diffs changed, summed across every file in it.
-fn changed_lines(group_diffs: &[FileDiff]) -> usize {
-    group_diffs
-        .iter()
-        .map(|diff| diff.changed_lines.len())
-        .sum()
 }
 
 /// Say, in the summary, when adaptive coverage found something round
@@ -1036,11 +1042,10 @@ mod tests {
         assert_eq!(outcome.omissions.len(), 1);
     }
 
-    /// A synthetic patch whose group is large enough for a coverage pass to
-    /// run at all — `diffs()` is deliberately two lines.
+    /// A synthetic patch large enough to exercise multi-pass prompt handling.
     fn large_patch() -> String {
         let mut patch = String::from("@@ -1,2 +1,42 @@\n fn handler(req: Request) {\n");
-        for i in 0..COVERAGE_PASS_MIN_LINES {
+        for i in 0..40 {
             patch.push_str(&format!("+    let x{i} = {i};\n"));
         }
         patch.push_str(" }\n");

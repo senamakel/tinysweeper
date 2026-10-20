@@ -2096,7 +2096,10 @@ mod tests {
         assert_eq!(snapshot.physical_usage.output_tokens, 8);
         assert_eq!(snapshot.physical_usage.cost_usd, 0.0051);
         assert_eq!(snapshot.physical_usage_by_model["b"].input_tokens, 15);
-        assert_eq!(snapshot.physical_usage_by_model["fallback"].cost_usd, 0.0021);
+        assert_eq!(
+            snapshot.physical_usage_by_model["fallback"].cost_usd,
+            0.0021
+        );
         assert!(snapshot.physical_accounting_complete);
     }
 
@@ -2177,11 +2180,9 @@ mod tests {
             .with_execution_control(control.clone())
             .expect("the Gateway preserves execution control");
         let timing = Arc::new(RecordedModelCalls::default());
-        let result = crate::ports::model::with_model_call_observer(
-            timing.clone(),
-            model.complete(request),
-        )
-        .await;
+        let result =
+            crate::ports::model::with_model_call_observer(timing.clone(), model.complete(request))
+                .await;
 
         result.expect("the provider response is valid");
         assert_eq!(gateway.requests().len(), 1);

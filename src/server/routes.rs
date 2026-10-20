@@ -5657,7 +5657,7 @@ mod tests {
             crate::forge::Write::CheckUpdate { check_id: 417, check }
                 if check.head_sha == "head-a"
                     && check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
-                    && check.title == "Review incomplete"
+                    && check.title == "Not reviewed"
         )));
         assert!(writes.iter().any(|write| matches!(
             write,

@@ -1948,7 +1948,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let (summary, summary_spend, summary_transcript) =
+    let summary_future =
         crate::review_timing::measure(timing.as_ref(), "summary", async {
             let full_pr_paths: Vec<String> =
                 context.files.iter().map(|file| file.path.clone()).collect();
@@ -2008,9 +2008,71 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                         .unwrap_or_default(),
                 )
             }
-        })
-        .await;
+        });
+
+    // These three artifacts have independent inputs after the lane outcomes
+    // are folded. Run their model calls together; each call still enters the
+    // same review budget and physical dispatch control.
+    let resolved: std::collections::BTreeSet<String> = lanes
+        .iter()
+        .flat_map(|lane| lane.resolved.iter().cloned())
+        .collect();
+    let threads_future = crate::review_timing::measure(timing.as_ref(), "threads", async {
+        // At the absolute soft cutoff, retain deterministic thread decisions
+        // but do not start a new advisory model call.
+        let thread_model = execution
+            .execution()
+            .refusal_for_new_work()
+            .is_none()
+            .then_some(model.as_ref());
+        match crate::threads::plan(forge, thread_model, config, repo, number, &resolved).await {
+            Ok(result) => result,
+            // Housekeeping must never cost a review its verdict.
+            Err(err) => {
+                tracing::warn!(%err, "could not plan thread resolution");
+                (Default::default(), Spend::default())
+            }
+        }
+    });
+    let wireframe_future = crate::review_timing::measure(timing.as_ref(), "wireframe", async {
+        if config.wireframe.enabled && execution.execution().refusal_for_new_work().is_none() {
+            let outcome = crate::wireframe::build(
+                &crate::wireframe::WireframeInputs {
+                    diffs: &diffs,
+                    max_screens: config.wireframe.max_screens,
+                    max_width: config.wireframe.max_width,
+                    max_height: config.wireframe.max_height,
+                    model: config.model_for_workload(crate::config::types::Workload::Wireframe),
+                    max_tokens: config.models.max_tokens,
+                },
+                model.as_ref(),
+            )
+            .await;
+            match outcome {
+                Ok(outcome) => Ok::<_, Error>((Some(outcome.set), outcome.spend)),
+                // Optional artifacts must not discard a review already made.
+                Err(Error::ModelExecutionRefused {
+                    refusal:
+                        crate::ports::model_execution::ModelExecutionRefusal::CallLimit
+                        | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
+                        | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline,
+                    ..
+                }) => Ok((None, Spend::default())),
+                Err(err) => Err(err),
+            }
+        } else {
+            // `None` leaves a previously published gallery alone. A partial
+            // review must not replace it with content from an incomplete run.
+            Ok::<_, Error>((None, Spend::default()))
+        }
+    });
+    let ((summary, summary_spend, summary_transcript), (threads, thread_spend), wireframe_result) =
+        tokio::join!(summary_future, threads_future, wireframe_future);
+    let (wireframe, wireframe_spend) = wireframe_result?;
+    // Fold shared spend in a stable stage order, independent of completion.
     spend.merge(summary_spend);
+    spend.merge(thread_spend);
+    spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
             spent: spend.cost_usd(),
@@ -2082,93 +2144,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         }
     }
 
-    // The review agents received the prior findings and the new diff. Their
-    // explicit `resolved` declarations are advisory evidence that the new code
-    // fixes a thread; `threads` also requires GitHub to mark that thread
-    // outdated before it can be closed.
-    let resolved: std::collections::BTreeSet<String> = lanes
-        .iter()
-        .flat_map(|lane| lane.resolved.iter().cloned())
-        .collect();
-    let threads = crate::review_timing::measure(timing.as_ref(), "threads", async {
-        // At the absolute soft cutoff, retain deterministic thread decisions
-        // but do not start a new advisory model call.
-        let thread_model = execution
-            .execution()
-            .refusal_for_new_work()
-            .is_none()
-            .then_some(model.as_ref());
-        match crate::threads::plan(forge, thread_model, config, repo, number, &resolved).await {
-            Ok((plan, thread_spend)) => {
-                spend.merge(thread_spend);
-                plan
-            }
-            // Housekeeping must never cost a review its verdict.
-            Err(err) => {
-                tracing::warn!(%err, "could not plan thread resolution");
-                Default::default()
-            }
-        }
-    })
-    .await;
-
     // The change map. Built last, from the findings that survived, so the
     // diagram marks the behaviours the review will actually comment on. It
     // makes no model call and cannot fail the review: `change_map` returns
     // `None` for a map nobody asked for and degrades to a graph-less picture
     // for one the store would not answer.
     let overview = change_map(config, &changed_neighbourhood, &diffs, &lanes);
-
-    // The ASCII wireframe gallery: what UI screens and modals this pull
-    // request adds, removes or changes, read from the diff alone. One cheap
-    // model call, independent of `src/preview` end to end — see
-    // `docs/modules/wireframe/README.md`.
-    let (wireframe, wireframe_spend) =
-        crate::review_timing::measure(timing.as_ref(), "wireframe", async {
-            if config.wireframe.enabled && execution.execution().refusal_for_new_work().is_none() {
-                let outcome = crate::wireframe::build(
-                    &crate::wireframe::WireframeInputs {
-                        diffs: &diffs,
-                        max_screens: config.wireframe.max_screens,
-                        max_width: config.wireframe.max_width,
-                        max_height: config.wireframe.max_height,
-                        model: config.model_for_workload(crate::config::types::Workload::Wireframe),
-                        max_tokens: config.models.max_tokens,
-                    },
-                    model.as_ref(),
-                )
-                .await;
-                match outcome {
-                    Ok(outcome) => Ok::<_, Error>((Some(outcome.set), outcome.spend)),
-                    // A physical permit can refuse after this preflight (for
-                    // example, when a sibling just used the last call). These
-                    // optional post-review artifacts must not discard the
-                    // review that already completed.
-                    Err(Error::ModelExecutionRefused {
-                        refusal:
-                            crate::ports::model_execution::ModelExecutionRefusal::CallLimit
-                            | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
-                            | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline,
-                        ..
-                    }) => Ok((None, Spend::default())),
-                    Err(err) => Err(err),
-                }
-            } else {
-                // `None` leaves a previously published gallery alone. A
-                // partial review after the cutoff must not replace it with
-                // content generated from an incomplete run.
-                Ok::<_, Error>((None, Spend::default()))
-            }
-        })
-        .await?;
-    spend.merge(wireframe_spend);
-    if spend.cost_usd() > config.models.budget_usd_per_pr {
-        return Err(Error::Budget {
-            spent: spend.cost_usd(),
-            limit: config.models.budget_usd_per_pr,
-            usage: None,
-        });
-    }
 
     let prior_findings = prior_titles
         .into_iter()

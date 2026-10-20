@@ -369,49 +369,60 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
 }
 
 #[tokio::test]
-async fn default_recording_ceiling_cannot_be_replenished_by_rerunning() {
-    let dir = corpus_dir(EXPECTATION);
-    let corpus = load(dir.path()).expect("loads one-case corpus");
-    let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let model = Arc::new(HiddenRetryModel {
-        control: None,
-        physical_calls: physical_calls.clone(),
-    });
-    let mut config = config();
-    config.models.budget_usd_per_pr = 0.5;
+async fn a_recording_ceiling_cannot_be_replenished_by_rerunning() {
+    for ceiling in [8, 32] {
+        let dir = corpus_dir(EXPECTATION);
+        let corpus = load(dir.path()).expect("loads one-case corpus");
+        let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model = Arc::new(HiddenRetryModel {
+            control: None,
+            physical_calls: physical_calls.clone(),
+        });
+        let mut config = config();
+        config.models.budget_usd_per_pr = 0.5;
+        let requested_ceiling = (ceiling != 8).then_some(ceiling);
 
-    run(
-        &corpus,
-        &config,
-        Some(model.clone()),
-        &RunOptions {
-            out: dir.path().join("runs/default-cumulative-first"),
-            record: true,
-            max_cost_usd: 0.5,
-            ..RunOptions::default()
-        },
-    )
-    .await
-    .expect("initial default allowance is admitted");
-    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+        run(
+            &corpus,
+            &config,
+            Some(model.clone()),
+            &RunOptions {
+                out: dir.path().join("runs/cumulative-first"),
+                record: true,
+                max_cost_usd: 0.5,
+                max_physical_calls_per_case: requested_ceiling,
+                ..RunOptions::default()
+            },
+        )
+        .await
+        .expect("initial selected allowance is admitted");
+        assert_eq!(
+            physical_calls.load(std::sync::atomic::Ordering::SeqCst),
+            ceiling
+        );
 
-    let second = run(
-        &corpus,
-        &config,
-        Some(model),
-        &RunOptions {
-            out: dir.path().join("runs/default-cumulative-second"),
-            record: true,
-            max_cost_usd: 0.5,
-            ..RunOptions::default()
-        },
-    )
-    .await;
-    assert!(
-        second.is_err(),
-        "a rerun cannot restore the default allowance"
-    );
-    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+        let second = run(
+            &corpus,
+            &config,
+            Some(model),
+            &RunOptions {
+                out: dir.path().join("runs/cumulative-second"),
+                record: true,
+                max_cost_usd: 0.5,
+                max_physical_calls_per_case: requested_ceiling,
+                ..RunOptions::default()
+            },
+        )
+        .await;
+        assert!(
+            second.is_err(),
+            "a rerun cannot restore the selected {ceiling}-call allowance"
+        );
+        assert_eq!(
+            physical_calls.load(std::sync::atomic::Ordering::SeqCst),
+            ceiling
+        );
+    }
 }
 
 #[tokio::test]

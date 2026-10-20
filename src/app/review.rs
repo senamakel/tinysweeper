@@ -310,6 +310,43 @@ fn refusal_error_before_new_work(
     })
 }
 
+async fn finish_within_execution_drain<T, F>(
+    execution: &crate::app::review_execution::ReviewExecution,
+    future: F,
+) -> Result<T>
+where
+    T: Send,
+    F: std::future::Future<Output = Result<T>> + Send,
+{
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    if let Some(error) = refusal_error_before_new_work(execution) {
+        return Err(error);
+    }
+    let now = tokio::time::Instant::now();
+    let drain_deadline = large_drain_deadline(
+        execution.soft_deadline(),
+        execution.hard_deadline(),
+        execution.drain_seconds(),
+        now,
+    );
+
+    tokio::select! {
+        biased;
+        _ = execution.cancelled() => Err(Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::Cancelled,
+            usage: None,
+            accounting_complete: false,
+        }),
+        _ = tokio::time::sleep_until(drain_deadline) => Err(Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::DrainDeadline,
+            usage: None,
+            accounting_complete: false,
+        }),
+        result = future => result,
+    }
+}
+
 /// Checks the shared run clock at the embedding provider boundary.
 struct ExecutionGatedEmbedder<'a> {
     inner: &'a dyn crate::ports::embed::Embedder,
@@ -323,17 +360,11 @@ impl crate::ports::embed::Embedder for ExecutionGatedEmbedder<'_> {
     }
 
     async fn embed(&self, texts: &[String]) -> Result<crate::index::types::Embedded> {
-        if let Some(error) = refusal_error_before_new_work(&self.execution) {
-            return Err(error);
-        }
-        self.inner.embed(texts).await
+        finish_within_execution_drain(&self.execution, self.inner.embed(texts)).await
     }
 
     async fn embed_query(&self, text: &str) -> Result<crate::index::types::Embedded> {
-        if let Some(error) = refusal_error_before_new_work(&self.execution) {
-            return Err(error);
-        }
-        self.inner.embed_query(text).await
+        finish_within_execution_drain(&self.execution, self.inner.embed_query(text)).await
     }
 }
 

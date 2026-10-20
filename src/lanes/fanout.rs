@@ -273,7 +273,9 @@ impl FanOut {
             ));
         }
 
-        let skipped = (reviewed == 0 && (!self.failures.is_empty() || !self.omitted.is_empty()))
+        let skipped = (reviewed == 0
+            && findings.is_empty()
+            && (!self.failures.is_empty() || !self.omitted.is_empty()))
             .then(|| {
                 "No files received a complete review; see the listed failures and omissions."
                     .to_string()

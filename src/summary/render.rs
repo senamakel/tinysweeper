@@ -242,18 +242,35 @@ fn partial_reason_label(reason: Option<crate::app::review::PartialReviewReason>)
 }
 
 fn render_unreviewed_labels(proposal: &Proposal, paths: &[String]) -> String {
-    let reasons: std::collections::BTreeMap<_, _> = proposal
+    let mut reasons = std::collections::BTreeMap::<
+        &str,
+        std::collections::BTreeSet<crate::app::review::PartialReviewReason>,
+    >::new();
+    for omission in proposal
         .partial_review
         .iter()
         .flat_map(|partial| &partial.omitted)
-        .map(|omission| (omission.path.as_str(), omission.reason))
-        .collect();
+    {
+        reasons
+            .entry(omission.path.as_str())
+            .or_default()
+            .insert(omission.reason);
+    }
     let mut grouped = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
     for path in paths {
-        grouped
-            .entry(partial_reason_label(reasons.get(path.as_str()).copied()))
-            .or_default()
-            .push(path.clone());
+        if let Some(path_reasons) = reasons.get(path.as_str()) {
+            for reason in path_reasons {
+                grouped
+                    .entry(partial_reason_label(Some(*reason)))
+                    .or_default()
+                    .push(path.clone());
+            }
+        } else {
+            grouped
+                .entry(partial_reason_label(None))
+                .or_default()
+                .push(path.clone());
+        }
     }
     grouped
         .into_iter()

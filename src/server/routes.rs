@@ -3993,8 +3993,10 @@ impl ReviewRun<'_> {
                     Ok(()) => std::panic::AssertUnwindSafe(run_lanes(
                         state,
                         &overlay.config,
-                        repo_id,
-                        number,
+                        LaneTarget {
+                            repo: repo_id,
+                            number,
+                        },
                         forge,
                         read_token,
                         &pull_request,
@@ -4167,16 +4169,22 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
 /// Holds no write credential: nothing in here runs after a model call has
 /// returned, so nothing in here may mint one.
 #[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "checkout_and_review"))]
+#[derive(Clone, Copy)]
+struct LaneTarget<'a> {
+    repo: &'a RepoId,
+    number: u64,
+}
+
 async fn run_lanes(
     state: &AppState,
     config: &Config,
-    repo: &RepoId,
-    number: u64,
+    target: LaneTarget<'_>,
     forge: &crate::forge::github::GitHubRead,
     read_token: &str,
     pull_request: &PullRequest,
     run: &Run,
 ) -> Result<(Config, crate::app::Proposal)> {
+    let LaneTarget { repo, number } = target;
     let binding = run
         .execution
         .bind_model(state.models.text(), config.models.budget_usd_per_pr);

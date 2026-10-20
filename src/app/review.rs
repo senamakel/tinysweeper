@@ -4533,7 +4533,6 @@ mod tests {
         ));
         let model = execution.bind_model(model, 10.0).model.clone();
         let embedder = ChargedEmbedder;
-        let embed_model = embedder.signature().price_key();
         let index = crate::index::MockChunkIndex::new();
         let retriever = crate::retrieve::Retriever::new(&embedder, &index);
 
@@ -4733,6 +4732,7 @@ mod tests {
         ));
         let model = execution.bind_model(model, 10.0).model.clone();
         let embedder = ChargedEmbedder;
+        let embed_model = embedder.signature().price_key();
         let index = crate::index::MockChunkIndex::new();
         let retriever = crate::retrieve::Retriever::new(&embedder, &index);
 

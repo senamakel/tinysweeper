@@ -2187,14 +2187,12 @@ fn record_large_group_result(
     group: crate::lanes::large_pr::PlannedGroup,
     result: Result<crate::lanes::fanout::FileReview>,
 ) {
-    use crate::lanes::fanout::{OmissionReason, OmittedGroup};
+    use crate::lanes::fanout::OmittedGroup;
     let fanout = fanouts.entry(group.lane).or_default();
     match result {
         Ok(review) if let Some(refusal) = review.execution_refusal => {
             let reason = large_omission_reason(refusal);
-            fanout
-                .partial
-                .push((group.group.paths.clone(), review));
+            fanout.partial.push((group.group.paths.clone(), review));
             fanout.omitted.push(OmittedGroup {
                 paths: group.group.paths,
                 reason,

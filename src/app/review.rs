@@ -4967,7 +4967,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_timing_keeps_pass_one_yield_when_pass_two_is_cancelled() {
-        use crate::ports::model::{Message, ModelRequest, ModelResponse};
+        use crate::ports::model::{ModelRequest, ModelResponse};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::sync::mpsc;
 

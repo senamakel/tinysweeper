@@ -2682,11 +2682,52 @@ mod tests {
             })
             .expect("review posted");
 
-        assert!(body.contains("$0.0100"), "{body}");
-        assert!(body.contains("10,000 in"), "{body}");
-        assert!(body.contains("400 out"), "{body}");
-        assert!(body.contains("800 cached (8%)"), "{body}");
-        assert!(body.contains("kimi-k3"), "{body}");
+        assert!(!body.contains("$0.0100"), "{body}");
+        assert!(!body.contains("10,000 in"), "{body}");
+        assert!(!body.contains("400 out"), "{body}");
+        assert!(!body.contains("800 cached (8%)"), "{body}");
+        assert!(!body.contains("kimi-k3"), "{body}");
+        assert!(body.contains("state v=1 sha=abc123"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn unchanged_verdict_and_blocking_findings_skip_review_but_update_hub() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        let store = MemoryState::new();
+        for _ in 0..2 {
+            apply(
+                &forge,
+                &forge,
+                &config(),
+                &proposal("abc123", vec![finding()]),
+                Some(&store),
+            )
+            .await
+            .expect("applies");
+        }
+        let writes = forge.writes();
+        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Review { .. })).count(), 1);
+        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Comment { .. })).count(), 2);
+        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Check { .. })).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_changed_verdict_still_posts_a_review() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        let store = MemoryState::new();
+        let mut config = config();
+        apply(&forge, &forge, &config, &proposal("abc123", vec![finding()]), Some(&store))
+            .await
+            .expect("first apply");
+        config.review.request_changes_at = "off".into();
+        apply(&forge, &forge, &config, &proposal("abc123", vec![finding()]), Some(&store))
+            .await
+            .expect("second apply");
+        assert_eq!(forge.writes().iter().filter(|w| matches!(w, Write::Review { .. })).count(), 2);
     }
     // --- the change map ----------------------------------------------------
 

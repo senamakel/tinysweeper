@@ -10448,6 +10448,9 @@ mod tests {
             .bind_model(model_port, full_config.models.budget_usd_per_pr)
             .model
             .clone();
+        let execution_for_assert = execution.clone();
+        let observed_proposal = Arc::new(std::sync::Mutex::new(None));
+        let proposal_slot = observed_proposal.clone();
         let repo = RepoId::parse("owner/repo").unwrap();
         let proposal = run_if_confirmed_head_needs_review(
             store.as_ref(),
@@ -10469,6 +10472,8 @@ mod tests {
                     None,
                 )
                 .await?;
+                *proposal_slot.lock().expect("Full proposal capture lock") =
+                    Some(proposal.clone());
                 Ok(InnerReview::Complete(Some((
                     proposal.findings().count(),
                     crate::app::apply::requests_changes(&full_config, &proposal),
@@ -10480,8 +10485,17 @@ mod tests {
         .expect("Full mode bypasses the Incremental terminal-head suppression");
         assert!(matches!(proposal, InnerReview::Complete(Some(_))));
         assert_eq!(mock_model.calls(), 1, "the Large execution shares its one-call cap");
+        let proposal = observed_proposal
+            .lock()
+            .expect("Full proposal capture lock")
+            .take()
+            .expect("the confirmed Full path invokes the actual App review");
+        let plan = proposal.partial_review.as_ref().expect("Large plan metadata");
+        assert_eq!(plan.mode, crate::lanes::large_pr::ReviewMode::Large);
+        assert_eq!(plan.selected_groups.len(), 1);
+        assert!(!proposal.unreviewed.is_empty(), "the one-group plan reports omitted files");
         assert_eq!(
-            execution.execution().soft_deadline(),
+            execution_for_assert.execution().soft_deadline(),
             started_at + Duration::from_secs(80),
             "Full execution keeps the same run clock instead of opening a fresh window"
         );

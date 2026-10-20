@@ -471,6 +471,130 @@ async fn sixty_file_large_review_places_and_falsifies_a_selected_finding_without
     assert!(writes.iter().any(|write| matches!(write, Write::Comment { body, .. } if body.contains("Document the public API result"))));
 }
 
+#[cfg(feature = "harness")]
+async fn wait_for_gateway_requests(
+    gateway: &crate::harness::fake_gateway::FakeGateway,
+    expected: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while gateway.requests().len() < expected {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the Gateway receives every admitted physical request");
+}
+
+#[cfg(feature = "harness")]
+fn gateway_empty_lane_reply(model: &str) -> crate::harness::fake_gateway::Reply {
+    crate::harness::fake_gateway::Reply::completion(
+        model,
+        r#"{"summary":"No issue found.","findings":[]}"#,
+        "stop",
+        json!({"prompt_tokens":2,"completion_tokens":1,"cost":0.0001}),
+    )
+}
+
+#[cfg(feature = "harness")]
+#[tokio::test]
+async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
+    use crate::harness::embed::GatewayModel;
+    use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+    let mut config = large_config();
+    config.models.fallback.clear();
+    config.models.provider.last_resort_unpinned = false;
+    config.models.budget_usd_per_pr = 10.0;
+    let primary = config.models.deep.clone();
+    let mut replies = (0..6)
+        .map(|_| {
+            Reply::completion(
+                &primary,
+                "{ malformed JSON",
+                "stop",
+                json!({"prompt_tokens":2,"completion_tokens":1,"cost":0.0001}),
+            )
+        })
+        .collect::<Vec<_>>();
+    replies.extend((0..2).map(|_| gateway_empty_lane_reply(&primary)));
+    let (gateway, release) = FakeGateway::start_paused(replies).await;
+    config.models.base_url = gateway.base_url.clone();
+    let forge = large_forge();
+    let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
+    let model: Arc<dyn Model> = Arc::new(GatewayModel::with_key(
+        &config.models,
+        "fixture-key".into(),
+    ));
+    let run_config = config.clone();
+    let task = tokio::spawn(async move { review(&forge, model, &run_config, &repo, 7).await });
+
+    wait_for_gateway_requests(&gateway, 6).await;
+    let initial = gateway.requests();
+    assert!(initial[..6].iter().all(|request| request["model"] == primary));
+    release.add_permits(6);
+    wait_for_gateway_requests(&gateway, 8).await;
+    release.add_permits(2);
+
+    let proposal = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the call-limited review finishes after its two repairs")
+        .expect("review task joins")
+        .expect("partial review is returned");
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 8, "repairs consume the shared physical limit");
+    assert!(requests.iter().all(|request| request["model"] == primary));
+    assert_eq!(proposal.usage().calls_attempted, 8);
+    assert!(!proposal.complete());
+}
+
+#[cfg(feature = "harness")]
+#[tokio::test]
+async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
+    use crate::harness::embed::GatewayModel;
+    use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+    let mut config = large_config();
+    let primary = config.models.deep.clone();
+    let fallback = "z-ai/glm-5.2".to_string();
+    config.models.fallback = vec![fallback.clone()];
+    config.models.provider.last_resort_unpinned = false;
+    config.models.budget_usd_per_pr = 10.0;
+    let mut replies = (0..4)
+        .map(|_| gateway_empty_lane_reply(&primary))
+        .collect::<Vec<_>>();
+    replies.extend((0..2).map(|_| Reply::error(404, "No endpoints found")));
+    replies.extend((0..2).map(|_| gateway_empty_lane_reply(&fallback)));
+    let (gateway, release) = FakeGateway::start_paused(replies).await;
+    config.models.base_url = gateway.base_url.clone();
+    let forge = large_forge();
+    let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
+    let model: Arc<dyn Model> = Arc::new(GatewayModel::with_key(
+        &config.models,
+        "fixture-key".into(),
+    ));
+    let run_config = config.clone();
+    let task = tokio::spawn(async move { review(&forge, model, &run_config, &repo, 7).await });
+
+    wait_for_gateway_requests(&gateway, 6).await;
+    let initial = gateway.requests();
+    assert!(initial[..6].iter().all(|request| request["model"] == primary));
+    release.add_permits(6);
+    wait_for_gateway_requests(&gateway, 8).await;
+    release.add_permits(2);
+
+    let proposal = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the call-limited review finishes after two fallback dispatches")
+        .expect("review task joins")
+        .expect("partial review is returned");
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 8, "fallbacks consume the shared physical limit");
+    assert!(requests[..6].iter().all(|request| request["model"] == primary));
+    assert!(requests[6..].iter().all(|request| request["model"] == fallback));
+    assert_eq!(proposal.usage().calls_attempted, 8);
+    assert!(!proposal.complete());
+}
+
 #[tokio::test]
 async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gaps() {
     let mut state = MockState::default();

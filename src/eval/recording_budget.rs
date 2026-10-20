@@ -211,7 +211,8 @@ mod tests {
             .spawn()
             .expect("start lock holder");
         let mut ready = String::new();
-        BufReader::new(child.stdout.take().expect("child stdout"))
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        stdout
             .read_line(&mut ready)
             .expect("read lock-holder marker");
         if ready.trim() != "RESERVATION_HELD" {

@@ -4129,6 +4129,14 @@ mod tests {
         config.models.fallback.clear();
         config.models.agentic_reviewers = false;
         config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        config.models.budget_prices.insert(
+            "deep".into(),
+            crate::config::types::BudgetPriceBound {
+                input: 5.0,
+                cached: 1.0,
+                output: 20.0,
+            },
+        );
         let model = Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
         config.retrieval.enabled = true;
         let embedder = ChargedEmbedder;

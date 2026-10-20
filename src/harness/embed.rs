@@ -2072,6 +2072,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn physical_retry_is_refused_before_a_second_gateway_request() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        // The OpenAI-compatible adapter learns unsupported parameters from a
+        // provider 400 and retries once with that parameter omitted. This is
+        // a real second HTTP dispatch on the same logical completion.
+        let gateway = FakeGateway::start(vec![
+            Reply {
+                status: 400,
+                body: json!({
+                    "error": {
+                        "message": "Unsupported parameter: 'max_tokens' is not supported with this model.",
+                        "type": "invalid_request_error",
+                        "param": "max_tokens",
+                        "code": "unsupported_parameter"
+                    }
+                }),
+            },
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control)
+            .expect("the Gateway keeps the supplied execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Review source."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            reasoning_effort: None,
+            max_tokens: 100,
+        };
+
+        let result = model.complete(request).await;
+
+        assert_eq!(
+            gateway.requests().len(),
+            1,
+            "the refused retry must not reach the provider"
+        );
+        assert_eq!(gateway.requests()[0]["max_tokens"], 100);
+        assert!(matches!(
+            result,
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            })
+        ));
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
     async fn direct_gateway_reports_raw_terminals_without_a_timing_observer() {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
 

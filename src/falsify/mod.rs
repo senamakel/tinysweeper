@@ -35,7 +35,7 @@
 
 pub mod types;
 
-use crate::config::types::{Config, LaneId, Workload};
+use crate::config::types::{Config, LaneId, ReasoningRole, Workload};
 use crate::findings::types::Finding;
 use crate::harness::prompt::push_fenced;
 use crate::ports::model::{Message, Model, ModelRequest, Spend};
@@ -119,6 +119,12 @@ impl<'a> Falsifier<'a> {
                 types::json_schema()
             },
             schema_name: "tinysweeper_falsify".into(),
+            reasoning_effort: Some(
+                self.config
+                    .models
+                    .role_reasoning_effort(ReasoningRole::Falsify)
+                    .to_string(),
+            ),
             max_tokens: self.config.models.max_tokens,
         };
 
@@ -126,7 +132,13 @@ impl<'a> Falsifier<'a> {
             Ok(response) => response,
             // Failing open is the decision. The alternative — failing the lane
             // — lets an unrelated provider outage delete a review.
-            Err(err) => return FalsifyOutcome::failed_open(findings, err.to_string()),
+            Err(err) => {
+                let mut outcome = FalsifyOutcome::failed_open(findings, err.to_string());
+                if let crate::error::Error::ModelExecutionRefused { refusal, .. } = err {
+                    outcome.execution_refusal = Some(refusal);
+                }
+                return outcome;
+            }
         };
 
         let spend = Spend::of(&response);
@@ -185,6 +197,7 @@ impl<'a> Falsifier<'a> {
             rejected,
             spend,
             failed_open: None,
+            execution_refusal: None,
         }
     }
 }

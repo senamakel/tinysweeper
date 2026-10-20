@@ -1860,6 +1860,7 @@ mod tests {
             overview: None,
             wireframe: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
             version: tinysweeper::app::review::PROPOSAL_VERSION,
             repo: repo.into(),
@@ -1872,6 +1873,8 @@ mod tests {
             cached_tokens: 0,
             embed_tokens: 0,
             models: vec![],
+            completion_accounting: None,
+            logical_usage: None,
             threads: Default::default(),
         }
     }

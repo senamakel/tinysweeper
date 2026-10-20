@@ -89,6 +89,7 @@ async fn gateway_review_budget_refusal_keeps_paid_usage_and_budget_remedy() {
         ],
         schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 128,
     };
     let tree = MockTree::from_files([("src/lib.rs", "pub fn f() {}")]);
@@ -166,6 +167,7 @@ async fn host_only_reviewer_reads_redacted_source_and_refuses_execution_tools() 
         ],
         schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 128,
     };
     let response = tokio::time::timeout(
@@ -349,6 +351,7 @@ async fn scripted_billed_fallback(
         ],
         schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 128,
     };
     struct CountingTree {
@@ -524,6 +527,7 @@ async fn fitting_agent_reviews_dispatch_together_using_inherited_capacity_wait()
         ],
         schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 1000,
     };
     let tree = MockTree::from_files([("src/lib.rs", "pub fn f() {}")]);

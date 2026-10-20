@@ -130,13 +130,21 @@ recall percentage for them.
 Each case selects only the `critique` lane. A future recording is evidence
 about that lane on these fixtures, not a full review across all lanes.
 
-Their original PR bodies and comments are omitted: the available PR bodies
-contain later fix explanations, and the exact review-time snapshots were not
-retained. The frozen changed-file patches, commit ranges and short read-only
+Their original PR bodies are blank and their comments are empty: the available
+PR bodies contain later fix explanations, and the exact review-time snapshots
+were not retained. The frozen changed-file patches, commit ranges and short read-only
 source lookups are pinned to the original reviewed heads. The lookup snippets
 show unmodified callers, providers and public descriptions that help falsify
 the findings. Any new recording must remain distinct from the historical miss
 evidence and must use the reviewed head's source tree for additional lookups.
+
+The fixture excerpts come from `tinyhumansai/openhuman` and
+`tinyhumansai/tinymcp`, both licensed `GPL-3.0-only` at the reviewed heads;
+TinySweeper uses the same license. Cases retain the source repository, pull
+request, reviewed commit, review comment and follow-up fix as attribution in
+`provenance`. Only changed-file patches and the short source ranges needed to
+evaluate each finding are copied; the immutable source archives used to check
+those excerpts stay outside the repository.
 
 ## A failed review scores zero, not nothing
 

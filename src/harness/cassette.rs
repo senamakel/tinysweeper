@@ -16,8 +16,8 @@
 //!
 //! # A key miss is loud on purpose
 //!
-//! The cassette key covers the model id, the schema name, the token ceiling and
-//! every message. So any change to a prompt invalidates every cassette that
+//! The cassette key covers the model id, the schema name, the token ceiling,
+//! an explicit per-request reasoning override, and every message. So any change to a prompt invalidates every cassette that
 //! prompt produced — and that is the *point*. A scoring run that silently fell
 //! back to a stale recording would report the old prompt's quality under the new
 //! prompt's name, which is worse than no measurement at all. Strict replay says
@@ -55,8 +55,8 @@ pub struct Take {
     pub usage: Usage,
     /// The structured answer.
     pub value: Value,
-    /// Lookup policy, source revision and query outcomes for a repository-aware review.
-    /// Missing on historical completion-only recordings.
+    /// Lookup policy, source revision and tree-query outcomes for reviews.
+    /// Missing from historical completion-only recordings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_context: Option<ReviewContext>,
     /// The prompt, recorded only when explicitly asked for.
@@ -69,14 +69,14 @@ pub struct Take {
     pub prompt: Option<Vec<RecordedMessage>>,
 }
 
-/// Stable repository context needed to replay a review without calling a live model.
+/// Repository context needed to replay a review without a live model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewContext {
     /// Effective lookup limits and feature flags for this review.
     pub policy: crate::config::types::LookupPolicy,
-    /// The tree revision when the provider call was recorded, when known.
+    /// The tree revision when the review was recorded, when known.
     pub revision: Option<String>,
-    /// Repository operations completed during this review, in completion order.
+    /// Repository operations completed during the review, in completion order.
     pub queries: Vec<RecordedQuery>,
 }
 
@@ -142,9 +142,9 @@ pub struct Cassette {
     dir: PathBuf,
     mode: Mode,
     /// Recorded answers by key, loaded once at construction.
-    takes: Arc<BTreeMap<String, Take>>,
+    takes: BTreeMap<String, Take>,
     /// Every take in file order, for the loose fallback.
-    ordered: Arc<Vec<Take>>,
+    ordered: Vec<Take>,
     state: Arc<Mutex<Playback>>,
     record_prompts: bool,
 }
@@ -194,8 +194,8 @@ impl Cassette {
             inner: Some(inner),
             dir: dir.into(),
             mode: Mode::Record,
-            takes: Arc::new(BTreeMap::new()),
-            ordered: Arc::new(Vec::new()),
+            takes: BTreeMap::new(),
+            ordered: Vec::new(),
             state: Arc::new(Mutex::new(Playback::default())),
             record_prompts: false,
         }
@@ -213,8 +213,8 @@ impl Cassette {
             inner: None,
             dir,
             mode,
-            takes: Arc::new(takes),
-            ordered: Arc::new(ordered),
+            takes,
+            ordered,
             state: Arc::new(Mutex::new(Playback::default())),
             record_prompts: false,
         })
@@ -269,6 +269,49 @@ impl Cassette {
         self.state.lock().expect("cassette lock").unreported_errors > 0
     }
 
+    /// Write everything recorded this run to disk, oldest call first.
+    ///
+    /// Called explicitly rather than on `Drop`: writing files from a destructor
+    /// means an I/O failure has nowhere to be reported, and a corpus that
+    /// silently failed to record is the one failure this must not have.
+    pub fn flush(&self) -> Result<usize> {
+        if self.mode != Mode::Record {
+            return Ok(0);
+        }
+        let recorded = {
+            let state = self.state.lock().expect("cassette lock");
+            state.recorded.clone()
+        };
+        if recorded.is_empty() {
+            return Ok(0);
+        }
+
+        std::fs::create_dir_all(&self.dir).map_err(|err| Error::path(&self.dir, err))?;
+        for (index, take) in recorded.iter().enumerate() {
+            // Sequence first so the directory reads in call order, key second
+            // so two identical prompts in one run do not overwrite each other.
+            let name = format!("{:04}-{}.json", index + 1, take.key);
+            let path = self.dir.join(name);
+            let json = serde_json::to_string_pretty(take)?;
+            std::fs::write(&path, json).map_err(|err| Error::path(&path, err))?;
+        }
+        Ok(recorded.len())
+    }
+
+    /// Rebuild this recorder around a scoped inner model while retaining its
+    /// recording cursor, takes, and output policy.
+    fn with_inner(&self, inner: Arc<dyn Model>) -> Self {
+        Self {
+            inner: Some(inner),
+            dir: self.dir.clone(),
+            mode: self.mode,
+            takes: self.takes.clone(),
+            ordered: self.ordered.clone(),
+            state: self.state.clone(),
+            record_prompts: self.record_prompts,
+        }
+    }
+
     fn make_take(
         &self,
         key: String,
@@ -300,44 +343,31 @@ impl Cassette {
 
     fn record_error(&self, error: &Error) {
         let mut state = self.state.lock().expect("cassette lock");
-        if let Some(usage) = error.usage() {
-            state.spend.usage.add(usage);
-        } else {
-            state.unreported_errors += 1;
+        match error {
+            Error::ModelExecutionRefused {
+                usage,
+                accounting_complete,
+                ..
+            } => {
+                if let Some(usage) = usage {
+                    state.spend.usage.add(**usage);
+                }
+                if !*accounting_complete {
+                    state.unreported_errors += 1;
+                }
+            }
+            _ => {
+                if let Some(usage) = error.usage() {
+                    state.spend.usage.add(usage);
+                } else {
+                    state.unreported_errors += 1;
+                }
+            }
         }
     }
 
     fn record_miss(&self) {
         self.state.lock().expect("cassette lock").misses += 1;
-    }
-
-    /// Write everything recorded this run to disk, oldest call first.
-    ///
-    /// Called explicitly rather than on `Drop`: writing files from a destructor
-    /// means an I/O failure has nowhere to be reported, and a corpus that
-    /// silently failed to record is the one failure this must not have.
-    pub fn flush(&self) -> Result<usize> {
-        if self.mode != Mode::Record {
-            return Ok(0);
-        }
-        let recorded = {
-            let state = self.state.lock().expect("cassette lock");
-            state.recorded.clone()
-        };
-        if recorded.is_empty() {
-            return Ok(0);
-        }
-
-        std::fs::create_dir_all(&self.dir).map_err(|err| Error::path(&self.dir, err))?;
-        for (index, take) in recorded.iter().enumerate() {
-            // Sequence first so the directory reads in call order, key second
-            // so two identical prompts in one run do not overwrite each other.
-            let name = format!("{:04}-{}.json", index + 1, take.key);
-            let path = self.dir.join(name);
-            let json = serde_json::to_string_pretty(take)?;
-            std::fs::write(&path, json).map_err(|err| Error::path(&path, err))?;
-        }
-        Ok(recorded.len())
     }
 }
 
@@ -371,7 +401,7 @@ fn review_key(
     } else {
         hasher.update(b"unknown");
     }
-    Ok(hex_digest(hasher.finalize().as_slice()))
+    Ok(hex_digest(&hasher.finalize()))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -551,37 +581,11 @@ impl Model for Cassette {
             let response = match inner.complete(request.clone()).await {
                 Ok(response) => response,
                 Err(error) => {
-                    let mut state = self.state.lock().expect("cassette lock");
-                    if let Some(usage) = error.usage() {
-                        // A refusal reports usage without an answering model.
-                        // Count its known charge without inventing attribution.
-                        state.spend.usage.add(usage);
-                    } else {
-                        state.unreported_errors += 1;
-                    }
+                    self.record_error(&error);
                     return Err(error);
                 }
             };
-            let take = Take {
-                key,
-                model_requested: request.model.clone(),
-                model_answered: response.model.clone(),
-                schema_name: request.schema_name.clone(),
-                usage: response.usage,
-                value: response.value.clone(),
-                review_context: None,
-                prompt: self.record_prompts.then(|| {
-                    request
-                        .messages
-                        .iter()
-                        .map(|message| RecordedMessage {
-                            role: role_name(message).to_string(),
-                            content: message.content.clone(),
-                            images: message.images.clone(),
-                        })
-                        .collect()
-                }),
-            };
+            let take = self.make_take(key, &request, &response, None);
             let mut state = self.state.lock().expect("cassette lock");
             state.recorded.push(take);
             state.served += 1;
@@ -640,6 +644,26 @@ impl Model for Cassette {
                 self.ordered.len(),
             ))),
         }
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.complete_reports_physical_calls())
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.review_reports_physical_calls())
+    }
+
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.mode == Mode::Record
+            && self
+                .inner
+                .as_ref()
+                .is_some_and(|inner| inner.reports_raw_completion_usage())
     }
 
     async fn review(
@@ -722,19 +746,27 @@ impl Model for Cassette {
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
-        if self.mode != Mode::Record {
-            return None;
-        }
-        let scoped = self.inner.as_ref()?.scoped_budget(budget_usd)?;
-        Some(Arc::new(Self {
-            inner: Some(scoped),
-            dir: self.dir.clone(),
-            mode: self.mode,
-            takes: self.takes.clone(),
-            ordered: self.ordered.clone(),
-            state: self.state.clone(),
-            record_prompts: self.record_prompts,
-        }))
+        self.inner
+            .as_ref()?
+            .scoped_budget(budget_usd)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .as_ref()?
+            .with_review_budget(limit_usd)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        self.inner
+            .as_ref()?
+            .with_execution_control(control)
+            .map(|inner| Arc::new(self.with_inner(inner)) as Arc<dyn Model>)
     }
 }
 
@@ -765,6 +797,11 @@ pub fn key(request: &ModelRequest) -> String {
     hasher.update(b"\0");
     hasher.update(request.schema_name.as_bytes());
     hasher.update(b"\0");
+    if let Some(effort) = &request.reasoning_effort {
+        hasher.update(b"reasoning-effort\0");
+        hasher.update(effort.as_bytes());
+        hasher.update(b"\0");
+    }
     // The schema is the output contract, not just its name a provider wants:
     // two responses with the same name but different properties are different
     // answers. `serde_json`'s key ordering is a feature flag, not a property:

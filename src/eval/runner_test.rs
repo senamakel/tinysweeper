@@ -460,6 +460,39 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
     other_model.models.deep = "deepseek/deepseek-v4-pro".into();
     assert_ne!(digest_of(&base), digest_of(&other_model));
 
+    // Each stage has its own effort override. A role-only configuration
+    // change must invalidate an eval baseline even when the global effort is
+    // unchanged.
+    let mut reviewer_effort = base.clone();
+    reviewer_effort.models.reviewer_reasoning_effort = "low".into();
+    assert_ne!(digest_of(&base), digest_of(&reviewer_effort));
+    let mut falsify_effort = base.clone();
+    falsify_effort.models.falsify_reasoning_effort = "high".into();
+    assert_ne!(digest_of(&base), digest_of(&falsify_effort));
+    let mut summary_effort = base.clone();
+    summary_effort.models.summary_reasoning_effort = "high".into();
+    assert_ne!(digest_of(&base), digest_of(&summary_effort));
+
+    let baseline = crate::eval::types::Scorecard {
+        corpus_digest: "same-corpus".into(),
+        config_digest: digest_of(&base),
+        loose_replays: 0,
+        cases: vec![],
+    };
+    for changed in [&reviewer_effort, &falsify_effort, &summary_effort] {
+        let current = crate::eval::types::Scorecard {
+            corpus_digest: baseline.corpus_digest.clone(),
+            config_digest: digest_of(changed),
+            loose_replays: 0,
+            cases: vec![],
+        };
+        assert!(matches!(
+            crate::eval::report::compare(&current, &baseline, false),
+            crate::eval::report::Comparison::Incomparable(reason)
+                if reason.contains("configuration changed")
+        ));
+    }
+
     // The per-PR ceiling decides whether a case fails with `Error::Budget`, so
     // two runs that spend the same model but allow different money are not the
     // same run either.
@@ -916,6 +949,7 @@ async fn failed_case_marks_unreported_model_charges_unknown() {
         messages: vec![],
         schema: json!({}),
         schema_name: "test".into(),
+        reasoning_effort: None,
         max_tokens: 10,
     };
     assert!(cassette.complete(request).await.is_err());

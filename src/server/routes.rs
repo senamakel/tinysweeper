@@ -6801,7 +6801,8 @@ mod tests {
             crate::forge::Write::CheckUpdate { check_id: updated, check }
                 if *updated == check_id
                     && check.head_sha == "failed-apply-head"
-                    && check.conclusion == Some(crate::forge::types::CheckConclusion::Failure)
+                    && check.conclusion
+                        == Some(crate::forge::types::CheckConclusion::ActionRequired)
         )));
         let failed_hub = writes.iter().find_map(|write| match write {
             crate::forge::Write::CommentUpdate { comment_id, body }

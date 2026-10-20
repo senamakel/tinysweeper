@@ -4737,11 +4737,8 @@ mod tests {
 
     fn test_execution_scope() -> Arc<crate::app::review_execution::ReviewExecution> {
         let started_at = tokio::time::Instant::now();
-        test_execution_context(
-            started_at,
-            started_at + std::time::Duration::from_secs(60),
-        )
-        .execution()
+        test_execution_context(started_at, started_at + std::time::Duration::from_secs(60))
+            .execution()
     }
 
     #[derive(Clone, Default)]

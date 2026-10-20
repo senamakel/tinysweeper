@@ -1246,10 +1246,15 @@ mod tests {
         assert_eq!(outcome.spend.usage.output_tokens, 4);
         assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
         assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.omissions.iter().any(|omission| {
+            omission.paths.contains(&"src/large.rs".to_string())
+                && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
+        }));
         let event = trace
             .lines()
             .find(|line| line.contains("adaptive review passes"))
             .expect("adaptive pass accounting is emitted");
+        assert!(event.contains("stop_reason=refused"), "{event}");
         assert!(event.contains("input_tokens=8"), "{event}");
         assert!(event.contains("output_tokens=4"), "{event}");
         assert!(event.contains("cost_usd=0.25"), "{event}");

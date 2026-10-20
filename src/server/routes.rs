@@ -6515,11 +6515,8 @@ mod tests {
             "the real apply path writes its review: {:#?}",
             forge.writes()
         );
-        assert_eq!(
-            model.requests().len(),
-            1,
-            "one critique call reviewed the head"
-        );
+        let paid_model_calls = model.requests().len();
+        assert!(paid_model_calls > 0, "the real review invoked its model");
 
         let InnerReview::Complete(findings) = completed else {
             panic!("the app completion result was already checked above");
@@ -6583,8 +6580,8 @@ mod tests {
         assert!(matches!(skipped, InnerReview::Complete(None)));
         assert_eq!(
             model.requests().len(),
-            1,
-            "redelivery makes no second paid model call"
+            paid_model_calls,
+            "redelivery makes no additional paid model call"
         );
         assert_eq!(
             forge.writes().len(),

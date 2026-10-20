@@ -1122,6 +1122,8 @@ mod tests {
                 ..Default::default()
             },
             usage_by_model: Default::default(),
+            committed_calls: 2,
+            terminal_count: 2,
             complete: false,
         });
 

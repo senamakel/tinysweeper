@@ -27,13 +27,23 @@ per-review budget, the case budget, and the run budget divided across all
 selected cases to the shared review budget root. An unreported-usage refusal
 stops later cases because its charge is unknown.
 
-The checked-in candidate is [`evals/recording.deepinfra.toml`](../../../evals/recording.deepinfra.toml).
-It uses DeepSeek V3.2 at the pinned DeepInfra endpoint, disables model and
-provider fallback and reasoning, sets `max_tokens = 4096`, and gives the
-gateway a conservative per-million-token price bound. Revalidate public
-endpoint availability, context/output limits, and rates immediately before
-recording; the config and price table do not prove the provider's live limits
-have not changed.
+The first `tm-0102-memory-pending-debug-state` capture used
+[`evals/recording.deepinfra.toml`](../../../evals/recording.deepinfra.toml),
+DeepSeek V3.2 at pinned DeepInfra. It exhausted its eight-call initial limit:
+the proposal marked the review partial, left ten files unanswered, and did not
+complete a file. Treat its missed label as a cap-interrupted partial baseline,
+not a completed recall measurement. Its cassette and proposal are preserved;
+rerunning Record mode makes new provider calls and can replace cassette data.
+
+The bounded continuation candidate is
+[`evals/recording.gptoss-deepinfra.toml`](../../../evals/recording.gptoss-deepinfra.toml).
+It pins GPT-OSS 120B to the DeepInfra endpoint, disables all fallback and
+agentic review, uses JSON structured output, sets a 4096-token starting limit,
+and requests low reasoning effort. The truncation retry ladder can reach
+16384 output tokens. Its configured reservation rates are $0.037/M input and
+cached input, and $0.17/M output. Revalidate the exact endpoint, model limits,
+and rates immediately before any call; this candidate does not authorize a
+call by itself.
 
 For any paid recording, calculate the worst-case dispatch cost from the
 configured input ceiling and the largest output allowed by retries, then
@@ -44,18 +54,30 @@ an API key's account limit, a corpus label, or the CLI admission threshold as
 authorization to exceed those limits. If usage is unknown or the bound cannot
 be established, stop paid work and preserve the case as unrecorded.
 
-Record the five cases individually so failures and spend are attributable:
+The first case has already reserved and used eight physical attempts. Its
+persistent ledger permits at most 56 total attempts across all reruns, so a
+continuation can reserve only the remaining 48. The other four cases may each
+reserve at most 56. Never delete or reset these ledgers. Using the verified
+GPT-OSS endpoint bounds, one worst-case dispatch (131072 input and 16384
+output tokens) is at most $0.007635 after micro-dollar rounding. The five-case
+upper bound, including the first case's known $0.011331, is $2.088051. Recheck
+the live endpoint and recalculate these bounds immediately before use; stop if
+any usage is unknown or the bound changes.
+
+Record the five cases individually so failures and spend are attributable.
+The first case may be continued only after the parent reconciles the existing
+ledger and explicitly authorizes another call:
 
 ```sh
 cargo run --locked --features harness --bin tinysweeper -- eval run \
   --record --case tm-0102-memory-pending-debug-state \
-  --config evals/recording.deepinfra.toml --max-cost-usd 0.50 \
-  --max-physical-calls-per-case 8
+  --config evals/recording.gptoss-deepinfra.toml --max-cost-usd 0.48 \
+  --max-physical-calls-per-case 56
 ```
 
 Repeat with each of the four `oh-...` cases listed in `evals/README.md`, using
-its exact historical source checkout with `--tree` when lookups are needed.
-Never pass one checkout for a different repository or head. Capture each
+only the matching historical source material when lookups are needed. Never
+pass one checkout for a different repository or head. Capture each
 command's source identity, config digest, exit status, raw output hash, model
 and provider answered, reported usage, and known cost. Keep credential values
 and request/response payloads private. Stop immediately after any provider

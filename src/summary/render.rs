@@ -224,17 +224,17 @@ fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSumma
 }
 
 fn partial_reason_label(proposal: &Proposal) -> &'static str {
-    match proposal.partial_review.as_ref().and_then(|partial| partial.stop_reason) {
-        Some(crate::app::review::PartialReviewReason::NotSelected) => {
-            "not reviewed (large PR)"
-        }
+    match proposal
+        .partial_review
+        .as_ref()
+        .and_then(|partial| partial.stop_reason)
+    {
+        Some(crate::app::review::PartialReviewReason::NotSelected) => "not reviewed (large PR)",
         Some(
             crate::app::review::PartialReviewReason::SoftDeadline
             | crate::app::review::PartialReviewReason::DrainDeadline,
         ) => "not reviewed (time limit)",
-        Some(crate::app::review::PartialReviewReason::CallLimit) => {
-            "not reviewed (call budget)"
-        }
+        Some(crate::app::review::PartialReviewReason::CallLimit) => "not reviewed (call budget)",
         Some(crate::app::review::PartialReviewReason::Cancelled) => {
             "not reviewed (review cancelled)"
         }
@@ -249,7 +249,7 @@ fn partial_reason_description(reason: crate::app::review::PartialReviewReason) -
     use crate::app::review::PartialReviewReason;
     match reason {
         PartialReviewReason::UnavailableDiff => "the forge did not provide a usable diff",
-        PartialReviewReason::NotSelected => "not reviewed (large PR)",
+        PartialReviewReason::NotSelected => "not selected by the large-review budget",
         PartialReviewReason::SoftDeadline | PartialReviewReason::DrainDeadline => {
             "not reviewed (time limit)"
         }

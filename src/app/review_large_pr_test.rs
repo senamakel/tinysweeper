@@ -1,4 +1,4 @@
-use crate::app::review::{review, Proposal};
+use crate::app::review::{Proposal, review};
 use crate::config::types::Config;
 use crate::forge::mock::{MockForge, MockState, Write};
 use crate::forge::types::{ChangedFile, FileStatus, PullRequest, RepoId};
@@ -77,9 +77,13 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
         encoded["partial_review"]["selected_groups"][0]["paths"],
         json!(["src/a.rs"])
     );
-    assert!(encoded["partial_review"]["omitted"].as_array().unwrap().iter().any(
-        |omission| omission["path"] == "src/b.rs" && omission["reason"] == "not_selected"
-    ));
+    assert!(
+        encoded["partial_review"]["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|omission| omission["path"] == "src/b.rs" && omission["reason"] == "not_selected")
+    );
     assert!(proposal.unreviewed.iter().any(|path| path == "src/b.rs"));
     assert!(
         !proposal.complete(),
@@ -118,5 +122,8 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
     let hub = hub.expect("partial review hub is published");
     assert!(hub.contains("not reviewed (large PR)"), "{hub}");
     assert!(hub.contains("src/b.rs"), "{hub}");
-    assert!(hub.contains("not selected by the large-review budget"), "{hub}");
+    assert!(
+        hub.contains("not selected by the large-review budget"),
+        "{hub}"
+    );
 }

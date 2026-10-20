@@ -699,7 +699,6 @@ struct ProposalAccounting {
 }
 
 fn proposal_accounting(
-
     execution: &crate::app::review_execution::ReviewRunContext,
     reports_raw_completion_usage: bool,
     current_models: &[String],
@@ -765,9 +764,15 @@ fn partial_review_metadata(
 ) -> (Option<PartialReview>, Vec<String>) {
     use crate::lanes::fanout::OmissionReason;
 
-    let changed: BTreeSet<&str> = changed_files.iter().map(|file| file.path.as_str()).collect();
+    let changed: BTreeSet<&str> = changed_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
     let mut omissions = BTreeSet::new();
-    for path in unavailable_diffs.iter().filter(|path| changed.contains(path.as_str())) {
+    for path in unavailable_diffs
+        .iter()
+        .filter(|path| changed.contains(path.as_str()))
+    {
         omissions.insert(PartialReviewPath {
             path: path.clone(),
             lane: None,

@@ -1,11 +1,113 @@
 use crate::app::review::{Proposal, review};
-use crate::config::types::Config;
+use crate::config::types::{Config, CouncilAgent};
+use crate::error::{Error, Result};
 use crate::forge::mock::{MockForge, MockState, Write};
-use crate::forge::types::{ChangedFile, FileStatus, PullRequest, RepoId};
+use crate::forge::types::{
+    ChangedFile, FileStatus, PullRequest, RepoId, ReviewThread, ThreadComment,
+};
 use crate::harness::mock::MockModel;
-use crate::ports::model::Model;
+use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
+use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+struct LargeReviewModel {
+    control: Option<Arc<dyn ModelExecutionControl>>,
+    attempts: Arc<Mutex<Vec<ModelRequest>>>,
+    calls: Arc<Mutex<Vec<ModelRequest>>>,
+    finding: bool,
+}
+
+#[async_trait::async_trait]
+impl Model for LargeReviewModel {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.attempts
+            .lock()
+            .expect("attempt list lock")
+            .push(request.clone());
+        let control = self
+            .control
+            .as_ref()
+            .ok_or(Error::ReviewExecutionUnavailable)?;
+        let permit = control.acquire().await.map_err(|refusal| {
+            Error::ModelExecutionRefused {
+                refusal,
+                usage: None,
+                accounting_complete: true,
+            }
+        })?;
+        permit.mark_dispatched().map_err(|refusal| Error::ModelExecutionRefused {
+            refusal,
+            usage: None,
+            accounting_complete: true,
+        })?;
+        self.calls
+            .lock()
+            .expect("successful call list lock")
+            .push(request.clone());
+
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<String>();
+        let value = match request.schema_name.as_str() {
+            "tinysweeper_critique" if self.finding && prompt.contains("src/z_api.rs") => {
+                json!({
+                    "summary": "The public API result should be documented.",
+                    "findings": [{
+                        "path": "src/z_api.rs",
+                        "existing_code": "pub fn z_api() -> bool { true }",
+                        "rule": "api-documentation",
+                        "title": "Document the public API result",
+                        "body": "The public result contract is not described.",
+                        "severity": "medium",
+                        "confidence": 0.95
+                    }]
+                })
+            }
+            "tinysweeper_critique" | "tinysweeper_security" => json!({
+                "summary": "No additional issue was found.",
+                "findings": []
+            }),
+            "tinysweeper_falsify" => json!({ "incorrect": [] }),
+            "review_summary" => json!({
+                "executive_summary": "The change updates the reviewed repository.",
+                "changes": "The reviewed changes update source and interface files.",
+                "features": [],
+                "tests": [],
+                "positive_observations": {}
+            }),
+            "tinysweeper_thread_resolution" => json!({
+                "resolve": false,
+                "reason": "The reply does not establish that the finding is fixed."
+            }),
+            "tinysweeper_wireframe" => json!({ "screens": [] }),
+            schema => return Err(Error::Model(format!("unexpected schema {schema}"))),
+        };
+        drop(permit);
+        Ok(ModelResponse {
+            value,
+            model: request.model,
+            usage: Usage {
+                input_tokens: 2,
+                output_tokens: 1,
+                cost_usd: 0.0001,
+                ..Usage::default()
+            },
+        })
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        let mut bound = self.clone();
+        bound.control = Some(control);
+        Some(Arc::new(bound))
+    }
+}
 
 fn config() -> Config {
     let mut config: Config = crate::config::DEFAULTS
@@ -32,6 +134,271 @@ fn changed_file(path: &str) -> ChangedFile {
         )),
         ..ChangedFile::default()
     }
+}
+
+fn large_fixture_files() -> Vec<ChangedFile> {
+    let mut files = vec![
+        ChangedFile {
+            path: "src/x_api.rs".into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -0,0 +1,1 @@\n+pub fn x_api() -> bool { true }\n".into()),
+            ..ChangedFile::default()
+        },
+        ChangedFile {
+            path: "src/y_api.rs".into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -0,0 +1,1 @@\n+pub fn y_api() -> bool { true }\n".into()),
+            ..ChangedFile::default()
+        },
+        ChangedFile {
+            path: "src/z_api.rs".into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -0,0 +1,1 @@\n+pub fn z_api() -> bool { true }\n".into()),
+            ..ChangedFile::default()
+        },
+        ChangedFile {
+            path: "app/src/Button.tsx".into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -0,0 +1,1 @@\n+export function Button() { return <button />; }\n".into()),
+            ..ChangedFile::default()
+        },
+    ];
+    files.extend((0..56).map(|index| ChangedFile {
+        path: format!("src/plain_{index:02}.rs"),
+        status: FileStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        patch: Some(format!("@@ -0,0 +1,1 @@\n+fn plain_{index}() {{}}\n")),
+        ..ChangedFile::default()
+    }));
+    files
+}
+
+fn large_config() -> Config {
+    let mut config = config();
+    config.review.lanes = vec!["critique".into(), "security".into()];
+    config.review.passes = 3;
+    config.council.enabled = true;
+    config.council.agents = vec![CouncilAgent {
+        id: "extra-reviewer".into(),
+        ..CouncilAgent::default()
+    }];
+    config.review.large_pr.files = 30;
+    config.review.large_pr.max_groups = 6;
+    config.review.large_pr.max_calls = 8;
+    config.review.approve_when_clean = true;
+    config.auto_merge.enabled = true;
+    config.threads.resolve_fixed = true;
+    config.threads.ask_model = true;
+    config.summary.enabled = true;
+    config.wireframe.enabled = true;
+    config
+}
+
+fn large_forge() -> MockForge {
+    let mut state = MockState::default();
+    state.pull_requests.insert(
+        7,
+        PullRequest {
+            number: 7,
+            title: "feat: bounded large review".into(),
+            body: "Review the changed API and interface files.".into(),
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        },
+    );
+    state.files.insert(7, large_fixture_files());
+    state.review_threads.insert(
+        7,
+        vec![ReviewThread {
+            id: "PRRT_prior_bot_finding".into(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![
+                ThreadComment {
+                    author: "tinysweeper[bot]".into(),
+                    body: "**Existing invariant**".into(),
+                    bot: true,
+                    maintainer: false,
+                },
+                ThreadComment {
+                    author: "maintainer".into(),
+                    body: "This behavior is intentional.".into(),
+                    bot: false,
+                    maintainer: true,
+                },
+            ],
+            ..ReviewThread::default()
+        }],
+    );
+    MockForge::with_state(state)
+}
+
+async fn run_large_fixture(finding: bool) -> (Proposal, MockForge, Arc<LargeReviewModel>, Config) {
+    let forge = large_forge();
+    let config = large_config();
+    let model = Arc::new(LargeReviewModel {
+        control: None,
+        attempts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(Mutex::new(Vec::new())),
+        finding,
+    });
+    let proposal = review(
+        &forge,
+        model.clone() as Arc<dyn Model>,
+        &config,
+        &RepoId::parse("tinyhumansai/tinysweeper").expect("repo id"),
+        7,
+    )
+    .await
+    .expect("the bounded large review returns a proposal");
+    (proposal, forge, model, config)
+}
+
+fn selected_lane_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<(String, String)> {
+    let mut selected = std::collections::BTreeSet::new();
+    for request in requests {
+        if !matches!(
+            request.schema_name.as_str(),
+            "tinysweeper_critique" | "tinysweeper_security"
+        ) {
+            continue;
+        }
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<String>();
+        let path = ["src/x_api.rs", "src/y_api.rs", "src/z_api.rs"]
+            .into_iter()
+            .find(|path| prompt.contains(&format!("The file is `{path}`.")))
+            .expect("lane request names one selected API unit");
+        selected.insert((request.schema_name.clone(), path.to_string()));
+    }
+    selected
+}
+
+#[tokio::test]
+async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_call_ceiling() {
+    let (proposal, forge, model, config) = run_large_fixture(false).await;
+    let calls = model.calls.lock().expect("successful calls lock").clone();
+    let expected: std::collections::BTreeSet<_> = [
+        ("tinysweeper_critique".to_string(), "src/x_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/x_api.rs".to_string()),
+        ("tinysweeper_critique".to_string(), "src/y_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/y_api.rs".to_string()),
+        ("tinysweeper_critique".to_string(), "src/z_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/z_api.rs".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(selected_lane_paths(&calls), expected);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|request| request.schema_name.starts_with("tinysweeper_"))
+            .count(),
+        6,
+        "the six global groups are one pass and one reviewer each despite three passes and council input"
+    );
+    assert!(calls.len() <= config.review.large_pr.max_calls);
+    assert_eq!(proposal.usage().calls_attempted, 8);
+    assert!(calls.iter().any(|request| request.schema_name == "review_summary"));
+    assert!(calls
+        .iter()
+        .any(|request| request.schema_name == "tinysweeper_thread_resolution"));
+    assert!(model
+        .attempts
+        .lock()
+        .expect("attempt list lock")
+        .iter()
+        .any(|request| request.schema_name == "tinysweeper_wireframe"));
+    assert!(proposal.wireframe.is_none(), "the shared ceiling refuses later optional work");
+    assert!(proposal.partial_review.is_some());
+    assert!(!proposal.complete());
+
+    let mut expected_paths: Vec<_> = (0..60)
+        .map(|index| format!("src/plain_{index:02}.rs"))
+        .collect();
+    expected_paths.extend([
+        "src/x_api.rs".to_string(),
+        "src/y_api.rs".to_string(),
+        "src/z_api.rs".to_string(),
+        "app/src/Button.tsx".to_string(),
+    ]);
+    assert_eq!(expected_paths.len(), 60);
+    let reviewed_paths: std::collections::BTreeSet<_> = proposal
+        .lanes
+        .iter()
+        .flat_map(|lane| lane.coverage.iter())
+        .flat_map(|coverage| coverage.reviewed.iter().cloned())
+        .collect();
+    assert!(reviewed_paths.contains("src/x_api.rs"));
+    assert!(reviewed_paths.contains("src/y_api.rs"));
+    assert!(reviewed_paths.contains("src/z_api.rs"));
+    assert!(proposal.unreviewed.iter().any(|path| path == "app/src/Button.tsx"));
+    assert!(proposal.unreviewed.len() >= 54);
+
+    crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("partial proposal is published");
+    let writes = forge.writes();
+    assert!(!writes.iter().any(|write| matches!(
+        write,
+        Write::Review {
+            event: crate::forge::types::ReviewEvent::Approve,
+            ..
+        } | Write::Merged { .. }
+    )));
+}
+
+#[tokio::test]
+async fn sixty_file_large_review_places_and_falsifies_a_selected_finding_without_approval() {
+    let (proposal, forge, model, config) = run_large_fixture(true).await;
+    let calls = model.calls.lock().expect("successful calls lock").clone();
+    let expected: std::collections::BTreeSet<_> = [
+        ("tinysweeper_critique".to_string(), "src/x_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/x_api.rs".to_string()),
+        ("tinysweeper_critique".to_string(), "src/y_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/y_api.rs".to_string()),
+        ("tinysweeper_critique".to_string(), "src/z_api.rs".to_string()),
+        ("tinysweeper_security".to_string(), "src/z_api.rs".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(selected_lane_paths(&calls), expected);
+    assert!(calls.iter().any(|request| request.schema_name == "tinysweeper_falsify"));
+    assert!(calls.iter().any(|request| request.schema_name == "review_summary"));
+    assert!(calls.len() <= config.review.large_pr.max_calls);
+    assert_eq!(proposal.usage().calls_attempted, 8);
+    assert!(proposal
+        .lanes
+        .iter()
+        .flat_map(|lane| lane.findings.iter())
+        .any(|finding| finding.title == "Document the public API result"));
+    assert!(!proposal.complete());
+
+    crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("finding and partial coverage are published");
+    let writes = forge.writes();
+    assert!(!writes.iter().any(|write| matches!(
+        write,
+        Write::Review {
+            event: crate::forge::types::ReviewEvent::Approve,
+            ..
+        } | Write::Merged { .. }
+    )));
+    assert!(writes.iter().any(|write| matches!(write, Write::Check(_))));
+    assert!(writes.iter().any(|write| matches!(write, Write::Comment { body, .. } if body.contains("Document the public API result"))));
 }
 
 #[tokio::test]

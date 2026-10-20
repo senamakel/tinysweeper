@@ -6545,7 +6545,6 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(feature = "serve")]
     fn changed_file(path: &str, patch: &str) -> ChangedFile {
         ChangedFile {
             path: path.into(),
@@ -6571,7 +6570,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn umbrella_coverage_includes_replayed_and_currently_reviewed_files() {
         let a_patch = "@@ -1,1 +1,2 @@\n let a = 1;\n+let a2 = 2;\n";
@@ -6594,7 +6592,6 @@ mod tests {
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
     }
 
-    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn an_all_replayed_review_still_has_complete_coverage() {
         let patch = "@@ -1,1 +1,2 @@\n let a = 1;\n+let a2 = 2;\n";
@@ -6617,7 +6614,6 @@ mod tests {
         assert_eq!(check.conclusion, Some(CheckConclusion::Success));
     }
 
-    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn umbrella_coverage_includes_mechanically_verified_files_and_the_sample() {
         let proposal =

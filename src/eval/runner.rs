@@ -132,9 +132,10 @@ pub async fn run(
     let mut skipped = Vec::new();
     let mut loose_replays = 0usize;
     let mut spent = 0.0f64;
+    let mut unknown_charge = false;
 
     for case in &corpus.cases {
-        if spent >= options.max_cost_usd {
+        if unknown_charge || spent >= options.max_cost_usd {
             skipped.push(case.case.id.clone());
             continue;
         }
@@ -176,7 +177,19 @@ pub async fn run(
             Some(recording) => recording,
             None => &recorded,
         };
-        let outcome = review_case(case, &with_lanes(&config, case), cassette.clone(), tree).await;
+        let mut case_config = with_lanes(&config, case);
+        if options.record && !corpus.cases.is_empty() {
+            // The provider budget binds the Gateway's shared spend root. Divide
+            // the run ceiling across every admitted case so one case cannot
+            // consume the next case's allowance, while respecting the corpus
+            // label and operator's per-review ceiling.
+            case_config.models.budget_usd_per_pr = config
+                .models
+                .budget_usd_per_pr
+                .min(case.case.budget.max_cost_usd)
+                .min(options.max_cost_usd / corpus.cases.len() as f64);
+        }
+        let outcome = review_case(case, &case_config, cassette.clone(), tree).await;
         let wall = started.elapsed();
 
         if let Some(recording) = &recording {
@@ -209,6 +222,10 @@ pub async fn run(
         // never having produced a proposal to sum. Recorded usage replayed
         // verbatim, so the ceil works offline too.
         spent += cassette.cost_usd();
+        // A refusal without usage may still have incurred a provider charge.
+        // Stop before admitting another case instead of spending against an
+        // unknowable remainder of the shared ceiling.
+        unknown_charge |= cassette.has_unreported_usage();
 
         let score = match outcome {
             Ok(proposal) => {

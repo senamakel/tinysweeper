@@ -6,13 +6,14 @@
 //! # Reading a tree is not running one
 //!
 //! The security boundary says contributor code is never executed, and a
-//! shallow `git fetch` of one commit does not execute any: no build, no
+//! server-owned bare mirrors and disposable exact-head worktrees do not execute
+//! contributor code: no build, no
 //! dependency install, no repository script. The two ways git *could* run
 //! something are both closed explicitly rather than left to defaults —
 //! `core.hooksPath` is pointed at nowhere so a hook in the fetched history
 //! cannot fire, and `GIT_TERMINAL_PROMPT=0` stops a credential prompt turning
-//! a fetch into a hang. [`Checkout::fetch`] is the only place in the crate that
-//! spawns a process, and the only program it will spawn is `git`.
+//! a fetch into a hang. Git children are supervised through cancellation and
+//! timeout; the only program this module spawns is `git`.
 //!
 //! # The token is not in argv
 //!
@@ -21,7 +22,7 @@
 //! for anything on the host to read. Git's `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`
 //! environment protocol takes the same config through the environment instead,
 //! so the header is set without the credential ever appearing on a command
-//! line. The temporary directory is removed when the [`Checkout`] is dropped.
+//! line. A review worktree is removed when the [`Checkout`] is dropped.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -37,7 +38,7 @@ use crate::error::{Error, Result};
 /// one, not to police clone size.
 pub const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// A shallow checkout of exactly one commit, deleted when dropped.
+/// A disposable checkout of exactly one commit, deleted when dropped.
 #[derive(Debug)]
 pub struct Checkout {
     dir: tempfile::TempDir,
@@ -721,10 +722,18 @@ where
         let status = match wait_for_git_child(&mut add, &mut cancel_rx, "worktree add").await {
             Ok(status) => status,
             Err(err) => {
-                drop(registration);
-                drop(cache_lock);
-                drop(dir);
-                return Err(err);
+                if err.process_exited {
+                    drop(registration);
+                    drop(cache_lock);
+                    drop(dir);
+                } else {
+                    // A live child may still be mutating both the checkout and
+                    // mirror. Leak these owners rather than delete its paths.
+                    std::mem::forget(registration);
+                    std::mem::forget(cache_lock);
+                    std::mem::forget(dir);
+                }
+                return Err(err.error);
             }
         };
         if !status.success() {
@@ -746,10 +755,16 @@ where
         let status = match wait_for_git_child(&mut reset, &mut cancel_rx, "checkout reset").await {
             Ok(status) => status,
             Err(err) => {
-                drop(registration);
-                drop(cache_lock);
-                drop(dir);
-                return Err(err);
+                if err.process_exited {
+                    drop(registration);
+                    drop(cache_lock);
+                    drop(dir);
+                } else {
+                    std::mem::forget(registration);
+                    std::mem::forget(cache_lock);
+                    std::mem::forget(dir);
+                }
+                return Err(err.error);
             }
         };
         if !status.success() {
@@ -788,30 +803,57 @@ fn quiet_git_command(root: &Path, args: &[&str]) -> Command {
     command
 }
 
+struct GitChildWaitError {
+    error: Error,
+    process_exited: bool,
+}
+
 async fn wait_for_git_child(
     child: &mut tokio::process::Child,
     cancel: &mut tokio::sync::oneshot::Receiver<()>,
     operation: &str,
-) -> Result<std::process::ExitStatus> {
+) -> std::result::Result<std::process::ExitStatus, GitChildWaitError> {
     tokio::select! {
         result = child.wait() => match result {
             Ok(status) => Ok(status),
             Err(err) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(Error::Forge(format!("could not wait for git {operation}: {err}")))
+                let (process_exited, termination) = terminate_git_child(child).await;
+                Err(GitChildWaitError {
+                    error: Error::Forge(format!("could not wait for git {operation}: {err}{termination}")),
+                    process_exited,
+                })
             }
         },
         _ = cancel => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            Err(Error::Forge(format!("git {operation} was cancelled")))
+            let (process_exited, termination) = terminate_git_child(child).await;
+            Err(GitChildWaitError {
+                error: Error::Forge(format!("git {operation} was cancelled{termination}")),
+                process_exited,
+            })
         }
         _ = tokio::time::sleep(GIT_TIMEOUT) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            Err(Error::Forge(format!("git {operation} timed out")))
+            let (process_exited, termination) = terminate_git_child(child).await;
+            Err(GitChildWaitError {
+                error: Error::Forge(format!("git {operation} timed out{termination}")),
+                process_exited,
+            })
         }
+    }
+}
+
+async fn terminate_git_child(child: &mut tokio::process::Child) -> (bool, String) {
+    let kill_result = child.kill().await;
+    match child.wait().await {
+        Ok(_) => (true, String::new()),
+        Err(wait_error) => (
+            false,
+            format!(
+                "; could not confirm Git process exit (kill: {}; wait: {wait_error}); checkout and cache registration were preserved",
+                kill_result
+                    .err()
+                    .map_or_else(|| "sent".to_string(), |err| err.to_string())
+            ),
+        ),
     }
 }
 
@@ -1150,12 +1192,18 @@ mod tests {
             .unwrap();
         stdin.flush().await.unwrap();
         let mut response = String::new();
-        output.read_line(&mut response).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), output.read_line(&mut response))
+            .await
+            .expect("Git should answer promptly")
+            .unwrap();
         assert!(response.starts_with(&format!("{revision} commit ")));
         let _stdin = stdin;
 
         cancel_tx.send(()).unwrap();
-        let (waited, reaped) = wait.await.unwrap();
+        let (waited, reaped) = tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+            .await
+            .expect("the cancelled Git child should be reaped promptly")
+            .unwrap();
         assert!(waited.is_err_and(|err| err.to_string().contains("cancelled")));
         assert!(reaped.is_some(), "the helper returns only after Git is reaped");
     }

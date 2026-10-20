@@ -24,9 +24,10 @@ use crate::indexer::fetch::Checkout;
 
 /// Shared entry point for repository checkouts used by indexing and reviews.
 ///
-/// This initial scaffold keeps the existing transport and disposable checkout
-/// behavior while the cache tests pin down object reuse. The server wiring and
-/// cached worktree implementation are added in the following slice.
+/// Each canonical repository gets a private bare mirror. Immutable revisions
+/// already present there are reused; each consumer receives a separate,
+/// disposable exact-head worktree. Per-repository locking keeps fetch, prune,
+/// and worktree registration changes from racing one another.
 #[derive(Debug, Clone)]
 pub struct RepositoryCache {
     root: PathBuf,
@@ -80,9 +81,6 @@ impl RepositoryCache {
     }
 
     /// Check out one immutable commit for an indexing or review read.
-    ///
-    /// Kept as a passthrough in the test-first scaffold; the regression below
-    /// demonstrates the duplicate network fetch that the cache must remove.
     pub async fn checkout(
         &self,
         host: &str,

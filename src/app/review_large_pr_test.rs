@@ -35,7 +35,10 @@ struct AdaptiveCoverageRefusalModel {
 impl Model for AdaptiveCoverageRefusalModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         let schema = request.schema_name.clone();
-        self.attempts.lock().expect("attempt list lock").push(schema.clone());
+        self.attempts
+            .lock()
+            .expect("attempt list lock")
+            .push(schema.clone());
         let control = self
             .control
             .as_ref()
@@ -55,7 +58,10 @@ impl Model for AdaptiveCoverageRefusalModel {
                 usage: None,
                 accounting_complete: true,
             })?;
-        self.calls.lock().expect("successful call list lock").push(schema.clone());
+        self.calls
+            .lock()
+            .expect("successful call list lock")
+            .push(schema.clone());
 
         let prompt = request
             .messages
@@ -481,7 +487,7 @@ fn f1_model(advance_after: Option<&'static str>) -> Arc<LargeReviewModel> {
 fn adaptive_normal_config(lane: &str, max_calls: usize) -> Config {
     let mut config = all_default_lanes_config();
     config.review.lanes = vec![lane.into()];
-    config.review.passes = 2;
+    config.review.passes = 3;
     config.review.large_pr.enabled = false;
     config.review.large_pr.max_calls = max_calls;
     config
@@ -543,10 +549,16 @@ async fn assert_adaptive_refusal_is_partial(
         advance_after,
     });
     let started_at = tokio::time::Instant::now();
-    let execution = f1_run_context(
-        started_at,
-        started_at + std::time::Duration::from_secs(100),
-    );
+    let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + std::time::Duration::from_secs(100),
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: Some(max_calls),
+            soft_deadline_percent: 80,
+            drain_seconds: 5,
+        },
+    ));
     let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Normal");
 
     let proposal = run_all_default_lanes(
@@ -583,16 +595,23 @@ async fn assert_adaptive_refusal_is_partial(
         crate::forge::types::CheckConclusion::Neutral
     );
     assert!(!lane_proposal.completed);
-    assert!(lane_proposal.unanswered.contains(&"src/z_api.rs".to_string()));
-    assert!(lane_proposal.omissions.iter().any(|omission| {
-        omission.reason == reason && omission.paths == ["src/z_api.rs"]
-    }));
+    assert!(
+        lane_proposal
+            .unanswered
+            .contains(&"src/z_api.rs".to_string())
+    );
+    assert!(
+        lane_proposal
+            .omissions
+            .iter()
+            .any(|omission| { omission.reason == reason && omission.paths == ["src/z_api.rs"] })
+    );
     assert!(lane_proposal.findings.iter().any(|finding| {
         finding.title == "Document the public API result" && finding.path == "src/z_api.rs"
     }));
     assert!(proposal.usage().input_tokens >= 6);
     assert!(proposal.usage().output_tokens >= 3);
-    assert!(proposal.usage().cost_usd >= 0.0003 - 1e-9);
+    assert!((proposal.usage().cost_usd - 0.0002).abs() < 1e-9);
     assert_f1_never_approves(&forge);
     assert_eq!(
         crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
@@ -601,6 +620,50 @@ async fn assert_adaptive_refusal_is_partial(
         crate::app::apply::ApplyDisposition::Published
     );
     assert_f1_never_approves(&forge);
+}
+
+#[tokio::test]
+async fn critique_adaptive_call_limit_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "critique",
+        2,
+        None,
+        crate::lanes::fanout::OmissionReason::CallLimit,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn critique_adaptive_soft_deadline_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "critique",
+        48,
+        Some("tinysweeper_falsify"),
+        crate::lanes::fanout::OmissionReason::SoftDeadline,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn security_adaptive_call_limit_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "security",
+        2,
+        None,
+        crate::lanes::fanout::OmissionReason::CallLimit,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn security_adaptive_soft_deadline_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "security",
+        48,
+        Some("tinysweeper_falsify"),
+        crate::lanes::fanout::OmissionReason::SoftDeadline,
+    )
+    .await;
 }
 
 fn assert_host_stopped_lane(

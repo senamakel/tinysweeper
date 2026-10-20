@@ -3211,7 +3211,6 @@ async fn handle_review(
             mode: crate::lanes::large_pr::ReviewMode::Normal,
             max_calls: None,
             soft_deadline_percent: large_pr.soft_deadline_percent,
-            #[cfg(test)]
             drain_seconds: large_pr.drain_seconds,
         },
     ));

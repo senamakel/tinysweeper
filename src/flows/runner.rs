@@ -25,6 +25,7 @@ use crate::flows::lookup;
 use crate::flows::panel::Call;
 use crate::flows::subagent::{self, Answered};
 use crate::ports::model::{Model, ModelResponse, Usage};
+use crate::ports::model_execution::ModelExecutionRefusal;
 use crate::ports::tree::{Lookup, TreeReader};
 
 /// What one reviewer said, or why it said nothing.
@@ -47,6 +48,12 @@ pub struct Answer {
     pub looked_up: String,
     /// Usage reported for the model call that produced this answer.
     usage: Usage,
+    /// A typed host execution refusal, retained across lane decoding.
+    pub(crate) execution_refusal: Option<ModelExecutionRefusal>,
+    /// Usage from paid work before a typed refusal, when known.
+    pub(crate) execution_usage: Option<Box<Usage>>,
+    /// Whether all paid work in the refused operation was accounted for.
+    pub(crate) execution_accounting_complete: Option<bool>,
 }
 
 impl Answer {
@@ -59,6 +66,9 @@ impl Answer {
             error: Some(error.into()),
             looked_up: String::new(),
             usage: Usage::default(),
+            execution_refusal: None,
+            execution_usage: None,
+            execution_accounting_complete: None,
         }
     }
 }
@@ -146,11 +156,24 @@ async fn one_round_review(
                 error: None,
                 looked_up,
                 usage: response.usage,
+                execution_refusal: None,
+                execution_usage: None,
+                execution_accounting_complete: None,
             },
             Err(err) => {
                 tracing::debug!(lane = lane.as_str(), reviewer = %call.id, %err, "reviewer call failed");
                 let mut answer = Answer::failed(&call.id, err.to_string());
                 answer.usage = err.usage().unwrap_or_default();
+                if let crate::error::Error::ModelExecutionRefused {
+                    refusal,
+                    usage,
+                    accounting_complete,
+                } = err
+                {
+                    answer.execution_refusal = Some(refusal);
+                    answer.execution_usage = usage;
+                    answer.execution_accounting_complete = Some(accounting_complete);
+                }
                 answer
             }
         })

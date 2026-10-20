@@ -412,8 +412,16 @@ pub fn reviewer_responses(
     answers: &[Answer],
 ) -> Result<Vec<ReviewerResponse>> {
     let mut responses = Vec::with_capacity(reviewers.len());
+    let mut execution_refusal = None;
     for (reviewer, answer) in reviewers.iter().zip(answers) {
         let Some(value) = answer.value.clone() else {
+            if let Some(refusal) = answer.execution_refusal {
+                execution_refusal = Some((
+                    refusal,
+                    answer.execution_usage.clone(),
+                    answer.execution_accounting_complete.unwrap_or(false),
+                ));
+            }
             tracing::warn!(
                 agent = reviewer.id,
                 err = answer.error.as_deref().unwrap_or("no answer"),
@@ -435,6 +443,15 @@ pub fn reviewer_responses(
             model: answer.model.clone(),
             response,
             looked_up: answer.looked_up.clone(),
+        });
+    }
+    if responses.is_empty()
+        && let Some((refusal, usage, accounting_complete)) = execution_refusal
+    {
+        return Err(crate::error::Error::ModelExecutionRefused {
+            refusal,
+            usage,
+            accounting_complete,
         });
     }
     Ok(responses)

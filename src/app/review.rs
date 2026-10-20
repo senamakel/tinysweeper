@@ -1019,7 +1019,6 @@ pub(crate) async fn review_with_tree_observed_at_head(
             mode: crate::lanes::large_pr::ReviewMode::Normal,
             max_calls: None,
             soft_deadline_percent: large_pr.soft_deadline_percent,
-            #[cfg(test)]
             drain_seconds: large_pr.drain_seconds,
         },
     ));
@@ -2008,8 +2007,8 @@ async fn run_large_groups<'run>(
         BoxFuture<'_, (PlannedGroup, Result<crate::lanes::fanout::FileReview>)>,
     > = FuturesUnordered::new();
     let mut active_groups = BTreeMap::<(LaneId, String), PlannedGroup>::new();
-    let soft_deadline = tokio::time::Instant::from_std(execution.soft_deadline());
-    let hard_deadline = tokio::time::Instant::from_std(execution.hard_deadline());
+    let soft_deadline = execution.soft_deadline();
+    let hard_deadline = execution.hard_deadline();
     let drain_deadline = soft_deadline + std::time::Duration::from_secs(execution.drain_seconds());
     let drain_deadline = drain_deadline.min(hard_deadline);
     let mut draining = false;
@@ -2075,8 +2074,6 @@ async fn run_large_groups<'run>(
             let key = (group.lane, group.group.label.clone());
             active_groups.insert(key, group.clone());
             let lane_input = &input;
-            let model = Arc::clone(&model);
-            let critique = critique_prepared.as_ref();
             let security = security_prepared.as_ref();
             let critique_llm = critique_llm.clone();
             let security_llm = security_llm.clone();
@@ -4819,7 +4816,6 @@ mod tests {
                 mode: crate::lanes::large_pr::ReviewMode::Normal,
                 max_calls: None,
                 soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
-                #[cfg(test)]
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
@@ -5018,7 +5014,6 @@ mod tests {
                 mode: crate::lanes::large_pr::ReviewMode::Normal,
                 max_calls: None,
                 soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
-                #[cfg(test)]
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
@@ -5200,7 +5195,6 @@ mod tests {
                 mode: crate::lanes::large_pr::ReviewMode::Normal,
                 max_calls: None,
                 soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
-                #[cfg(test)]
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
@@ -5322,7 +5316,6 @@ mod tests {
                 mode: crate::lanes::large_pr::ReviewMode::Normal,
                 max_calls: None,
                 soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
-                #[cfg(test)]
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
@@ -5408,7 +5401,6 @@ mod tests {
                 mode: crate::lanes::large_pr::ReviewMode::Normal,
                 max_calls: None,
                 soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
-                #[cfg(test)]
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));

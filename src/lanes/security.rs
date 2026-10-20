@@ -302,6 +302,12 @@ impl Security {
             }
         }
         merge_scanner_findings(&mut outcome, &prepared.scanner);
+        if !prepared.scanner.is_empty() {
+            // A scanner fact remains actionable even when every selected
+            // model group was omitted or failed; unanswered work still keeps
+            // non-blocking outcomes neutral in the proposal gate.
+            outcome.skipped = None;
+        }
         Ok(outcome)
     }
 

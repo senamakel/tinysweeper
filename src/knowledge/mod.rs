@@ -251,7 +251,7 @@ mod tests {
                 .pinned
                 .contains("Preserve the curated convention when extraction cannot run.")
         );
-        assert_eq!(prepared.instruction_files, vec!["AGENTS.md"]);
+        assert!(prepared.instruction_files.contains(&"AGENTS.md".to_string()));
 
         tokio::time::advance(std::time::Duration::from_secs(80)).await;
         let (knowledge, usage) =

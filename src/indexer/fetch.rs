@@ -150,6 +150,7 @@ impl Checkout {
             .prefix("tinysweeper-review-")
             .tempdir()
             .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
+        let mut registration = WorktreeRegistrationCleanup::for_path(mirror, dir.path())?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
         let path = dir
             .path()
@@ -161,6 +162,7 @@ impl Checkout {
             &["worktree", "add", "--quiet", "--detach", path, revision],
         )
         .await?;
+        registration.disarm();
         Ok(Self {
             dir,
             revision: revision.to_string(),
@@ -431,6 +433,54 @@ impl Checkout {
     /// The commit this checkout reflects.
     pub fn revision(&self) -> &str {
         &self.revision
+    }
+}
+
+/// Git can leave a worktree registration locked as "initializing" if an
+/// add is cancelled. `worktree prune` deliberately preserves locked entries,
+/// so this guard owns and removes only the unique admin path for its tempdir.
+struct WorktreeRegistrationCleanup {
+    admin_path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl WorktreeRegistrationCleanup {
+    fn for_path(mirror: &Path, worktree: &Path) -> Result<Self> {
+        let name = worktree
+            .file_name()
+            .ok_or_else(|| Error::config("review worktree path has no final component"))?;
+        Ok(Self {
+            admin_path: mirror.join("worktrees").join(name),
+            armed: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorktreeRegistrationCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        match std::fs::symlink_metadata(&self.admin_path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                if let Err(err) = std::fs::remove_dir_all(&self.admin_path) {
+                    tracing::warn!(path = %self.admin_path.display(), %err, "could not clean cancelled worktree metadata");
+                }
+            }
+            Ok(_) => {
+                if let Err(err) = std::fs::remove_file(&self.admin_path) {
+                    tracing::warn!(path = %self.admin_path.display(), %err, "could not remove cancelled worktree metadata link");
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::warn!(path = %self.admin_path.display(), %err, "could not inspect cancelled worktree metadata");
+            }
+        }
     }
 }
 

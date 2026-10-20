@@ -6665,20 +6665,22 @@ mod tests {
                     .control
                     .as_ref()
                     .ok_or(Error::ReviewExecutionUnavailable)?;
-                let permit = control.acquire().await.map_err(|refusal| {
-                    Error::ModelExecutionRefused {
+                let permit =
+                    control
+                        .acquire()
+                        .await
+                        .map_err(|refusal| Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        })?;
+                permit
+                    .mark_dispatched()
+                    .map_err(|refusal| Error::ModelExecutionRefused {
                         refusal,
                         usage: None,
                         accounting_complete: true,
-                    }
-                })?;
-                permit.mark_dispatched().map_err(|refusal| {
-                    Error::ModelExecutionRefused {
-                        refusal,
-                        usage: None,
-                        accounting_complete: true,
-                    }
-                })?;
+                    })?;
                 self.committed
                     .lock()
                     .expect("committed call list lock")
@@ -6768,7 +6770,10 @@ mod tests {
                 drain_seconds: 5,
             },
         ));
-        assert_eq!(run_context.execution().soft_deadline(), started_at + Duration::from_secs(80));
+        assert_eq!(
+            run_context.execution().soft_deadline(),
+            started_at + Duration::from_secs(80)
+        );
         let (held_tx, mut held_rx) = watch::channel(Vec::<String>::new());
         let (release_fast_tx, _) = watch::channel(false);
         let (falsified_tx, mut falsified_rx) = watch::channel(false);
@@ -6808,7 +6813,9 @@ mod tests {
                 path: format!("src/{letter}.rs"),
                 status: FileStatus::Modified,
                 additions: 1,
-                patch: Some(format!("@@ -1 +1,2 @@\n fn {letter}() {{}}\n+fn {letter}_next() {{}}\n")),
+                patch: Some(format!(
+                    "@@ -1 +1,2 @@\n fn {letter}() {{}}\n+fn {letter}_next() {{}}\n"
+                )),
                 ..ChangedFile::default()
             })
             .collect::<Vec<_>>();
@@ -6839,7 +6846,12 @@ mod tests {
             .await
             .unwrap()
             .expect("the original head is claimed");
-        assert!(store.confirm_head(&owned, "abc123", now_ms + 2).await.unwrap());
+        assert!(
+            store
+                .confirm_head(&owned, "abc123", now_ms + 2)
+                .await
+                .unwrap()
+        );
 
         let (checkout_tx, checkout_rx) = oneshot::channel();
         let task = {
@@ -6858,11 +6870,8 @@ mod tests {
                     || async { Ok(()) },
                     || async { Ok(true) },
                     || async move {
-                        let timing = crate::review_timing::ReviewTiming::new(
-                            "owner/repo",
-                            7,
-                            "Incremental",
-                        );
+                        let timing =
+                            crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
                         let (proposal, findings) = checkout_then_review_before_deadline(
                             &timing,
                             hard_deadline,
@@ -6874,28 +6883,28 @@ mod tests {
                                 Ok::<(), Error>(())
                             },
                             |_| async move {
-                                assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(75));
-                                let proposal = crate::app::review::review_with_tree_observed_at_head_in_run(
-                                    &forge,
-                                    model,
-                                    &config,
-                                    &repo,
-                                    7,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    Some("abc123"),
-                                    context,
-                                    None,
-                                )
-                                .await?;
+                                assert_eq!(
+                                    tokio::time::Instant::now(),
+                                    started_at + Duration::from_secs(75)
+                                );
+                                let proposal =
+                                    crate::app::review::review_with_tree_observed_at_head_in_run(
+                                        &forge,
+                                        model,
+                                        &config,
+                                        &repo,
+                                        7,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        Some("abc123"),
+                                        context,
+                                        None,
+                                    )
+                                    .await?;
                                 let applied = crate::app::apply::apply(
-                                    &forge,
-                                    &forge,
-                                    &config,
-                                    &proposal,
-                                    None,
+                                    &forge, &forge, &config, &proposal, None,
                                 )
                                 .await?;
                                 let result = published_review_result(
@@ -6915,46 +6924,86 @@ mod tests {
             })
         };
 
-        checkout_rx.await.expect("checkout starts in the paid attempt");
+        checkout_rx
+            .await
+            .expect("checkout starts in the paid attempt");
         tokio::time::advance(Duration::from_secs(75)).await;
         while held_rx.borrow().len() < 8 {
-            held_rx.changed().await.expect("held requests remain observable");
+            held_rx
+                .changed()
+                .await
+                .expect("held requests remain observable");
         }
         while !*falsified_rx.borrow() {
-            falsified_rx.changed().await.expect("the finding is falsified");
+            falsified_rx
+                .changed()
+                .await
+                .expect("the finding is falsified");
         }
-        assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(75));
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started_at + Duration::from_secs(75)
+        );
         assert_eq!(run_context.execution().started_at(), started_at);
-        assert_eq!(run_context.execution().soft_deadline(), started_at + Duration::from_secs(80));
+        assert_eq!(
+            run_context.execution().soft_deadline(),
+            started_at + Duration::from_secs(80)
+        );
 
         tokio::time::advance(Duration::from_secs(5)).await;
-        assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(80));
-        assert!(!task.is_finished(), "admitted model work remains in the drain window");
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started_at + Duration::from_secs(80)
+        );
         assert!(
-            !model.attempts.lock().unwrap().iter().any(|(_, path)| path == "src/j.rs"),
+            !task.is_finished(),
+            "admitted model work remains in the drain window"
+        );
+        assert!(
+            !model
+                .attempts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| path == "src/j.rs"),
             "the queued tenth group does not start at the soft deadline"
         );
 
         tokio::time::advance(Duration::from_secs(4)).await;
-        assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(84));
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started_at + Duration::from_secs(84)
+        );
         release_fast_tx.send_replace(true);
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
-        assert!(!task.is_finished(), "the final admitted group is still draining at t=84");
+        assert!(
+            !task.is_finished(),
+            "the final admitted group is still draining at t=84"
+        );
 
         tokio::time::advance(Duration::from_secs(1)).await;
         let (completed, proposal) = task
             .await
             .expect("review worker task joins")
             .expect("review succeeds");
-        assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(85));
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started_at + Duration::from_secs(85)
+        );
         let InnerReview::Complete(findings) = completed else {
             panic!("the drained review reaches the worker completion path");
         };
-        assert!(findings.is_some(), "a real apply publishes the partial review");
+        assert!(
+            findings.is_some(),
+            "a real apply publishes the partial review"
+        );
         let (conclusion, disposition) = completed_review_disposition(findings);
-        assert!(matches!(conclusion, Conclusion::Reviewed { findings: 1, .. }));
+        assert!(matches!(
+            conclusion,
+            Conclusion::Reviewed { findings: 1, .. }
+        ));
         assert!(matches!(
             disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Published)
@@ -6985,16 +7034,33 @@ mod tests {
         assert_eq!(usage.calls_attempted, 10);
         let attempts = model.attempts.lock().unwrap().clone();
         let committed = model.committed.lock().unwrap().clone();
-        assert_eq!(attempts.len(), 10, "A plus eight held groups and A's falsifier are attempted");
-        assert_eq!(committed.len(), 10, "the last admitted request is dropped only at drain cutoff");
+        assert_eq!(
+            attempts.len(),
+            10,
+            "A plus eight held groups and A's falsifier are attempted"
+        );
+        assert_eq!(
+            committed.len(),
+            10,
+            "the last admitted request is dropped only at drain cutoff"
+        );
 
         let proposal_partial = run_context.execution().snapshot();
         assert_eq!(proposal_partial.committed_calls, 10);
         let writes = forge.writes();
-        assert!(writes.iter().any(|write| matches!(write, Write::Check(check)
-            if check.conclusion == Some(crate::forge::types::CheckConclusion::Neutral))));
-        assert!(!writes.iter().any(|write| matches!(write,
-            Write::Review { event: ReviewEvent::Approve, .. } | Write::Merged { .. })));
+        assert!(
+            writes
+                .iter()
+                .any(|write| matches!(write, Write::Check(check)
+            if check.conclusion == Some(crate::forge::types::CheckConclusion::Neutral)))
+        );
+        assert!(!writes.iter().any(|write| matches!(
+            write,
+            Write::Review {
+                event: ReviewEvent::Approve,
+                ..
+            } | Write::Merged { .. }
+        )));
         assert!(
             store
                 .snapshot_for_test()

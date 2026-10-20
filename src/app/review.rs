@@ -4285,7 +4285,7 @@ mod tests {
             let result = self.inner.complete(request).await;
             if lane_request {
                 self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if let (Some(permit), Some(control)) = (&permit, &self.execution) {
+                if let (Some(_), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
                             crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
@@ -4338,7 +4338,7 @@ mod tests {
             let result = self.inner.review(request, tree, policy).await;
             if lane_request {
                 self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if let (Some(permit), Some(control)) = (&permit, &self.execution) {
+                if let (Some(_), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
                             crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,

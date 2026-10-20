@@ -938,6 +938,69 @@ mod tests {
         assert_eq!(snapshot.reserved_calls, 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_hundred_mock_model_calls_share_the_three_call_execution_limit() {
+        use crate::ports::model::{Message, ModelRequest};
+
+        let started_at = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(3),
+            started_at,
+            started_at + Duration::from_secs(100),
+        )));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let mock = crate::harness::mock::MockModel::always(serde_json::json!({"ok": true}));
+        let model = mock
+            .with_execution_control(control)
+            .expect("the offline mock accepts review-wide execution control");
+        let barrier = Arc::new(tokio::sync::Barrier::new(101));
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for _ in 0..100 {
+            let barrier = Arc::clone(&barrier);
+            let model = Arc::clone(&model);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                model
+                    .complete(ModelRequest {
+                        model: "mock".into(),
+                        messages: vec![Message::user("concurrent model call")],
+                        schema: serde_json::json!({"type": "object"}),
+                        schema_name: "review-execution-concurrency".into(),
+                        max_tokens: 8,
+                    })
+                    .await
+            });
+        }
+        barrier.wait().await;
+
+        let mut succeeded = 0;
+        let mut refused = 0;
+        while let Some(joined) = tasks.join_next().await {
+            match joined.expect("mock dispatch task completes") {
+                Ok(_) => succeeded += 1,
+                Err(crate::error::Error::ModelExecutionRefused {
+                    refusal: ModelExecutionRefusal::CallLimit,
+                    ..
+                }) => refused += 1,
+                Err(error) => panic!("unexpected mock dispatch result: {error}"),
+            }
+        }
+
+        assert_eq!(succeeded, 3);
+        assert_eq!(refused, 97);
+        assert_eq!(
+            mock.calls(),
+            3,
+            "only admitted calls reach MockModel recording"
+        );
+        assert_eq!(mock.requests().len(), 3);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 3);
+        assert_eq!(snapshot.reserved_calls, 0);
+    }
+
     #[tokio::test]
     async fn acquisition_uses_the_absolute_soft_deadline_from_review_start() {
         let started_at = Instant::now() - Duration::from_secs(85);

@@ -238,6 +238,75 @@ impl Lane for Security {
 }
 
 impl Security {
+    /// Review one planner-selected group, retaining scanner evidence for its members.
+    pub(crate) async fn review_selected_group<'a>(
+        &self,
+        input: &LaneInput<'a>,
+        prepared: &SecurityPreparation<'a>,
+        group: &FileGroup,
+    ) -> Result<FileReview> {
+        let llm = runner::lane_llm(
+            self.model.clone(),
+            input.config,
+            input.config.models.budget_usd_per_pr,
+        );
+        let changed_paths = input.changed_paths();
+        let group_diffs: Vec<FileDiff> = group
+            .paths
+            .iter()
+            .filter_map(|path| input.diffs.iter().find(|diff| &diff.path == path).cloned())
+            .collect();
+        let scanner: Vec<&ScanFinding> = prepared
+            .scanner
+            .iter()
+            .copied()
+            .filter(|finding| group.paths.contains(&finding.path))
+            .collect();
+        let mut review = review_group(
+            llm.clone(),
+            input.config,
+            input.repo_policy,
+            input.extracted_rules,
+            input.prior_findings,
+            input.retrieved_context,
+            input.redaction_note,
+            input.asking_about_group(&group_diffs),
+            &changed_paths,
+            &group.paths,
+            &group_diffs,
+            &scanner,
+        )
+        .await?;
+        review.spend.merge(llm.spend());
+        Ok(review)
+    }
+
+    /// Apply scanner, triage and mechanical results after selected group reviews.
+    pub(crate) fn finish_selected<'a>(
+        prepared: SecurityPreparation<'a>,
+        mut outcome: LaneOutcome,
+    ) -> Result<LaneOutcome> {
+        if let Some(skipped) = prepared.skipped {
+            return Ok(skipped);
+        }
+        let mut covered_without_model = prepared.covered_without_model;
+        covered_without_model.extend(prepared.mechanical_verified);
+        outcome.include_reviewed_paths(covered_without_model);
+        outcome.summary.push_str(&skip_note(&prepared.triage_skipped));
+        if let Some(substitution) = &prepared.mechanical {
+            outcome.summary = format!(
+                "{} {}",
+                outcome.summary.trim(),
+                mechanical::note(substitution)
+            );
+            if prepared.review_paths_empty {
+                outcome.skipped = None;
+            }
+        }
+        merge_scanner_findings(&mut outcome, &prepared.scanner);
+        Ok(outcome)
+    }
+
     /// Run the exact model-free candidate preparation already used by planning.
     pub(crate) async fn run_prepared<'a>(
         &self,

@@ -187,6 +187,61 @@ impl Lane for Critique {
 }
 
 impl Critique {
+    /// Review one planner-selected group, retaining its exact normal lane path.
+    pub(crate) async fn review_selected_group(
+        &self,
+        input: &LaneInput<'_>,
+        group: &FileGroup,
+    ) -> Result<FileReview> {
+        let changed_paths = input.changed_paths();
+        let llm = runner::lane_llm(
+            self.model.clone(),
+            input.config,
+            input.config.models.budget_usd_per_pr,
+        );
+        let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
+        let group_diffs: Vec<FileDiff> = group
+            .paths
+            .iter()
+            .filter_map(|path| input.diffs.iter().find(|diff| &diff.path == path).cloned())
+            .collect();
+        let mut review = review_group(
+            llm.clone(),
+            input,
+            &changed_paths,
+            &group.paths,
+            &group_diffs,
+            &cross_file_evidence,
+        )
+        .await?;
+        review.spend.merge(llm.spend());
+        Ok(review)
+    }
+
+    /// Apply lane-wide postprocessing to selected group results.
+    pub(crate) fn finish_selected(
+        input: &LaneInput<'_>,
+        prepared: CritiquePreparation,
+        mut outcome: LaneOutcome,
+    ) -> Result<LaneOutcome> {
+        if let Some(skipped) = prepared.skipped {
+            return Ok(skipped);
+        }
+        outcome.context_degraded = input.retrieval_status.is_degraded();
+        outcome.include_reviewed_paths(prepared.covered_without_model);
+        if let Some(substitution) = &prepared.mechanical {
+            outcome.summary = format!(
+                "{} {}",
+                outcome.summary.trim(),
+                mechanical::note(substitution)
+            );
+            if prepared.paths_empty {
+                outcome.skipped = None;
+            }
+        }
+        Ok(outcome)
+    }
+
     /// Run the exact model-free candidate preparation already used by planning.
     pub(crate) async fn run_prepared(
         &self,

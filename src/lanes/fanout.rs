@@ -27,6 +27,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::error::Error;
@@ -51,6 +52,43 @@ pub struct FileReview {
     pub resolved: Vec<String>,
     /// What the call cost, and which model answered.
     pub spend: Spend,
+}
+
+/// Why a prepared group did not receive a model review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmissionReason {
+    /// The global Large-review plan left this group outside its selected set.
+    NotSelected,
+    /// The original absolute soft deadline stopped new group work.
+    SoftDeadline,
+    /// The bounded drain ended before this in-flight group returned.
+    DrainDeadline,
+    /// The shared physical-call ceiling refused a call in this group.
+    CallLimit,
+    /// The review owner cancelled the active execution scope.
+    Cancelled,
+}
+
+impl OmissionReason {
+    fn description(self) -> &'static str {
+        match self {
+            Self::NotSelected => "not selected by the large-review budget",
+            Self::SoftDeadline => "not started before the soft deadline",
+            Self::DrainDeadline => "did not finish before the drain deadline",
+            Self::CallLimit => "stopped at the physical-call limit",
+            Self::Cancelled => "cancelled with the owning review",
+        }
+    }
+}
+
+/// A planned group omitted without claiming that a provider failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmittedGroup {
+    /// Every file whose group received no complete review answer.
+    pub paths: Vec<String>,
+    /// Host-side reason the group was omitted.
+    pub reason: OmissionReason,
 }
 
 /// Review `units` concurrently, at most [`MAX_CONCURRENT_FILES`] at a time.
@@ -129,6 +167,8 @@ pub struct FanOut {
     /// The units whose review failed: the unit's label, its member file
     /// paths, and why.
     pub failures: Vec<(String, Vec<String>, Error)>,
+    /// Groups the host did not review, kept distinct from provider failures.
+    pub omitted: Vec<OmittedGroup>,
 }
 
 impl FanOut {

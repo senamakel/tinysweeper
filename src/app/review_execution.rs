@@ -945,6 +945,11 @@ mod tests {
             .await
             .expect("soft deadline wakes the queued logical call")
             .expect("model task completes");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a call queued before the cutoff must not enter the model after it"
+        );
         assert!(matches!(
             result,
             Err(crate::error::Error::ModelExecutionRefused {
@@ -952,7 +957,6 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

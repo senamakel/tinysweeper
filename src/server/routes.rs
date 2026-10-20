@@ -5979,6 +5979,7 @@ mod tests {
         request_b.head_sha = Some("head-b".into());
         request_b.accepted_at_ms = now + 2;
         store.admit_batch(vec![request_b]).await.unwrap();
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), now + 3).await;
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(2), worker)
                 .await

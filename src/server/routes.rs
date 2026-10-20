@@ -1244,6 +1244,7 @@ where
 /// Reconcile a lane failure with durable ownership before it can be retried or
 /// published as a failure for a head that has already been superseded.
 async fn ownership_fence_disposition<Valid>(
+    failure: &Error,
     execution: &crate::app::review_execution::ReviewExecution,
     jobs: &dyn ReviewJobStore,
     owned: Option<&OwnedReview>,
@@ -1252,6 +1253,10 @@ async fn ownership_fence_disposition<Valid>(
 where
     Valid: Fn() -> bool,
 {
+    if matches!(failure, Error::ReviewOwnershipLost) {
+        execution.cancel();
+        return Ok(Some(WorkerDisposition::OwnershipLost));
+    }
     let Some(owned) = owned else {
         return Ok(execution
             .is_cancelled()
@@ -3348,6 +3353,7 @@ async fn handle_review(
             }
             Err(err) => {
                 if let Some(disposition) = ownership_fence_disposition(
+                    &err,
                     &run.execution.execution(),
                     state.review_jobs.as_ref(),
                     run.owned.as_ref(),
@@ -5582,7 +5588,6 @@ mod tests {
     #[tokio::test]
     async fn an_uncancelled_durable_supersession_precedes_a_terminal_lane_error() {
         use crate::forge::MockForge;
-        use crate::ports::forge::ForgeWrite;
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let now = unix_time_ms();
@@ -5608,11 +5613,22 @@ mod tests {
 
         // This models a sibling lane's terminal Budget result arriving before
         // the old worker's ownership watcher has canceled its shared scope.
+        let budget_failure = Error::Budget {
+            spent: 1.0,
+            limit: 1.0,
+            usage: None,
+        };
         let execution = test_execution_scope();
         assert!(!execution.is_cancelled());
-        let result = ownership_fence_disposition(&execution, store.as_ref(), Some(&owned), || true)
-            .await
-            .unwrap();
+        let result = ownership_fence_disposition(
+            &budget_failure,
+            &execution,
+            store.as_ref(),
+            Some(&owned),
+            || true,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(result, Some(WorkerDisposition::Yielded)));
         assert!(execution.is_cancelled());

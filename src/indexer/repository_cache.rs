@@ -259,6 +259,7 @@ fn cache_root(configured: Option<OsString>, home: Option<OsString>) -> Result<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::tree::TreeReader;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

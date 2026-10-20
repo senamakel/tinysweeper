@@ -168,11 +168,11 @@ async fn one_round_review(
                     refusal,
                     usage,
                     accounting_complete,
-                } = err
+                } = &err
                 {
-                    answer.execution_refusal = Some(refusal);
-                    answer.execution_usage = usage;
-                    answer.execution_accounting_complete = Some(accounting_complete);
+                    answer.execution_refusal = Some(*refusal);
+                    answer.execution_usage = usage.clone();
+                    answer.execution_accounting_complete = Some(*accounting_complete);
                 }
                 answer
             }

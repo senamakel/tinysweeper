@@ -2009,8 +2009,9 @@ async fn run_large_groups<'run>(
     let mut active_groups = BTreeMap::<(LaneId, String), PlannedGroup>::new();
     let soft_deadline = execution.soft_deadline();
     let hard_deadline = execution.hard_deadline();
-    let drain_deadline = soft_deadline + std::time::Duration::from_secs(execution.drain_seconds());
-    let drain_deadline = drain_deadline.min(hard_deadline);
+    let drain_deadline = (soft_deadline
+        + std::time::Duration::from_secs(execution.drain_seconds()))
+    .min(hard_deadline - std::time::Duration::from_secs(5));
     let mut draining = false;
 
     loop {

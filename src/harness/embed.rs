@@ -109,6 +109,7 @@ struct AgenticCallObserver {
     downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
     execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+    requested_model: String,
     counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
@@ -140,7 +141,9 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             if let Some(control) = &self.execution_control {
                 control.on_terminal(ModelExecutionTerminal {
-                    requested_model: requested_model.clone().unwrap_or_else(|| "unknown".into()),
+                    requested_model: requested_model
+                        .clone()
+                        .unwrap_or_else(|| self.requested_model.clone()),
                     answered_model: answered_model.clone(),
                     outcome: execution_terminal_outcome(*status),
                     refused: *refused,
@@ -157,7 +160,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             let model = answered_model
                 .as_deref()
                 .or(requested_model.as_deref())
-                .unwrap_or("unknown");
+                .unwrap_or(&self.requested_model);
             let observed_usage = Usage {
                 input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
@@ -1186,6 +1189,7 @@ impl GatewayModel {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
             execution_control: self.execution_control.clone(),
+            requested_model: model.to_owned(),
             counts: resources.physical_counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),

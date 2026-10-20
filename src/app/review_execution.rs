@@ -197,27 +197,35 @@ impl PhysicalExecutionAccounting {
 }
 
 fn add_usage_saturating(total: &mut Usage, addition: Usage) -> bool {
-    total.input_tokens = total.input_tokens.saturating_add(addition.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(addition.output_tokens);
-    total.reasoning_tokens = total
-        .reasoning_tokens
-        .saturating_add(addition.reasoning_tokens);
-    total.cached_tokens = total.cached_tokens.saturating_add(addition.cached_tokens);
-    total.calls_attempted = total
-        .calls_attempted
-        .saturating_add(addition.calls_attempted);
-    total.calls_succeeded = total
-        .calls_succeeded
-        .saturating_add(addition.calls_succeeded);
-    total.calls_refused = total.calls_refused.saturating_add(addition.calls_refused);
-    total.calls_errored = total.calls_errored.saturating_add(addition.calls_errored);
+    let mut complete = true;
+    complete &= saturating_add_exact(&mut total.input_tokens, addition.input_tokens);
+    complete &= saturating_add_exact(&mut total.output_tokens, addition.output_tokens);
+    complete &= saturating_add_exact(&mut total.reasoning_tokens, addition.reasoning_tokens);
+    complete &= saturating_add_exact(&mut total.cached_tokens, addition.cached_tokens);
+    complete &= saturating_add_exact(&mut total.calls_attempted, addition.calls_attempted);
+    complete &= saturating_add_exact(&mut total.calls_succeeded, addition.calls_succeeded);
+    complete &= saturating_add_exact(&mut total.calls_refused, addition.calls_refused);
+    complete &= saturating_add_exact(&mut total.calls_errored, addition.calls_errored);
     let cost = total.cost_usd + addition.cost_usd;
     if cost.is_finite() {
         total.cost_usd = cost;
-        true
     } else {
         total.cost_usd = f64::MAX;
-        false
+        complete = false;
+    }
+    complete
+}
+
+fn saturating_add_exact(total: &mut u64, addition: u64) -> bool {
+    match total.checked_add(addition) {
+        Some(sum) => {
+            *total = sum;
+            true
+        }
+        None => {
+            *total = u64::MAX;
+            false
+        }
     }
 }
 

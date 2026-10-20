@@ -6708,7 +6708,8 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|comment| {
-                comment.body.contains(crate::summary::MARKER)
+                comment.author == "tinysweeper"
+                    && comment.body.contains(crate::summary::MARKER)
                     && comment
                         .body
                         .contains("The change updates the reviewed source files.")
@@ -6752,7 +6753,7 @@ mod tests {
                 .is_some_and(|summary| !summary.executive_summary.is_empty())
         );
         let failed_attempt_report = crate::summary::render(&config, &partial);
-        assert!(failed_attempt_report.contains("PARTIAL ATTEMPT TITLE"));
+        assert!(failed_attempt_report.contains("The change updates two reviewed source files."));
         assert_ne!(failed_attempt_report, last_good_report);
 
         let check_id = forge
@@ -6817,7 +6818,7 @@ mod tests {
         assert_eq!(failed_hub.matches(last_good_report.as_str()).count(), 1);
         assert!(failed_hub.contains(&last_good_report), "{failed_hub}");
         assert!(
-            !failed_hub.contains("PARTIAL ATTEMPT TITLE"),
+            !failed_hub.contains("The change updates two reviewed source files."),
             "{failed_hub}"
         );
         assert_eq!(

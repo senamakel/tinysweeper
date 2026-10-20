@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::forge::{PullRequest, RepoId};
 use crate::index::mongo::MongoIndex;
+use crate::indexer::repository_cache::RepositoryCache;
 use crate::ports::forge::ForgeRead as _;
 use crate::ports::forge::ForgeWrite;
 use crate::ports::knowledge::KnowledgeStore;
@@ -37,7 +38,6 @@ use crate::server::admin::{self, AdminAuth};
 use crate::server::auth::AppAuth;
 use crate::server::failure;
 use crate::server::indexing::{IndexBackend, index_in_background};
-use crate::indexer::repository_cache::RepositoryCache;
 use crate::server::manual::{self, FullReviews, MergeReport, Merges, Triages};
 use crate::server::mcp;
 use crate::server::model::{GatewayModelFactory, ResolvedModels};
@@ -4238,14 +4238,16 @@ async fn run_lanes(
         || async {
             if config_ref.lookup.enabled && config_ref.lookup.checkout {
                 let head = &pull_request.head_sha;
-                match state.repository_cache.checkout_for_diff(
-                    &super::indexing::git_host(),
-                    &repo.to_string(),
-                    head,
-                    &pull_request.base_sha,
-                    read_token,
-                )
-                .await
+                match state
+                    .repository_cache
+                    .checkout_for_diff(
+                        &super::indexing::git_host(),
+                        &repo.to_string(),
+                        head,
+                        &pull_request.base_sha,
+                        read_token,
+                    )
+                    .await
                 {
                     Ok(checkout) => {
                         if !config_ref.retrieval.submodules.is_empty()

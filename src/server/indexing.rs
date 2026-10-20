@@ -34,8 +34,8 @@ use crate::graph::types::SourceFile;
 use crate::index::mongo::MongoIndex;
 use crate::index::types::EmbedSignature;
 use crate::indexer::fetch::Checkout;
-use crate::indexer::repository_cache::RepositoryCache;
 use crate::indexer::mongo::MongoManifest;
+use crate::indexer::repository_cache::RepositoryCache;
 use crate::indexer::run::Indexer;
 use crate::indexer::types::IndexOutcome;
 use crate::ports::embed::Embedder;
@@ -99,10 +99,7 @@ impl IndexBackend {
     /// configured and could not be opened, which is a mistake rather than a
     /// choice and must not be papered over as "retrieval off" — a silently
     /// unindexed reviewer still posts reviews, just worse ones.
-    pub async fn open(
-        config: &Config,
-        repository_cache: RepositoryCache,
-    ) -> Result<Option<Self>> {
+    pub async fn open(config: &Config, repository_cache: RepositoryCache) -> Result<Option<Self>> {
         let Some(embedder) = crate::index::embedder_from_config(&config.embeddings)? else {
             return Ok(None);
         };
@@ -533,9 +530,9 @@ mod tests {
                 &config,
                 RepositoryCache::at(tempfile::tempdir().unwrap().path().join("cache")).unwrap(),
             )
-                .await
-                .expect("a disabled section is a choice")
-                .is_none()
+            .await
+            .expect("a disabled section is a choice")
+            .is_none()
         );
     }
 }

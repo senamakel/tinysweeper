@@ -222,9 +222,13 @@ impl Checkout {
     /// Return whether an immutable commit is already present in the mirror.
     pub(super) async fn mirror_has_revision(mirror: &Path, revision: &str) -> Result<bool> {
         validate_revision(revision)?;
-        Ok(git_stdout(mirror, "", &["cat-file", "-e", &format!("{revision}^{{commit}}")])
-            .await
-            .is_ok())
+        Ok(git_stdout(
+            mirror,
+            "",
+            &["cat-file", "-e", &format!("{revision}^{{commit}}")],
+        )
+        .await
+        .is_ok())
     }
 
     /// Fetch allowed submodules recursively into this checkout, shallowly.
@@ -554,12 +558,13 @@ impl Drop for WorktreeRegistrationCleanup {
                         .is_ok_and(|reason| reason.trim() == "initializing")
             });
             let gitdir = admin.join("gitdir");
-            let points_to_owned_worktree = std::fs::symlink_metadata(&gitdir).is_ok_and(|metadata| {
-                metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && std::fs::read_to_string(&gitdir)
-                        .is_ok_and(|target| Path::new(target.trim()) == self.worktree_gitdir)
-            });
+            let points_to_owned_worktree =
+                std::fs::symlink_metadata(&gitdir).is_ok_and(|metadata| {
+                    metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && std::fs::read_to_string(&gitdir)
+                            .is_ok_and(|target| Path::new(target.trim()) == self.worktree_gitdir)
+                });
             if !is_initializing && !points_to_owned_worktree {
                 continue;
             }
@@ -602,7 +607,10 @@ async fn changed_gitlinks(
         let Some(path) = fields.next() else {
             break;
         };
-        let mut metadata = metadata.strip_prefix(':').unwrap_or(metadata).split_ascii_whitespace();
+        let mut metadata = metadata
+            .strip_prefix(':')
+            .unwrap_or(metadata)
+            .split_ascii_whitespace();
         let old_mode = metadata.next();
         let new_mode = metadata.next();
         if old_mode == Some("160000") || new_mode == Some("160000") {
@@ -1081,16 +1089,22 @@ mod tests {
             .map(|entry| entry.unwrap().path())
             .find(|admin| {
                 std::fs::read_to_string(admin.join("gitdir")).is_ok_and(|target| {
-                        target.trim() == cancelled_path.join(".git").to_string_lossy()
+                    target.trim() == cancelled_path.join(".git").to_string_lossy()
                 })
             })
             .unwrap();
-        assert_ne!(active_admin, own_admin, "Git selected a distinct suffixed registration");
+        assert_ne!(
+            active_admin, own_admin,
+            "Git selected a distinct suffixed registration"
+        );
         assert!(
             lock_probe.try_lock().is_err(),
             "the repository lock remains owned while the setup supervisor is active"
         );
-        assert!(cancelled_path.exists(), "the setup owner retains its TempDir");
+        assert!(
+            cancelled_path.exists(),
+            "the setup owner retains its TempDir"
+        );
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
 
@@ -1103,8 +1117,14 @@ mod tests {
         .expect("cancelled setup supervisor removes its registration");
 
         assert!(!own_admin.exists(), "cancelled registration is removed");
-        assert!(active_admin.is_dir(), "live sibling registration is preserved");
-        assert!(!cancelled_path.exists(), "cancelled TempDir is removed after metadata");
+        assert!(
+            active_admin.is_dir(),
+            "live sibling registration is preserved"
+        );
+        assert!(
+            !cancelled_path.exists(),
+            "cancelled TempDir is removed after metadata"
+        );
         assert!(
             repo_lock.try_lock().is_ok(),
             "the repository lock is released after setup cleanup"
@@ -1192,10 +1212,13 @@ mod tests {
             .unwrap();
         stdin.flush().await.unwrap();
         let mut response = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(2), output.read_line(&mut response))
-            .await
-            .expect("Git should answer promptly")
-            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            output.read_line(&mut response),
+        )
+        .await
+        .expect("Git should answer promptly")
+        .unwrap();
         assert!(response.starts_with(&format!("{revision} commit ")));
         let _stdin = stdin;
 
@@ -1205,7 +1228,10 @@ mod tests {
             .expect("the cancelled Git child should be reaped promptly")
             .unwrap();
         assert!(waited.is_err_and(|err| err.to_string().contains("cancelled")));
-        assert!(reaped.is_some(), "the helper returns only after Git is reaped");
+        assert!(
+            reaped.is_some(),
+            "the helper returns only after Git is reaped"
+        );
     }
 
     #[test]
@@ -1214,7 +1240,8 @@ mod tests {
         let checkout = tempfile::tempdir().unwrap();
         let basename = checkout.path().file_name().unwrap();
         let admin = mirror.path().join("worktrees").join(basename);
-        let cleanup = WorktreeRegistrationCleanup::for_path(mirror.path(), checkout.path()).unwrap();
+        let cleanup =
+            WorktreeRegistrationCleanup::for_path(mirror.path(), checkout.path()).unwrap();
         std::fs::create_dir_all(&admin).unwrap();
         std::fs::write(admin.join("locked"), "initializing").unwrap();
 

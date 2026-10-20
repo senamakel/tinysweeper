@@ -228,7 +228,9 @@ fn validate_revision(revision: &str) -> Result<()> {
 
 fn validate_repo(repo: &str) -> Result<()> {
     let Some((owner, name)) = repo.split_once('/') else {
-        return Err(crate::error::Error::config(format!("`{repo}` is not owner/name")));
+        return Err(crate::error::Error::config(format!(
+            "`{repo}` is not owner/name"
+        )));
     };
     let component = |value: &str| {
         !value.is_empty()
@@ -239,7 +241,9 @@ fn validate_repo(repo: &str) -> Result<()> {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     };
     if repo.starts_with('-') || !component(owner) || !component(name) || name.ends_with(".git") {
-        return Err(crate::error::Error::config(format!("`{repo}` is not owner/name")));
+        return Err(crate::error::Error::config(format!(
+            "`{repo}` is not owner/name"
+        )));
     }
     Ok(())
 }
@@ -480,21 +484,29 @@ mod tests {
         std::fs::create_dir_all(&owner_cache_root).unwrap();
         std::os::unix::fs::symlink(&external_owner, owner_cache_root.join("acme")).unwrap();
         let owner_cache = RepositoryCache::at(&owner_cache_root).unwrap();
-        assert!(owner_cache
-            .checkout_from_url(
-                "acme/widgets",
-                &revision,
-                owner_mirror.to_str().unwrap(),
-                "",
-                &AtomicUsize::new(0),
-            )
-            .await
-            .is_err());
+        assert!(
+            owner_cache
+                .checkout_from_url(
+                    "acme/widgets",
+                    &revision,
+                    owner_mirror.to_str().unwrap(),
+                    "",
+                    &AtomicUsize::new(0),
+                )
+                .await
+                .is_err()
+        );
         assert_eq!(
-            git(&["--git-dir", owner_mirror.to_str().unwrap(), "worktree", "list", "--porcelain"])
-                .lines()
-                .filter(|line| line.starts_with("worktree "))
-                .count(),
+            git(&[
+                "--git-dir",
+                owner_mirror.to_str().unwrap(),
+                "worktree",
+                "list",
+                "--porcelain"
+            ])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
             1,
             "refusing an owner symlink must not register a worktree externally"
         );
@@ -504,21 +516,29 @@ mod tests {
         std::fs::create_dir_all(&mirror_owner).unwrap();
         std::os::unix::fs::symlink(&owner_mirror, mirror_owner.join("widgets.git")).unwrap();
         let mirror_cache = RepositoryCache::at(&mirror_cache_root).unwrap();
-        assert!(mirror_cache
-            .checkout_from_url(
-                "acme/widgets",
-                &revision,
-                owner_mirror.to_str().unwrap(),
-                "",
-                &AtomicUsize::new(0),
-            )
-            .await
-            .is_err());
+        assert!(
+            mirror_cache
+                .checkout_from_url(
+                    "acme/widgets",
+                    &revision,
+                    owner_mirror.to_str().unwrap(),
+                    "",
+                    &AtomicUsize::new(0),
+                )
+                .await
+                .is_err()
+        );
         assert_eq!(
-            git(&["--git-dir", owner_mirror.to_str().unwrap(), "worktree", "list", "--porcelain"])
-                .lines()
-                .filter(|line| line.starts_with("worktree "))
-                .count(),
+            git(&[
+                "--git-dir",
+                owner_mirror.to_str().unwrap(),
+                "worktree",
+                "list",
+                "--porcelain"
+            ])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
             1,
             "refusing a mirror symlink must not prune or register external admin state"
         );

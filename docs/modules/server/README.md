@@ -145,6 +145,16 @@ says the index was cold rather than quietly reviewing on less context than the
 operator believes. Blocking the first review on the first index would trade a
 thin review for a late one, and a late review is the one nobody reads.
 
+Both paths use the server-owned repository cache: one private bare mirror per
+canonical repository, with separate exact-head disposable worktrees for
+indexing and review. Git operations for one repository are serialized, and
+review worktrees are removed when the run ends. The cache is disposable
+optimization state. To reclaim it manually, stop the service first, then
+remove the configured `TINYSWEEPER_REPOSITORY_CACHE_DIR` (or the default
+private cache directory); do not clean it while workers may hold checkouts.
+Allowed changed gitlinks and missing submodules actually read by a lane are
+fetched lazily under the existing host and submodule allowlist policy.
+
 ### Closed pull requests stop before review work
 
 Webhook routing ignores a pull request event when GitHub supplies a non-open

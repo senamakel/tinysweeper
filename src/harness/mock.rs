@@ -177,6 +177,7 @@ impl MockModel {
     }
 
     /// Queue a typed host execution refusal at the model boundary.
+    #[cfg(test)]
     pub(crate) fn then_execution_refusal(self, refusal: ModelExecutionRefusal) -> Self {
         self.responses
             .lock()

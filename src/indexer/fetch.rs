@@ -231,7 +231,7 @@ impl Checkout {
         token: &str,
         allowed: &[String],
     ) -> Result<Unfetched> {
-        self.fetch_submodules_with(host, token, allowed, |dir, url, gitlink| async move {
+        self.fetch_submodules_with(host, token, allowed, None, |dir, url, gitlink| async move {
             std::fs::create_dir_all(&dir).map_err(|err| {
                 Error::Forge(format!("could not make a submodule directory: {err}"))
             })?;
@@ -445,6 +445,48 @@ impl Checkout {
     pub fn revision(&self) -> &str {
         &self.revision
     }
+}
+
+async fn changed_gitlinks(
+    checkout: &Path,
+    base_revision: &str,
+    head_revision: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+    validate_revision(base_revision)?;
+    validate_revision(head_revision)?;
+    let raw = git_stdout(
+        checkout,
+        "",
+        &[
+            "diff-tree",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            "--no-commit-id",
+            "-r",
+            "-z",
+            base_revision,
+            head_revision,
+        ],
+    )
+    .await?;
+    let mut changed = std::collections::BTreeSet::new();
+    let mut fields = raw.split('\0');
+    while let Some(metadata) = fields.next() {
+        if metadata.is_empty() {
+            continue;
+        }
+        let Some(path) = fields.next() else {
+            break;
+        };
+        let mut metadata = metadata.strip_prefix(':').unwrap_or(metadata).split_ascii_whitespace();
+        let old_mode = metadata.next();
+        let new_mode = metadata.next();
+        if old_mode == Some("160000") || new_mode == Some("160000") {
+            changed.insert(path.to_string());
+        }
+    }
+    Ok(changed)
 }
 
 fn validate_revision(revision: &str) -> Result<()> {

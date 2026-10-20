@@ -4786,6 +4786,98 @@ mod tests {
         assert_eq!(skipped.usage().calls_attempted, 1);
     }
 
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn proposal_usage_counts_a_committed_gateway_call_without_a_terminal_yet() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::{Message, ModelRequest};
+
+        let reply = || {
+            Reply::completion(
+                "deep",
+                r#"{"ok":true}"#,
+                "stop",
+                json!({"prompt_tokens": 11,"completion_tokens": 4,"cost": 0.125}),
+            )
+        };
+        let (gateway, response_gate) =
+            FakeGateway::start_paused(vec![reply(), reply(), reply()]).await;
+        let mut config = critique_config();
+        config.models.base_url = gateway.base_url.clone();
+        config.models.fallback.clear();
+        config.models.agentic_reviewers = false;
+        config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                #[cfg(test)]
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let model: Arc<dyn Model> =
+            Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        let model = execution.bind_model(model, 10.0).model.clone();
+        let request = || ModelRequest {
+            model: "deep".into(),
+            messages: vec![Message::user("record a physical completion")],
+            schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
+            schema_name: "pending-terminal-accounting".into(),
+            max_tokens: 32,
+        };
+
+        async fn wait_for_request_count(gateway: &FakeGateway, expected: usize) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while gateway.requests().len() < expected {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("gateway received each expected request");
+        }
+
+        for expected in 1..=2 {
+            let model = model.clone();
+            let mut calls = tokio::task::JoinSet::new();
+            calls.spawn(async move { model.complete(request()).await });
+            wait_for_request_count(&gateway, expected).await;
+            response_gate.add_permits(1);
+            calls
+                .join_next()
+                .await
+                .expect("completed call task")
+                .expect("call task joins")
+                .expect("gateway response succeeds");
+        }
+
+        let model_for_pending = model.clone();
+        let mut pending = tokio::task::JoinSet::new();
+        pending.spawn(async move { model_for_pending.complete(request()).await });
+        wait_for_request_count(&gateway, 3).await;
+
+        let accounting = proposal_accounting(&execution, true, None, &[]);
+        assert_eq!(accounting.usage.calls_attempted, 3);
+        assert_eq!(accounting.usage.calls_succeeded, 2);
+        assert_eq!(accounting.usage.calls_errored, 0);
+        assert_eq!(accounting.usage.input_tokens, 22);
+        assert_eq!(accounting.usage.cost_usd, 0.25);
+        assert!(!accounting.completion.expect("raw accounting").complete);
+
+        response_gate.add_permits(1);
+        pending
+            .join_next()
+            .await
+            .expect("pending call task")
+            .expect("pending task joins")
+            .expect("released response succeeds");
+    }
+
     #[test]
     fn grouping_alone_needs_no_walk_when_no_enabled_lane_consumes_it() {
         // A tests-only review — neither `critique` nor `security` on — never

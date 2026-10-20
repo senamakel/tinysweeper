@@ -198,7 +198,9 @@ async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
     first_ask.is_outdated = false;
     let mut later_ask = first_ask.clone();
     later_ask.id = "PRRT_ask_2".into();
-    let forge = forge_with(vec![ours(), first_ask, later_ask]);
+    let mut later_deterministic = ours();
+    later_deterministic.id = "PRRT_2".into();
+    let forge = forge_with(vec![ours(), first_ask, later_ask, later_deterministic]);
     let mut config = config();
     config.threads.ask_model = true;
     let calls = Arc::new(AtomicUsize::new(0));
@@ -216,8 +218,9 @@ async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
     .expect("an optional advisory deadline does not discard deterministic decisions");
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(plan.resolve.len(), 1);
+    assert_eq!(plan.resolve.len(), 2);
     assert_eq!(plan.resolve[0].id, "PRRT_1");
+    assert_eq!(plan.resolve[1].id, "PRRT_2");
     assert_eq!(spend, Spend::default());
     assert!(forge.writes().is_empty(), "planning remains read-only");
 }

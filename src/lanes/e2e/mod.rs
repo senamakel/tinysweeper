@@ -214,6 +214,11 @@ impl Lane for E2e {
                 if let Some(mut outcome) =
                     stopped_by_execution_policy(LaneId::E2e, changed_paths, llm.spend(), refusal)
                 {
+                    // Deterministic job findings remain a real verdict even
+                    // when the model could not assess coverage. `unanswered`
+                    // keeps an empty result Neutral without suppressing a
+                    // blocking finding as `skipped` would.
+                    outcome.skipped = None;
                     outcome.findings = deterministic;
                     outcome.pending = pending;
                     append_run_notes(&mut outcome, &runs, evidence);

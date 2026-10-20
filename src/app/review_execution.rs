@@ -386,7 +386,7 @@ impl ReviewExecution {
     }
 
     /// Whether an ownership fence has stopped this review's remaining work.
-    #[cfg(any(test, feature = "serve"))]
+    #[cfg(feature = "serve")]
     pub(crate) fn is_cancelled(&self) -> bool {
         lock(&self.inner.state).cancelled
     }

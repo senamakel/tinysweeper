@@ -577,7 +577,7 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
         check.conclusion,
         Some(crate::forge::types::CheckConclusion::Neutral)
     );
-    assert!(check.summary.contains("not reviewed (call budget)"));
+    assert!(check.summary.contains("stopped at the physical-call limit"));
     let hub = writes.iter().find_map(|write| match write {
         Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
         _ => None,
@@ -677,7 +677,7 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
         check.conclusion,
         Some(crate::forge::types::CheckConclusion::Neutral)
     );
-    assert!(check.summary.contains("not reviewed (call budget)"));
+    assert!(check.summary.contains("stopped at the physical-call limit"));
     let hub = writes.iter().find_map(|write| match write {
         Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
         _ => None,

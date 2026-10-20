@@ -5901,6 +5901,8 @@ mod tests {
         let embedder = ChargedEmbedder;
         let index = crate::index::MockChunkIndex::new();
         let retriever = crate::retrieve::Retriever::new(&embedder, &index);
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
 
         let proposal = review_with_tree_observed(
             &forge,
@@ -5912,7 +5914,7 @@ mod tests {
             None,
             Some(&retriever),
             None,
-            None,
+            Some(timing.clone()),
         )
         .await
         .expect("the fake provider answers the review");
@@ -5920,6 +5922,26 @@ mod tests {
         assert_eq!(gateway.requests().len(), 1);
         assert_eq!(proposal.cost_usd, 0.875);
         assert_eq!(proposal.embed_tokens, 7);
+        timing.finish("success");
+        let expected_lane_usage = serde_json::to_string(&proposal.lane_costs())
+            .expect("lane usage serializes");
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("cost_usd=0.875"), "{line}");
+        assert!(line.contains("embed_tokens=7"), "{line}");
+        assert!(line.contains("models=\"[\\\"deep\\\"]\""), "{line}");
+        assert!(
+            line.contains(&format!("lane_usage=\"{expected_lane_usage}\"")),
+            "{line}"
+        );
         let usage = proposal.usage();
         assert_eq!(usage.calls_attempted, 1);
         assert_eq!(usage.calls_succeeded, 1);

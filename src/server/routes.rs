@@ -5860,7 +5860,6 @@ mod tests {
     #[tokio::test]
     async fn an_inflight_a_model_call_yields_then_only_b_publishes() {
         use crate::forge::{MockForge, RepoId};
-        use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Usage};
         use crate::ports::model_execution::ModelExecutionControl;
         use std::sync::Mutex;
@@ -5914,6 +5913,7 @@ mod tests {
         seed_previously_published_queue_checks(&*store, now).await;
         let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
+        let owned_a_for_status = owned_a.clone();
         assert_eq!(
             store.begin_paid(&owned_a, now + 1).await.unwrap(),
             PaidStart::Started
@@ -5997,6 +5997,60 @@ mod tests {
         let forge = MockForge::new();
         publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
 
+        let queued_a = forge
+            .writes()
+            .into_iter()
+            .find_map(|write| match write {
+                crate::forge::Write::Check(check)
+                    if check.head_sha == "head-a"
+                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued) =>
+                {
+                    Some(check)
+                }
+                _ => None,
+            })
+            .expect("A's queued check is written before review work");
+        let queued_a_id = crate::ports::forge::ForgeRead::check_run_by_external_id(
+            &forge,
+            &RepoId::parse("owner/repo").unwrap(),
+            "head-a",
+            queued_a.external_id.as_deref().expect("queued A identity"),
+        )
+        .await
+        .unwrap()
+        .expect("A's queued check has a remote ID");
+        let old_status = ReviewStatus {
+            repo: RepoId::parse("owner/repo").unwrap(),
+            check_id: queued_a_id,
+            head_sha: "head-a".into(),
+            installation: 1,
+            stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+            owned: Some(owned_a_for_status),
+            hub_comment_id: None,
+            prior_hub_body: None,
+        };
+        let status_store = store.clone();
+        let status_owner = old_status.owned.clone().expect("A's durable owner");
+        let (old_check, old_hub) = conclude_status_with_writer(
+            &old_status,
+            Conclusion::NotReviewed,
+            &forge,
+            || async move {
+                let _ = status_store
+                    .set_check_stage(
+                        &status_owner,
+                        "head-a",
+                        queued_a_id,
+                        crate::ports::review_job::ReviewCheckStage::Completed,
+                        unix_time_ms(),
+                    )
+                    .await;
+            },
+        )
+        .await;
+        old_check.expect("A's superseded check concludes neutrally");
+        assert!(old_hub.is_none());
+
         let owned_b = store
             .claim_next("worker-b", unix_time_ms())
             .await
@@ -6049,22 +6103,41 @@ mod tests {
                         max_tokens: 16,
                     })
                     .await?;
-                forge
-                    .update_check(
-                        &repo,
-                        queued_b_id,
-                        crate::forge::CheckRun {
-                            name: "tinysweeper/review".into(),
-                            head_sha: "head-b".into(),
-                            conclusion: Some(crate::forge::CheckConclusion::Success),
-                            title: "Reviewed B".into(),
-                            summary: "B replaced the yielded A".into(),
-                            status: None,
-                            external_id: None,
-                            images: vec![],
-                        },
-                    )
-                    .await?;
+                let status_store = store.clone();
+                let status_owner = owned_b.clone();
+                let status = ReviewStatus {
+                    repo: repo.clone(),
+                    check_id: queued_b_id,
+                    head_sha: "head-b".into(),
+                    installation: 1,
+                    stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+                    owned: Some(status_owner.clone()),
+                    hub_comment_id: None,
+                    prior_hub_body: None,
+                };
+                let (check, hub) = conclude_status_with_writer(
+                    &status,
+                    Conclusion::Reviewed {
+                        findings: 1,
+                        changes_requested: false,
+                        coverage: status::ReviewCoverage::default(),
+                    },
+                    &forge,
+                    || async move {
+                        let _ = status_store
+                            .set_check_stage(
+                                &status_owner,
+                                "head-b",
+                                queued_b_id,
+                                crate::ports::review_job::ReviewCheckStage::Completed,
+                                unix_time_ms(),
+                            )
+                            .await;
+                    },
+                )
+                .await;
+                check?;
+                assert!(hub.is_none());
                 Ok(InnerReview::Complete(Some((
                     1,
                     false,
@@ -6107,7 +6180,7 @@ mod tests {
                 })
                 .all(|check| {
                     check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
-                        && check.title == "Review incomplete"
+                        && check.title == "Not reviewed"
                 }),
             "A may only receive its neutral retirement status: {writes:#?}"
         );

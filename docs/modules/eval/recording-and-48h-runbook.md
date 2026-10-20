@@ -36,14 +36,12 @@ not a completed recall measurement. Its cassette and proposal are preserved;
 rerunning Record mode makes new provider calls and can replace cassette data.
 
 The bounded continuation candidate is
-[`evals/recording.gptoss-deepinfra.toml`](../../../evals/recording.gptoss-deepinfra.toml).
-It pins GPT-OSS 120B to the DeepInfra endpoint, disables all fallback and
-agentic review, uses JSON structured output, sets a 4096-token starting limit,
-and requests low reasoning effort. The truncation retry ladder can reach
-16384 output tokens. Its configured reservation rates are $0.037/M input and
-cached input, and $0.17/M output. Revalidate the exact endpoint, model limits,
-and rates immediately before any call; this candidate does not authorize a
-call by itself.
+[`evals/recording.gptoss-novita.toml`](../../../evals/recording.gptoss-novita.toml).
+It pins GPT-OSS 120B to the Novita endpoint, disables all fallback and agentic
+review, uses JSON structured output, sets a 12000-token starting limit, and
+requests low reasoning effort. Revalidate the exact endpoint, native output
+limit, and rates immediately before any call; this candidate does not
+authorize a call by itself.
 
 For any paid recording, calculate the worst-case dispatch cost from the
 configured input ceiling and the largest output allowed by retries, then
@@ -55,14 +53,14 @@ authorization to exceed those limits. If usage is unknown or the bound cannot
 be established, stop paid work and preserve the case as unrecorded.
 
 The first case has already reserved and used eight physical attempts. Its
-persistent ledger permits at most 56 total attempts across all reruns, so a
-continuation can reserve only the remaining 48. The other four cases may each
-reserve at most 56. Never delete or reset these ledgers. Using the verified
-GPT-OSS endpoint bounds, one worst-case dispatch (131072 input and 16384
-output tokens) is at most $0.007635 after micro-dollar rounding. The five-case
-upper bound, including the first case's known $0.011331, is $2.088051. Recheck
-the live endpoint and recalculate these bounds immediately before use; stop if
-any usage is unknown or the bound changes.
+persistent ledger permits at most 40 total attempts for this provider, so a
+continuation can reserve only the remaining 32. The other four cases may each
+reserve at most 32. Never delete or reset these ledgers. Using the verified
+GPT-OSS Novita endpoint bounds, one worst-case dispatch (131072 input and
+32768 native output tokens) is at most $0.014746 after micro-dollar rounding.
+The five-case upper bound, including the first case's known $0.011331, is
+$2.370691. Recheck the live endpoint and recalculate these bounds immediately
+before use; stop if any usage is unknown or the bound changes.
 
 Record the five cases individually so failures and spend are attributable.
 The first case may be continued only after the parent reconciles the existing
@@ -71,9 +69,11 @@ ledger and explicitly authorizes another call:
 ```sh
 cargo run --locked --features harness --bin tinysweeper -- eval run \
   --record --case tm-0102-memory-pending-debug-state \
-  --config evals/recording.gptoss-deepinfra.toml --max-cost-usd 0.48 \
-  --max-physical-calls-per-case 56
+  --config evals/recording.gptoss-novita.toml --max-cost-usd 0.48 \
+  --max-physical-calls-per-case 40
 ```
+
+Use `--max-physical-calls-per-case 32` for each of the other four cases.
 
 Repeat with each of the four `oh-...` cases listed in `evals/README.md`, using
 only the matching historical source material when lookups are needed. Never

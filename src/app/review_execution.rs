@@ -746,6 +746,9 @@ mod tests {
         let original_context = Arc::new(ReviewRunContext {
             execution: Arc::clone(&execution),
             model: OnceLock::new(),
+            retrieval_usage: Mutex::new(Usage::default()),
+            logical_usage: Mutex::new(Usage::default()),
+            logical_models: Mutex::new(Vec::new()),
         });
         let mock = crate::harness::mock::MockModel::silent().with_usage(Usage {
             input_tokens: 7,
@@ -803,6 +806,9 @@ mod tests {
         let replacement_context = Arc::new(ReviewRunContext {
             execution: Arc::clone(&replacement_execution),
             model: OnceLock::new(),
+            retrieval_usage: Mutex::new(Usage::default()),
+            logical_usage: Mutex::new(Usage::default()),
+            logical_models: Mutex::new(Vec::new()),
         });
         let replacement_mock = crate::harness::mock::MockModel::silent();
         let replacement_model = replacement_context

@@ -420,6 +420,12 @@ impl Security {
             }
         }
         merge_scanner_findings(&mut outcome, &scanner);
+        if !scanner.is_empty() {
+            // A confirmed scanner finding remains actionable when every
+            // selected model group was omitted at the execution cutoff.
+            // Keep the partial coverage and omission metadata on this outcome.
+            outcome.skipped = None;
+        }
         Ok(outcome)
     }
 }

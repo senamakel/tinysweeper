@@ -1204,12 +1204,13 @@ impl GatewayModel {
             output_cap: request.max_tokens,
             downstream: Some(observer),
         });
+        let options = provider_options(self.effort_for(&request), routing);
         crate::harness::agentic::review_accounted(
             request,
             tree,
             policy,
             provider,
-            provider_options(self.effort_for(&request), routing),
+            options,
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
                 lookup_budget: resources.lookup_budget,

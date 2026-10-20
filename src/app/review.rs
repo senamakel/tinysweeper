@@ -4994,11 +4994,12 @@ mod tests {
         });
         let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let review_timing = timing.clone();
+        let repository = repo();
         let mut running = Box::pin(review_with_tree_observed(
             &forge,
             model,
             &config,
-            &repo(),
+            &repository,
             7,
             None,
             None,

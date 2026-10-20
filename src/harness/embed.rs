@@ -1446,8 +1446,17 @@ mod tests {
         tracing::info!(target: "tinysweeper::model", "thread-sensitive model event");
     }
 
+    fn registered_no_subscriber_guard() -> tracing::Dispatch {
+        // tracing-core 0.1.36 has a single-dispatch callsite fast path that
+        // can cache `Never` when the first invocation sees `Dispatch::none()`.
+        // Keep a second registered dispatcher alive so parallel no-subscriber
+        // calls retain per-thread interest instead of poisoning that cache.
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default())
+    }
+
     #[test]
     fn a_callsite_first_seen_without_a_subscriber_is_enabled_by_a_later_dispatch() {
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_log = Arc::clone(&log);
         let subscriber = tracing_subscriber::fmt()
@@ -1628,6 +1637,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let dispatch = tracing::Dispatch::new(subscriber);
         let response = crate::ports::model::with_model_call_observer(
             calls.clone(),
@@ -1917,6 +1927,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(std::io::sink)
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let running = crate::ports::model::with_model_call_observer(
             calls.clone(),
             model
@@ -2692,6 +2703,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let response = crate::ports::model::with_model_call_observer(calls.clone(), {
             model
                 .complete(request)

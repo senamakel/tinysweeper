@@ -140,7 +140,7 @@ pub async fn plan(
                 }
                 let (resolve, call) = match advise::ask(model, config, &thread).await {
                     Ok(result) => result,
-                    Err(Error::ModelExecutionRefused {
+                    Err(error @ Error::ModelExecutionRefused {
                         refusal:
                             ModelExecutionRefusal::CallLimit
                             | ModelExecutionRefusal::SoftDeadline
@@ -150,6 +150,12 @@ pub async fn plan(
                         // Advisory model judgments cannot invalidate deterministic
                         // decisions already made, and later advisories share the
                         // same exhausted run-wide boundary.
+                        if let Some(usage) = error.usage() {
+                            spend.record(
+                                config.model_for_workload(crate::config::types::Workload::ThreadReview),
+                                usage,
+                            );
+                        }
                         advisory_stopped = true;
                         continue;
                     }

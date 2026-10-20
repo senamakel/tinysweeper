@@ -187,8 +187,15 @@ async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
             self.0.fetch_add(1, Ordering::SeqCst);
             Err(Error::ModelExecutionRefused {
                 refusal: self.1,
-                usage: None,
-                accounting_complete: true,
+                usage: Some(Box::new(crate::ports::model::Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                    calls_attempted: 1,
+                    calls_errored: 1,
+                    cost_usd: 0.125,
+                    ..Default::default()
+                })),
+                accounting_complete: false,
             })
         }
     }
@@ -226,7 +233,21 @@ async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
         assert_eq!(plan.resolve.len(), 2);
         assert_eq!(plan.resolve[0].id, "PRRT_1");
         assert_eq!(plan.resolve[1].id, "PRRT_2");
-        assert_eq!(spend, Spend::default());
+        assert_eq!(
+            spend.usage,
+            crate::ports::model::Usage {
+                input_tokens: 3,
+                output_tokens: 1,
+                calls_attempted: 1,
+                calls_errored: 1,
+                cost_usd: 0.125,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            spend.models,
+            vec![config.model_for_workload(crate::config::types::Workload::ThreadReview)]
+        );
         assert!(forge.writes().is_empty(), "planning remains read-only");
     }
 }

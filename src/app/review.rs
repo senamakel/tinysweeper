@@ -296,6 +296,22 @@ impl Model for ObservedModel {
 /// a version-4 proposal must be treated as incomplete rather than accepted.
 pub const PROPOSAL_VERSION: u32 = 5;
 
+/// Raw completion accounting from the shared physical execution scope.
+///
+/// `usage` is a known lower bound when `complete` is false. The marker covers
+/// provider completions only; embedding charges remain in the proposal total
+/// but are not evidence about completion usage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompletionAccounting {
+    /// Provider-reported completion usage, aggregated once per physical call.
+    pub usage: Usage,
+    /// The same known usage attributed to the model that actually answered.
+    pub usage_by_model: BTreeMap<String, Usage>,
+    /// Whether every committed completion had complete valid reported usage.
+    pub complete: bool,
+}
+
 /// What a review run concluded, ready for `apply` to publish.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proposal {
@@ -373,6 +389,12 @@ pub struct Proposal {
     /// Which model actually answered, per lane.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Raw physical completion usage when the adapter exposes it.
+    ///
+    /// Missing in older proposal files and absent for models that only expose
+    /// logical response usage. An incomplete value is a known lower bound.
+    #[serde(default)]
+    pub completion_accounting: Option<CompletionAccounting>,
     /// The review threads this run decided can be closed.
     ///
     /// Decided here, on the read side, and executed by `apply`, which holds the
@@ -389,14 +411,15 @@ impl Proposal {
     /// Kept flat on disk because the schema predates [`Usage`] being
     /// serializable and old proposals still have to load.
     pub fn usage(&self) -> Usage {
+        let completion = self.completion_accounting.as_ref();
         Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
-            reasoning_tokens: 0,
-            calls_attempted: 0,
-            calls_succeeded: 0,
-            calls_refused: 0,
-            calls_errored: 0,
+            reasoning_tokens: completion.map_or(0, |accounting| accounting.usage.reasoning_tokens),
+            calls_attempted: completion.map_or(0, |accounting| accounting.usage.calls_attempted),
+            calls_succeeded: completion.map_or(0, |accounting| accounting.usage.calls_succeeded),
+            calls_refused: completion.map_or(0, |accounting| accounting.usage.calls_refused),
+            calls_errored: completion.map_or(0, |accounting| accounting.usage.calls_errored),
             cached_tokens: self.cached_tokens,
             embed_tokens: self.embed_tokens,
             cost_usd: self.cost_usd,

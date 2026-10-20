@@ -4788,7 +4788,7 @@ mod tests {
         assert_eq!(proposal.embed_tokens, 14);
         assert_eq!(proposal.cost_usd, 1.35);
         assert_eq!(proposal.usage().calls_attempted, 3);
-        assert_eq!(proposal.completion_accounting.unwrap().complete, true);
+        assert!(proposal.completion_accounting.unwrap().complete);
     }
 
     #[cfg(feature = "harness")]

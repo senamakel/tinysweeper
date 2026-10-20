@@ -840,7 +840,13 @@ mod tests {
         assert!(setup.await.unwrap_err().is_cancelled());
 
         assert!(!own_admin.exists(), "cancelled registration is removed");
-        assert!(active_admin.join("locked").is_file(), "live sibling is preserved");
+        assert!(active_admin.is_dir(), "live sibling registration is preserved");
+        assert_eq!(
+            std::fs::read_to_string(active_admin.join("gitdir"))
+                .unwrap()
+                .trim(),
+            active.join(".git").to_string_lossy()
+        );
     }
 
     #[test]

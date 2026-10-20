@@ -399,6 +399,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn partial_group_does_not_resolve_threads_for_unreviewed_members() {
+        let paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let outcome = FanOut {
+            partial: vec![(
+                paths.clone(),
+                FileReview {
+                    resolved: vec!["Old finding title".to_string()],
+                    spend: Spend {
+                        usage: crate::ports::model::Usage {
+                            input_tokens: 7,
+                            output_tokens: 2,
+                            cost_usd: 0.125,
+                            ..crate::ports::model::Usage::default()
+                        },
+                        models: vec!["reviewer-model".to_string()],
+                    },
+                    ..FileReview::default()
+                },
+            )],
+            omitted: vec![OmittedGroup {
+                paths: paths.clone(),
+                reason: OmissionReason::CallLimit,
+            }],
+            ..FanOut::default()
+        }
+        .into_outcome();
+
+        assert!(outcome.resolved.is_empty());
+        assert!(!outcome.completed);
+        assert_eq!(outcome.unanswered, paths);
+        assert_eq!(outcome.spend.usage.input_tokens, 7);
+        assert_eq!(outcome.spend.usage.output_tokens, 2);
+        assert_eq!(outcome.spend.usage.cost_usd, 0.125);
+        assert_eq!(outcome.spend.models, ["reviewer-model"]);
+    }
+
     #[tokio::test]
     async fn a_multi_file_groups_success_counts_every_member_file() {
         // Two two-file groups: the fan-out ran two conversations, but the

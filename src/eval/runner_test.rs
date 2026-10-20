@@ -128,7 +128,9 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
 fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
     let loaded = crate::config::load_validated(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-        Some(std::path::Path::new("evals/recording.gptoss-deepinfra.toml")),
+        Some(std::path::Path::new(
+            "evals/recording.gptoss-deepinfra.toml",
+        )),
     )
     .expect("continuation candidate validates");
     let config = loaded.config;
@@ -153,7 +155,10 @@ fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
         .budget_prices
         .get("openai/gpt-oss-120b")
         .expect("verified reservation rate");
-    assert_eq!((price.input, price.cached, price.output), (0.037, 0.037, 0.17));
+    assert_eq!(
+        (price.input, price.cached, price.output),
+        (0.037, 0.037, 0.17)
+    );
 }
 
 #[derive(Clone)]

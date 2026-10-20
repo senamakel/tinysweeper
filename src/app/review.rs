@@ -369,10 +369,6 @@ impl crate::ports::embed::Embedder for ExecutionGatedEmbedder<'_> {
 }
 
 impl LogicalUsageModel {
-    fn stopped_before_call(&self) -> Option<Error> {
-        refusal_error_before_new_work(&self.execution.execution())
-    }
-
     fn retain(&self, request_model: &str, result: &Result<crate::ports::model::ModelResponse>) {
         if self.inner.reports_raw_completion_usage() {
             return;
@@ -411,36 +407,10 @@ impl LogicalUsageModel {
 
     async fn finish_within_drain<F>(&self, future: F) -> Result<crate::ports::model::ModelResponse>
     where
-        F: std::future::Future<Output = Result<crate::ports::model::ModelResponse>>,
+        F: std::future::Future<Output = Result<crate::ports::model::ModelResponse>> + Send,
     {
-        use crate::ports::model_execution::ModelExecutionRefusal;
-
         let execution = self.execution.execution();
-        if let Some(error) = self.stopped_before_call() {
-            return Err(error);
-        }
-        let now = tokio::time::Instant::now();
-        let drain_deadline = large_drain_deadline(
-            execution.soft_deadline(),
-            execution.hard_deadline(),
-            execution.drain_seconds(),
-            now,
-        );
-
-        tokio::select! {
-            biased;
-            _ = execution.cancelled() => Err(Error::ModelExecutionRefused {
-                refusal: ModelExecutionRefusal::Cancelled,
-                usage: None,
-                accounting_complete: false,
-            }),
-            _ = tokio::time::sleep_until(drain_deadline) => Err(Error::ModelExecutionRefused {
-                refusal: ModelExecutionRefusal::DrainDeadline,
-                usage: None,
-                accounting_complete: false,
-            }),
-            result = future => result,
-        }
+        finish_within_execution_drain(&execution, future).await
     }
 }
 

@@ -355,13 +355,11 @@ impl ReviewExecution {
     }
 
     /// The absolute hard deadline inherited from the server job.
-    #[cfg(test)]
     pub(crate) fn hard_deadline(&self) -> Instant {
         self.inner.hard_deadline
     }
 
     /// The absolute soft deadline for stopping new work.
-    #[cfg(test)]
     pub(crate) fn soft_deadline(&self) -> Instant {
         self.inner.soft_deadline
     }
@@ -376,7 +374,6 @@ impl ReviewExecution {
     }
 
     /// Maximum time reserved for admitted work to drain.
-    #[cfg(test)]
     pub(crate) fn drain_seconds(&self) -> u64 {
         self.inner.drain_seconds
     }
@@ -442,9 +439,21 @@ impl ReviewExecution {
     }
 
     /// Whether an ownership fence has stopped this review's remaining work.
-    #[cfg(feature = "serve")]
     pub(crate) fn is_cancelled(&self) -> bool {
         lock(&self.inner.state).cancelled
+    }
+
+    /// Wait until the owner cancels this execution scope.
+    pub(crate) async fn cancelled(&self) {
+        let mut generation = self.inner.availability_generation.subscribe();
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            if generation.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 

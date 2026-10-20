@@ -9,9 +9,14 @@
 //! result in something being posted.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::VecDeque;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 
@@ -1486,6 +1491,39 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         None
     };
 
+    let mut large_outcomes = if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
+        Some(
+            run_large_groups(
+                LaneInput {
+                    config,
+                    pull_request: &context.pull_request,
+                    diffs: &diffs,
+                    file_contents: &file_contents,
+                    scan_findings: &scan_findings,
+                    commits: &context.commits,
+                    repo_policy: knowledge.pinned_text(),
+                    extracted_rules: &knowledge.extracted_rules,
+                    reviewed_evidence: &reviewed_evidence,
+                    prior_findings: &prior_lines,
+                    retrieval_status: retrieved.status.clone(),
+                    retrieved_context: &retrieved_context,
+                    redaction_note: &redaction_note,
+                    e2e: e2e_evidence.as_ref(),
+                    tree: Some(tree),
+                    graph: graph_for_lanes,
+                },
+                model.clone(),
+                plan.clone(),
+                critique_prepared.take(),
+                security_prepared.take(),
+                execution_scope.clone(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
     for lane_id in config.enabled_lanes() {
         let lane_input = LaneInput {
             config,
@@ -1510,6 +1548,13 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             lane_id.as_str(),
             Some(&lanes_span),
             async {
+                if let Some(outcomes) = &mut large_outcomes {
+                    if matches!(lane_id, LaneId::Critique | LaneId::Security) {
+                        return Ok(outcomes
+                            .remove(&lane_id)
+                            .expect("prepared large lane has a scheduled outcome"));
+                    }
+                }
                 match lane_id {
                     LaneId::Critique => {
                         Critique::new(model.clone())

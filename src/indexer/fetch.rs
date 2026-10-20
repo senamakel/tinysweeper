@@ -174,20 +174,21 @@ impl Checkout {
         Fut: std::future::Future<Output = ()>,
     {
         validate_revision(revision)?;
-        let mut registration = WorktreeRegistrationCleanup::for_path(mirror, dir.path())?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
-        let path = dir
-            .path()
+        let path = std::fs::canonicalize(dir.path())
+            .map_err(|err| Error::Forge(format!("could not resolve checkout directory: {err}")))?;
+        let mut registration = WorktreeRegistrationCleanup::for_path(mirror, &path)?;
+        let path = path
             .to_str()
             .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?;
-        git(
+        git_worktree_add(
             mirror,
-            "",
-            &["worktree", "add", "--quiet", "--detach", path, revision],
+            path,
+            revision,
+            registration,
+            checkpoint,
         )
         .await?;
-        checkpoint().await;
-        registration.disarm();
         Ok(Self {
             dir,
             revision: revision.to_string(),
@@ -465,18 +466,56 @@ impl Checkout {
 /// add is cancelled. `worktree prune` deliberately preserves locked entries,
 /// so this guard owns and removes only the unique admin path for its tempdir.
 struct WorktreeRegistrationCleanup {
-    worktrees_path: std::path::PathBuf,
+    admin_path: std::path::PathBuf,
     worktree_gitdir: std::path::PathBuf,
     armed: bool,
 }
 
 impl WorktreeRegistrationCleanup {
     fn for_path(mirror: &Path, worktree: &Path) -> Result<Self> {
-        Ok(Self {
-            worktrees_path: mirror.join("worktrees"),
-            worktree_gitdir: worktree.join(".git"),
-            armed: true,
-        })
+        let worktrees_path = mirror.join("worktrees");
+        match std::fs::symlink_metadata(&worktrees_path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(Error::config(
+                    "mirror worktree administration path is not a directory",
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(Error::Forge(format!(
+                    "could not inspect mirror worktree metadata: {err}"
+                )));
+            }
+        }
+        let basename = worktree
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| Error::config("review worktree has no valid basename"))?;
+        let mut suffix = 0usize;
+        loop {
+            let name = if suffix == 0 {
+                basename.to_string()
+            } else {
+                format!("{basename}-{suffix}")
+            };
+            let admin_path = worktrees_path.join(name);
+            match std::fs::symlink_metadata(&admin_path) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Self {
+                        admin_path,
+                        worktree_gitdir: worktree.join(".git"),
+                        armed: true,
+                    });
+                }
+                Ok(_) => suffix += 1,
+                Err(err) => {
+                    return Err(Error::Forge(format!(
+                        "could not inspect mirror worktree entry: {err}"
+                    )));
+                }
+            }
+        }
     }
 
     fn disarm(&mut self) {
@@ -489,38 +528,32 @@ impl Drop for WorktreeRegistrationCleanup {
         if !self.armed {
             return;
         }
-        let entries = match std::fs::read_dir(&self.worktrees_path) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
-            Err(err) => {
-                tracing::warn!(path = %self.worktrees_path.display(), %err, "could not inspect cancelled worktree metadata");
-                return;
-            }
+        let admin = &self.admin_path;
+        let Ok(metadata) = std::fs::symlink_metadata(admin) else {
+            return;
         };
-        for entry in entries.flatten() {
-            let admin = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() || file_type.is_symlink() {
-                continue;
-            }
-            let gitdir = admin.join("gitdir");
-            let Ok(metadata) = std::fs::symlink_metadata(&gitdir) else {
-                continue;
-            };
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                continue;
-            }
-            let Ok(target) = std::fs::read_to_string(&gitdir) else {
-                continue;
-            };
-            if Path::new(target.trim()) != self.worktree_gitdir {
-                continue;
-            }
-            if let Err(err) = std::fs::remove_dir_all(&admin) {
-                tracing::warn!(path = %admin.display(), %err, "could not clean cancelled worktree metadata");
-            }
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return;
+        }
+        let locked = admin.join("locked");
+        let is_initializing = std::fs::symlink_metadata(&locked).is_ok_and(|metadata| {
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && std::fs::read_to_string(&locked)
+                    .is_ok_and(|reason| reason.trim() == "initializing")
+        });
+        let gitdir = admin.join("gitdir");
+        let points_to_owned_worktree = std::fs::symlink_metadata(&gitdir).is_ok_and(|metadata| {
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && std::fs::read_to_string(&gitdir)
+                    .is_ok_and(|target| Path::new(target.trim()) == self.worktree_gitdir)
+        });
+        if !is_initializing && !points_to_owned_worktree {
+            return;
+        }
+        if let Err(err) = std::fs::remove_dir_all(admin) {
+            tracing::warn!(path = %admin.display(), %err, "could not clean cancelled worktree metadata");
         }
     }
 }

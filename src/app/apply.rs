@@ -2826,7 +2826,23 @@ mod tests {
     async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
         use crate::state::{memory::MemoryState, PublishedReview, ReviewedState};
 
-        let forge = forge("new-head").with_own_review(7, ReviewEvent::Approve);
+        let mut mock_state = MockState::default();
+        mock_state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                head_sha: "new-head".into(),
+                ..PullRequest::default()
+            },
+        );
+        mock_state.own_reviews.insert(
+            7,
+            crate::forge::types::OwnReview {
+                event: ReviewEvent::Approve,
+                head_sha: None,
+            },
+        );
+        let forge = MockForge::with_state(mock_state);
         let store = MemoryState::new();
         let key = crate::state::key("tinyhumansai/tinysweeper", 7);
         store

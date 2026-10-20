@@ -4527,8 +4527,8 @@ mod tests {
                 ..ChangedFile::default()
             },
         ];
-        let forge = forge_with(
-            files,
+        let forge = forge_with(files, vec![]).with_review_threads(
+            7,
             vec![ReviewThread {
                 id: "PRRT_needs_human_reply".into(),
                 is_resolved: false,

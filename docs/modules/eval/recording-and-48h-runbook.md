@@ -100,29 +100,47 @@ command's source identity, config digest, exit status, raw output hash, model
 and provider answered, reported usage, and known cost. Keep credential values
 and request/response payloads private. Stop immediately after any provider
 error that lacks usage information. The recorder persists a call-budget audit
-at `evals/recording-attempts/<case-id>/recording-attempts.json`; it reserves capacity
-before dispatch and records actual committed physical calls after success or
-failure. A process crash leaves the full reservation charged; atomic replacement
-does not promise durability across power loss. Do not remove the audit or lock
-file to obtain a fresh allowance; investigate and preserve its history.
+at `evals/recording-attempts/<case-id>/recording-attempts.json`; it reserves
+capacity before dispatch and records actual committed physical calls after
+success or failure. A process crash leaves its full reservation charged, but
+the OS releases its advisory lock when the process exits, so a bounded rerun
+can reserve only the remaining allowance. The persistent lock file is never
+removed: unlinking it while another process holds the old inode could let a
+second process lock a replacement inode concurrently. Do not delete either
+file to obtain a fresh allowance. Reconcile the existing audit and continue
+using the same case output and canonical corpus root. Atomic replacement does
+not promise durability across power loss.
 
-After all five recordings exist, run the offline proof and scorecard with no
-model configured:
+For offline verification, run the exact selected group with its matching
+recording profile. This replays only saved cassettes and makes no provider
+calls. Keep output directories distinct from the live-recording outputs:
 
 ```sh
+cargo run --locked -j1 --features harness,github --bin tinysweeper -- \
+  eval run --config evals/recording.gptoss-novita.toml \
+  --case tm-0102-memory-pending-debug-state \
+  --case oh-8061-standalone-local-only-policy \
+  --case oh-8061-speech-redirect-origin \
+  --case oh-8061-privacy-docs-contract-mismatch \
+  --case oh-8076-credential-read-failure-migration \
+  --out evals/runs/replay-check/historical-gptoss-novita
+python3 scripts/check-eval-scorecard.py \
+  evals/runs/replay-check/historical-gptoss-novita/scorecard.json \
+  --expected tm-0102-memory-pending-debug-state \
+  --expected oh-8061-standalone-local-only-policy \
+  --expected oh-8061-speech-redirect-origin \
+  --expected oh-8061-privacy-docs-contract-mismatch \
+  --expected oh-8076-credential-read-failure-migration
 cargo test --locked -j1 eval
-cargo run --locked --bin tinysweeper -- eval score
-cargo run --locked --bin tinysweeper -- eval report
 ```
 
-For each case report expected labels, matched labels, misses, false positives
-only when the case is exhaustive, cassette strict hits/misses, review errors,
-known provider cost, and whether the result is a valid measurement. Failed
-reviews, strict replay misses, and missing cassettes are not hits. Recall is
-`matched expected labels / all expected labels`; show per-case values as well
-as the aggregate so a strong case cannot hide a complete miss elsewhere.
-Include the exact corpus and config digests. Do not publish an aggregate recall
-until all five cases have real strict-hit recordings and completed reviews.
+The legacy three cases use `src/config/defaults.toml` and a separate replay
+directory. Do not compare either profile group against the full-corpus
+baseline. For every scorecard, report expected labels, matches, misses,
+unscored findings, strict replay completion, known provider cost, selected case
+IDs, and persisted execution limits. A strict miss or review error is not a
+hit. Recall is `matched expected labels / all expected labels`; show each
+selected group's aggregate and each case separately.
 
 ## Observe the rollout for 48 hours
 

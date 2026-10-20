@@ -82,6 +82,7 @@ jobs:
             --out target/eval-ci/legacy-default
           python3 scripts/check-eval-scorecard.py \
             target/eval-ci/legacy-default/scorecard.json \
+            --diagnostic \
             --expected oc-2313-round-boundary-leaks \
             --expected ts-0045-kernel-bypass-hallucination \
             --expected ts-0068-description-anchored-to-code \
@@ -92,6 +93,7 @@ jobs:
       # report its measured values without comparing to a differently bounded
       # corpus baseline.
       - name: Replay the historical GPT-OSS/Novita cases
+        if: ${{ !cancelled() }}
         run: |
           cargo run --locked --features harness,github -- \
             eval run --config evals/recording.gptoss-novita.toml \

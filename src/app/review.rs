@@ -723,6 +723,9 @@ pub struct LaneProposal {
     /// consulted. See [`LaneOutcome::unanswered`](crate::lanes::LaneOutcome).
     #[serde(default)]
     pub unanswered: Vec<String>,
+    /// Planned groups omitted by host-side policy, with every member path.
+    #[serde(default)]
+    pub omissions: Vec<crate::lanes::fanout::OmittedGroup>,
     /// Per-file review coverage, when this lane fans out over changed files.
     #[serde(default)]
     pub coverage: Option<crate::lanes::FileCoverage>,
@@ -2460,6 +2463,7 @@ fn lane_proposal(
         usage: spend.usage,
         models: spend.models,
         unanswered: outcome.unanswered,
+        omissions: outcome.omissions,
         coverage: outcome.coverage,
         overflow: vec![],
     }

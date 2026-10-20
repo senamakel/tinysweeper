@@ -1448,8 +1448,6 @@ mod tests {
 
     #[test]
     fn a_callsite_first_seen_without_a_subscriber_is_enabled_by_a_later_dispatch() {
-        let _ = std::thread::spawn(emit_thread_sensitive_model_event).join();
-
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_log = Arc::clone(&log);
         let subscriber = tracing_subscriber::fmt()
@@ -1457,7 +1455,14 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || LogBytes(Arc::clone(&writer_log)))
             .finish();
-        tracing::subscriber::with_default(subscriber, emit_thread_sensitive_model_event);
+        let collector = tracing::Dispatch::new(subscriber);
+        let no_subscriber = tracing::Dispatch::none();
+        std::thread::spawn(move || {
+            tracing::dispatcher::with_default(&no_subscriber, emit_thread_sensitive_model_event);
+        })
+        .join()
+        .expect("the unobserved callsite thread completes");
+        tracing::dispatcher::with_default(&collector, emit_thread_sensitive_model_event);
 
         let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
         assert_eq!(

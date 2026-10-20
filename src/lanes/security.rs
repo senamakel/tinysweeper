@@ -292,7 +292,9 @@ impl Security {
         let mut covered_without_model = prepared.covered_without_model;
         covered_without_model.extend(prepared.mechanical_verified);
         outcome.include_reviewed_paths(covered_without_model);
-        outcome.summary.push_str(&skip_note(&prepared.triage_skipped));
+        outcome
+            .summary
+            .push_str(&skip_note(&prepared.triage_skipped));
         if let Some(substitution) = &prepared.mechanical {
             outcome.summary = format!(
                 "{} {}",

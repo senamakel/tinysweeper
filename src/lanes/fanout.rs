@@ -261,7 +261,10 @@ impl FanOut {
         }
 
         let skipped = (reviewed == 0 && (!self.failures.is_empty() || !self.omitted.is_empty()))
-            .then(|| "No files received a complete review; see the listed failures and omissions.".to_string());
+            .then(|| {
+                "No files received a complete review; see the listed failures and omissions."
+                    .to_string()
+            });
         let coverage = (!reviewed_paths.is_empty() || !unanswered.is_empty()).then_some(
             crate::lanes::FileCoverage {
                 reviewed: reviewed_paths,

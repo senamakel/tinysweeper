@@ -2303,9 +2303,7 @@ fn helper() {
                 )]
             }));
 
-        let mut diff = large_diffs();
-        diff[0].path = "src/auth.rs".into();
-        let outcome = run_with(model, &config_with_passes(2), &diff).await;
+        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
 
         assert_eq!(outcome.findings.len(), 1);
         assert_eq!(outcome.findings[0].title, "Guard the first index");
@@ -2327,9 +2325,7 @@ fn helper() {
                 "incorrect": [{"index": 1, "reason": "x30 is never dereferenced"}]
             }));
 
-        let mut diff = large_diffs();
-        diff[0].path = "src/auth.rs".into();
-        let outcome = run_with(model, &config_with_passes(2), &diff).await;
+        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
 
         assert_eq!(
             outcome.findings.len(),
@@ -2345,15 +2341,19 @@ fn helper() {
         // If round one found nothing and the coverage pass then adds a
         // surviving finding, the summary must say so rather than keep
         // reading "Nothing to report." while `findings` says otherwise.
+        let mut coverage_finding = finding_named("Guard the second index", 30);
+        coverage_finding["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({
                 "summary": "…",
-                "findings": [finding_named("Guard the second index", 30)]
+                "findings": [coverage_finding]
             }))
             .then(json!({"incorrect": []}));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
+        let mut diff = large_diffs();
+        diff[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diff).await;
 
         assert_eq!(outcome.findings.len(), 1, "{:#?}", outcome.findings);
         assert!(
@@ -2519,7 +2519,8 @@ fn helper() {
             std::time::Duration::from_millis(15),
         );
         let config = config_with_passes(2);
-        let diffs = large_diffs();
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
         let pr = pull_request();
         let file_contents = BTreeMap::new();
 

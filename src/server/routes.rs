@@ -10383,7 +10383,7 @@ mod tests {
         );
         let inc_snapshot = store.snapshot_for_test();
         assert!(inc_snapshot.terminal.iter().any(|entry| {
-            entry.request_id == incremental.request.id
+            entry.id == incremental.request.id
                 && entry.outcome == TerminalOutcome::Published
         }));
 
@@ -10442,19 +10442,18 @@ mod tests {
                 drain_seconds: 5,
             },
         ));
-        let model = MockModel::silent();
-        let model_port: Arc<dyn Model> = Arc::new(model.clone());
+        let mock_model = MockModel::silent();
+        let model_port: Arc<dyn Model> = Arc::new(mock_model.clone());
         let model = execution
             .bind_model(model_port, full_config.models.budget_usd_per_pr)
             .model
             .clone();
         let repo = RepoId::parse("owner/repo").unwrap();
-        let full_mock = model.clone();
         let proposal = run_if_confirmed_head_needs_review(
             store.as_ref(),
             Some(&full),
             Mode::Full,
-            || async {
+            || async move {
                 let proposal = crate::app::review::review_with_tree_observed_at_head_in_run(
                     &forge,
                     model,
@@ -10480,9 +10479,15 @@ mod tests {
         .await
         .expect("Full mode bypasses the Incremental terminal-head suppression");
         assert!(matches!(proposal, InnerReview::Complete(Some(_))));
-        assert_eq!(full_mock.calls(), 1, "the Large execution shares its one-call cap");
+        assert_eq!(mock_model.calls(), 1, "the Large execution shares its one-call cap");
         assert_eq!(
-            store.snapshot_for_test().incremental_heads.len(),
+            execution.execution().soft_deadline(),
+            started_at + Duration::from_secs(80),
+            "Full execution keeps the same run clock instead of opening a fresh window"
+        );
+        let proposal_metadata = store.snapshot_for_test();
+        assert_eq!(
+            proposal_metadata.incremental_heads.len(),
             1,
             "a Full pass does not clear the Incremental ledger"
         );

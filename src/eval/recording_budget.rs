@@ -182,6 +182,21 @@ mod tests {
     }
 
     #[test]
+    fn dropping_a_reservation_unlocks_even_when_a_child_inherited_its_handle() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let reservation = Reservation::begin(directory.path(), 8, 8).expect("first reserve");
+        let inherited_handle = reservation._lock.try_clone().expect("clone lock handle");
+
+        drop(reservation);
+
+        let next = Reservation::begin(directory.path(), 8, 8)
+            .expect("drop releases the lock despite an inherited handle");
+        assert_eq!(next.reserved_calls(), 8);
+        drop(next);
+        drop(inherited_handle);
+    }
+
+    #[test]
     fn a_larger_rerun_limit_only_admits_the_persistent_remainder() {
         let directory = tempfile::tempdir().expect("tempdir");
         let initial = Reservation::begin(directory.path(), 8, 56).expect("initial reserve");

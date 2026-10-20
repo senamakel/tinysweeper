@@ -144,12 +144,16 @@ impl Checkout {
     }
 
     /// Create a disposable exact-head worktree from a server-owned mirror.
-    pub(super) async fn from_mirror(mirror: &Path, revision: &str) -> Result<Self> {
+    pub(super) async fn from_mirror(
+        mirror: &Path,
+        revision: &str,
+        cache_lock: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<Self> {
         let dir = tempfile::Builder::new()
             .prefix("tinysweeper-review-")
             .tempdir()
             .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
-        Self::from_mirror_at(mirror, revision, dir).await
+        Self::from_mirror_at_owned(mirror, revision, dir, Some(cache_lock), || async {}).await
     }
 
     /// Populate an owned temporary directory as an exact-head worktree.
@@ -173,6 +177,20 @@ impl Checkout {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
+        Self::from_mirror_at_owned(mirror, revision, dir, None, checkpoint).await
+    }
+
+    async fn from_mirror_at_owned<F, Fut>(
+        mirror: &Path,
+        revision: &str,
+        dir: tempfile::TempDir,
+        cache_lock: Option<tokio::sync::OwnedMutexGuard<()>>,
+        checkpoint: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         validate_revision(revision)?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
         let path = std::fs::canonicalize(dir.path())
@@ -181,10 +199,12 @@ impl Checkout {
         let path = path
             .to_str()
             .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?;
-        git_worktree_add(
+        let dir = git_worktree_add(
             mirror,
             path,
             revision,
+            dir,
+            cache_lock,
             registration,
             checkpoint,
         )
@@ -466,7 +486,8 @@ impl Checkout {
 /// add is cancelled. `worktree prune` deliberately preserves locked entries,
 /// so this guard owns and removes only the unique admin path for its tempdir.
 struct WorktreeRegistrationCleanup {
-    admin_path: std::path::PathBuf,
+    worktrees_path: std::path::PathBuf,
+    existing_entries: std::collections::HashSet<std::ffi::OsString>,
     worktree_gitdir: std::path::PathBuf,
     armed: bool,
 }
@@ -474,48 +495,34 @@ struct WorktreeRegistrationCleanup {
 impl WorktreeRegistrationCleanup {
     fn for_path(mirror: &Path, worktree: &Path) -> Result<Self> {
         let worktrees_path = mirror.join("worktrees");
-        match std::fs::symlink_metadata(&worktrees_path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        let existing_entries = match std::fs::symlink_metadata(&worktrees_path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => std::fs::read_dir(&worktrees_path)
+                .map_err(|err| {
+                    Error::Forge(format!("could not inspect mirror worktree metadata: {err}"))
+                })?
+                .filter_map(std::result::Result::ok)
+                .map(|entry| entry.file_name())
+                .collect(),
             Ok(_) => {
                 return Err(Error::config(
                     "mirror worktree administration path is not a directory",
                 ));
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                std::collections::HashSet::new()
+            }
             Err(err) => {
                 return Err(Error::Forge(format!(
                     "could not inspect mirror worktree metadata: {err}"
                 )));
             }
-        }
-        let basename = worktree
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .ok_or_else(|| Error::config("review worktree has no valid basename"))?;
-        let mut suffix = 0usize;
-        loop {
-            let name = if suffix == 0 {
-                basename.to_string()
-            } else {
-                format!("{basename}-{suffix}")
-            };
-            let admin_path = worktrees_path.join(name);
-            match std::fs::symlink_metadata(&admin_path) {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(Self {
-                        admin_path,
-                        worktree_gitdir: worktree.join(".git"),
-                        armed: true,
-                    });
-                }
-                Ok(_) => suffix += 1,
-                Err(err) => {
-                    return Err(Error::Forge(format!(
-                        "could not inspect mirror worktree entry: {err}"
-                    )));
-                }
-            }
-        }
+        };
+        Ok(Self {
+            worktrees_path,
+            existing_entries,
+            worktree_gitdir: worktree.join(".git"),
+            armed: true,
+        })
     }
 
     fn disarm(&mut self) {
@@ -528,32 +535,45 @@ impl Drop for WorktreeRegistrationCleanup {
         if !self.armed {
             return;
         }
-        let admin = &self.admin_path;
-        let Ok(metadata) = std::fs::symlink_metadata(admin) else {
-            return;
+        let entries = match std::fs::read_dir(&self.worktrees_path) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                tracing::warn!(path = %self.worktrees_path.display(), %err, "could not inspect cancelled worktree metadata");
+                return;
+            }
         };
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return;
-        }
-        let locked = admin.join("locked");
-        let is_initializing = std::fs::symlink_metadata(&locked).is_ok_and(|metadata| {
-            metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && std::fs::read_to_string(&locked)
-                    .is_ok_and(|reason| reason.trim() == "initializing")
-        });
-        let gitdir = admin.join("gitdir");
-        let points_to_owned_worktree = std::fs::symlink_metadata(&gitdir).is_ok_and(|metadata| {
-            metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && std::fs::read_to_string(&gitdir)
-                    .is_ok_and(|target| Path::new(target.trim()) == self.worktree_gitdir)
-        });
-        if !is_initializing && !points_to_owned_worktree {
-            return;
-        }
-        if let Err(err) = std::fs::remove_dir_all(admin) {
-            tracing::warn!(path = %admin.display(), %err, "could not clean cancelled worktree metadata");
+        for entry in entries.flatten() {
+            if self.existing_entries.contains(&entry.file_name()) {
+                continue;
+            }
+            let admin = entry.path();
+            let Ok(metadata) = entry.file_type() else {
+                continue;
+            };
+            if !metadata.is_dir() || metadata.is_symlink() {
+                continue;
+            }
+            let locked = admin.join("locked");
+            let is_initializing = std::fs::symlink_metadata(&locked).is_ok_and(|metadata| {
+                metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && std::fs::read_to_string(&locked)
+                        .is_ok_and(|reason| reason.trim() == "initializing")
+            });
+            let gitdir = admin.join("gitdir");
+            let points_to_owned_worktree = std::fs::symlink_metadata(&gitdir).is_ok_and(|metadata| {
+                metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && std::fs::read_to_string(&gitdir)
+                        .is_ok_and(|target| Path::new(target.trim()) == self.worktree_gitdir)
+            });
+            if !is_initializing && !points_to_owned_worktree {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_dir_all(&admin) {
+                tracing::warn!(path = %admin.display(), %err, "could not clean cancelled worktree metadata");
+            }
         }
     }
 }
@@ -674,9 +694,11 @@ async fn git_worktree_add<F, Fut>(
     mirror: &Path,
     path: &str,
     revision: &str,
+    dir: tempfile::TempDir,
+    cache_lock: Option<tokio::sync::OwnedMutexGuard<()>>,
     registration: WorktreeRegistrationCleanup,
     checkpoint: F,
-) -> Result<()>
+) -> Result<tempfile::TempDir>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -694,6 +716,8 @@ where
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let mut cancellation = CancelGitTask(Some(cancel_tx));
     let worker = tokio::spawn(async move {
+        let dir = dir;
+        let cache_lock = cache_lock;
         let mut registration = registration;
         let status = tokio::select! {
             result = child.wait() => result.map_err(|err| {
@@ -703,12 +727,16 @@ where
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 drop(registration);
+                drop(cache_lock);
+                drop(dir);
                 return Err(Error::Forge("git worktree add was cancelled".to_string()));
             }
             _ = tokio::time::sleep(GIT_TIMEOUT) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 drop(registration);
+                drop(cache_lock);
+                drop(dir);
                 return Err(Error::Forge("git worktree add timed out".to_string()));
             }
         };
@@ -720,10 +748,13 @@ where
         tokio::select! {
             _ = checkpoint() => {
                 registration.disarm();
-                Ok(())
+                drop(cache_lock);
+                Ok(dir)
             }
             _ = &mut cancel_rx => {
                 drop(registration);
+                drop(cache_lock);
+                drop(dir);
                 Err(Error::Forge("git worktree add setup was cancelled".to_string()))
             }
         }
@@ -926,11 +957,15 @@ mod tests {
         let mirror_path = mirror.path().to_path_buf();
         let revision = revision.clone();
         let cancelled_path = cancelled.path().to_path_buf();
+        let repo_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let cache_lock = repo_lock.clone().lock_owned().await;
+        let lock_probe = repo_lock.clone();
         let setup = tokio::spawn(async move {
-            let _checkout = Checkout::from_mirror_at_with_checkpoint(
+            let _checkout = Checkout::from_mirror_at_owned(
                 &mirror_path,
                 &revision,
                 cancelled,
+                Some(cache_lock),
                 || async move {
                     let _ = registered.send(());
                     std::future::pending::<()>().await;
@@ -960,6 +995,11 @@ mod tests {
             })
             .unwrap();
         assert_ne!(active_admin, own_admin, "Git selected a distinct suffixed registration");
+        assert!(
+            lock_probe.try_lock().is_err(),
+            "the repository lock remains owned while the setup supervisor is active"
+        );
+        assert!(cancelled_path.exists(), "the setup owner retains its TempDir");
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
 
@@ -973,6 +1013,11 @@ mod tests {
 
         assert!(!own_admin.exists(), "cancelled registration is removed");
         assert!(active_admin.is_dir(), "live sibling registration is preserved");
+        assert!(!cancelled_path.exists(), "cancelled TempDir is removed after metadata");
+        assert!(
+            repo_lock.try_lock().is_ok(),
+            "the repository lock is released after setup cleanup"
+        );
         assert_eq!(
             std::fs::read_to_string(active_admin.join("gitdir"))
                 .unwrap()

@@ -140,7 +140,7 @@ impl RepositoryCache {
         let mirror = self.mirror_path(repo)?;
         self.validate_existing_paths(repo, &mirror)?;
         let lock = self.lock_for(&mirror);
-        let _guard = lock.lock().await;
+        let guard = lock.lock_owned().await;
         self.validate_existing_paths(repo, &mirror)?;
         let mut missing = Vec::new();
         if !Checkout::mirror_has_revision(&mirror, revision).await? {
@@ -165,8 +165,7 @@ impl RepositoryCache {
             protect_directory(&mirror)?;
             Checkout::fetch_into_mirror(&mirror, url, &missing, token, fetch_count).await?;
         }
-        let checkout = Checkout::from_mirror(&mirror, revision).await?;
-        drop(_guard);
+        let checkout = Checkout::from_mirror(&mirror, revision, guard).await?;
         Ok(checkout)
     }
 

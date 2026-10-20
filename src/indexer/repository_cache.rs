@@ -445,6 +445,64 @@ mod tests {
         assert!(!config.contains("http.extraHeader"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_cache_owner_and_mirror_symlinks_are_refused_before_git_access() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let (external_mirror, revision) = local_bare_repository(fixture.path());
+        let external_owner = fixture.path().join("external-owner");
+        std::fs::create_dir_all(&external_owner).unwrap();
+        let owner_mirror = external_owner.join("widgets.git");
+        std::fs::rename(&external_mirror, &owner_mirror).unwrap();
+
+        let owner_cache_root = fixture.path().join("owner-cache");
+        std::fs::create_dir_all(&owner_cache_root).unwrap();
+        std::os::unix::fs::symlink(&external_owner, owner_cache_root.join("acme")).unwrap();
+        let owner_cache = RepositoryCache::at(&owner_cache_root).unwrap();
+        assert!(owner_cache
+            .checkout_from_url(
+                "acme/widgets",
+                &revision,
+                owner_mirror.to_str().unwrap(),
+                "",
+                &AtomicUsize::new(0),
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            git(&["--git-dir", owner_mirror.to_str().unwrap(), "worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "refusing an owner symlink must not register a worktree externally"
+        );
+
+        let mirror_cache_root = fixture.path().join("mirror-cache");
+        let mirror_owner = mirror_cache_root.join("acme");
+        std::fs::create_dir_all(&mirror_owner).unwrap();
+        std::os::unix::fs::symlink(&owner_mirror, mirror_owner.join("widgets.git")).unwrap();
+        let mirror_cache = RepositoryCache::at(&mirror_cache_root).unwrap();
+        assert!(mirror_cache
+            .checkout_from_url(
+                "acme/widgets",
+                &revision,
+                owner_mirror.to_str().unwrap(),
+                "",
+                &AtomicUsize::new(0),
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            git(&["--git-dir", owner_mirror.to_str().unwrap(), "worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "refusing a mirror symlink must not prune or register external admin state"
+        );
+    }
+
     #[test]
     fn cache_root_override_wins_and_empty_override_uses_the_private_user_cache() {
         assert_eq!(

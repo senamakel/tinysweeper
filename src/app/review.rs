@@ -286,6 +286,112 @@ impl Model for ObservedModel {
     }
 }
 
+/// Retains reported usage from nonphysical adapters for the whole run.
+///
+/// This wrapper is created per App attempt, below the cached run binding, so
+/// it can hold the run context without creating a context/model reference
+/// cycle. Physical adapters report through the shared execution collector and
+/// must not be counted again from their response envelope.
+struct LogicalUsageModel {
+    inner: Arc<dyn Model>,
+    execution: Arc<crate::app::review_execution::ReviewRunContext>,
+}
+
+impl LogicalUsageModel {
+    fn retain(&self, request_model: &str, result: &Result<crate::ports::model::ModelResponse>) {
+        if self.inner.reports_raw_completion_usage() {
+            return;
+        }
+        match result {
+            Ok(response) => {
+                let mut usage = response.usage;
+                if usage.calls_attempted
+                    .saturating_add(usage.calls_succeeded)
+                    .saturating_add(usage.calls_refused)
+                    .saturating_add(usage.calls_errored)
+                    == 0
+                {
+                    usage.calls_attempted = 1;
+                    usage.calls_succeeded = 1;
+                }
+                self.execution
+                    .record_logical_usage(usage, std::slice::from_ref(&response.model));
+            }
+            Err(error) => {
+                if let Some(usage) = error.usage() {
+                    self.execution
+                        .record_logical_usage(usage, &[request_model.to_owned()]);
+                }
+            }
+        }
+    }
+
+    fn with_inner(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
+        Arc::new(Self {
+            inner,
+            execution: self.execution.clone(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for LogicalUsageModel {
+    async fn complete(
+        &self,
+        request: crate::ports::model::ModelRequest,
+    ) -> Result<crate::ports::model::ModelResponse> {
+        let request_model = request.model.clone();
+        let result = self.inner.complete(request).await;
+        self.retain(&request_model, &result);
+        result
+    }
+
+    async fn review(
+        &self,
+        request: crate::ports::model::ModelRequest,
+        tree: &dyn TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> Result<crate::ports::model::ModelResponse> {
+        let request_model = request.model.clone();
+        let result = self.inner.review(request, tree, policy).await;
+        self.retain(&request_model, &result);
+        result
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
+    }
+
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.inner.reports_raw_completion_usage()
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .scoped_budget(budget_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_review_budget(limit_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_execution_control(control)
+            .map(|inner| self.with_inner(inner))
+    }
+}
+
 /// The schema version `review` writes.
 ///
 /// Version 2 added `unanswered` on every lane and `skipped` on the proposal.

@@ -2849,21 +2849,22 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         }
     };
 
-    let (concluded, hub_updated) = conclude_status_with_writer(&open, conclusion, &write, || async {
-        if let Some(owned) = &open.owned {
-            let _ = state
-                .review_jobs
-                .set_check_stage(
-                    owned,
-                    &open.head_sha,
-                    open.check_id,
-                    crate::ports::review_job::ReviewCheckStage::Completed,
-                    unix_time_ms(),
-                )
-                .await;
-        }
-    })
-    .await;
+    let (concluded, hub_updated) =
+        conclude_status_with_writer(&open, conclusion, &write, || async {
+            if let Some(owned) = &open.owned {
+                let _ = state
+                    .review_jobs
+                    .set_check_stage(
+                        owned,
+                        &open.head_sha,
+                        open.check_id,
+                        crate::ports::review_job::ReviewCheckStage::Completed,
+                        unix_time_ms(),
+                    )
+                    .await;
+            }
+        })
+        .await;
     if let Err(err) = concluded {
         // Worth an error rather than a warning: the check is now stuck
         // in-progress, and a pending check refuses auto-merge on this commit
@@ -5657,11 +5658,8 @@ mod tests {
             prior_hub_body: Some("previous review body".into()),
         };
         let callback_forge = forge.clone();
-        let (concluded, hub_updated) = conclude_status_with_writer(
-            &open,
-            Conclusion::NotReviewed,
-            &forge,
-            || async move {
+        let (concluded, hub_updated) =
+            conclude_status_with_writer(&open, Conclusion::NotReviewed, &forge, || async move {
                 let writes = callback_forge.writes();
                 assert!(writes.iter().any(|write| matches!(
                     write,
@@ -5669,11 +5667,13 @@ mod tests {
                 )));
                 assert!(writes.iter().all(|write| !matches!(
                     write,
-                    crate::forge::Write::CommentUpdate { comment_id: 418, .. }
+                    crate::forge::Write::CommentUpdate {
+                        comment_id: 418,
+                        ..
+                    }
                 )));
-            },
-        )
-        .await;
+            })
+            .await;
         concluded.expect("the stale head receives a neutral terminal check");
         hub_updated
             .expect("the open review hub is also retired")

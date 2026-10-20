@@ -1075,11 +1075,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_coverage_pass_is_not_run_below_the_line_threshold() {
+    async fn an_empty_low_risk_group_does_not_get_an_adaptive_pass() {
         let model = MockModel::new().then(json!({"summary": "Nothing to report.", "findings": []}));
         let handle = model.clone();
+        let low_risk = vec![parse_file_patch(
+            "src/ordinary.rs",
+            "@@ -1,1 +1,2 @@\n fn ordinary() {}\n+    let value = 1;\n",
+        )];
 
-        run_with(model, &config_with_passes(2), &diffs(), &[]).await;
+        run_with(model, &config_with_passes(2), &low_risk, &[]).await;
 
         assert_eq!(handle.calls(), 1, "no coverage call should have been made");
     }
@@ -1833,11 +1837,15 @@ mod tests {
 
     #[tokio::test]
     async fn disproved_coverage_proposals_do_not_unlock_another_pass() {
+        let mut proposal = finding_at_line("Unsupported claim", 5);
+        proposal["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary":"Nothing to report.", "findings":[]}))
-            .then(json!({"summary":"An invalid index.", "findings":[finding_at_line("Unsupported claim",5)]}))
+            .then(json!({"summary":"An invalid index.", "findings":[proposal]}))
             .then(disprove_first());
-        let outcome = run_with(model.clone(), &config_with_passes(3), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model.clone(), &config_with_passes(3), &diffs, &[]).await;
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert_eq!(model.requests().len(), 3);
     }
@@ -1864,6 +1872,7 @@ mod tests {
     #[tokio::test]
     async fn out_of_scope_coverage_proposals_do_not_unlock_another_pass() {
         let mut proposal = finding_at_line("Add focused tests for round behavior", 5);
+        proposal["path"] = json!("src/auth.rs");
         proposal["body"] =
             json!("The behavior changed without focused tests; add generic behavior coverage.");
         let model = MockModel::new()
@@ -1873,7 +1882,9 @@ mod tests {
                 "index":1, "verdict":"out_of_scope", "attacker_input":"",
                 "dangerous_operation":"", "security_impact":"",
                 "reason":"Generic behavior-test coverage asserts no security exploit."}]}));
-        let outcome = run_with(model.clone(), &config_with_passes(3), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model.clone(), &config_with_passes(3), &diffs, &[]).await;
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert_eq!(model.requests().len(), 3);
     }

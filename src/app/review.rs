@@ -5040,7 +5040,7 @@ mod tests {
         config.overview.enabled = false;
         config.summary.enabled = false;
         config.wireframe.enabled = true;
-        let model = Arc::new(FailSecondWireframe(AtomicUsize::new(0)));
+        let fail_model = Arc::new(FailSecondWireframe(AtomicUsize::new(0)));
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let started_at = tokio::time::Instant::now();
@@ -5055,7 +5055,7 @@ mod tests {
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
-        let model = execution.bind_model(model, 100.0).model.clone();
+        let model: Arc<dyn Model> = execution.bind_model(fail_model.clone(), 100.0).model.clone();
 
         review_with_tree_observed_at_head_in_run(
             &forge,
@@ -5073,7 +5073,7 @@ mod tests {
         )
         .await
         .expect("the first proposal completes");
-        assert_eq!(model.as_ref().as_ref().downcast_ref::<FailSecondWireframe>(), None);
+        assert_eq!(fail_model.0.load(Ordering::SeqCst), 1);
         let failed = review_with_tree_observed_at_head_in_run(
             &forge,
             model,
@@ -5090,6 +5090,7 @@ mod tests {
         )
         .await;
         assert!(matches!(failed, Err(Error::Model(_))), "{failed:?}");
+        assert_eq!(fail_model.0.load(Ordering::SeqCst), 2);
         timing.finish("failure");
 
         let expected_observed_cost = timing.snapshot().usage.cost_usd;

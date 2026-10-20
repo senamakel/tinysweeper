@@ -6168,20 +6168,20 @@ mod tests {
             "B's completed review updates its queued check once: {writes:#?}"
         );
         assert!(
-            writes
-                .iter()
-                .filter_map(|write| match write {
-                    crate::forge::Write::Check(check) if check.head_sha == "head-a" => Some(check),
-                    crate::forge::Write::CheckUpdate { check, .. }
-                        if check.head_sha == "head-a" =>
-                        Some(check),
-                    _ => None,
-                })
-                .all(|check| {
+            writes.iter().all(|write| match write {
+                crate::forge::Write::Check(check) if check.head_sha == "head-a" => {
+                    check.conclusion.is_none()
+                        && check.status == Some(crate::forge::types::CheckRunStatus::Queued)
+                }
+                crate::forge::Write::CheckUpdate { check, .. }
+                    if check.head_sha == "head-a" =>
+                {
                     check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
                         && check.title == "Not reviewed"
-                }),
-            "A may only receive its neutral retirement status: {writes:#?}"
+                }
+                _ => true,
+            }),
+            "A may receive its queued check and only neutral retirement updates: {writes:#?}"
         );
     }
 

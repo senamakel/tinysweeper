@@ -6718,10 +6718,11 @@ mod tests {
         assert!(!partial.complete());
         assert!(partial.partial_review.is_some());
         assert_eq!(partial.unreviewed.len(), 1);
-        assert!(partial
-            .summary
-            .as_ref()
-            .is_some_and(|summary| summary.executive_summary.contains("PARTIAL-ATTEMPT-REPORT-ONLY")));
+        assert!(partial.summary.as_ref().is_some_and(|summary| {
+            summary
+                .executive_summary
+                .contains("PARTIAL-ATTEMPT-REPORT-ONLY")
+        }));
 
         let check_id = forge
             .publish_check(&repo, status::in_progress("failed-apply-head"))
@@ -6784,9 +6785,29 @@ mod tests {
         assert_eq!(failed_hub.matches("LAST-GOOD-REPORT-ONLY").count(), 1);
         assert!(failed_hub.contains(&last_good_report), "{failed_hub}");
         assert!(
-            !failed_hub.contains("not reviewed (large PR)"),
+            !failed_hub.contains("PARTIAL-ATTEMPT-REPORT-ONLY"),
             "{failed_hub}"
         );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|write| matches!(
+                    write,
+                    crate::forge::Write::CommentUpdate { comment_id, .. }
+                        if *comment_id == hub_comment_id
+                ))
+                .count(),
+            1,
+            "the failure report updates the original hub once"
+        );
+        let persisted_hub = forge
+            .comments(&repo, 7)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|comment| comment.id == Some(hub_comment_id))
+            .expect("the same bot comment remains persisted");
+        assert_eq!(persisted_hub.body, failed_hub);
     }
 
     #[tokio::test(start_paused = true)]

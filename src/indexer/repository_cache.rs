@@ -138,8 +138,10 @@ impl RepositoryCache {
             validate_revision(base_revision)?;
         }
         let mirror = self.mirror_path(repo)?;
+        self.validate_existing_paths(repo, &mirror)?;
         let lock = self.lock_for(&mirror);
         let _guard = lock.lock().await;
+        self.validate_existing_paths(repo, &mirror)?;
         let mut missing = Vec::new();
         if !Checkout::mirror_has_revision(&mirror, revision).await? {
             missing.push(revision);
@@ -171,6 +173,28 @@ impl RepositoryCache {
     fn mirror_path(&self, repo: &str) -> Result<PathBuf> {
         let (owner, name) = repo.split_once('/').expect("validated owner/name");
         Ok(self.root.join(owner).join(format!("{name}.git")))
+    }
+
+    fn validate_existing_paths(&self, repo: &str, mirror: &Path) -> Result<()> {
+        let owner = repo.split_once('/').expect("validated owner/name").0;
+        let owner_path = self.root.join(owner);
+        for path in [self.root.as_path(), owner_path.as_path(), mirror] {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(crate::error::Error::config(
+                        "repository cache path contains a symlink or non-directory",
+                    ));
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(crate::error::Error::Forge(format!(
+                        "could not inspect repository cache path: {err}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn lock_for(&self, path: &Path) -> Arc<AsyncMutex<()>> {

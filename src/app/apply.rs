@@ -2965,6 +2965,7 @@ mod tests {
                         event: ReviewEvent::Approve,
                         head_sha: "old-head".into(),
                         blocking_findings: vec![],
+                        standing_review: None,
                     }),
                     ..ReviewedState::default()
                 },
@@ -3135,7 +3136,7 @@ mod tests {
         record_apply_state(
             Some(&store),
             &proposal("head", vec![]),
-            Some((ReviewEvent::Approve, vec![])),
+            Some((ReviewEvent::Approve, vec![], None)),
         )
         .await;
         assert_eq!(saves.load(Ordering::SeqCst), 0);

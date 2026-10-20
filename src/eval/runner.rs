@@ -33,7 +33,8 @@ use crate::ports::model::{Model, Spend, Usage};
 use crate::ports::tree::TreeReader;
 use crate::state::memory::MemoryState;
 
-const MAX_RECORDING_PHYSICAL_CALLS_PER_CASE: usize = 8;
+const DEFAULT_RECORDING_PHYSICAL_CALLS_PER_CASE: usize = 8;
+const MAX_RECORDING_PHYSICAL_CALLS_PER_CASE: usize = 56;
 
 /// Failure metadata is separate from labels, so re-scoring uses current ground truth.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -78,7 +79,7 @@ impl Default for RunOptions {
             record: false,
             loose: false,
             record_prompts: false,
-            max_physical_calls_per_case: Some(MAX_RECORDING_PHYSICAL_CALLS_PER_CASE),
+            max_physical_calls_per_case: Some(DEFAULT_RECORDING_PHYSICAL_CALLS_PER_CASE),
             max_cost_usd: 5.0,
             tree: None,
         }

@@ -176,4 +176,27 @@ mod tests {
         assert!(Reservation::begin(directory.path(), 8, 8).is_err());
         drop(first);
     }
+
+    #[test]
+    fn a_larger_rerun_limit_only_admits_the_persistent_remainder() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let initial = Reservation::begin(directory.path(), 8, 56).expect("initial reserve");
+        assert_eq!(initial.reserved_calls(), 8);
+        initial.finish(8).expect("persist first attempt count");
+
+        let rerun = Reservation::begin(directory.path(), 56, 56).expect("remaining reserve");
+        assert_eq!(rerun.reserved_calls(), 48);
+        rerun.finish(48).expect("persist rerun attempt count");
+
+        assert!(Reservation::begin(directory.path(), 56, 56).is_err());
+        let audit: Audit = read_audit(&directory.path().join(AUDIT_FILE)).expect("audit reads");
+        assert_eq!(
+            audit
+                .reservations
+                .iter()
+                .map(|record| record.actual_calls.unwrap_or(record.reserved_calls))
+                .sum::<usize>(),
+            56
+        );
+    }
 }

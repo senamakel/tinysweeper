@@ -65,8 +65,7 @@ under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
 without acknowledging the delivery; GitHub does not retry automatically, so an
 operator must redeliver that overflowed event. Manual batches are admitted
 atomically, or refused as a whole. Other webhook actions keep their existing
-dispatch path; corpus recall recording and post-rollout observation are covered
-by [the evaluation runbook](../eval/recording-and-48h-runbook.md).
+dispatch path; corpus recall recording and post-rollout observation are covered by [the evaluation runbook](../eval/recording-and-48h-runbook.md).
 
 The manual endpoint checks durable capacity before resolving installations or
 pull requests. Its final whole-batch admission is still authoritative, so a

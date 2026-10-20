@@ -3057,25 +3057,24 @@ fn lane_proposal(
         .iter()
         .map(|finding| finding.severity)
         .max();
-    let blocking_findings = if conclusion.blocks() {
-        config
-            .request_changes_at()
-            .map(|threshold| {
-                confidence_qualified
-                    .iter()
-                    .filter(|finding| finding.severity >= threshold)
-                    .map(|finding| {
-                        finding
-                            .identity
-                            .clone()
-                            .unwrap_or_else(|| finding.fingerprint(&finding.title))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // The aggregate verdict can be driven by a different lane: a high finding
+    // in a lane whose own fail threshold is higher still participates in the
+    // request-changes signature when another lane makes the proposal blocked.
+    let blocking_findings = config
+        .request_changes_at()
+        .map(|threshold| {
+            confidence_qualified
+                .iter()
+                .filter(|finding| finding.severity >= threshold)
+                .map(|finding| {
+                    finding
+                        .identity
+                        .clone()
+                        .unwrap_or_else(|| finding.fingerprint(&finding.title))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Below the gate but not below notice: named in the summary, never posted.
     // Capped so a chatty reviewer cannot turn the summary into the comment

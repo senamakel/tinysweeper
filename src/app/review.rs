@@ -4564,7 +4564,6 @@ mod tests {
         let forge = forge_with(vec![rust_file()], vec![]);
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
-        let security_requests = model.security_requests.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let config = scheduling_config();
 
@@ -4688,6 +4687,7 @@ mod tests {
         let forge = forge_with(files, vec![]);
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let security_requests = model.security_requests.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
         // Normal mode would adapt for high-risk workflow edits. Large mode

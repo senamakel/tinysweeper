@@ -2688,6 +2688,7 @@ mod tests {
         assert!(!body.contains("800 cached (8%)"), "{body}");
         assert!(!body.contains("kimi-k3"), "{body}");
         assert!(body.contains("state v=1 sha=abc123"), "{body}");
+        assert!(body.contains("usage=cost:0.0100,input:10000,output:400,cached:800,embed:0"), "{body}");
     }
 
     #[tokio::test]

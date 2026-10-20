@@ -592,6 +592,17 @@ mod tests {
     }
 
     #[test]
+    fn blank_model_names_are_not_rendered() {
+        let line = cost_line(
+            &usage(0.01, 10, 2, 1),
+            &["provider/model".into(), "".into(), "  ".into()],
+        );
+        assert!(line.contains("provider/model"), "{line}");
+        assert!(!line.contains(", ,"), "{line}");
+        assert!(!line.ends_with(", "), "{line}");
+    }
+
+    #[test]
     fn embedding_tokens_are_reported_apart_from_prompt_tokens() {
         let line = cost_line(
             &Usage {

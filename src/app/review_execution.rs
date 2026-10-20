@@ -26,7 +26,7 @@ pub(crate) struct ReviewExecutionOptions {
     pub started_at: Instant,
     /// The already-established server hard deadline.
     pub hard_deadline: Instant,
-    /// Review policy mode retained for test diagnostics until scheduler wiring.
+    /// Review policy mode retained for test diagnostics.
     #[cfg(test)]
     pub mode: ReviewMode,
     /// Physical call ceiling, absent for normal-mode scheduling.
@@ -34,7 +34,6 @@ pub(crate) struct ReviewExecutionOptions {
     /// Percent of the original hard window available for new work.
     pub soft_deadline_percent: u8,
     /// Maximum finish interval for admitted work, consumed by bounded fan-out.
-    #[cfg(test)]
     pub drain_seconds: u64,
 }
 
@@ -288,12 +287,10 @@ fn saturating_add_exact(total: &mut u64, addition: u64) -> bool {
 struct ExecutionInner {
     #[cfg(test)]
     started_at: Instant,
-    #[cfg(test)]
     hard_deadline: Instant,
     soft_deadline: Instant,
     #[cfg(test)]
     mode: ReviewMode,
-    #[cfg(test)]
     drain_seconds: u64,
     _now: Arc<dyn Fn() -> Instant + Send + Sync>,
     availability_generation: watch::Sender<u64>,
@@ -326,12 +323,10 @@ impl ReviewExecution {
             inner: Arc::new(ExecutionInner {
                 #[cfg(test)]
                 started_at: options.started_at,
-                #[cfg(test)]
                 hard_deadline: options.hard_deadline,
                 soft_deadline,
                 #[cfg(test)]
                 mode: options.mode,
-                #[cfg(test)]
                 drain_seconds: options.drain_seconds,
                 _now: now,
                 availability_generation,

@@ -910,7 +910,7 @@ pub struct LaneProposal {
     /// Captured before cross-push dedupe and the comment budget remove visible
     /// findings, so apply can compare the decision that was actually reached.
     #[serde(default)]
-    pub blocking_findings: Vec<String>,
+    pub blocking_findings: Option<Vec<String>>,
     /// Findings that missed the posting gate but were worth a line in the
     /// summary: at least `medium`, at least `review.note_confidence` sure.
     ///
@@ -1450,7 +1450,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                     summary: format!("Skipped: `{label}` is applied."),
                     completed: false,
                     findings: vec![],
-                    blocking_findings: vec![],
+                    blocking_findings: Some(vec![]),
                     noted: Vec::new(),
                     context_degraded: false,
                     resolved: vec![],
@@ -2166,6 +2166,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                     .or_else(|| stored.as_ref().and_then(|state| state.summary.clone())),
                 hub_comment_id: stored.as_ref().and_then(|state| state.hub_comment_id),
                 summary_transcript: summary_transcript.clone(),
+                published_review: stored
+                    .as_ref()
+                    .and_then(|state| state.published_review.clone()),
             };
             if let Err(err) = store.save_state(&state_key, &next).await {
                 tracing::warn!(%err, "could not record the review state; the next review will cost more");
@@ -3165,7 +3168,7 @@ fn lane_proposal(
         summary,
         completed: outcome.completed,
         findings,
-        blocking_findings,
+        blocking_findings: Some(blocking_findings),
         noted,
         context_degraded,
         resolved,

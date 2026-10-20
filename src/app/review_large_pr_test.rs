@@ -361,6 +361,196 @@ async fn run_all_default_lanes(
     .await
 }
 
+fn f1_run_context(
+    started_at: tokio::time::Instant,
+    hard_deadline: tokio::time::Instant,
+) -> Arc<crate::app::review_execution::ReviewRunContext> {
+    Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline,
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: None,
+            soft_deadline_percent: 80,
+            drain_seconds: 5,
+        },
+    ))
+}
+
+fn f1_model(advance_after: Option<&'static str>) -> Arc<LargeReviewModel> {
+    Arc::new(LargeReviewModel {
+        control: None,
+        attempts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(Mutex::new(Vec::new())),
+        finding: true,
+        advance_after,
+    })
+}
+
+fn assert_host_stopped_lane(
+    proposal: &Proposal,
+    lane_id: crate::config::types::LaneId,
+    reason: crate::lanes::fanout::OmissionReason,
+) {
+    let lane = proposal
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == lane_id)
+        .expect("enabled lane is represented in the partial proposal");
+    assert_eq!(
+        lane.conclusion,
+        crate::forge::types::CheckConclusion::Neutral
+    );
+    assert!(!lane.completed, "a refused lane did not complete a review");
+    assert!(lane.unanswered.contains(&lane_id.check_name()));
+    assert!(lane.omissions.iter().any(|omission| {
+        omission.reason == reason && omission.paths.contains(&"src/z_api.rs".to_string())
+    }));
+}
+
+fn assert_f1_kept_prior_review(proposal: &Proposal) {
+    let critique = proposal
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == crate::config::types::LaneId::Critique)
+        .expect("the completed critique lane is retained");
+    assert!(critique.findings.iter().any(|finding| {
+        finding.title == "Document the public API result" && finding.path == "src/z_api.rs"
+    }));
+    assert!(proposal.usage().input_tokens >= 6);
+    assert!(proposal.usage().output_tokens >= 3);
+    assert!((proposal.usage().cost_usd - 0.0003).abs() < 1e-9);
+    assert!(!proposal.complete());
+}
+
+fn assert_f1_never_approves(forge: &MockForge) {
+    assert!(forge.writes().iter().all(|write| !matches!(
+        write,
+        Write::Review {
+            event: crate::forge::types::ReviewEvent::Approve,
+            ..
+        } | Write::Merged { .. }
+    )));
+}
+
+#[tokio::test]
+async fn default_tests_lane_refusal_publishes_the_completed_partial_review() {
+    let mut config = all_default_lanes_config();
+    config.review.large_pr.max_calls = 3;
+    config.review.large_pr.max_groups = 2;
+    let forge = two_file_public_api_forge();
+    let model = f1_model(None);
+    let started_at = tokio::time::Instant::now();
+    let execution = f1_run_context(started_at, started_at + std::time::Duration::from_secs(900));
+    let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
+
+    let result = run_all_default_lanes(
+        &forge,
+        model.clone() as Arc<dyn Model>,
+        &config,
+        execution,
+        timing.clone(),
+    )
+    .await;
+
+    let attempts = model.attempts.lock().expect("attempt list lock").clone();
+    let successful = model
+        .calls
+        .lock()
+        .expect("successful call list lock")
+        .clone();
+    let schemas: Vec<_> = attempts
+        .iter()
+        .map(|request| request.schema_name.as_str())
+        .collect();
+    assert!(schemas.contains(&"tinysweeper_security"));
+    assert!(schemas.contains(&"tinysweeper_critique"));
+    assert!(schemas.contains(&"tinysweeper_falsify"));
+    assert!(schemas.contains(&"tinysweeper_tests"));
+    assert_eq!(
+        successful.len(),
+        3,
+        "two lanes and falsification spend the cap"
+    );
+    assert_eq!(timing.snapshot().calls_refused, 1);
+
+    let proposal = result
+        .expect("a CallLimit in the enabled Tests lane must publish prior completed lane results");
+    assert_f1_kept_prior_review(&proposal);
+    assert_host_stopped_lane(
+        &proposal,
+        crate::config::types::LaneId::Tests,
+        crate::lanes::fanout::OmissionReason::CallLimit,
+    );
+    assert_f1_never_approves(&forge);
+    let applied = crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("an honest partial proposal remains publishable");
+    assert_eq!(applied, crate::app::apply::ApplyDisposition::Published);
+    assert_f1_never_approves(&forge);
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_tests_lane_soft_deadline_publishes_the_completed_partial_review() {
+    let mut config = all_default_lanes_config();
+    config.review.large_pr.max_calls = 48;
+    config.review.large_pr.max_groups = 2;
+    let forge = two_file_public_api_forge();
+    let model = f1_model(Some("tinysweeper_falsify"));
+    let started_at = tokio::time::Instant::now();
+    let execution = f1_run_context(started_at, started_at + std::time::Duration::from_secs(100));
+    let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
+
+    let result = run_all_default_lanes(
+        &forge,
+        model.clone() as Arc<dyn Model>,
+        &config,
+        execution.clone(),
+        timing.clone(),
+    )
+    .await;
+
+    let attempts = model.attempts.lock().expect("attempt list lock").clone();
+    let successful = model
+        .calls
+        .lock()
+        .expect("successful call list lock")
+        .clone();
+    let schemas: Vec<_> = attempts
+        .iter()
+        .map(|request| request.schema_name.as_str())
+        .collect();
+    assert!(schemas.contains(&"tinysweeper_security"));
+    assert!(schemas.contains(&"tinysweeper_critique"));
+    assert!(schemas.contains(&"tinysweeper_falsify"));
+    assert!(!schemas.contains(&"tinysweeper_tests"));
+    assert_eq!(successful.len(), 3, "the completed work precedes soft time");
+    assert_eq!(
+        tokio::time::Instant::now(),
+        started_at + std::time::Duration::from_secs(80)
+    );
+    assert!(timing.snapshot().calls_refused >= 1);
+    assert_eq!(execution.logical_usage().input_tokens, 6);
+    assert_eq!(execution.logical_usage().output_tokens, 3);
+    assert!((execution.logical_usage().cost_usd - 0.0003).abs() < 1e-9);
+
+    let proposal = result.expect(
+        "a SoftDeadline in the enabled Tests lane must publish prior completed lane results",
+    );
+    assert_f1_kept_prior_review(&proposal);
+    assert_host_stopped_lane(
+        &proposal,
+        crate::config::types::LaneId::Tests,
+        crate::lanes::fanout::OmissionReason::SoftDeadline,
+    );
+    assert_f1_never_approves(&forge);
+    let applied = crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("an honest partial proposal remains publishable");
+    assert_eq!(applied, crate::app::apply::ApplyDisposition::Published);
+    assert_f1_never_approves(&forge);
+}
+
 fn selected_lane_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<(String, String)> {
     let mut selected = std::collections::BTreeSet::new();
     for request in requests {

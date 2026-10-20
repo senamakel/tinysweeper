@@ -210,15 +210,17 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("tempdir");
         let ready_path = directory.path().join("child-ready");
-        let mut child = ChildGuard(Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "eval::recording_budget::tests::reservation_lock_holder_child",
-                "--nocapture",
-            ])
-            .env(CHILD_DIRECTORY, directory.path())
-            .spawn()
-            .expect("start lock holder"));
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "eval::recording_budget::tests::reservation_lock_holder_child",
+                    "--nocapture",
+                ])
+                .env(CHILD_DIRECTORY, directory.path())
+                .spawn()
+                .expect("start lock holder"),
+        );
         for _ in 0..500 {
             if ready_path.exists() {
                 break;
@@ -245,8 +247,8 @@ mod tests {
         let Ok(directory) = std::env::var("TINYSWEEPER_RECORDING_BUDGET_CHILD_DIRECTORY") else {
             return;
         };
-        let _reservation = Reservation::begin(Path::new(&directory), 8, 12)
-            .expect("child reservation");
+        let _reservation =
+            Reservation::begin(Path::new(&directory), 8, 12).expect("child reservation");
         fs::write(Path::new(&directory).join("child-ready"), b"held")
             .expect("write lock-holder marker");
         loop {

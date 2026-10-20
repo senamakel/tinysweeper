@@ -55,7 +55,8 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
         match (&current.execution_limits, &baseline.execution_limits) {
             (Some(current), Some(baseline)) if current != baseline => {
                 return Comparison::Incomparable(
-                    "the execution limits changed (selected cases or admission bounds differ)".into(),
+                    "the execution limits changed (selected cases or admission bounds differ)"
+                        .into(),
                 );
             }
             (Some(_), Some(_)) => {}
@@ -139,8 +140,16 @@ pub fn markdown(card: &Scorecard, baseline: Option<&Scorecard>, allow_drift: boo
                 .max_physical_calls_per_case
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "unbounded".into()),
-            if limits.recording { "recording" } else { "replay" },
-            if limits.loose_replay { " (loose)" } else { " (strict)" },
+            if limits.recording {
+                "recording"
+            } else {
+                "replay"
+            },
+            if limits.loose_replay {
+                " (loose)"
+            } else {
+                " (strict)"
+            },
         );
     } else {
         out.push_str("execution limits unknown (legacy scorecard)\n");

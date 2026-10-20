@@ -1016,9 +1016,12 @@ async fn execution_limits_capture_selected_cases_and_effective_run_ceilings() {
     assert_eq!(base.execution_limits.max_physical_calls_per_case, Some(8));
     assert_ne!(base.execution_limits, selected_run.execution_limits);
     assert_ne!(base.execution_limits, bounded_run.execution_limits);
-    assert!(base.execution_limits.effective_case_budgets.iter().all(|budget| {
-        budget.budget_usd.is_none()
-    }));
+    assert!(
+        base.execution_limits
+            .effective_case_budgets
+            .iter()
+            .all(|budget| { budget.budget_usd.is_none() })
+    );
     let recording_limits = super::effective_execution_limits(
         &full,
         &config(),

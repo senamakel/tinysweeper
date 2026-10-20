@@ -6379,6 +6379,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_applied_review_is_classified_published_and_suppresses_same_head_redelivery() {
+        use crate::app::apply::ApplyDisposition;
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let now_ms = unix_time_ms();
+        let mut request = queued_test_review(7);
+        request.repo = "owner/repo".into();
+        request.head_sha = Some("published-head".into());
+        store.admit_batch(vec![request.clone()]).await.unwrap();
+
+        let forge = MockForge::with_state({
+            let mut state = MockState::default();
+            state.pull_requests.insert(
+                7,
+                PullRequest {
+                    number: 7,
+                    head_sha: "published-head".into(),
+                    author: "contributor".into(),
+                    ..PullRequest::default()
+                },
+            );
+            state.files.insert(
+                7,
+                vec![ChangedFile {
+                    path: "src/lib.rs".into(),
+                    status: FileStatus::Modified,
+                    patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                    additions: 1,
+                    ..ChangedFile::default()
+                }],
+            );
+            state
+        });
+        publish_test_queued_statuses_through_forge(&store, forge.clone(), now_ms).await;
+        let owned = store
+            .claim_next("worker-publish", now_ms + 1)
+            .await
+            .unwrap()
+            .expect("the admitted head is claimed by the worker");
+        assert!(store.confirm_head(&owned, "published-head", now_ms + 2).await.unwrap());
+
+        let mut config: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = false;
+        config.overview.enabled = false;
+        config.automerge.enabled = false;
+        let model = Arc::new(MockModel::always(json!({
+            "summary": "Reviewed.", "findings": [], "resolved": []
+        })));
+        let repo = RepoId::parse("owner/repo").unwrap();
+
+        let completed = review_with_paid_budget_and_status(
+            &store,
+            Some(&owned),
+            now_ms + 3,
+            || async {
+                assert_eq!(
+                    store.begin_paid(&owned, now_ms + 3).await?,
+                    PaidStart::Started
+                );
+                Ok(())
+            },
+            || async { Ok(true) },
+            || async {
+                let proposal = crate::app::review::review_with_tree(
+                    &forge,
+                    model.clone(),
+                    &config,
+                    &repo,
+                    7,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+                let applied = crate::app::apply::apply(
+                    &forge,
+                    &forge,
+                    &config,
+                    &proposal,
+                    None,
+                )
+                .await?;
+                let findings = published_review_result(
+                    applied,
+                    proposal.findings().count(),
+                    crate::app::apply::requests_changes(&config, &proposal),
+                    status::aggregate_coverage(&proposal),
+                );
+                Ok(InnerReview::Complete(findings))
+            },
+        )
+        .await
+        .expect("the real review and apply complete within paid work");
+        assert!(matches!(completed, InnerReview::Complete(Some(_))));
+        assert!(forge.writes().iter().any(|write| matches!(
+            write,
+            crate::forge::Write::Review { review, .. }
+                if review.event == crate::forge::types::ReviewEvent::Approve
+                    || review.event == crate::forge::types::ReviewEvent::Comment
+        )), "the real apply path writes its review: {:#?}", forge.writes());
+        assert_eq!(model.requests().len(), 1, "one critique call reviewed the head");
+
+        let InnerReview::Complete(findings) = completed else {
+            panic!("the app completion result was already checked above");
+        };
+        let (conclusion, disposition) = completed_review_disposition(findings);
+        assert!(matches!(conclusion, Conclusion::Reviewed { .. }));
+        assert!(matches!(
+            disposition,
+            WorkerDisposition::Terminal(TerminalOutcome::Published)
+        ));
+        assert!(record_owned_disposition(&store, &owned, disposition, now_ms + 4)
+            .await
+            .expect("owned worker terminal update")
+            .expect("publication is recorded durably"));
+        let state = store.snapshot_for_test();
+        assert_eq!(state.unfinished.len(), 0);
+        assert_eq!(
+            state.incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published)
+        );
+        assert_eq!(state.incremental_heads[0].paid_attempts, 1);
+
+        request.id = crate::ports::review_job::ReviewJobId("redelivered-head".into());
+        request.delivery = Some("redelivered-head".into());
+        request.accepted_at_ms = now_ms + 5;
+        store.admit_batch(vec![request]).await.unwrap();
+        seed_previously_published_queue_checks(&store, now_ms + 5).await;
+        let redelivery = store
+            .claim_next("worker-redelivery", now_ms + 6)
+            .await
+            .unwrap()
+            .expect("the delayed delivery is independently claimable");
+        assert!(store.confirm_head(&redelivery, "published-head", now_ms + 7).await.unwrap());
+        let before_redelivery_writes = forge.writes().len();
+        let skipped = run_if_confirmed_head_needs_review(
+            &store,
+            Some(&redelivery),
+            Mode::Incremental,
+            || async {
+                model.complete(ModelRequest {
+                    model: "test".into(),
+                    messages: vec![crate::ports::model::Message::user("duplicate review")],
+                    schema: json!({"type": "object"}),
+                    schema_name: "duplicate-review".into(),
+                    max_tokens: 16,
+                }).await?;
+                Ok(InnerReview::Complete(None))
+            },
+        )
+        .await
+        .expect("terminal head is a normal duplicate");
+        assert!(matches!(skipped, InnerReview::Complete(None)));
+        assert_eq!(model.requests().len(), 1, "redelivery makes no second paid model call");
+        assert_eq!(forge.writes().len(), before_redelivery_writes, "redelivery makes no apply writes");
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads[0].paid_attempts,
+            1,
+            "redelivery does not start another paid attempt"
+        );
+        assert!(record_owned_disposition(
+            &store,
+            &redelivery,
+            WorkerDisposition::Terminal(TerminalOutcome::Declined),
+            now_ms + 8,
+        )
+        .await
+        .expect("duplicate terminal disposition")
+        .expect("duplicate completion is durably released"));
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads[0].terminal_outcome,
+            Some(TerminalOutcome::Published),
+            "a duplicate delivery cannot downgrade the published head"
+        );
+        let _: &dyn ForgeRead = &forge;
+        let _: &dyn ForgeWrite = &forge;
+    }
+
+    #[tokio::test]
     async fn a_push_during_retry_backoff_yields_instead_of_exhausting_the_live_head() {
         use crate::forge::{MockForge, RepoId};
         use crate::harness::MockModel;

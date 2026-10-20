@@ -667,6 +667,98 @@ mod tests {
         assert_eq!(execution.snapshot().committed_calls, 1);
     }
 
+    #[tokio::test]
+    async fn a_retry_keeps_the_original_soft_window_and_committed_dispatches() {
+        use crate::ports::model::{Message, ModelRequest, Usage};
+        use crate::ports::model_execution::ModelExecutionRefusal;
+
+        let started_at = Instant::now();
+        let after_soft_deadline = Arc::new(AtomicBool::new(false));
+        let clock_flag = Arc::clone(&after_soft_deadline);
+        let now: Arc<dyn Fn() -> Instant + Send + Sync> = Arc::new(move || {
+            if clock_flag.load(Ordering::Acquire) {
+                started_at + Duration::from_secs(81)
+            } else {
+                started_at
+            }
+        });
+        let execution = Arc::new(ReviewExecution::with_clock(
+            options(
+                ReviewMode::Large,
+                Some(2),
+                started_at,
+                started_at + Duration::from_secs(100),
+            ),
+            now,
+        ));
+        let original_context = Arc::new(ReviewRunContext {
+            execution: Arc::clone(&execution),
+            model: OnceLock::new(),
+        });
+        let mock = crate::harness::mock::MockModel::silent().with_usage(Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            calls_attempted: 1,
+            calls_succeeded: 1,
+            cost_usd: 0.02,
+            ..Usage::default()
+        });
+        let model = original_context
+            .bind_model(Arc::new(mock.clone()), 1.0)
+            .model
+            .clone();
+        let retry_context = Arc::clone(&original_context);
+        assert!(Arc::ptr_eq(&original_context, &retry_context));
+        assert_eq!(retry_context.execution().started_at(), started_at);
+
+        let request = || ModelRequest {
+            model: "mock".into(),
+            messages: vec![Message::user("retry the same review")],
+            schema: serde_json::json!({"type":"object"}),
+            schema_name: "same-review-retry".into(),
+            max_tokens: 16,
+        };
+        assert!(model.complete(request()).await.is_ok());
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        assert_eq!(mock.calls(), 1);
+
+        // A transient retry reuses the original worker clock, so it cannot
+        // reopen the paid window after the first dispatch has committed.
+        after_soft_deadline.store(true, Ordering::Release);
+        assert!(matches!(
+            model.complete(request()).await,
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::SoftDeadline,
+                ..
+            })
+        ));
+        assert_eq!(mock.calls(), 1, "the retry is refused before provider work");
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+
+        let replacement_started_at = Instant::now();
+        let replacement_execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(2),
+            replacement_started_at,
+            replacement_started_at + Duration::from_secs(100),
+        )));
+        let replacement_context = Arc::new(ReviewRunContext {
+            execution: Arc::clone(&replacement_execution),
+            model: OnceLock::new(),
+        });
+        let replacement_mock = crate::harness::mock::MockModel::silent();
+        let replacement_model = replacement_context
+            .bind_model(Arc::new(replacement_mock.clone()), 1.0)
+            .model
+            .clone();
+        assert!(!Arc::ptr_eq(&original_context, &replacement_context));
+        assert_ne!(replacement_execution.started_at(), started_at);
+        assert!(replacement_model.complete(request()).await.is_ok());
+        assert_eq!(replacement_mock.calls(), 1);
+        assert_eq!(replacement_execution.snapshot().committed_calls, 1);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_dispatches_wait_for_reservations_then_refuse_at_the_shared_ceiling() {
         let started_at = Instant::now();

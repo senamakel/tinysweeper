@@ -126,16 +126,10 @@ impl BoundedLogicalModel {
     async fn acquire(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, ModelExecutionRefusal> {
-        tokio::select! {
-            biased;
-            _ = self.execution.cancelled() => Err(ModelExecutionRefusal::Cancelled),
-            _ = tokio::time::sleep_until(self.execution.soft_deadline()) => {
-                Err(ModelExecutionRefusal::SoftDeadline)
-            }
-            permit = Arc::clone(&self.permits).acquire_owned() => {
-                Ok(permit.expect("the review logical-call semaphore is never closed"))
-            }
-        }
+        Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| ModelExecutionRefusal::SoftDeadline)
     }
 }
 
@@ -888,6 +882,77 @@ mod tests {
         assert!(matches!(expired, Err(ModelExecutionRefusal::SoftDeadline)));
         assert_eq!(execution.snapshot().reserved_calls, 0);
         assert_eq!(execution.snapshot().committed_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn opaque_call_released_after_soft_deadline_never_reaches_the_model() {
+        struct CountingModel {
+            inner: crate::harness::mock::MockModel,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for CountingModel {
+            async fn complete(
+                &self,
+                request: crate::ports::model::ModelRequest,
+            ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.complete(request).await
+            }
+        }
+
+        let started = Instant::now();
+        let mut options = options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_millis(500),
+        );
+        options.soft_deadline_percent = 40;
+        let execution = Arc::new(ReviewExecution::new(options));
+        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_MODEL_DISPATCHES {
+            held.push(permits.clone().acquire_owned().await.expect("permit"));
+        }
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model: Arc<dyn Model> = Arc::new(BoundedLogicalModel {
+            inner: Arc::new(CountingModel {
+                inner: crate::harness::mock::MockModel::always(serde_json::json!({"ok": true})),
+                calls: calls.clone(),
+            }),
+            permits,
+            execution: execution.clone(),
+        });
+        let waiting_model = model.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_model
+                .complete(crate::ports::model::ModelRequest {
+                    model: "mock".into(),
+                    messages: Vec::new(),
+                    schema: serde_json::json!({"type": "object"}),
+                    schema_name: "queued".into(),
+                    max_tokens: 8,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::sleep_until(execution.soft_deadline()).await;
+        drop(held.pop());
+
+        let result = tokio::time::timeout(Duration::from_millis(100), waiting)
+            .await
+            .expect("soft deadline wakes the queued logical call")
+            .expect("model task completes");
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::SoftDeadline,
+                ..
+            })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

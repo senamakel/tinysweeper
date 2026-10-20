@@ -10275,6 +10275,223 @@ mod tests {
         assert!(registry.lock().unwrap().slots.is_empty());
     }
 
+    #[tokio::test]
+    async fn a_full_job_runs_after_an_incremental_terminal_without_resetting_run_limits() {
+        use crate::app::review_execution::ReviewExecutionOptions;
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::harness::MockModel;
+        use crate::ports::model::Model;
+        use crate::ports::review_job::ReviewJobId;
+        use std::time::Duration;
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now_ms = unix_time_ms();
+        let mut incremental_request = queued_test_review(7);
+        incremental_request.repo = "owner/repo".into();
+        incremental_request.head_sha = Some("abc123".into());
+        incremental_request.accepted_at_ms = now_ms;
+        assert_eq!(
+            store.admit_batch(vec![incremental_request]).await.unwrap(),
+            Admission::Admitted
+        );
+        let forge = MockForge::with_state(MockState {
+            pull_requests: [(
+                7,
+                PullRequest {
+                    number: 7,
+                    title: "full review keeps the original limits".into(),
+                    head_sha: "abc123".into(),
+                    ..PullRequest::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            files: [(
+                7,
+                ["src/a.rs", "src/b.rs"]
+                    .into_iter()
+                    .map(|path| ChangedFile {
+                        path: path.into(),
+                        status: FileStatus::Modified,
+                        additions: 1,
+                        patch: Some(format!("@@ -1 +1,2 @@\n fn item() {{}}\n+fn next() {{}}\n")),
+                        ..ChangedFile::default()
+                    })
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
+            ..MockState::default()
+        });
+
+        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms).await;
+        let incremental = store
+            .claim_next("full-mode-worker", now_ms + 1)
+            .await
+            .unwrap()
+            .expect("incremental work is claimed first");
+        confirm_test_head(store.as_ref(), &incremental, now_ms + 2).await;
+
+        let mut full_request = queued_test_review(7);
+        full_request.id = ReviewJobId("manual-full-7".into());
+        full_request.repo = incremental.request.repo.clone();
+        full_request.head_sha = incremental.request.head_sha.clone();
+        full_request.delivery = None;
+        full_request.event = "manual-review".into();
+        full_request.mode = ReviewJobMode::Full;
+        full_request.accepted_at_ms = now_ms + 3;
+        assert_eq!(
+            store.admit_batch(vec![full_request]).await.unwrap(),
+            Admission::Admitted,
+            "manual Full work has its own identity beside an active Incremental job"
+        );
+        let queued = store.snapshot_for_test();
+        assert_eq!(queued.unfinished.len(), 2);
+        assert_ne!(
+            queued.unfinished[0].request.id,
+            queued.unfinished[1].request.id
+        );
+        assert!(queued.unfinished.iter().any(|job| {
+            job.request.mode == ReviewJobMode::Full && job.owner.is_none()
+        }));
+        assert!(store.should_continue(&incremental, now_ms + 4).await.unwrap());
+        assert!(
+            store
+                .claim_next_with_limit("at-global-limit", now_ms + 4, 1)
+                .await
+                .unwrap()
+                .is_none(),
+            "the Full job stays queued while the one shared worker slot is occupied"
+        );
+
+        assert_eq!(
+            store.begin_paid(&incremental, now_ms + 5).await.unwrap(),
+            PaidStart::Started
+        );
+        assert!(
+            store
+                .finish(
+                    &incremental,
+                    TerminalOutcome::Published,
+                    now_ms + 6,
+                    now_ms + 6,
+                )
+                .await
+                .unwrap()
+        );
+        let inc_snapshot = store.snapshot_for_test();
+        assert!(inc_snapshot.terminal.iter().any(|entry| {
+            entry.request_id == incremental.request.id
+                && entry.outcome == TerminalOutcome::Published
+        }));
+
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms + 7).await;
+        let full = store
+            .claim_next("full-mode-worker", now_ms + 8)
+            .await
+            .unwrap()
+            .expect("the queued Full job becomes claimable after the slot is released");
+        assert_eq!(full.request.mode, ReviewJobMode::Full);
+        assert_eq!(full.request.head_sha.as_deref(), Some("abc123"));
+        confirm_test_head(store.as_ref(), &full, now_ms + 9).await;
+        assert_eq!(
+            store.begin_paid(&full, now_ms + 10).await.unwrap(),
+            PaidStart::Started
+        );
+        assert!(
+            store
+                .head_is_terminal(&incremental, now_ms + 11)
+                .await
+                .unwrap(),
+            "the Incremental completion remains recorded while Full starts"
+        );
+
+        let mut base = Config::default();
+        base.review.incremental = true;
+        base.review.lanes = vec!["critique".into()];
+        base.review.passes = 3;
+        base.review.large_pr.files = 1;
+        base.review.large_pr.max_groups = 1;
+        base.models.budget_usd_per_pr = 4.25;
+        base.grouping.enabled = false;
+        base.summary.enabled = false;
+        base.overview.enabled = false;
+        base.knowledge.extract = false;
+        base.retrieval.enabled = false;
+        base.threads.resolve_fixed = false;
+        base.threads.ask_model = false;
+        base.wireframe.enabled = false;
+        let full_config = config_for(&base, Mode::Full);
+        assert!(!full_config.review.incremental);
+        assert_eq!(full_config.review.passes, base.review.passes);
+        assert_eq!(full_config.models.budget_usd_per_pr, 4.25);
+        assert_eq!(full_config.review.large_pr.files, 1);
+        assert_eq!(full_config.review.large_pr.max_groups, 1);
+
+        let started_at = tokio::time::Instant::now();
+        let hard_deadline = started_at + Duration::from_secs(100);
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            ReviewExecutionOptions {
+                started_at,
+                hard_deadline,
+                mode: crate::lanes::large_pr::ReviewMode::Large,
+                max_calls: Some(1),
+                soft_deadline_percent: 80,
+                drain_seconds: 5,
+            },
+        ));
+        let model = MockModel::silent();
+        let model_port: Arc<dyn Model> = Arc::new(model.clone());
+        let model = execution
+            .bind_model(model_port, full_config.models.budget_usd_per_pr)
+            .model
+            .clone();
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let full_mock = model.clone();
+        let proposal = run_if_confirmed_head_needs_review(
+            store.as_ref(),
+            Some(&full),
+            Mode::Full,
+            || async {
+                let proposal = crate::app::review::review_with_tree_observed_at_head_in_run(
+                    &forge,
+                    model,
+                    &full_config,
+                    &repo,
+                    7,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("abc123"),
+                    execution,
+                    None,
+                )
+                .await?;
+                Ok(InnerReview::Complete(Some((
+                    proposal.findings().count(),
+                    crate::app::apply::requests_changes(&full_config, &proposal),
+                    status::aggregate_coverage(&proposal),
+                ))))
+            },
+        )
+        .await
+        .expect("Full mode bypasses the Incremental terminal-head suppression");
+        assert!(matches!(proposal, InnerReview::Complete(Some(_))));
+        assert_eq!(full_mock.calls(), 1, "the Large execution shares its one-call cap");
+        assert_eq!(
+            store.snapshot_for_test().incremental_heads.len(),
+            1,
+            "a Full pass does not clear the Incremental ledger"
+        );
+        assert!(store
+            .finish(&full, TerminalOutcome::Published, now_ms + 12, now_ms + 12)
+            .await
+            .unwrap());
+    }
+
     #[test]
     fn a_full_review_turns_the_incremental_path_off_and_changes_nothing_else() {
         // This is the whole of what "full" means. `review.incremental` gates

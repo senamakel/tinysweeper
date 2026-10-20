@@ -133,8 +133,9 @@ impl RepositoryCache {
             protect_directory(&mirror)?;
             Checkout::fetch_into_mirror(&mirror, url, revision, token, fetch_count).await?;
         }
+        let checkout = Checkout::from_mirror(&mirror, revision).await?;
         drop(_guard);
-        Checkout::from_mirror(&mirror, revision).await
+        Ok(checkout)
     }
 
     fn mirror_path(&self, repo: &str) -> Result<PathBuf> {

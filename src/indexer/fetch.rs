@@ -143,20 +143,24 @@ impl Checkout {
         })
     }
 
-    /// Create a disposable checkout from an already-populated server mirror.
+    /// Create a disposable exact-head worktree from a server-owned mirror.
     pub(super) async fn from_mirror(mirror: &Path, revision: &str) -> Result<Self> {
         validate_revision(revision)?;
         let dir = tempfile::Builder::new()
             .prefix("tinysweeper-review-")
             .tempdir()
             .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
-        let root = dir.path().to_path_buf();
-        git(&root, "", &["init", "--quiet"]).await?;
-        let mirror = mirror
+        git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
+        let path = dir
+            .path()
             .to_str()
-            .ok_or_else(|| Error::config("repository cache path is not valid UTF-8"))?;
-        git(&root, "", &["fetch", "--quiet", "--no-tags", mirror, revision]).await?;
-        git(&root, "", &["checkout", "--quiet", "--detach", "FETCH_HEAD"]).await?;
+            .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?;
+        git(
+            mirror,
+            "",
+            &["worktree", "add", "--quiet", "--detach", path, revision],
+        )
+        .await?;
         Ok(Self {
             dir,
             revision: revision.to_string(),

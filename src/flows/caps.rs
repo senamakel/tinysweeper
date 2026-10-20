@@ -427,7 +427,10 @@ mod tests {
     #[tokio::test]
     async fn every_call_carries_the_configured_ceiling_and_the_reviewers_turn() {
         let model = Arc::new(MockModel::always(json!({})));
-        let capability = ModelCapability::new(model.clone(), models());
+        let mut config = models();
+        config.reasoning_effort = "high".into();
+        config.reviewer_reasoning_effort = "low".into();
+        let capability = ModelCapability::new(model.clone(), config);
         capability
             .call(&call("vendor/deep"), &json!({ "type": "object" }))
             .await

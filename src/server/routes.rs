@@ -6447,6 +6447,7 @@ mod tests {
         config.review.large_pr.files = 1;
         config.review.large_pr.groups = 1;
         config.review.large_pr.max_groups = 1;
+        config.grouping.enabled = false;
         config.summary.enabled = false;
         config.overview.enabled = false;
         config.threads.enabled = false;

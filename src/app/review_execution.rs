@@ -1520,8 +1520,8 @@ mod tests {
             .expect("second call's initial send is covered");
         assert_eq!(execution.snapshot().committed_calls, 2);
 
-        let first = Arc::from(first);
-        let second = Arc::from(second);
+        let first: Arc<dyn ModelExecutionPermit> = Arc::from(first);
+        let second: Arc<dyn ModelExecutionPermit> = Arc::from(second);
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let first_barrier = Arc::clone(&barrier);
         let first_retry = std::thread::spawn(move || {

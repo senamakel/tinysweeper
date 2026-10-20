@@ -3912,6 +3912,7 @@ mod tests {
             messages: vec![],
             schema: json!({"type":"object"}),
             schema_name: "review-root-probe".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         };
 
@@ -3989,6 +3990,7 @@ mod tests {
                     messages: vec![Message::user("model request")],
                     schema: json!({"type":"object"}),
                     schema_name: "observed-dispatch-control".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 };
 
@@ -4033,6 +4035,7 @@ mod tests {
             messages: vec![crate::ports::model::Message::user("observe this call")],
             schema: json!({"type":"object"}),
             schema_name: "observed-execution-control".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         }
     }
@@ -5552,6 +5555,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let result = observed
@@ -6654,6 +6658,7 @@ mod tests {
                 messages: vec![Message::user("record a physical completion")],
                 schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
                 schema_name: "pending-terminal-accounting".into(),
+                reasoning_effort: None,
                 max_tokens: 32,
             }
         }

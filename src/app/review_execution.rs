@@ -939,6 +939,7 @@ mod tests {
                     messages: Vec::new(),
                     schema: serde_json::json!({"type": "object"}),
                     schema_name: "queued".into(),
+                    reasoning_effort: None,
                     max_tokens: 8,
                 })
                 .await
@@ -1023,6 +1024,7 @@ mod tests {
                     messages: vec![crate::ports::model::Message::user("must be refused")],
                     schema: serde_json::json!({"type":"object"}),
                     schema_name: "review-binding-cap".into(),
+                    reasoning_effort: None,
                     max_tokens: 8,
                 })
                 .await,
@@ -1101,6 +1103,7 @@ mod tests {
             messages: vec![Message::user("retry the same review")],
             schema: serde_json::json!({"type":"object"}),
             schema_name: "same-review-retry".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         };
         assert!(model.complete(request()).await.is_ok());
@@ -1254,6 +1257,7 @@ mod tests {
                         messages: vec![Message::user("concurrent model call")],
                         schema: serde_json::json!({"type": "object"}),
                         schema_name: "review-execution-concurrency".into(),
+                        reasoning_effort: None,
                         max_tokens: 8,
                     })
                     .await
@@ -1867,6 +1871,7 @@ mod tests {
                 ],
                 schema: serde_json::json!({"type":"object"}),
                 schema_name: "review".into(),
+                reasoning_effort: None,
                 max_tokens: 16,
             })
             .await

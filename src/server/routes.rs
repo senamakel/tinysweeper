@@ -4968,6 +4968,7 @@ mod tests {
                 messages: vec![Message::user("review the leased head")],
                 schema: json!({"type":"object"}),
                 schema_name: "review-root-probe".into(),
+                reasoning_effort: None,
                 max_tokens: 16,
             };
 
@@ -5046,6 +5047,7 @@ mod tests {
                     messages: vec![Message::user("review the leased head")],
                     schema: json!({"type":"object"}),
                     schema_name: "owned-dispatch-control".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 };
 
@@ -6575,6 +6577,7 @@ mod tests {
                         messages: vec![crate::ports::model::Message::user("duplicate review")],
                         schema: json!({"type": "object"}),
                         schema_name: "duplicate-review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;

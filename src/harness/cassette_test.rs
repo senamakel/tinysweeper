@@ -712,6 +712,7 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
             "properties":{"summary":{"type":"string"}}, "required":["summary"]
         }),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 128,
     };
     let result = crate::ports::model::with_model_call_observer(
@@ -1332,6 +1333,7 @@ async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
             ],
             schema: json!({"type":"object"}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         }),
     )

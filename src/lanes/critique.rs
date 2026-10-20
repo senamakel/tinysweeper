@@ -2519,6 +2519,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             };
             let prepared = prepare(input.preparation());
             lane.run_prepared_with_execution(input, prepared, Some(execution))

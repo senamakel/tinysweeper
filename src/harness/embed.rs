@@ -1805,6 +1805,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         struct CountingTree {
@@ -2117,6 +2118,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
 
@@ -2219,6 +2221,7 @@ mod tests {
                     "properties":{"summary":{"type":"string"}}, "required":["summary"]
                 }),
                 schema_name: "review".into(),
+                reasoning_effort: None,
                 max_tokens: 100,
             })
             .await
@@ -2320,6 +2323,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -2394,6 +2398,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let waiting = tokio::spawn(async move { model.complete(request).await });

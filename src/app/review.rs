@@ -1760,9 +1760,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         e2e: e2e_evidence.as_ref(),
         tree: Some(tree),
         graph: graph_for_lanes,
-        pass_yield_observer: timing.as_ref().map(|timing| {
-            timing as &dyn crate::lanes::PassYieldObserver
-        }),
+        pass_yield_observer: timing
+            .as_ref()
+            .map(|timing| timing as &dyn crate::lanes::PassYieldObserver),
     };
     let large_plan = plan.clone();
     let large_model = model.clone();
@@ -1833,9 +1833,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             e2e: e2e_evidence.as_ref(),
             tree: Some(tree),
             graph: graph_for_lanes,
-            pass_yield_observer: timing.as_ref().map(|timing| {
-                timing as &dyn crate::lanes::PassYieldObserver
-            }),
+            pass_yield_observer: timing
+                .as_ref()
+                .map(|timing| timing as &dyn crate::lanes::PassYieldObserver),
         };
         let model = model.clone();
         let lane_execution = execution.execution();
@@ -4694,11 +4694,7 @@ mod tests {
         // Normal mode would adapt for high-risk workflow edits. Large mode
         // must clamp this configured ceiling back to one pass.
         config.review.passes = 3;
-        config.review.lanes = vec![
-            "critique".into(),
-            "security".into(),
-            "tests".into(),
-        ];
+        config.review.lanes = vec!["critique".into(), "security".into(), "tests".into()];
         config.review.large_pr.enabled = true;
         config.review.large_pr.files = 1;
         config.review.large_pr.max_groups = 2;
@@ -4926,7 +4922,8 @@ mod tests {
         config.review.passes = 1;
         config.models.agentic_reviewers = false;
         config.overview.enabled = false;
-        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         review_with_tree_observed(
             &forge,
             Arc::new(MockModel::always(json!({"summary":"Fine.","findings":[]}))),
@@ -4962,7 +4959,12 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || drop(timing));
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert_eq!(line.matches("review timing").count(), 1, "{line}");
-        assert!(line.contains("pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":0,\"survivors\":0}}"), "{line}");
+        assert!(
+            line.contains(
+                "pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":0,\"survivors\":0}}"
+            ),
+            "{line}"
+        );
     }
 
     #[tokio::test]
@@ -5034,7 +5036,8 @@ mod tests {
             critique_calls: AtomicUsize::new(0),
             second_pass_started: started,
         });
-        let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let review_timing = timing.clone();
         let repository = repo();
         let mut running = Box::pin(review_with_tree_observed(
@@ -5079,7 +5082,12 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || drop(timing));
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert_eq!(line.matches("review timing").count(), 1, "{line}");
-        assert!(line.contains("pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":1,\"survivors\":0}}"), "{line}");
+        assert!(
+            line.contains(
+                "pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":1,\"survivors\":0}}"
+            ),
+            "{line}"
+        );
     }
 
     #[tokio::test]

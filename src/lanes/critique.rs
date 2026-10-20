@@ -2155,12 +2155,22 @@ fn helper() {
             .await
             .expect("lane runs");
 
-        assert!(outcome.findings.is_empty(), "falsification rejected the candidate");
+        assert!(
+            outcome.findings.is_empty(),
+            "falsification rejected the candidate"
+        );
         let requests = handle.requests();
         assert_eq!(requests.len(), 3);
         assert_eq!(
-            requests.iter().map(|request| request.schema_name.as_str()).collect::<Vec<_>>(),
-            ["tinysweeper_critique", "tinysweeper_falsify", "tinysweeper_critique"],
+            requests
+                .iter()
+                .map(|request| request.schema_name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "tinysweeper_critique",
+                "tinysweeper_falsify",
+                "tinysweeper_critique"
+            ],
             "the final request is a second reviewer call, even though no finding survived"
         );
         let yields = timing.snapshot().pass_yields;

@@ -399,11 +399,12 @@ fn configured_role_efforts_are_not_replaced_by_role_defaults() {
 
 #[test]
 fn an_unknown_role_effort_is_rejected() {
-    let config = parse(
-        "version = 1\n[models]\nfalsify_reasoning_effort = \"very_low\"\n",
-    );
+    let config = parse("version = 1\n[models]\nfalsify_reasoning_effort = \"very_low\"\n");
     let joined = validate::validate(&config).join("\n");
-    assert!(joined.contains("models.falsify_reasoning_effort"), "{joined}");
+    assert!(
+        joined.contains("models.falsify_reasoning_effort"),
+        "{joined}"
+    );
 }
 
 #[test]

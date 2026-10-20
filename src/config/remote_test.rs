@@ -184,9 +184,18 @@ fn a_repository_cannot_set_model_reasoning_effort() {
         "#,
     );
 
-    assert_eq!(config.models.reviewer_reasoning_effort, base().models.reviewer_reasoning_effort);
-    assert_eq!(config.models.falsify_reasoning_effort, base().models.falsify_reasoning_effort);
-    assert_eq!(config.models.summary_reasoning_effort, base().models.summary_reasoning_effort);
+    assert_eq!(
+        config.models.reviewer_reasoning_effort,
+        base().models.reviewer_reasoning_effort
+    );
+    assert_eq!(
+        config.models.falsify_reasoning_effort,
+        base().models.falsify_reasoning_effort
+    );
+    assert_eq!(
+        config.models.summary_reasoning_effort,
+        base().models.summary_reasoning_effort
+    );
     assert_eq!(
         ignored,
         vec![

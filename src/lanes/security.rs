@@ -879,11 +879,8 @@ mod tests {
             "summary": "No security findings.",
             "findings": []
         }));
-        let timing = crate::review_timing::ReviewTiming::new(
-            "tinyhumansai/tinysweeper",
-            7,
-            "Incremental",
-        );
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let pull_request = pull_request();
         Security::new(Arc::new(model))
             .run(LaneInput {
@@ -1093,7 +1090,11 @@ mod tests {
 
         run_with(model, &config_with_passes(2), &low_risk, &[]).await;
 
-        assert_eq!(handle.calls(), 3, "review, falsification, and adaptive review");
+        assert_eq!(
+            handle.calls(),
+            3,
+            "review, falsification, and adaptive review"
+        );
     }
 
     #[tokio::test]

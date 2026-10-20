@@ -264,7 +264,10 @@ mod tests {
         }
 
         let record = timing.snapshot();
-        assert_eq!(record.pass_yields.len(), crate::config::types::LaneId::ALL.len() * 3);
+        assert_eq!(
+            record.pass_yields.len(),
+            crate::config::types::LaneId::ALL.len() * 3
+        );
         assert!(!record.pass_yields.contains_key("critique:4"));
         assert_eq!(record.pass_yields["critique:1"].groups, 1);
     }

@@ -110,9 +110,7 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
 
     let loaded = crate::config::load_validated(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-        Some(std::path::Path::new(
-            "evals/recording.gptoss-novita.toml",
-        )),
+        Some(std::path::Path::new("evals/recording.gptoss-novita.toml")),
     )
     .expect("the recording profile validates")
     .config;
@@ -129,7 +127,10 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
     .await
     .expect("the labelled recordings replay without a model");
 
-    assert_eq!(outcome.loose_replays, 0, "replay must use strict cassette keys");
+    assert_eq!(
+        outcome.loose_replays, 0,
+        "replay must use strict cassette keys"
+    );
     assert_eq!(outcome.scores.len(), CASES.len());
     for score in &outcome.scores {
         assert!(
@@ -144,13 +145,21 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
             score.id,
             score.forbidden_hits
         );
-        assert_eq!(score.true_positives, 0, "{} baseline hits changed", score.id);
+        assert_eq!(
+            score.true_positives, 0,
+            "{} baseline hits changed",
+            score.id
+        );
         assert_eq!(score.missed, ["E1"], "{} baseline misses changed", score.id);
         let expected = expected_unscored
             .iter()
             .find_map(|(id, count)| (*id == score.id).then_some(*count))
             .expect("the score belongs to one of the five cases");
-        assert_eq!(score.unscored, expected, "{} unscored count changed", score.id);
+        assert_eq!(
+            score.unscored, expected,
+            "{} unscored count changed",
+            score.id
+        );
 
         let case = loaded_cases
             .iter()
@@ -168,7 +177,11 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
                 .unwrap_or_else(|err| panic!("{} has no replay proposal: {err}", score.id)),
         )
         .expect("the replay proposal is valid JSON");
-        assert!(proposal["partial_review"].is_null(), "{} is partial", score.id);
+        assert!(
+            proposal["partial_review"].is_null(),
+            "{} is partial",
+            score.id
+        );
         assert_eq!(
             proposal["unreviewed"].as_array().map(Vec::len),
             Some(0),
@@ -178,7 +191,11 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
         let lanes = proposal["lanes"].as_array().expect("proposal has lanes");
         assert!(!lanes.is_empty(), "{} has no reviewed lane", score.id);
         for lane in lanes {
-            assert_eq!(lane["completed"], true, "{} lane did not complete", score.id);
+            assert_eq!(
+                lane["completed"], true,
+                "{} lane did not complete",
+                score.id
+            );
             let coverage = &lane["coverage"];
             assert_eq!(
                 coverage["unanswered"].as_array().map(Vec::len),
@@ -192,7 +209,11 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
                 .iter()
                 .filter_map(serde_json::Value::as_str)
                 .collect::<std::collections::BTreeSet<_>>();
-            assert_eq!(reviewed, expected_files, "{} file coverage changed", score.id);
+            assert_eq!(
+                reviewed, expected_files,
+                "{} file coverage changed",
+                score.id
+            );
         }
     }
 }

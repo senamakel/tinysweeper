@@ -117,17 +117,38 @@ A stricter gate finds fewer things without the reviewer having got worse, so
 `eval report --baseline` refuses that comparison rather than letting somebody
 read it as a regression. `--allow-config-drift` makes it anyway, and says so.
 
-## Historical miss cases are labels, not replay results
+## Historical miss cases and measured recording baseline
 
 The corpus includes five externally verified misses from the original
 reviewed heads of `tinymcp#102`, `openhuman#8061`, and `openhuman#8076`. Each
 expectation is anchored to the changed hunk from the external review and cites
-the follow-up fix. These historical zero-finding reviews establish why the
-labels are valid; they are not outputs from the current TinySweeper pipeline.
-The cases have no cassettes yet, so the corpus does not claim a hit rate or
-recall percentage for them.
+the follow-up fix. These historical reviews establish why the labels are
+valid; they are not outputs from the current TinySweeper pipeline.
 
-Each case selects only the `critique` lane. A future recording is evidence
+The following measurements use the recording-only GPT-OSS 120B profile pinned
+to Novita (`evals/recording.gptoss-novita.toml`), not the production review
+configuration. All five reviews completed the `critique` lane and covered every
+fixture file. The per-case score is:
+
+| Case | Coverage | Expected matched | Expected missed | Unscored | Known cost |
+| --- | ---: | ---: | --- | ---: | ---: |
+| `tm-0102-memory-pending-debug-state` | 10/10 | 0/1 | E1 | 3 | $0.011998 |
+| `oh-8061-standalone-local-only-policy` | 9/9 | 0/1 | E1 | 3 | $0.009062 |
+| `oh-8061-speech-redirect-origin` | 9/9 | 0/1 | E1 | 1 | $0.010656 |
+| `oh-8061-privacy-docs-contract-mismatch` | 9/9 | 0/1 | E1 | 3 | $0.010875 |
+| `oh-8076-credential-read-failure-migration` | 6/6 | 0/1 | E1 | 1 | $0.008242 |
+| **Aggregate** | **43/43** | **0/5** | **5** | **11** | **$0.050833** |
+
+All five completed reviews missed their labelled finding. The aggregate is the
+measured result for this corpus and recording profile, not a production
+benchmark or a claim about other lanes. The initial DeepSeek V3.2 capture for
+`tm-0102-memory-pending-debug-state` is a separate partial baseline: it stopped
+at its eight-call limit with ten files unanswered. Its miss is excluded from
+the aggregate above. See [`evals/README.md`](../../../evals/README.md) for case
+provenance and the [recording runbook](recording-and-48h-runbook.md) for the
+provider, configuration and observation limits.
+
+Each case selects only the `critique` lane. These measurements are evidence
 about that lane on these fixtures, not a full review across all lanes.
 
 Their original PR bodies are blank and their comments are empty: the available

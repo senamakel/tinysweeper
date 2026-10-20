@@ -1131,7 +1131,7 @@ mod tests {
 
         assert!(rendered.contains("- **Spend:** $0.875000"), "{rendered}");
         assert!(
-            rendered.contains("Completion usage is incomplete"),
+            rendered.contains("**Completion usage:** incomplete"),
             "{rendered}"
         );
         assert!(

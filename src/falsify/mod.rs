@@ -191,6 +191,7 @@ impl<'a> Falsifier<'a> {
             rejected,
             spend,
             failed_open: None,
+            execution_refusal: None,
         }
     }
 }

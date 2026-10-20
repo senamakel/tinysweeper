@@ -495,6 +495,7 @@ async fn review_group(
         .filter_with(LaneId::Security, outcome.findings, &evidence, &looked_up)
         .await;
     let mut findings = filtered.findings;
+    let mut execution_refusal = filtered.execution_refusal;
     let mut rejected = filtered.rejected;
     let mut spend = outcome.spend;
     spend.merge(filtered.spend);
@@ -502,7 +503,10 @@ async fn review_group(
     // Adaptive coverage uses the same strict anchoring and falsification as
     // round one, judging only new proposals against the evidence already read.
     let mut added_by_coverage = 0usize;
-    if config.review.passes > 1 && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES {
+    if execution_refusal.is_none()
+        && config.review.passes > 1
+        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+    {
         let mut confirmed = findings.clone();
         let mut metrics = crate::lanes::coverage::Metrics::start(
             round_one_usage,
@@ -604,6 +608,13 @@ async fn review_group(
                 .await;
             spend.merge(filtered.spend);
             rejected.extend(filtered.rejected);
+            if let Some(refusal) = filtered.execution_refusal {
+                execution_refusal = Some(refusal);
+                findings.extend(filtered.findings);
+                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.stop(crate::lanes::coverage::StopReason::Failed);
+                break;
+            }
             let new_findings = filtered.findings;
             if new_findings.is_empty() {
                 metrics.record(coverage_usage, coverage_elapsed, 0);
@@ -636,6 +647,7 @@ async fn review_group(
         findings,
         resolved: outcome.resolved,
         spend,
+        execution_refusal,
     })
 }
 

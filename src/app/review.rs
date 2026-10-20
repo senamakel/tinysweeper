@@ -2190,27 +2190,42 @@ fn record_large_group_result(
     use crate::lanes::fanout::{OmissionReason, OmittedGroup};
     let fanout = fanouts.entry(group.lane).or_default();
     match result {
-        Ok(review) => fanout.reviews.push((group.group.paths, review)),
-        Err(Error::ModelExecutionRefused { refusal, .. }) => {
-            let reason = match refusal {
-                crate::ports::model_execution::ModelExecutionRefusal::CallLimit => {
-                    OmissionReason::CallLimit
-                }
-                crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline => {
-                    OmissionReason::SoftDeadline
-                }
-                crate::ports::model_execution::ModelExecutionRefusal::Cancelled => {
-                    OmissionReason::Cancelled
-                }
-            };
+        Ok(review) if let Some(refusal) = review.execution_refusal => {
+            let reason = large_omission_reason(refusal);
+            fanout
+                .partial
+                .push((group.group.paths.clone(), review));
             fanout.omitted.push(OmittedGroup {
                 paths: group.group.paths,
                 reason,
             });
         }
+        Ok(review) => fanout.reviews.push((group.group.paths, review)),
+        Err(Error::ModelExecutionRefused { refusal, .. }) => {
+            fanout.omitted.push(OmittedGroup {
+                paths: group.group.paths,
+                reason: large_omission_reason(refusal),
+            });
+        }
         Err(error) => fanout
             .failures
             .push((group.group.label, group.group.paths, error)),
+    }
+}
+
+fn large_omission_reason(
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+) -> crate::lanes::fanout::OmissionReason {
+    match refusal {
+        crate::ports::model_execution::ModelExecutionRefusal::CallLimit => {
+            crate::lanes::fanout::OmissionReason::CallLimit
+        }
+        crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline => {
+            crate::lanes::fanout::OmissionReason::SoftDeadline
+        }
+        crate::ports::model_execution::ModelExecutionRefusal::Cancelled => {
+            crate::lanes::fanout::OmissionReason::Cancelled
+        }
     }
 }
 

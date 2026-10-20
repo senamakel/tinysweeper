@@ -52,6 +52,9 @@ pub struct FileReview {
     pub resolved: Vec<String>,
     /// What the call cost, and which model answered.
     pub spend: Spend,
+    /// A required host-controlled stage stopped after this review was produced.
+    /// The findings and spend remain useful, but member paths are not complete.
+    pub execution_refusal: Option<crate::ports::model_execution::ModelExecutionRefusal>,
 }
 
 /// Why a prepared group did not receive a model review.
@@ -164,6 +167,9 @@ pub struct FanOut {
     /// One entry per unit that was reviewed: its member file paths, and the
     /// review produced for the whole unit.
     pub reviews: Vec<(Vec<String>, FileReview)>,
+    /// Results with findings/spend retained, but an essential review stage
+    /// refused by host policy. These paths are omitted from completed coverage.
+    pub partial: Vec<(Vec<String>, FileReview)>,
     /// The units whose review failed: the unit's label, its member file
     /// paths, and why.
     pub failures: Vec<(String, Vec<String>, Error)>,
@@ -200,6 +206,12 @@ impl FanOut {
             // covered one file or a whole group: it is the one verdict this
             // fan-out reached, and reads better than a bare tally.
             only_summary = Some(review.summary);
+        }
+
+        for (_, review) in self.partial {
+            spend.merge(review.spend);
+            findings.extend(review.findings);
+            resolved.extend(review.resolved);
         }
 
         // One conversation is the common case for a small pull request or a

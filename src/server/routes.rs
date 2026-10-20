@@ -3097,6 +3097,19 @@ fn review_conclusion(
     }
 }
 
+/// Classify a completed, already-applied review the same way for the worker
+/// lifecycle and its durable scheduler record.
+fn completed_review_disposition(
+    findings: Option<(usize, bool, status::ReviewCoverage)>,
+) -> (Conclusion<'static>, WorkerDisposition) {
+    let outcome = if findings.is_some() {
+        TerminalOutcome::Published
+    } else {
+        TerminalOutcome::Declined
+    };
+    (review_conclusion(findings), WorkerDisposition::Terminal(outcome))
+}
+
 /// Review one pull request, off the request path.
 ///
 /// A failed review must not take the server with it — one pull request going
@@ -3316,8 +3329,11 @@ async fn handle_review(
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;
                 }
-                let published = findings.is_some();
-                let conclusion = review_conclusion(findings);
+                let (conclusion, disposition) = completed_review_disposition(findings);
+                let published = matches!(
+                    disposition,
+                    WorkerDisposition::Terminal(TerminalOutcome::Published)
+                );
                 if let Err(err) = run.check_owner(&state).await {
                     run.cancel_for_ownership_fence(&err);
                     drop(permit);
@@ -3333,11 +3349,7 @@ async fn handle_review(
                 } else if timing.snapshot().outcome == "cancelled" {
                     timing.finish("declined");
                 }
-                return WorkerDisposition::Terminal(if published {
-                    TerminalOutcome::Published
-                } else {
-                    TerminalOutcome::Declined
-                });
+                return disposition;
             }
             Ok(InnerReview::Busy) => {
                 if let Err(err) = run.check_owner(&state).await {

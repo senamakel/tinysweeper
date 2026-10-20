@@ -88,27 +88,34 @@ impl Checkout {
         // webhook payload and are about to be command arguments; a `--`-leading
         // value would be read as an option by git even though it cannot escape
         // the argv boundary into a shell.
-        if revision.len() != 40 || !revision.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(Error::config(format!(
-                "`{revision}` is not a commit sha; the indexer fetches one commit by id"
-            )));
-        }
+        validate_revision(revision)?;
         if repo.starts_with('-') || !repo.contains('/') || repo.contains("..") {
             return Err(Error::config(format!("`{repo}` is not owner/name")));
         }
 
+        Self::fetch_url(&format!("https://{host}/{repo}.git"), revision, token, None).await
+    }
+
+    /// Fetch one commit from an explicit remote through the same hardened Git
+    /// runner as the production host URL. The explicit URL exists so cache
+    /// tests can use a local bare repository without opening a network socket.
+    async fn fetch_url(
+        url: &str,
+        revision: &str,
+        token: &str,
+        fetch_count: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> Result<Self> {
         let dir = tempfile::Builder::new()
             .prefix("tinysweeper-index-")
             .tempdir()
             .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
         let root = dir.path().to_path_buf();
-        let url = format!("https://{host}/{repo}.git");
 
         git(&root, token, &["init", "--quiet"]).await?;
         // `--depth 1` of one commit id: the whole history is never on disk, so
         // indexing a monorepo costs its tree rather than its history. `--no-tags`
         // because a tag is a ref we would fetch and never look at.
-        git(
+        git_fetch(
             &root,
             token,
             &[
@@ -117,9 +124,10 @@ impl Checkout {
                 "--depth",
                 "1",
                 "--no-tags",
-                &url,
+                url,
                 revision,
             ],
+            fetch_count,
         )
         .await?;
         git(
@@ -133,6 +141,17 @@ impl Checkout {
             dir,
             revision: revision.to_string(),
         })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn fetch_from_url_for_test(
+        url: &str,
+        revision: &str,
+        token: &str,
+        fetch_count: &std::sync::atomic::AtomicUsize,
+    ) -> Result<Self> {
+        validate_revision(revision)?;
+        Self::fetch_url(url, revision, token, Some(fetch_count)).await
     }
 
     /// Fetch allowed submodules recursively into this checkout, shallowly.
@@ -189,6 +208,73 @@ impl Checkout {
             .await
         })
         .await
+    }
+
+    /// Fetch allowlisted submodules needed by a change from `base_revision`
+    /// to this checkout's pinned revision.
+    ///
+    /// This entry point is the test-first seam for lazy gitlink fetching. Its
+    /// initial implementation retains the old eager behavior; the cache
+    /// change will narrow it to gitlinks changed by the diff or requested by a
+    /// lane.
+    pub async fn fetch_submodules_for_diff(
+        &self,
+        base_revision: &str,
+        host: &str,
+        token: &str,
+        allowed: &[String],
+    ) -> Result<Unfetched> {
+        self.fetch_submodules_for_diff_with(
+            base_revision,
+            host,
+            token,
+            allowed,
+            |dir, url, gitlink| async move {
+                std::fs::create_dir_all(&dir).map_err(|err| {
+                    Error::Forge(format!("could not make a submodule directory: {err}"))
+                })?;
+                git(&dir, token, &["init", "--quiet"]).await?;
+                git(
+                    &dir,
+                    token,
+                    &[
+                        "fetch",
+                        "--quiet",
+                        "--depth",
+                        "1",
+                        "--no-tags",
+                        &url,
+                        &gitlink,
+                    ],
+                )
+                .await?;
+                git(
+                    &dir,
+                    token,
+                    &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+                )
+                .await
+            },
+        )
+        .await
+    }
+
+    async fn fetch_submodules_for_diff_with<F, Fut>(
+        &self,
+        _base_revision: &str,
+        host: &str,
+        token: &str,
+        allowed: &[String],
+        fetch: F,
+    ) -> Result<Unfetched>
+    where
+        F: FnMut(std::path::PathBuf, String, String) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        // Kept eager until the diff-gitlink check is implemented. The test
+        // below makes the otherwise redundant submodule request observable.
+        self.fetch_submodules_with(host, token, allowed, fetch)
+            .await
     }
 
     /// Walk declared gitlinks using the same policy for each repository.
@@ -306,6 +392,15 @@ impl Checkout {
     }
 }
 
+fn validate_revision(revision: &str) -> Result<()> {
+    if revision.len() != 40 || !revision.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::config(format!(
+            "`{revision}` is not a commit sha; the indexer fetches one commit by id"
+        )));
+    }
+    Ok(())
+}
+
 /// Reject existing symlink components before creating or initializing a repo.
 /// A lexical containment check alone does not keep a nested checkout on disk
 /// inside the root when a contributor supplied a symlink along the path.
@@ -347,6 +442,20 @@ async fn gitlink(root: &Path, token: &str, path: &str) -> Result<Option<String>>
 
 /// Run one git command in `root`, with hooks and prompts disabled.
 async fn git(root: &Path, token: &str, args: &[&str]) -> Result<()> {
+    git_stdout(root, token, args).await.map(|_| ())
+}
+
+/// Run the checkout's actual Git fetch command and optionally record its
+/// invocation for tests that use a local bare remote.
+async fn git_fetch(
+    root: &Path,
+    token: &str,
+    args: &[&str],
+    fetch_count: Option<&std::sync::atomic::AtomicUsize>,
+) -> Result<()> {
+    if let Some(count) = fetch_count {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     git_stdout(root, token, args).await.map(|_| ())
 }
 
@@ -662,6 +771,99 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_gitlink_does_not_fetch_a_submodule_for_an_ordinary_diff() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), "", &["init", "--quiet"]).await.unwrap();
+        std::fs::write(
+            dir.path().join(".gitmodules"),
+            "[submodule \"lib\"]\npath = vendor/lib\nurl = https://github.com/acme/lib\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("README.md"), "before\n").unwrap();
+        git(dir.path(), "", &["add", ".gitmodules", "README.md"])
+            .await
+            .unwrap();
+        let pin = "1".repeat(40);
+        git(
+            dir.path(),
+            "",
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{pin},vendor/lib"),
+            ],
+        )
+        .await
+        .unwrap();
+        git(
+            dir.path(),
+            "",
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        )
+        .await
+        .unwrap();
+        let base = git_stdout(dir.path(), "", &["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .to_string();
+        std::fs::write(dir.path().join("README.md"), "after\n").unwrap();
+        git(dir.path(), "", &["add", "README.md"]).await.unwrap();
+        git(
+            dir.path(),
+            "",
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "ordinary file change",
+            ],
+        )
+        .await
+        .unwrap();
+        let revision = git_stdout(dir.path(), "", &["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .to_string();
+        let checkout = Checkout { dir, revision };
+        let fetches = AtomicUsize::new(0);
+
+        let unfetched = checkout
+            .fetch_submodules_for_diff_with(
+                &base,
+                "github.com",
+                "",
+                &["acme/lib".into()],
+                |_, _, _| {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(()) }
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(unfetched.is_empty());
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(unix)]

@@ -96,6 +96,92 @@ struct BoundedExecutionPermit {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
+/// Compatibility bound for adapters that do not expose physical dispatch
+/// admission. One permit covers their whole `complete` or `review` operation.
+struct BoundedLogicalModel {
+    inner: Arc<dyn Model>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl BoundedLogicalModel {
+    fn new(inner: Arc<dyn Model>) -> Self {
+        Self {
+            inner,
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_MODEL_DISPATCHES,
+            )),
+        }
+    }
+
+    fn with_inner(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
+        Arc::new(Self {
+            inner,
+            permits: self.permits.clone(),
+        })
+    }
+
+    async fn acquire(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("the review logical-call semaphore is never closed")
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for BoundedLogicalModel {
+    async fn complete(
+        &self,
+        request: crate::ports::model::ModelRequest,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        let _permit = self.acquire().await;
+        self.inner.complete(request).await
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    async fn review(
+        &self,
+        request: crate::ports::model::ModelRequest,
+        tree: &dyn crate::ports::tree::TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        let _permit = self.acquire().await;
+        self.inner.review(request, tree, policy).await
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
+    }
+
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.inner.reports_raw_completion_usage()
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .scoped_budget(budget_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_review_budget(limit_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        // If a later binding supplies a physical hook, it replaces this
+        // logical fallback rather than nesting both limiters around a call.
+        self.inner.with_execution_control(control)
+    }
+}
+
 #[async_trait::async_trait]
 impl ModelExecutionControl for BoundedExecutionControl {
     async fn acquire(
@@ -160,7 +246,7 @@ impl ReviewRunContext {
             let controlled = rooted.with_execution_control(execution);
             let execution_control_bound = controlled.is_some();
             ReviewModelBinding {
-                model: controlled.unwrap_or(rooted),
+                model: controlled.unwrap_or_else(|| Arc::new(BoundedLogicalModel::new(rooted))),
                 #[cfg(test)]
                 review_budget_bound,
                 execution_control_bound,

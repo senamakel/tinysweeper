@@ -126,10 +126,20 @@ impl BoundedLogicalModel {
     async fn acquire(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, ModelExecutionRefusal> {
-        Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| ModelExecutionRefusal::SoftDeadline)
+        let permit = tokio::select! {
+            biased;
+            _ = self.execution.cancelled() => Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.execution.soft_deadline()) => {
+                Err(ModelExecutionRefusal::SoftDeadline)
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                Ok(permit.expect("the review logical-call semaphore is never closed"))
+            }
+        }?;
+        if let Some(refusal) = self.execution.refusal_for_new_work() {
+            return Err(refusal);
+        }
+        Ok(permit)
     }
 }
 

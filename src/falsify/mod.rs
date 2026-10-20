@@ -35,7 +35,7 @@
 
 pub mod types;
 
-use crate::config::types::{Config, LaneId, Workload};
+use crate::config::types::{Config, LaneId, ReasoningRole, Workload};
 use crate::findings::types::Finding;
 use crate::harness::prompt::push_fenced;
 use crate::ports::model::{Message, Model, ModelRequest, Spend};
@@ -119,7 +119,12 @@ impl<'a> Falsifier<'a> {
                 types::json_schema()
             },
             schema_name: "tinysweeper_falsify".into(),
-            reasoning_effort: None,
+            reasoning_effort: Some(
+                self.config
+                    .models
+                    .role_reasoning_effort(ReasoningRole::Falsify)
+                    .to_string(),
+            ),
             max_tokens: self.config.models.max_tokens,
         };
 

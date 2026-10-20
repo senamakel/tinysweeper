@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::app::review::LaneProposal;
-use crate::config::types::{Config, LaneId, Workload};
+use crate::config::types::{Config, LaneId, ReasoningRole, Workload};
 use crate::evidence::diff::FileDiff;
 use crate::forge::types::PullRequest;
 use crate::ports::model::{Message, Model, ModelRequest, Role, Spend};
@@ -207,7 +207,12 @@ pub async fn generate_with_input(
         messages,
         schema: schema(),
         schema_name: "review_summary".into(),
-        reasoning_effort: None,
+        reasoning_effort: Some(
+            config
+                .models
+                .role_reasoning_effort(ReasoningRole::Summary)
+                .to_string(),
+        ),
         max_tokens: config.models.max_tokens.min(4_000),
     };
 

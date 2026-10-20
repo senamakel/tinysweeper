@@ -63,11 +63,10 @@ note_confidence = 0.65
 incremental = true
 draft_prs = false
 respect_agents_md = true
-# Maximum adaptive review depth over the same evidence. Small groups stop
-# after round one. Qualifying groups may take up to two more looks, stopping
-# as soon as a pass adds no distinct surviving finding. Each extra pass is
-# another model call, so this remains an operator-owned ceiling.
-passes = 3
+# Maximum review passes over the same evidence. Pass one always runs; later
+# passes run only when the previous pass proposed a candidate or the group has
+# a deterministic high-risk signal. Each extra pass is another model call.
+passes = 2
 
 # Block the merge button at this severity; "off" never blocks. A blocking review
 # has to be cleared by a human if it turns out to be wrong, so the floor sits at

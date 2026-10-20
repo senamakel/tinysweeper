@@ -89,12 +89,11 @@ pub struct Metrics {
 
 impl Metrics {
     /// Start accounting with round one's already-completed review.
-    pub fn start(
+    pub(crate) fn start(
         usage: Usage,
         elapsed: Duration,
         candidates: usize,
         survivors: usize,
-        _yield_observer: Option<&dyn super::PassYieldObserver>,
     ) -> Self {
         Self {
             started: Instant::now(),

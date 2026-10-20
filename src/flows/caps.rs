@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::config::types::Models;
+use crate::config::types::{Models, ReasoningRole};
 use crate::error::{Error, Result};
 use crate::flows::panel::Call;
 use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Spend};
@@ -157,7 +157,11 @@ impl ModelCapability {
             ],
             schema: schema.clone(),
             schema_name: call.schema_name.clone(),
-            reasoning_effort: None,
+            reasoning_effort: Some(
+                self.models
+                    .role_reasoning_effort(ReasoningRole::Reviewer)
+                    .to_string(),
+            ),
             max_tokens: self.models.max_tokens,
         };
         let response = match repository {

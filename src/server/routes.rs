@@ -2367,6 +2367,7 @@ struct Run {
 /// stale worker spend against a job now owned by another process.
 struct OwnedModel {
     inner: Arc<dyn Model>,
+    execution: Arc<crate::app::review_execution::ReviewExecution>,
     jobs: Arc<dyn ReviewJobStore>,
     owned: OwnedReview,
     owner_lost: Option<watch::Receiver<bool>>,
@@ -2383,6 +2384,17 @@ impl OwnedModel {
     }
 
     async fn check_owner(&self) -> Result<()> {
+        let result = self.check_owner_inner().await;
+        if matches!(
+            &result,
+            Err(Error::ReviewOwnershipLost | Error::ReviewSuperseded)
+        ) {
+            self.execution.cancel();
+        }
+        result
+    }
+
+    async fn check_owner_inner(&self) -> Result<()> {
         if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
         }
@@ -2406,6 +2418,7 @@ impl OwnedModel {
     fn wrap(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
         Arc::new(Self {
             inner,
+            execution: self.execution.clone(),
             jobs: self.jobs.clone(),
             owned: self.owned.clone(),
             owner_lost: self.owner_lost.clone(),
@@ -4037,6 +4050,7 @@ async fn run_lanes(
     let model = match &run.owned {
         Some(owned) => Arc::new(OwnedModel {
             inner: binding.model.clone(),
+            execution: run.execution.execution(),
             jobs: state.review_jobs.clone(),
             owned: owned.clone(),
             owner_lost: run.owner_lost.clone(),
@@ -4330,9 +4344,23 @@ where
 {
     tokio::select! {
         biased;
-        _ = wait_for_owner_fence(owner_lost, owner_until) => Err(Error::ReviewOwnershipLost),
-        result = wait_for_review_yield(jobs, owned) => Err(result.expect_err("yield waiter only completes when control changes")),
-        result = review => result,
+        _ = wait_for_owner_fence(owner_lost, owner_until) => {
+            execution.cancel();
+            Err(Error::ReviewOwnershipLost)
+        },
+        result = wait_for_review_yield(jobs, owned) => {
+            let err = result.expect_err("yield waiter only completes when control changes");
+            if matches!(err, Error::ReviewOwnershipLost | Error::ReviewSuperseded) {
+                execution.cancel();
+            }
+            Err(err)
+        },
+        result = review => {
+            if matches!(&result, Err(Error::ReviewOwnershipLost | Error::ReviewSuperseded)) {
+                execution.cancel();
+            }
+            result
+        },
     }
 }
 

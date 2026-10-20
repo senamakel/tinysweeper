@@ -373,7 +373,6 @@ impl ReviewExecution {
     }
 
     /// Cancel this review's remaining execution and wake pending acquisitions.
-    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         let mut state = lock(&self.inner.state);
         if !state.cancelled {

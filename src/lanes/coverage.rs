@@ -342,3 +342,114 @@ mod tests {
         assert_eq!(metrics.elapsed, Duration::from_millis(35));
     }
 }
+
+/// Shared fixtures for lane-level adaptive accounting regressions.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use crate::app::review_execution::{ReviewExecution, ReviewExecutionOptions};
+    use crate::harness::mock::MockModel;
+    use crate::lanes::large_pr::ReviewMode;
+    use crate::ports::model::{Model, Usage};
+    use crate::ports::tree::{Found, Lookup, MockTree, TreeReader};
+    use tokio::time::Instant;
+
+    pub const PAID_USAGE: Usage = Usage {
+        input_tokens: 4,
+        output_tokens: 2,
+        reasoning_tokens: 0,
+        calls_attempted: 0,
+        calls_succeeded: 0,
+        calls_refused: 0,
+        calls_errored: 0,
+        cached_tokens: 0,
+        embed_tokens: 0,
+        cost_usd: 0.125,
+    };
+
+    pub fn limited_model(
+        first: serde_json::Value,
+        second: serde_json::Value,
+    ) -> (MockModel, Arc<dyn Model>) {
+        let mock = MockModel::new()
+            .with_usage(PAID_USAGE)
+            .then(first)
+            .then(second);
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + Duration::from_secs(100),
+            mode: ReviewMode::Normal,
+            max_calls: Some(2),
+            soft_deadline_percent: 80,
+            drain_seconds: 5,
+        });
+        let bound = execution
+            .bind_model(Arc::new(mock.clone()), 10.0)
+            .model
+            .clone();
+        (mock, bound)
+    }
+
+    #[derive(Debug)]
+    pub struct DelayedTree {
+        inner: MockTree,
+        delay: Duration,
+    }
+
+    impl DelayedTree {
+        pub fn new(delay: Duration) -> Self {
+            Self {
+                inner: MockTree::from_files([("src/defs.rs", "fn checked() {}")]),
+                delay,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TreeReader for DelayedTree {
+        async fn lookup(&self, lookup: &Lookup) -> crate::error::Result<Found> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.lookup(lookup).await
+        }
+
+        fn describe(&self) -> String {
+            "delayed test tree".into()
+        }
+    }
+
+    pub async fn capture_trace<T>(run: impl Future<Output = T>) -> (T, String) {
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("trace buffer")
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let writer = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || Writer(writer.clone()))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        let result = run.await;
+        drop(guard);
+        let output = String::from_utf8(bytes.lock().expect("trace buffer").clone())
+            .expect("trace output is UTF-8");
+        (result, output)
+    }
+}

@@ -1189,6 +1189,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_adaptive_lookup_refusal_keeps_its_paid_usage_and_elapsed_time() {
+        let (handle, model) = crate::lanes::coverage::test_support::limited_model(
+            json!({"summary": "Nothing to report.", "findings": []}),
+            json!({
+                "summary": "I need to inspect the called helper.",
+                "findings": [],
+                "lookups": [{
+                    "kind": "read",
+                    "path": "src/defs.rs",
+                    "start": 1,
+                    "end": 1,
+                    "why": "Check the helper contract before concluding."
+                }]
+            }),
+        );
+        let tree = crate::lanes::coverage::test_support::DelayedTree::new(
+            std::time::Duration::from_millis(15),
+        );
+        let config = config_with_passes(2);
+        let diffs = large_diffs();
+        let pr = pull_request();
+        let file_contents = BTreeMap::new();
+
+        let (outcome, trace) = crate::lanes::coverage::test_support::capture_trace(async {
+            Security::new(model)
+                .run(LaneInput {
+                    config: &config,
+                    pull_request: &pr,
+                    diffs: &diffs,
+                    file_contents: &file_contents,
+                    scan_findings: &[],
+                    commits: &[],
+                    repo_policy: None,
+                    extracted_rules: &[],
+                    reviewed_evidence: "",
+                    prior_findings: &[],
+                    retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                    retrieved_context: "",
+                    redaction_note: "",
+                    e2e: None,
+                    tree: Some(&tree),
+                    graph: None,
+                })
+                .await
+                .expect("a typed adaptive refusal is a partial lane result")
+        })
+        .await;
+
+        assert_eq!(
+            handle.calls(),
+            2,
+            "the third model call is refused before dispatch"
+        );
+        assert_eq!(outcome.spend.usage.input_tokens, 8);
+        assert_eq!(outcome.spend.usage.output_tokens, 4);
+        assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
+        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        let event = trace
+            .lines()
+            .find(|line| line.contains("adaptive review passes"))
+            .expect("adaptive pass accounting is emitted");
+        assert!(event.contains("input_tokens=8"), "{event}");
+        assert!(event.contains("output_tokens=4"), "{event}");
+        assert!(event.contains("cost_usd=0.25"), "{event}");
+        let elapsed_ms = event
+            .split("model_elapsed_ms=")
+            .nth(1)
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("adaptive elapsed field is present");
+        assert!(elapsed_ms >= 10, "the accounted lookup took 15ms: {event}");
+    }
+
+    #[tokio::test]
     async fn a_coverage_finding_updates_a_clean_round_one_summary() {
         // Round one said "Nothing to report." before the coverage pass ever
         // ran. If the coverage pass then finds something, the summary must

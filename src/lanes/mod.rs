@@ -386,6 +386,44 @@ impl LaneOutcome {
     }
 }
 
+/// A whole-pull-request lane whose reviewer work stopped at a host budget
+/// boundary. The changed paths remain explicitly uncovered; this does not
+/// claim per-file coverage for a lane that reasons about the whole pull request.
+pub(crate) fn stopped_by_execution_policy(
+    lane: LaneId,
+    paths: Vec<String>,
+    spend: Spend,
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+) -> Option<LaneOutcome> {
+    use crate::lanes::fanout::{OmissionReason, OmittedGroup};
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let (reason, message) = match refusal {
+        ModelExecutionRefusal::CallLimit => (
+            OmissionReason::CallLimit,
+            "Review stopped at the shared physical-call limit.",
+        ),
+        ModelExecutionRefusal::SoftDeadline => (
+            OmissionReason::SoftDeadline,
+            "Review stopped at the original soft deadline.",
+        ),
+        ModelExecutionRefusal::Cancelled => return None,
+    };
+
+    Some(LaneOutcome {
+        summary: message.into(),
+        spend,
+        skipped: Some(message.into()),
+        unanswered: vec![lane.check_name()],
+        omissions: if paths.is_empty() {
+            Vec::new()
+        } else {
+            vec![OmittedGroup { paths, reason }]
+        },
+        ..LaneOutcome::default()
+    })
+}
+
 /// One response that was both received and valid for its lane's schema.
 ///
 /// Failed calls and malformed responses are kept out of the returned list, so

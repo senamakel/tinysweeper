@@ -46,6 +46,7 @@ use crate::harness::schema;
 use crate::lanes::tests::Inventory;
 use crate::lanes::{
     Anchoring, Lane, LaneInput, LaneOutcome, aggregate_reviewer_responses, reviewer_responses,
+    stopped_by_execution_policy,
 };
 use crate::ports::model::Model;
 
@@ -207,9 +208,25 @@ impl Lane for E2e {
         )
         .await?;
 
+        let responses = match reviewer_responses(LaneId::E2e, &reviewers, &answers) {
+            Ok(responses) => responses,
+            Err(err @ crate::error::Error::ModelExecutionRefused { refusal, .. }) => {
+                if let Some(mut outcome) =
+                    stopped_by_execution_policy(LaneId::E2e, changed_paths, llm.spend(), refusal)
+                {
+                    outcome.findings = deterministic;
+                    outcome.pending = pending;
+                    append_run_notes(&mut outcome, &runs, evidence);
+                    return Ok(outcome);
+                }
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
+
         let Some(mut outcome) = aggregate_reviewer_responses(
             LaneId::E2e,
-            reviewer_responses(LaneId::E2e, &reviewers, &answers)?,
+            responses,
             input.diffs,
             Anchoring::Strict,
             input.config.council.corroboration,

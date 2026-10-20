@@ -16,6 +16,7 @@ fn execution_limits(case_id: &str) -> ExecutionLimits {
         effective_case_budgets: vec![EffectiveCaseBudget {
             case_id: case_id.into(),
             budget_usd: None,
+            max_physical_calls_per_case: None,
         }],
     }
 }

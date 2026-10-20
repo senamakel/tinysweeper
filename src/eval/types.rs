@@ -351,6 +351,9 @@ pub struct EffectiveCaseBudget {
     pub case_id: String,
     /// The effective recording budget, or `None` for offline replay.
     pub budget_usd: Option<f64>,
+    /// The physical-call allowance admitted for this case. Recording reruns
+    /// can receive less than the requested ceiling after prior attempts.
+    pub max_physical_calls_per_case: Option<usize>,
 }
 
 /// Every case's result, plus the totals.

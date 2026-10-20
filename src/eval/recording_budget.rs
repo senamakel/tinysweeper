@@ -96,6 +96,10 @@ impl Reservation {
         self.reserved_calls
     }
 
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// Record observed committed dispatches. An impossible overrun stays in
     /// the audit and is returned as a hard error instead of being clamped.
     pub(crate) fn finish(self, actual_calls: usize) -> Result<()> {

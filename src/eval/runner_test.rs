@@ -335,6 +335,12 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
         .finish(8)
         .expect("first invocation audit is completed");
 
+    let cassette_dir = corpus.cases[0].cassette_dir(&corpus.root);
+    std::fs::create_dir_all(&cassette_dir).expect("cassette directory");
+    let stale_tail = cassette_dir.join("9999-stale-tail.json");
+    std::fs::write(&stale_tail, "stale take from an earlier attempt")
+        .expect("seed stale cassette tail");
+
     let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let model = Arc::new(HiddenRetryModel {
         control: None,
@@ -343,7 +349,7 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
     let mut config = config();
     config.models.budget_usd_per_pr = 0.5;
 
-    run(
+    let outcome = run(
         &corpus,
         &config,
         Some(model),
@@ -366,6 +372,8 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
     assert_eq!(audit["reservations"][0]["actual_calls"], 8);
     assert_eq!(audit["reservations"][1]["reserved_calls"], 32);
     assert_eq!(audit["reservations"][1]["actual_calls"], 32);
+    assert!(!stale_tail.exists(), "old takes must leave the replay directory");
+    let _ = outcome;
 }
 
 #[tokio::test]

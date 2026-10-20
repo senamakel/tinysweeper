@@ -87,7 +87,7 @@ pub(crate) struct ReviewRunContext {
 const MAX_CONCURRENT_MODEL_DISPATCHES: usize = 8;
 
 struct BoundedExecutionControl {
-    inner: Arc<dyn ModelExecutionControl>,
+    inner: Arc<ReviewExecution>,
     permits: Arc<tokio::sync::Semaphore>,
 }
 
@@ -189,10 +189,16 @@ impl ModelExecutionControl for BoundedExecutionControl {
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
         // Wait for shared dispatch capacity before reserving the review's
         // finite call budget, so queued work does not occupy admission slots.
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .expect("the review dispatch semaphore is never closed");
+        let permit = tokio::select! {
+            biased;
+            _ = self.inner.cancelled() => return Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.inner.soft_deadline()) => {
+                return Err(ModelExecutionRefusal::SoftDeadline);
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                permit.expect("the review dispatch semaphore is never closed")
+            }
+        };
         match self.inner.acquire().await {
             Ok(inner) => Ok(Box::new(BoundedExecutionPermit {
                 inner,

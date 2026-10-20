@@ -5662,8 +5662,7 @@ mod tests {
         assert!(writes.iter().any(|write| matches!(
             write,
             crate::forge::Write::CommentUpdate { comment_id: 418, body }
-                if body.contains("stopped before a review could be completed")
-                    && body.contains("previous review body")
+                if body.contains("# Tiny Sweeper review") && body.contains("head-a")
         )));
     }
 

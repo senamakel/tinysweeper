@@ -1461,6 +1461,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_committed_permit_rechecks_the_soft_deadline_before_a_later_send() {
+        let started_at = Instant::now();
+        let crossed_deadline = Arc::new(AtomicBool::new(false));
+        let clock_flag = Arc::clone(&crossed_deadline);
+        let now: Arc<dyn Fn() -> Instant + Send + Sync> = Arc::new(move || {
+            if clock_flag.load(Ordering::Acquire) {
+                started_at + Duration::from_secs(81)
+            } else {
+                started_at
+            }
+        });
+        let execution = ReviewExecution::with_clock(
+            options(
+                ReviewMode::Large,
+                Some(1),
+                started_at,
+                started_at + Duration::from_secs(100),
+            ),
+            now,
+        );
+        let permit = execution.acquire().await.expect("reservation");
+
+        permit.mark_dispatched().expect("first physical send");
+        crossed_deadline.store(true, Ordering::Release);
+
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::SoftDeadline)
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn a_committed_permit_rechecks_cancellation_before_a_later_send() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit = execution.acquire().await.expect("reservation");
+
+        permit.mark_dispatched().expect("first physical send");
+        execution.cancel();
+
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::Cancelled)
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
     async fn cancellation_refuses_an_uncommitted_permit_and_drop_refunds_it() {
         let started_at = Instant::now();
         let execution = ReviewExecution::new(options(

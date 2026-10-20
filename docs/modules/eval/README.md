@@ -112,10 +112,19 @@ went over budget, and no case newly failed to review.
 `seed` is honoured and the gateway routes where it likes — and teaches people to
 re-run CI rather than to read it.
 
-Two runs are only comparable when the corpus digest and the config digest match.
-A stricter gate finds fewer things without the reviewer having got worse, so
-`eval report --baseline` refuses that comparison rather than letting somebody
-read it as a regression. `--allow-config-drift` makes it anyway, and says so.
+Two runs are only comparable when corpus, config, selected cases, and execution
+limits match. The scorecard persists selected case IDs, the run ceiling, the
+per-case physical-call ceiling, replay mode, and each derived per-case model
+budget. A legacy scorecard without these limits is unknown and fails closed;
+`--allow-config-drift` is the explicit override, and the report says so.
+`eval score` carries these limits forward and re-scores only the original
+selection, so it cannot silently expand a selected run to the full corpus.
+
+The CI replay keeps its three default-profile cassettes separate from the five
+historical GPT-OSS/Novita cases. Each exact group writes a separate scorecard;
+the workflow verifies case IDs, strict replay completion, and zero loose
+replays before publishing each scorecard. It does not run an unfiltered score
+or compare these differently bounded groups against the full-corpus baseline.
 
 ## Historical miss cases and measured recording baseline
 

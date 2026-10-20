@@ -50,6 +50,7 @@ use crate::harness::schema::{self, RawFinding};
 use crate::lanes::fanout::{FileReview, per_unit};
 use crate::lanes::grouping::{FileGroup, GroupBounds};
 use crate::lanes::mechanical;
+use crate::lanes::preparation::LanePreparationInput;
 use crate::lanes::{Lane, LaneInput, LaneOutcome, reviewer_responses};
 use crate::ports::model::{Model, Spend, Usage};
 use crate::position::{PositionRequest, Positioner, Resolution, Unanchored};
@@ -69,6 +70,110 @@ impl Critique {
     }
 }
 
+/// The model-free part of preparing one critique lane.
+pub(crate) struct CritiquePreparation {
+    /// An early draft/content skip, when the lane has no candidate work.
+    pub(crate) skipped: Option<LaneOutcome>,
+    /// Groups in the exact order the existing critique runner reviews them.
+    pub(crate) groups: Vec<FileGroup>,
+    /// Paths covered without a current model response.
+    pub(crate) covered_without_model: Vec<String>,
+    /// A deterministic substitution proved by the changed lines, if any.
+    pub(crate) mechanical: Option<mechanical::Substitution>,
+    /// Whether every fresh path was verified mechanically.
+    pub(crate) paths_empty: bool,
+}
+
+/// Prepare critique groups without constructing prompts or calling a model.
+pub(crate) fn prepare(input: LanePreparationInput<'_>) -> CritiquePreparation {
+    if !input.has_reviewable_content() {
+        return CritiquePreparation {
+            skipped: Some(LaneOutcome::skipped(
+                "No added or modified lines to review.",
+            )),
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            paths_empty: true,
+        };
+    }
+
+    if let Some(skipped) = input.skip_as_draft() {
+        return CritiquePreparation {
+            skipped: Some(skipped),
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            paths_empty: true,
+        };
+    }
+
+    let fresh: Vec<&FileDiff> = replay::unreviewed(input.reviewed_evidence, input.diffs)
+        .into_iter()
+        .filter(|diff| !diff.changed_lines.is_empty())
+        .collect();
+    let mut covered_without_model: Vec<String> = input
+        .diffs
+        .iter()
+        .filter(|diff| {
+            !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
+        })
+        .map(|diff| diff.path.clone())
+        .collect();
+
+    // A mechanical rename is verified, not read. Keep one verified file as a
+    // sample: uniformity proves the same substitution, not that it is harmless.
+    let mechanical = mechanical::detect(&fresh);
+    let sample = mechanical
+        .as_ref()
+        .and_then(|substitution| substitution.verified.first().cloned());
+    let paths: Vec<String> = fresh
+        .iter()
+        .filter(|diff| {
+            mechanical.as_ref().is_none_or(|substitution| {
+                !substitution.verified.contains(&diff.path) || Some(&diff.path) == sample.as_ref()
+            })
+        })
+        .map(|diff| diff.path.clone())
+        .collect();
+
+    if let Some(substitution) = &mechanical {
+        covered_without_model.extend(
+            substitution
+                .verified
+                .iter()
+                .filter(|path| Some(*path) != sample.as_ref())
+                .cloned(),
+        );
+    }
+
+    let groups = if input.config.grouping.enabled {
+        input.group(
+            &paths,
+            &GroupBounds {
+                max_files: input.config.grouping.max_files,
+                max_hunk_chars: input.config.grouping.max_hunk_chars,
+            },
+        )
+    } else {
+        paths
+            .iter()
+            .map(|path| FileGroup {
+                label: path.clone(),
+                paths: vec![path.clone()],
+            })
+            .collect()
+    };
+
+    CritiquePreparation {
+        skipped: None,
+        groups,
+        covered_without_model,
+        mechanical,
+        paths_empty: paths.is_empty(),
+    }
+}
+
 #[async_trait]
 impl Lane for Critique {
     fn id(&self) -> LaneId {
@@ -76,85 +181,88 @@ impl Lane for Critique {
     }
 
     async fn run(&self, input: LaneInput<'_>) -> Result<LaneOutcome> {
-        // Cheapest possible check first. A pull request that only deletes
-        // files, or only touches ignored paths, has nothing for this lane, and
-        // asking a model to confirm that is money for a foregone conclusion.
-        if !input.has_reviewable_content() {
-            return Ok(LaneOutcome::skipped(
-                "No added or modified lines to review.",
-            ));
-        }
+        let prepared = prepare(input.preparation());
+        self.run_prepared(input, prepared).await
+    }
+}
 
-        if input.pull_request.draft && !input.config.review.draft_prs {
-            return Ok(LaneOutcome::skipped(
-                "Draft pull request; set `review.draft_prs = true` to review drafts.",
-            ));
-        }
-
-        // Files this lane has already reviewed, unchanged since, are skipped
-        // outright rather than replayed into a cacheable prefix. Both are
-        // sound, but a per-file lane can take the stronger one: skipping pays
-        // always, where a cache prefix only pays when the provider honours it.
-        // This is what `security` does, and for the same reason.
-        let fresh: Vec<&FileDiff> = replay::unreviewed(input.reviewed_evidence, input.diffs)
-            .into_iter()
-            .filter(|diff| !diff.changed_lines.is_empty())
-            .collect();
-        let mut covered_without_model: Vec<String> = input
-            .diffs
-            .iter()
-            .filter(|diff| {
-                !diff.changed_lines.is_empty() && !fresh.iter().any(|fresh| fresh.path == diff.path)
-            })
-            .map(|diff| diff.path.clone())
-            .collect();
-
-        // A mechanical rename is verified, not read. Every file the
-        // substitution explains in full is proven line for line here and
-        // named as such in the summary; the model's budget goes to the files
-        // it does not explain — which, on the pull request that motivated
-        // this, was one file in fifty-nine. See `lanes::mechanical`.
-        let mechanical = mechanical::detect(&fresh);
-        // One verified file is still read: the check proves every file got
-        // the *same* substitution, not that the substitution is harmless.
-        // `check_admin()` → `allow_guest()` across fifty files is uniform and
-        // is not a rename. One conversation over one sample answers that;
-        // fifty over fifty answered it fifty times.
-        let sample = mechanical.as_ref().and_then(|sub| sub.verified.first());
-        let paths: Vec<String> = fresh
-            .iter()
-            .filter(|diff| {
-                mechanical.as_ref().is_none_or(|sub| {
-                    !sub.verified.contains(&diff.path) || Some(&diff.path) == sample
-                })
-            })
-            .map(|diff| diff.path.clone())
-            .collect();
-
+impl Critique {
+    /// Review one planner-selected group, retaining its exact normal lane path.
+    pub(crate) async fn review_selected_group(
+        llm: Arc<crate::flows::caps::ModelCapability>,
+        input: &LaneInput<'_>,
+        group: &FileGroup,
+    ) -> Result<FileReview> {
         let changed_paths = input.changed_paths();
-        // No model call: groups related changed files so a bug spanning them
-        // — a caller and its callee, a function and its test — is visible to
-        // one reviewer instead of hidden by the isolation clause each
-        // ungrouped conversation is given. Off, or a component too large to
-        // bet on, falls back to exactly the singleton fan-out this lane ran
-        // before grouping existed — see `lanes::grouping`.
-        let groups: Vec<FileGroup> = if input.config.grouping.enabled {
-            input.group(
-                &paths,
-                &GroupBounds {
-                    max_files: input.config.grouping.max_files,
-                    max_hunk_chars: input.config.grouping.max_hunk_chars,
-                },
-            )
-        } else {
-            paths
-                .iter()
-                .map(|path| FileGroup {
-                    label: path.clone(),
-                    paths: vec![path.clone()],
-                })
-                .collect()
-        };
+        let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
+        let group_diffs: Vec<FileDiff> = group
+            .paths
+            .iter()
+            .filter_map(|path| input.diffs.iter().find(|diff| &diff.path == path).cloned())
+            .collect();
+        let review = review_group(
+            llm.clone(),
+            input,
+            &changed_paths,
+            &group.paths,
+            &group_diffs,
+            &cross_file_evidence,
+        )
+        .await?;
+        Ok(review)
+    }
+
+    /// Apply lane-wide postprocessing to selected group results.
+    pub(crate) fn finish_selected(
+        input: &LaneInput<'_>,
+        prepared: CritiquePreparation,
+        mut outcome: LaneOutcome,
+        llm: Arc<crate::flows::caps::ModelCapability>,
+    ) -> Result<LaneOutcome> {
+        if let Some(skipped) = prepared.skipped {
+            return Ok(skipped);
+        }
+        outcome.context_degraded = input.retrieval_status.is_degraded();
+        outcome.spend.merge(llm.spend());
+        outcome.include_reviewed_paths(prepared.covered_without_model);
+        if let Some(substitution) = &prepared.mechanical {
+            outcome.summary = format!(
+                "{} {}",
+                outcome.summary.trim(),
+                mechanical::note(substitution)
+            );
+            if prepared.paths_empty {
+                outcome.skipped = None;
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Run the exact model-free candidate preparation already used by planning.
+    pub(crate) async fn run_prepared(
+        &self,
+        input: LaneInput<'_>,
+        prepared: CritiquePreparation,
+    ) -> Result<LaneOutcome> {
+        self.run_prepared_with_execution(input, prepared, None)
+            .await
+    }
+
+    /// Run the prepared lane under its original review-wide stop window.
+    pub(crate) async fn run_prepared_with_execution(
+        &self,
+        input: LaneInput<'_>,
+        prepared: CritiquePreparation,
+        execution: Option<Arc<crate::app::review_execution::ReviewExecution>>,
+    ) -> Result<LaneOutcome> {
+        if let Some(skipped) = prepared.skipped {
+            return Ok(skipped);
+        }
+        let changed_paths = input.changed_paths();
+        let groups = prepared.groups;
+        let covered_without_model = prepared.covered_without_model;
+        let mechanical = prepared.mechanical;
+        let paths_empty = prepared.paths_empty;
 
         // One capability for the whole lane, so the pull-request budget is
         // enforced across every file and every reviewer at once. That is what
@@ -170,34 +278,46 @@ impl Lane for Critique {
         // falsifier gets only its own diff and mechanically related excerpts.
         let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
 
-        let outcome = per_unit(
-            &groups,
-            |group| group.label.clone(),
-            |group| group.paths.clone(),
-            |group| {
-                let llm = llm.clone();
-                let input = &input;
-                let changed_paths = &changed_paths;
-                let cross_file_evidence = &cross_file_evidence;
-                async move {
-                    let group_diffs: Vec<FileDiff> = group
-                        .paths
-                        .iter()
-                        .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
-                        .collect();
-                    review_group(
-                        llm,
-                        input,
-                        changed_paths,
-                        &group.paths,
-                        &group_diffs,
-                        cross_file_evidence,
-                    )
-                    .await
-                }
-            },
-        )
-        .await;
+        let review = |group: crate::lanes::grouping::FileGroup| {
+            let llm = llm.clone();
+            let input = &input;
+            let changed_paths = &changed_paths;
+            let cross_file_evidence = &cross_file_evidence;
+            async move {
+                let group_diffs: Vec<FileDiff> = group
+                    .paths
+                    .iter()
+                    .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
+                    .collect();
+                review_group(
+                    llm,
+                    input,
+                    changed_paths,
+                    &group.paths,
+                    &group_diffs,
+                    cross_file_evidence,
+                )
+                .await
+            }
+        };
+        let outcome = if let Some(execution) = execution {
+            crate::lanes::fanout::per_unit_bounded(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+                execution,
+            )
+            .await
+        } else {
+            per_unit(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+            )
+            .await
+        };
 
         // The graph's own calls are tallied inside the capability, which is the
         // only object every one of them passes through. Folded in once here
@@ -205,21 +325,13 @@ impl Lane for Critique {
         // it per file would multiply the bill by the file count.
         let mut outcome = outcome.into_outcome();
         outcome.context_degraded = input.retrieval_status.is_degraded();
-        if let Some(sub) = &mechanical {
-            covered_without_model.extend(
-                sub.verified
-                    .iter()
-                    .filter(|path| Some(*path) != sample)
-                    .cloned(),
-            );
-        }
         outcome.include_reviewed_paths(covered_without_model);
         outcome.spend.merge(llm.spend());
         if let Some(sub) = &mechanical {
             outcome.summary = format!("{} {}", outcome.summary.trim(), mechanical::note(sub));
             // Every file was the rename: a real verdict, reached without a
             // model, and the outcome must say so rather than read as skipped.
-            if paths.is_empty() {
+            if paths_empty {
                 outcome.skipped = None;
             }
         }
@@ -369,6 +481,7 @@ async fn review_group(
     spend.merge(filtered.spend);
 
     let mut findings = filtered.findings;
+    let mut execution_refusal = filtered.execution_refusal;
     let mut rejected = filtered.rejected;
     let mut capped_for_degraded_context = 0usize;
 
@@ -376,7 +489,10 @@ async fn review_group(
     // pull request's — a lane fans out per group, so a two-line group must
     // not build a second prompt just because the change elsewhere is large.
     let mut added_by_coverage = 0usize;
-    if config.review.passes > 1 && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES {
+    if execution_refusal.is_none()
+        && config.review.passes > 1
+        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+    {
         // Fed cumulatively: the second coverage pass (pass 3) is told about
         // everything round one *and* the first coverage pass found, so it
         // does not rediscover the first pass's own additions.
@@ -417,12 +533,32 @@ async fn review_group(
             {
                 Ok(coverage) => coverage,
                 Err(err) => {
-                    tracing::warn!(%err, "an adaptive review pass failed");
+                    let refusal = match &err {
+                        crate::error::Error::ModelExecutionRefused { refusal, .. } => {
+                            Some(*refusal)
+                        }
+                        _ => None,
+                    };
+                    if refusal
+                        == Some(crate::ports::model_execution::ModelExecutionRefusal::Cancelled)
+                    {
+                        return Err(err);
+                    }
+                    if let Some(refusal) = refusal {
+                        execution_refusal = Some(refusal);
+                        tracing::info!(?refusal, "adaptive review pass stopped by host policy");
+                    } else {
+                        tracing::warn!(%err, "an adaptive review pass failed");
+                    }
                     // No per-call usage is observable when the round itself
                     // fails to return an outcome; count the attempt without
                     // attributing concurrent groups' shared lane spend to it.
                     metrics.record(Usage::default(), Duration::ZERO, 0);
-                    metrics.stop(crate::lanes::coverage::StopReason::Failed);
+                    metrics.stop(if refusal.is_some() {
+                        crate::lanes::coverage::StopReason::Refused
+                    } else {
+                        crate::lanes::coverage::StopReason::Failed
+                    });
                     break;
                 }
             };
@@ -430,6 +566,13 @@ async fn review_group(
             let coverage_elapsed = coverage.elapsed;
             spend.merge(coverage.spend);
             looked_up.push_str(&coverage.looked_up);
+
+            if let Some(refusal) = coverage.execution_refusal {
+                execution_refusal = Some(refusal);
+                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.stop(crate::lanes::coverage::StopReason::Refused);
+                break;
+            }
 
             // No answer this round: nothing new to place, and a round that
             // could not be reached is not evidence a further one would fare
@@ -511,6 +654,13 @@ async fn review_group(
             }
             spend.merge(new_filtered.spend);
             rejected.extend(new_filtered.rejected);
+            if let Some(refusal) = new_filtered.execution_refusal {
+                execution_refusal = Some(refusal);
+                findings.extend(new_filtered.findings);
+                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.stop(crate::lanes::coverage::StopReason::Failed);
+                break;
+            }
 
             if new_filtered.findings.is_empty() {
                 metrics.record(coverage_usage, coverage_elapsed, 0);
@@ -555,6 +705,7 @@ async fn review_group(
         findings,
         resolved,
         spend,
+        execution_refusal,
     })
 }
 
@@ -2132,6 +2283,87 @@ fn helper() {
 
         assert_eq!(outcome.findings.len(), 1, "{:#?}", outcome.findings);
         assert_eq!(handle.calls(), 3, "failure must stop before pass three");
+    }
+
+    #[tokio::test]
+    async fn an_adaptive_lookup_refusal_keeps_its_paid_usage_and_elapsed_time() {
+        let (handle, model, execution) = crate::lanes::coverage::test_support::limited_model(
+            json!({"summary": "Nothing to report.", "findings": []}),
+            json!({
+                "summary": "I need to inspect the called helper.",
+                "findings": [],
+                "lookups": [{
+                    "kind": "read",
+                    "path": "src/defs.rs",
+                    "start": 1,
+                    "end": 1,
+                    "why": "Check the helper contract before concluding."
+                }]
+            }),
+        );
+        let tree = crate::lanes::coverage::test_support::DelayedTree::new(
+            std::time::Duration::from_millis(15),
+        );
+        let config = config_with_passes(2);
+        let diffs = large_diffs();
+        let pr = pull_request();
+        let file_contents = BTreeMap::new();
+
+        let (outcome, trace) = crate::lanes::coverage::test_support::capture_trace(async {
+            let lane = Critique::new(model);
+            let input = LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &file_contents,
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            };
+            let prepared = prepare(input.preparation());
+            lane.run_prepared_with_execution(input, prepared, Some(execution))
+                .await
+                .expect("a typed adaptive refusal is a partial lane result")
+        })
+        .await;
+
+        assert_eq!(
+            handle.calls(),
+            2,
+            "the third model call is refused before dispatch"
+        );
+        assert_eq!(outcome.spend.usage.input_tokens, 8);
+        assert_eq!(outcome.spend.usage.output_tokens, 4);
+        assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
+        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.omissions.iter().any(|omission| {
+            omission.paths.contains(&"src/large.rs".to_string())
+                && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
+        }));
+        let event = trace
+            .lines()
+            .find(|line| line.contains("adaptive review passes"))
+            .expect("adaptive pass accounting is emitted");
+        assert!(event.contains("stop_reason=\"refused\""), "{event}");
+        assert!(event.contains("input_tokens=8"), "{event}");
+        assert!(event.contains("output_tokens=4"), "{event}");
+        assert!(event.contains("cost_usd=0.25"), "{event}");
+        let elapsed_ms = event
+            .split("model_elapsed_ms=")
+            .nth(1)
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("adaptive elapsed field is present");
+        assert!(elapsed_ms >= 10, "the accounted lookup took 15ms: {event}");
     }
 
     #[tokio::test]

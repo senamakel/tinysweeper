@@ -28,6 +28,41 @@
 
 use crate::evidence::diff::{FileDiff, LineKind};
 
+/// Host-only priority signals shared with large-review planning.
+///
+/// These reuse security triage's established path and sink indicators; public
+/// API detection is intentionally a bounded textual hint, not a parser.
+pub(crate) fn large_review_signals(diff: &FileDiff) -> (bool, bool) {
+    let sensitive =
+        sensitive_path(&diff.path) || is_supply_chain_file(&diff.path) || added_sinks(diff) > 0;
+    let lower_path = diff.path.to_ascii_lowercase();
+    let public_path = ["/api/", "/schema/", "/schemas/"]
+        .iter()
+        .any(|segment| lower_path.contains(segment))
+        || lower_path.starts_with("api/")
+        || lower_path.starts_with("schema/")
+        || lower_path == "schema.json"
+        || lower_path.starts_with("schemas/")
+        || [".h", ".hh", ".hpp", ".hxx"]
+            .iter()
+            .any(|suffix| lower_path.ends_with(suffix))
+        || lower_path.contains("openapi.");
+    let public_declaration = diff.hunks.iter().flat_map(|hunk| &hunk.lines).any(|line| {
+        if !matches!(line.kind, LineKind::Added | LineKind::Removed) {
+            return false;
+        }
+        let text = line.text.trim_start();
+        (text.starts_with("pub ")
+            && !text.starts_with("pub(crate)")
+            && !text.starts_with("pub(super)")
+            && !text.starts_with("pub(in "))
+            || text.starts_with("export ")
+            || text.starts_with("export{")
+            || text.starts_with("__all__")
+    });
+    (sensitive, public_path || public_declaration)
+}
+
 /// The outcome of triaging one pull request's diffs.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Triage {
@@ -408,6 +443,53 @@ mod tests {
     fn diff(path: &str, added: &str) -> FileDiff {
         let patch = format!("@@ -1 +1,2 @@\n context\n+{added}\n");
         parse_file_patch(path, &patch)
+    }
+
+    fn removed_diff(path: &str, removed: &str) -> FileDiff {
+        let patch = format!("@@ -1 +0,0 @@\n-{removed}\n");
+        parse_file_patch(path, &patch)
+    }
+
+    #[test]
+    fn large_review_api_risk_covers_added_and_removed_public_declarations() {
+        let unprioritized = [
+            ("src/lib.rs", "pub fn added_api() {}", false),
+            ("src/lib.rs", "pub struct RemovedApi;", true),
+            ("web/client.ts", "export const addedApi = true;", false),
+            ("web/client.ts", "export function removedApi() {}", true),
+            ("package.py", "__all__ = ['added_api']", false),
+            ("package.py", "__all__ = ['removed_api']", true),
+        ]
+        .into_iter()
+        .filter_map(|(path, declaration, removed)| {
+            let changed = if removed {
+                removed_diff(path, declaration)
+            } else {
+                diff(path, declaration)
+            };
+            (!large_review_signals(&changed).1).then_some((path, declaration))
+        })
+        .collect::<Vec<_>>();
+        assert!(
+            unprioritized.is_empty(),
+            "unprioritized public API changes: {unprioritized:?}"
+        );
+    }
+
+    #[test]
+    fn large_review_api_risk_covers_root_and_nested_schema_paths() {
+        let unprioritized = [
+            "schema.json",
+            "schemas/root.yaml",
+            "src/schemas/openapi.yaml",
+        ]
+        .into_iter()
+        .filter(|path| !large_review_signals(&diff(path, "{ } ")).1)
+        .collect::<Vec<_>>();
+        assert!(
+            unprioritized.is_empty(),
+            "unprioritized schema paths: {unprioritized:?}"
+        );
     }
 
     #[test]

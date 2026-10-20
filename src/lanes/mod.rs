@@ -241,6 +241,8 @@ pub struct LaneOutcome {
     /// change. A review that consulted no model once approved a pull request
     /// with "found nothing blocking · $0.0000 · 0 in / 0 out".
     pub unanswered: Vec<String>,
+    /// Planned groups omitted by host-side execution policy, with their reason.
+    pub omissions: Vec<fanout::OmittedGroup>,
     /// Per-file review coverage, when this lane fans out over changed files.
     pub coverage: Option<FileCoverage>,
 }

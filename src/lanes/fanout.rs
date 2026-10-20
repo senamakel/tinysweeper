@@ -71,7 +71,7 @@ pub enum OmissionReason {
 }
 
 impl OmissionReason {
-    fn description(self) -> &'static str {
+    pub(crate) fn description(self) -> &'static str {
         match self {
             Self::NotSelected => "not selected by the large-review budget",
             Self::SoftDeadline => "not started before the soft deadline",
@@ -216,11 +216,16 @@ impl FanOut {
 
         // Every path behind a failed unit, not one synthetic entry per
         // conversation: a failed two-file group must count and name both.
-        let unanswered: Vec<String> = self
+        let mut unanswered: Vec<String> = self
             .failures
             .iter()
             .flat_map(|(_, paths, _)| paths.iter().cloned())
             .collect();
+        unanswered.extend(
+            self.omitted
+                .iter()
+                .flat_map(|omitted| omitted.paths.iter().cloned()),
+        );
 
         if !unanswered.is_empty() {
             let total = reviewed + unanswered.len();
@@ -239,8 +244,24 @@ impl FanOut {
             ));
         }
 
-        let skipped = (reviewed == 0 && !self.failures.is_empty())
-            .then(|| "No files could be reviewed; see the listed provider failures.".to_string());
+        if !self.omitted.is_empty() {
+            let omitted_count: usize = self.omitted.iter().map(|group| group.paths.len()).sum();
+            let reasons = self
+                .omitted
+                .iter()
+                .map(|group| group.reason.description())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            summary.push_str(&format!(
+                " {omitted_count} file{} were omitted: {reasons}.",
+                plural(omitted_count)
+            ));
+        }
+
+        let skipped = (reviewed == 0 && (!self.failures.is_empty() || !self.omitted.is_empty()))
+            .then(|| "No files received a complete review; see the listed failures and omissions.".to_string());
         let coverage = (!reviewed_paths.is_empty() || !unanswered.is_empty()).then_some(
             crate::lanes::FileCoverage {
                 reviewed: reviewed_paths,
@@ -258,6 +279,7 @@ impl FanOut {
             pending: Vec::new(),
             unanswered,
             coverage,
+            omissions: self.omitted,
         }
     }
 }

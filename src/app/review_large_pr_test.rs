@@ -672,7 +672,7 @@ async fn a_subagent_settling_call_limit_publishes_an_unanswered_normal_review() 
     let forge = one_large_api_forge();
     let mut config = adaptive_normal_config("critique", 2);
     config.council.subagents = true;
-    config.review.passes = 3;
+    config.review.passes = 1;
     let usage = Usage {
         input_tokens: 3,
         output_tokens: 1,

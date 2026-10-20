@@ -5382,6 +5382,7 @@ mod tests {
     async fn a_superseding_delivery_stops_the_old_model_dispatch_before_provider_call() {
         use crate::harness::MockModel;
         use crate::ports::model::{Message, Model, ModelRequest};
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
         use serde_json::json;
 
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
@@ -5396,8 +5397,22 @@ mod tests {
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
         let model = MockModel::silent();
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
         let guarded = OwnedModel {
-            inner: Arc::new(model.clone()),
+            inner: model
+                .with_execution_control(control)
+                .expect("the model receives this run's execution scope"),
             jobs: store.clone(),
             owned: owned.clone(),
             owner_lost: None,
@@ -5428,6 +5443,11 @@ mod tests {
             "the old owner keeps its slot until yield acknowledgement"
         );
         assert!(!store.should_continue(&owned, 102).await.unwrap());
+        assert_eq!(
+            execution.acquire().await.err(),
+            Some(ModelExecutionRefusal::Cancelled),
+            "a typed supersession fence cancels the shared execution scope"
+        );
     }
 
     #[tokio::test]

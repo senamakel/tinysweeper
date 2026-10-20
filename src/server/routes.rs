@@ -5564,6 +5564,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_terminal_budget_error_rechecks_durable_ownership_before_failure_publication() {
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now = unix_time_ms();
+        let mut first = queued_test_review(74);
+        first.repo = "owner/repo".into();
+        first.number = 7;
+        first.head_sha = Some("head-a".into());
+        store.admit_batch(vec![first.clone()]).await.unwrap();
+        seed_previously_published_queue_checks(&*store, now).await;
+        let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
+        assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
+        assert_eq!(
+            store.begin_paid(&owned, now + 2).await.unwrap(),
+            PaidStart::Started
+        );
+
+        let mut next = first;
+        next.id = crate::ports::review_job::ReviewJobId("push-b-budget-race".into());
+        next.delivery = Some("push-b-budget-race".into());
+        next.head_sha = Some("head-b".into());
+        next.accepted_at_ms = now + 3;
+        store.admit_batch(vec![next]).await.unwrap();
+
+        // This models a sibling lane's terminal Budget result arriving before
+        // the old worker's ownership watcher has canceled its shared scope.
+        let execution = test_execution_scope();
+        assert!(!execution.is_cancelled());
+        let result = cancelled_execution_disposition(
+            &execution,
+            store.as_ref(),
+            Some(&owned),
+            || true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, Some(WorkerDisposition::Yielded));
+        assert!(execution.is_cancelled());
+        assert!(store.owns(&owned, now + 4).await.unwrap());
+        assert!(!store.should_continue(&owned, now + 4).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn a_transient_review_error_does_not_cancel_the_run_execution_scope() {
         use crate::ports::model_execution::ModelExecutionControl;
 

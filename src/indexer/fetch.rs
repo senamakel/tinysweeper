@@ -143,6 +143,54 @@ impl Checkout {
         })
     }
 
+    /// Create a disposable checkout from an already-populated server mirror.
+    pub(super) async fn from_mirror(mirror: &Path, revision: &str) -> Result<Self> {
+        validate_revision(revision)?;
+        let dir = tempfile::Builder::new()
+            .prefix("tinysweeper-review-")
+            .tempdir()
+            .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
+        let root = dir.path().to_path_buf();
+        git(&root, "", &["init", "--quiet"]).await?;
+        let mirror = mirror
+            .to_str()
+            .ok_or_else(|| Error::config("repository cache path is not valid UTF-8"))?;
+        git(&root, "", &["fetch", "--quiet", "--no-tags", mirror, revision]).await?;
+        git(&root, "", &["checkout", "--quiet", "--detach", "FETCH_HEAD"]).await?;
+        Ok(Self {
+            dir,
+            revision: revision.to_string(),
+        })
+    }
+
+    /// Populate a bare mirror with one exact commit, using the hardened Git
+    /// runner so the read credential remains an ephemeral environment value.
+    pub(super) async fn fetch_into_mirror(
+        mirror: &Path,
+        url: &str,
+        revision: &str,
+        token: &str,
+        fetch_count: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> Result<()> {
+        validate_revision(revision)?;
+        git(mirror, "", &["init", "--bare", "--quiet"]).await?;
+        git_fetch(
+            mirror,
+            token,
+            &["fetch", "--quiet", "--depth", "1", "--no-tags", url, revision],
+            fetch_count,
+        )
+        .await
+    }
+
+    /// Return whether an immutable commit is already present in the mirror.
+    pub(super) async fn mirror_has_revision(mirror: &Path, revision: &str) -> Result<bool> {
+        validate_revision(revision)?;
+        Ok(git_stdout(mirror, "", &["cat-file", "-e", &format!("{revision}^{{commit}}")])
+            .await
+            .is_ok())
+    }
+
     #[cfg(test)]
     pub(super) async fn fetch_from_url_for_test(
         url: &str,

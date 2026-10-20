@@ -2921,15 +2921,15 @@ where
         )),
     };
     let concluded = write.update_check(&open.repo, open.check_id, check).await;
+    if concluded.is_ok() {
+        after_check().await;
+    }
     let hub_updated = match (open.hub_comment_id, hub_body) {
         (Some(comment_id), Some(body)) => {
             Some(write.update_comment(&open.repo, comment_id, &body).await)
         }
         _ => None,
     };
-    if concluded.is_ok() {
-        after_check().await;
-    }
     (concluded, hub_updated)
 }
 

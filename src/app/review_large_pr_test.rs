@@ -545,6 +545,13 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
     assert!(requests.iter().all(|request| request["model"] == primary));
     assert_eq!(proposal.usage().calls_attempted, 8);
     assert!(!proposal.complete());
+    assert_eq!(
+        proposal
+            .partial_review
+            .as_ref()
+            .and_then(|partial| partial.stop_reason),
+        Some(crate::app::review::PartialReviewReason::CallLimit)
+    );
 }
 
 #[cfg(feature = "harness")]
@@ -559,10 +566,9 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
     config.models.fallback = vec![fallback.clone()];
     config.models.provider.last_resort_unpinned = false;
     config.models.budget_usd_per_pr = 10.0;
-    let mut replies = (0..4)
-        .map(|_| gateway_empty_lane_reply(&primary))
+    let mut replies = (0..6)
+        .map(|_| Reply::error(404, "No endpoints found"))
         .collect::<Vec<_>>();
-    replies.extend((0..2).map(|_| Reply::error(404, "No endpoints found")));
     replies.extend((0..2).map(|_| gateway_empty_lane_reply(&fallback)));
     let (gateway, release) = FakeGateway::start_paused(replies).await;
     config.models.base_url = gateway.base_url.clone();
@@ -593,6 +599,13 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
     assert!(requests[6..].iter().all(|request| request["model"] == fallback));
     assert_eq!(proposal.usage().calls_attempted, 8);
     assert!(!proposal.complete());
+    assert_eq!(
+        proposal
+            .partial_review
+            .as_ref()
+            .and_then(|partial| partial.stop_reason),
+        Some(crate::app::review::PartialReviewReason::CallLimit)
+    );
 }
 
 #[tokio::test]

@@ -4826,13 +4826,16 @@ mod tests {
             Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
         let model = execution.bind_model(model, 10.0).model.clone();
         let request_model = config.models.deep.clone();
-        let request = move || ModelRequest {
-            model: request_model.clone(),
-            messages: vec![Message::user("record a physical completion")],
-            schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
-            schema_name: "pending-terminal-accounting".into(),
-            max_tokens: 32,
-        };
+
+        fn request(model: String) -> ModelRequest {
+            ModelRequest {
+                model,
+                messages: vec![Message::user("record a physical completion")],
+                schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
+                schema_name: "pending-terminal-accounting".into(),
+                max_tokens: 32,
+            }
+        }
 
         async fn wait_for_request_count<T: std::fmt::Debug + 'static>(
             gateway: &FakeGateway,
@@ -4853,8 +4856,9 @@ mod tests {
 
         for expected in 1..=2 {
             let model = model.clone();
+            let request_model = request_model.clone();
             let mut calls = tokio::task::JoinSet::new();
-            calls.spawn(async move { model.complete(request()).await });
+            calls.spawn(async move { model.complete(request(request_model)).await });
             wait_for_request_count(&gateway, expected, &mut calls).await;
             response_gate.add_permits(1);
             calls
@@ -4866,8 +4870,9 @@ mod tests {
         }
 
         let model_for_pending = model.clone();
+        let request_model = request_model.clone();
         let mut pending = tokio::task::JoinSet::new();
-        pending.spawn(async move { model_for_pending.complete(request()).await });
+        pending.spawn(async move { model_for_pending.complete(request(request_model)).await });
         wait_for_request_count(&gateway, 3, &mut pending).await;
 
         let skipped_forge = forge_with(

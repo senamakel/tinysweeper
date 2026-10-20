@@ -5569,7 +5569,7 @@ mod tests {
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let execution = test_execution_scope();
-        let result = select_review_control(
+        let result: Result<()> = select_review_control(
             async { Err(Error::Forge("temporary read failure".into())) },
             &store,
             None,
@@ -6160,6 +6160,7 @@ mod tests {
         use crate::harness::MockModel;
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest};
+        use crate::ports::model_execution::ModelExecutionControl;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let now = unix_time_ms();

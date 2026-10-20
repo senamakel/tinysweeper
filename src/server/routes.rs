@@ -6625,6 +6625,7 @@ mod tests {
             PullRequest {
                 number: 7,
                 head_sha: "previous-good-head".into(),
+                title: "LAST GOOD TITLE".into(),
                 ..PullRequest::default()
             },
         );
@@ -6649,7 +6650,7 @@ mod tests {
         );
         let forge = MockForge::with_state(state);
         let last_good_model = Arc::new(MockModel::always(json!({
-            "summary": "LAST-GOOD-REPORT-ONLY",
+            "summary": "A review completed successfully.",
             "executive_summary": "The change updates the reviewed source files.",
             "changes": "The source files gain a small behavior update.",
             "features": [],
@@ -6659,7 +6660,7 @@ mod tests {
             "resolved": []
         })));
         let partial_model = Arc::new(MockModel::always(json!({
-            "summary": "PARTIAL-ATTEMPT-REPORT-ONLY",
+            "summary": "The next review is incomplete.",
             "executive_summary": "The change updates two reviewed source files.",
             "changes": "The source files gain a small behavior update.",
             "features": [],
@@ -6691,7 +6692,7 @@ mod tests {
         assert!(last_good.complete());
         assert_eq!(last_good.head_sha, "previous-good-head");
         // The prior body is a real app-rendered publication with a distinct
-        // model-authored summary, so replacement by the next report is visible.
+        // pull-request title, so replacement by the next report is visible.
         crate::app::apply::apply(&forge, &forge, &config, &last_good, None)
             .await
             .expect("the complete baseline report publishes");
@@ -6702,7 +6703,7 @@ mod tests {
             .into_iter()
             .find(|comment| {
                 comment.author == "tinysweeper[bot]"
-                    && comment.body.contains("LAST-GOOD-REPORT-ONLY")
+                    && comment.body.contains("LAST GOOD TITLE")
             })
             .expect("the last-good report was published to the review hub");
         let last_good_report = previous_hub.body;
@@ -6713,6 +6714,7 @@ mod tests {
         forge.replace_pull_request(PullRequest {
             number: 7,
             head_sha: "failed-apply-head".into(),
+            title: "PARTIAL ATTEMPT TITLE".into(),
             ..PullRequest::default()
         });
         config.review.large_pr.files = 1;
@@ -6735,11 +6737,13 @@ mod tests {
         assert!(partial.partial_review.is_some());
         assert_eq!(partial.head_sha, "failed-apply-head");
         assert_eq!(partial.unreviewed.len(), 1);
-        assert!(partial.summary.as_ref().is_some_and(|summary| {
-            summary
-                .executive_summary
-                .contains("PARTIAL-ATTEMPT-REPORT-ONLY")
-        }));
+        assert!(partial
+            .summary
+            .as_ref()
+            .is_some_and(|summary| !summary.executive_summary.is_empty()));
+        let failed_attempt_report = crate::summary::render(&config, &partial);
+        assert!(failed_attempt_report.contains("PARTIAL ATTEMPT TITLE"));
+        assert_ne!(failed_attempt_report, last_good_report);
 
         let check_id = forge
             .publish_check(&repo, status::in_progress("failed-apply-head"))

@@ -70,10 +70,13 @@ ledger and explicitly authorizes another call:
 cargo run --locked --features harness --bin tinysweeper -- eval run \
   --record --case tm-0102-memory-pending-debug-state \
   --config evals/recording.gptoss-novita.toml --max-cost-usd 0.48 \
-  --max-physical-calls-per-case 40
+  --max-physical-calls-per-case 40 \
+  --out evals/runs/issue235/gptoss-novita/tm-0102-memory-pending-debug-state
 ```
 
-Use `--max-physical-calls-per-case 32` for each of the other four cases.
+Use `--max-physical-calls-per-case 32` for each of the other four cases, with
+an output directory under `evals/runs/issue235/gptoss-novita/` named for that
+case. Keep the initial V3.2 proposal and run output in its original directory.
 
 Repeat with each of the four `oh-...` cases listed in `evals/README.md`, using
 only the matching historical source material when lookups are needed. Never

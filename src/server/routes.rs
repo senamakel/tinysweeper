@@ -1243,7 +1243,7 @@ where
 
 /// Reconcile a lane failure with durable ownership before it can be retried or
 /// published as a failure for a head that has already been superseded.
-async fn cancelled_execution_disposition<Valid>(
+async fn ownership_fence_disposition<Valid>(
     execution: &crate::app::review_execution::ReviewExecution,
     jobs: &dyn ReviewJobStore,
     owned: Option<&OwnedReview>,
@@ -3332,7 +3332,7 @@ async fn handle_review(
                 return disposition;
             }
             Err(err) => {
-                if let Some(disposition) = cancelled_execution_disposition(
+                if let Some(disposition) = ownership_fence_disposition(
                     &run.execution.execution(),
                     state.review_jobs.as_ref(),
                     run.owned.as_ref(),
@@ -5592,7 +5592,7 @@ mod tests {
         // the old worker's ownership watcher has canceled its shared scope.
         let execution = test_execution_scope();
         assert!(!execution.is_cancelled());
-        let result = cancelled_execution_disposition(
+        let result = ownership_fence_disposition(
             &execution,
             store.as_ref(),
             Some(&owned),

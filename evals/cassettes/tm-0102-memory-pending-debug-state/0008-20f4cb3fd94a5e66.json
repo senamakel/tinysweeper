@@ -1,0 +1,52 @@
+{
+  "key": "20f4cb3fd94a5e66",
+  "model_requested": "deepseek/deepseek-v3.2",
+  "model_answered": "deepseek/deepseek-v3.2",
+  "schema_name": "tinysweeper_critique",
+  "usage": {
+    "input_tokens": 5075,
+    "output_tokens": 404,
+    "reasoning_tokens": 0,
+    "calls_attempted": 1,
+    "calls_succeeded": 1,
+    "calls_refused": 0,
+    "calls_errored": 0,
+    "cached_tokens": 2112,
+    "embed_tokens": 0,
+    "cost_usd": 0.00119846
+  },
+  "value": {
+    "findings": [],
+    "lookups": [
+      {
+        "end": 50,
+        "kind": "read",
+        "path": "crates/tinymcp/src/lib.rs",
+        "start": 1,
+        "why": "Check the public re-exports at the crate root for the symbols used in the test."
+      },
+      {
+        "end": 30,
+        "kind": "read",
+        "path": "crates/tinymcp/src/pending/mod.rs",
+        "start": 1,
+        "why": "Examine the definition of `PendingAuthorization`, `PendingAuthorizationStore`, `MemoryPendingStore`, and `PENDING_TTL_SECS` to verify their signatures and the `expired_at` method."
+      },
+      {
+        "end": 30,
+        "kind": "read",
+        "path": "crates/tinymcp/src/oauth/mod.rs",
+        "start": 1,
+        "why": "Check the definition of `OAuthFlow` and its `new` and `with_pending_store` methods to ensure the test's usage is correct."
+      },
+      {
+        "end": 28,
+        "kind": "read",
+        "path": "crates/tinymcp/tests/public_reexports.rs",
+        "start": 1,
+        "why": "Understand the existing test pattern and ensure the new test follows the same style and purpose."
+      }
+    ],
+    "summary": "Provisional summary: The test uses symbols imported from `tinymcp::` that need to be verified as publicly exported and correctly typed. I'll read the relevant modules to check that `MemoryPendingStore`, `OAuthFlow`, `PendingAuthorization`, `PendingAuthorizationStore`, and `PENDING_TTL_SECS` are indeed re-exported at the crate root and that the test's usage matches their contracts."
+  }
+}

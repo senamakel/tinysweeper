@@ -1,0 +1,43 @@
+{
+  "key": "2969d12b7d621109",
+  "model_requested": "deepseek/deepseek-v3.2",
+  "model_answered": "deepseek/deepseek-v3.2",
+  "schema_name": "tinysweeper_critique",
+  "usage": {
+    "input_tokens": 4176,
+    "output_tokens": 272,
+    "reasoning_tokens": 0,
+    "calls_attempted": 1,
+    "calls_succeeded": 1,
+    "calls_refused": 0,
+    "calls_errored": 0,
+    "cached_tokens": 2112,
+    "embed_tokens": 0,
+    "cost_usd": 0.00091456
+  },
+  "value": {
+    "findings": [],
+    "lookups": [
+      {
+        "end": 110,
+        "kind": "read",
+        "path": "crates/tinymcp/src/lib.rs",
+        "start": 90,
+        "why": "Need to see the surrounding context of the change, including the use statements, to understand what's being re-exported."
+      },
+      {
+        "end": 50,
+        "kind": "read",
+        "path": "crates/tinymcp/src/registry.rs",
+        "start": 1,
+        "why": "Need to verify that MemoryPendingStore, PENDING_TTL_SECS, PendingAuthorization, and PendingAuthorizationStore are indeed defined in registry.rs and are being newly exported."
+      },
+      {
+        "kind": "list",
+        "path": "crates/tinymcp/src",
+        "why": "Check if there are other files that might define these symbols, to ensure they are being exported from the correct module."
+      }
+    ],
+    "summary": "The diff adds four new public exports from the registry module: MemoryPendingStore, PENDING_TTL_SECS, PendingAuthorization, and PendingAuthorizationStore. Need to verify these symbols exist and are intended for public use."
+  }
+}

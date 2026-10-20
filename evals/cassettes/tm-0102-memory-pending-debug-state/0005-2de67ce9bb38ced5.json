@@ -1,0 +1,48 @@
+{
+  "key": "2de67ce9bb38ced5",
+  "model_requested": "deepseek/deepseek-v3.2",
+  "model_answered": "deepseek/deepseek-v3.2",
+  "schema_name": "tinysweeper_critique",
+  "usage": {
+    "input_tokens": 4200,
+    "output_tokens": 327,
+    "reasoning_tokens": 0,
+    "calls_attempted": 1,
+    "calls_succeeded": 1,
+    "calls_refused": 0,
+    "calls_errored": 0,
+    "cached_tokens": 2112,
+    "embed_tokens": 0,
+    "cost_usd": 0.0009417
+  },
+  "value": {
+    "findings": [],
+    "lookups": [
+      {
+        "end": 40,
+        "kind": "read",
+        "path": "crates/tinymcp/src/registry/mod.rs",
+        "start": 1,
+        "why": "Check the surrounding lines to see the full module structure and ensure the re-exports are consistent with the module's existing pattern."
+      },
+      {
+        "glob": "crates/tinymcp/src/**/*.rs",
+        "kind": "search",
+        "pattern": "MemoryPendingStore",
+        "why": "Verify that the newly exported types are defined somewhere in the oauth module to ensure the re-exports are valid."
+      },
+      {
+        "glob": "crates/tinymcp/src/**/*.rs",
+        "kind": "search",
+        "pattern": "PENDING_TTL_SECS",
+        "why": "Verify that the constant is defined in the oauth module, ensuring the export will compile."
+      },
+      {
+        "kind": "list",
+        "path": "crates/tinymcp/src/oauth",
+        "why": "Confirm the oauth module's structure and see if the exported items are present there."
+      }
+    ],
+    "summary": "The diff re-exports new OAuth-related types (`MemoryPendingStore`, `PendingAuthorization`, `PendingAuthorizationStore`) and a constant `PENDING_TTL_SECS` from the `oauth` module. No logic changes are visible; this appears to be a straightforward export addition."
+  }
+}

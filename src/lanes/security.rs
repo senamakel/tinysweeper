@@ -257,7 +257,7 @@ impl Security {
             .copied()
             .filter(|finding| group.paths.contains(&finding.path))
             .collect();
-        let mut review = review_group(
+        let review = review_group(
             llm.clone(),
             input.config,
             input.repo_policy,

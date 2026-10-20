@@ -200,7 +200,7 @@ impl Critique {
             .iter()
             .filter_map(|path| input.diffs.iter().find(|diff| &diff.path == path).cloned())
             .collect();
-        let mut review = review_group(
+        let review = review_group(
             llm.clone(),
             input,
             &changed_paths,

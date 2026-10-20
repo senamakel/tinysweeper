@@ -229,14 +229,8 @@ async fn answer_questions(
         .filter_map(|(question, answer)| {
             usage.add(answer.usage);
             if answer.execution_refusal.is_some() {
-                let cancelled =
-                    answer.execution_refusal == Some(ModelExecutionRefusal::Cancelled);
-                let prior_cancelled = execution_refusal
-                    .as_ref()
-                    .is_some_and(|prior: &Answer| {
-                        prior.execution_refusal == Some(ModelExecutionRefusal::Cancelled)
-                    });
-                if cancelled || execution_refusal.is_none() || !prior_cancelled {
+                let cancelled = answer.execution_refusal == Some(ModelExecutionRefusal::Cancelled);
+                if cancelled || execution_refusal.is_none() {
                     execution_refusal = Some(answer.clone());
                 }
             }

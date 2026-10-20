@@ -682,6 +682,37 @@ async fn cancellation_in_question_and_settling_turns_remains_terminal() {
 }
 
 #[tokio::test]
+async fn cancellation_wins_when_other_subagents_hit_a_policy_limit() {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let model = MockModel::new()
+        .then(asking(&["first question", "second question"]))
+        .then_execution_refusal(ModelExecutionRefusal::CallLimit)
+        .then_execution_refusal(ModelExecutionRefusal::Cancelled);
+    let llm = lane_llm(Arc::new(model), &config(), 100.0);
+
+    let result = ask_all_accounted(
+        llm,
+        LaneId::Critique,
+        &[call("a")],
+        &schema(),
+        Asking {
+            subagent_model: Some("vendor/flash"),
+            ..Asking::default()
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(crate::error::Error::ModelExecutionRefused {
+            refusal: ModelExecutionRefusal::Cancelled,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn an_unconfident_answer_still_earns_a_second_turn() {
     // "The evidence does not say" is a real input to a verdict — it is the
     // difference between a doubt resolved and one that could not be. Hiding it

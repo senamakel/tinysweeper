@@ -2014,10 +2014,18 @@ mod tests {
                 json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
             )
         };
+        let primary_repair_without_reported_cost = || {
+            Reply::completion(
+                "b",
+                "{primary broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2}),
+            )
+        };
         let gateway = FakeGateway::start(vec![
             primary_repair(),
             primary_repair(),
-            primary_repair(),
+            primary_repair_without_reported_cost(),
             Reply::completion(
                 "fallback",
                 r#"{"summary":"checked"}"#,
@@ -2074,7 +2082,18 @@ mod tests {
         let expected = vec![
             primary_terminal.clone(),
             primary_terminal.clone(),
-            primary_terminal,
+            raw_terminal(
+                "b",
+                Some("b"),
+                ModelExecutionTerminalOutcome::Succeeded,
+                Some(ModelExecutionTerminalUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: None,
+                }),
+            ),
             raw_terminal(
                 "fallback",
                 Some("fallback"),
@@ -2092,6 +2111,40 @@ mod tests {
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.committed_calls, 4);
         assert_eq!(snapshot.physical_terminals, expected);
+        assert_eq!(snapshot.physical_usage.input_tokens, 20);
+        assert_eq!(snapshot.physical_usage.output_tokens, 8);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.0041);
+        assert_eq!(snapshot.physical_usage_by_model["b"].input_tokens, 15);
+        assert_eq!(snapshot.physical_usage_by_model["fallback"].cost_usd, 0.0021);
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn raw_terminal_observation_does_not_duplicate_timing_accounting() {
+        let (model, gateway, request) = admission_fixture().await;
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway preserves execution control");
+        let timing = Arc::new(RecordedModelCalls::default());
+        let result = crate::ports::model::with_model_call_observer(
+            timing.clone(),
+            model.complete(request),
+        )
+        .await;
+
+        result.expect("the provider response is valid");
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(control.terminals.lock().unwrap().len(), 1);
+        assert_eq!(timing.0.lock().unwrap().len(), 1);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminal_count, 1);
+        assert_eq!(snapshot.physical_usage.calls_attempted, 1);
         assert!(snapshot.physical_accounting_complete);
     }
 

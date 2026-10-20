@@ -973,7 +973,7 @@ async fn execution_limits_capture_selected_cases_and_effective_run_ceilings() {
     let dir = corpus_dir(EXPECTATION);
     std::fs::write(
         dir.path().join("cases/ts-0002.toml"),
-        case_toml(EXPECTATION).replace("ts-0001", "ts-0002"),
+        case_toml(EXPECTATION).replace("id = \"ts-0001\"", "id = \"ts-0002\""),
     )
     .expect("write second case");
     let full = load(dir.path()).expect("loads both cases");

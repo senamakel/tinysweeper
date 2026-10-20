@@ -82,6 +82,164 @@ pub(crate) struct ReviewRunContext {
     logical_models: Mutex<Vec<String>>,
 }
 
+/// One review shares this ceiling across physical turns, retries and turns
+/// started by read-only agents.
+const MAX_CONCURRENT_MODEL_DISPATCHES: usize = 8;
+
+struct BoundedExecutionControl {
+    inner: Arc<ReviewExecution>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+struct BoundedExecutionPermit {
+    inner: Box<dyn ModelExecutionPermit>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Compatibility bound for adapters that do not expose physical dispatch
+/// admission. One permit covers their whole `complete` or `review` operation.
+struct BoundedLogicalModel {
+    inner: Arc<dyn Model>,
+    permits: Arc<tokio::sync::Semaphore>,
+    execution: Arc<ReviewExecution>,
+}
+
+impl BoundedLogicalModel {
+    fn new(inner: Arc<dyn Model>, execution: Arc<ReviewExecution>) -> Self {
+        Self {
+            inner,
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES)),
+            execution,
+        }
+    }
+
+    fn with_inner(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
+        Arc::new(Self {
+            inner,
+            permits: self.permits.clone(),
+            execution: self.execution.clone(),
+        })
+    }
+
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, ModelExecutionRefusal> {
+        let permit = tokio::select! {
+            biased;
+            _ = self.execution.cancelled() => Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.execution.soft_deadline()) => {
+                Err(ModelExecutionRefusal::SoftDeadline)
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                Ok(permit.expect("the review logical-call semaphore is never closed"))
+            }
+        }?;
+        if let Some(refusal) = self.execution.refusal_for_new_work() {
+            return Err(refusal);
+        }
+        Ok(permit)
+    }
+}
+
+#[async_trait::async_trait]
+impl Model for BoundedLogicalModel {
+    async fn complete(
+        &self,
+        request: crate::ports::model::ModelRequest,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        let _permit = self.acquire().await.map_err(refusal_error)?;
+        self.inner.complete(request).await
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.inner.complete_reports_physical_calls()
+    }
+
+    async fn review(
+        &self,
+        request: crate::ports::model::ModelRequest,
+        tree: &dyn crate::ports::tree::TreeReader,
+        policy: &crate::config::types::LookupPolicy,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        let _permit = self.acquire().await.map_err(refusal_error)?;
+        self.inner.review(request, tree, policy).await
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.inner.review_reports_physical_calls()
+    }
+
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.inner.reports_raw_completion_usage()
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .scoped_budget(budget_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        self.inner
+            .with_review_budget(limit_usd)
+            .map(|inner| self.with_inner(inner))
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        // If a later binding supplies a physical hook, it replaces this
+        // logical fallback rather than nesting both limiters around a call.
+        self.inner.with_execution_control(control)
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelExecutionControl for BoundedExecutionControl {
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+        // Wait for shared dispatch capacity before reserving the review's
+        // finite call budget, so queued work does not occupy admission slots.
+        let permit = tokio::select! {
+            biased;
+            _ = self.inner.cancelled() => return Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.inner.soft_deadline()) => {
+                return Err(ModelExecutionRefusal::SoftDeadline);
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                permit.expect("the review dispatch semaphore is never closed")
+            }
+        };
+        match self.inner.acquire().await {
+            Ok(inner) => Ok(Box::new(BoundedExecutionPermit {
+                inner,
+                _permit: permit,
+            })),
+            Err(refusal) => Err(refusal),
+        }
+    }
+
+    fn on_terminal(&self, terminal: ModelExecutionTerminal) {
+        self.inner.on_terminal(terminal);
+    }
+}
+
+impl ModelExecutionPermit for BoundedExecutionPermit {
+    fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
+        self.inner.mark_dispatched()
+    }
+}
+
+fn refusal_error(refusal: ModelExecutionRefusal) -> crate::error::Error {
+    crate::error::Error::ModelExecutionRefused {
+        refusal,
+        usage: None,
+        accounting_complete: true,
+    }
+}
+
 impl ReviewRunContext {
     /// Create the shared scope from the run's original absolute clock window.
     pub(crate) fn new(options: ReviewExecutionOptions) -> Self {
@@ -106,11 +264,16 @@ impl ReviewRunContext {
             #[cfg(test)]
             let review_budget_bound = rooted.is_some();
             let rooted = rooted.unwrap_or(base);
-            let execution: Arc<dyn ModelExecutionControl> = self.execution.clone();
+            let execution: Arc<dyn ModelExecutionControl> = Arc::new(BoundedExecutionControl {
+                inner: self.execution.clone(),
+                permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES)),
+            });
             let controlled = rooted.with_execution_control(execution);
             let execution_control_bound = controlled.is_some();
             ReviewModelBinding {
-                model: controlled.unwrap_or(rooted),
+                model: controlled.unwrap_or_else(|| {
+                    Arc::new(BoundedLogicalModel::new(rooted, self.execution.clone()))
+                }),
                 #[cfg(test)]
                 review_budget_bound,
                 execution_control_bound,
@@ -677,6 +840,129 @@ mod tests {
             soft_deadline_percent: 80,
             drain_seconds: 30,
         }
+    }
+
+    #[tokio::test]
+    async fn queued_dispatch_admission_observes_cancel_and_original_soft_deadline() {
+        let started = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_secs(2),
+        )));
+        let control = Arc::new(BoundedExecutionControl {
+            inner: execution.clone(),
+            permits: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let waiting_control = control.clone();
+        let waiting = tokio::spawn(async move { waiting_control.acquire().await });
+        tokio::task::yield_now().await;
+        execution.cancel();
+        let cancelled = tokio::time::timeout(Duration::from_millis(100), waiting)
+            .await
+            .expect("owner cancellation wakes a dispatch waiting for capacity")
+            .expect("waiter task completes");
+        assert!(matches!(cancelled, Err(ModelExecutionRefusal::Cancelled)));
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+
+        let started = Instant::now();
+        let mut soft_options = options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_millis(100),
+        );
+        soft_options.soft_deadline_percent = 10;
+        let execution = Arc::new(ReviewExecution::new(soft_options));
+        let control = Arc::new(BoundedExecutionControl {
+            inner: execution.clone(),
+            permits: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let waiting = tokio::spawn(async move { control.acquire().await });
+        let expired = tokio::time::timeout(Duration::from_millis(200), waiting)
+            .await
+            .expect("the original soft deadline wakes a dispatch waiting for capacity")
+            .expect("waiter task completes");
+        assert!(matches!(expired, Err(ModelExecutionRefusal::SoftDeadline)));
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn opaque_call_released_after_soft_deadline_never_reaches_the_model() {
+        struct CountingModel {
+            inner: crate::harness::mock::MockModel,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for CountingModel {
+            async fn complete(
+                &self,
+                request: crate::ports::model::ModelRequest,
+            ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.complete(request).await
+            }
+        }
+
+        let started = Instant::now();
+        let mut options = options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_millis(500),
+        );
+        options.soft_deadline_percent = 40;
+        let execution = Arc::new(ReviewExecution::new(options));
+        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_MODEL_DISPATCHES {
+            held.push(permits.clone().acquire_owned().await.expect("permit"));
+        }
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model: Arc<dyn Model> = Arc::new(BoundedLogicalModel {
+            inner: Arc::new(CountingModel {
+                inner: crate::harness::mock::MockModel::always(serde_json::json!({"ok": true})),
+                calls: calls.clone(),
+            }),
+            permits,
+            execution: execution.clone(),
+        });
+        let waiting_model = model.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_model
+                .complete(crate::ports::model::ModelRequest {
+                    model: "mock".into(),
+                    messages: Vec::new(),
+                    schema: serde_json::json!({"type": "object"}),
+                    schema_name: "queued".into(),
+                    max_tokens: 8,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::sleep_until(execution.soft_deadline()).await;
+        drop(held.pop());
+
+        let result = tokio::time::timeout(Duration::from_millis(100), waiting)
+            .await
+            .expect("soft deadline wakes the queued logical call")
+            .expect("model task completes");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a call queued before the cutoff must not enter the model after it"
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::SoftDeadline,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

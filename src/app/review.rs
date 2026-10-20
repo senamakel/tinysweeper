@@ -1742,40 +1742,77 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         None
     };
 
-    let mut large_outcomes = if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
-        Some(
-            run_large_groups(
-                LaneInput {
-                    config,
-                    pull_request: &context.pull_request,
-                    diffs: &diffs,
-                    file_contents: &file_contents,
-                    scan_findings: &scan_findings,
-                    commits: &context.commits,
-                    repo_policy: knowledge.pinned_text(),
-                    extracted_rules: &knowledge.extracted_rules,
-                    reviewed_evidence: &reviewed_evidence,
-                    prior_findings: &prior_lines,
-                    retrieval_status: retrieved.status.clone(),
-                    retrieved_context: &retrieved_context,
-                    redaction_note: &redaction_note,
-                    e2e: e2e_evidence.as_ref(),
-                    tree: Some(tree),
-                    graph: graph_for_lanes,
-                },
-                model.clone(),
-                plan.clone(),
-                critique_prepared.take(),
-                security_prepared.take(),
-                execution_scope.clone(),
-            )
-            .await?,
-        )
+    let is_large = plan.mode == crate::lanes::large_pr::ReviewMode::Large;
+    let large_input = LaneInput {
+        config,
+        pull_request: &context.pull_request,
+        diffs: &diffs,
+        file_contents: &file_contents,
+        scan_findings: &scan_findings,
+        commits: &context.commits,
+        repo_policy: knowledge.pinned_text(),
+        extracted_rules: &knowledge.extracted_rules,
+        reviewed_evidence: &reviewed_evidence,
+        prior_findings: &prior_lines,
+        retrieval_status: retrieved.status.clone(),
+        retrieved_context: &retrieved_context,
+        redaction_note: &redaction_note,
+        e2e: e2e_evidence.as_ref(),
+        tree: Some(tree),
+        graph: graph_for_lanes,
+    };
+    let large_plan = plan.clone();
+    let large_model = model.clone();
+    let large_critique = is_large.then(|| critique_prepared.take()).flatten();
+    let large_security = is_large.then(|| security_prepared.take()).flatten();
+    let large_execution = execution_scope.clone();
+    let large_lane_phases: Vec<_> = if is_large {
+        timing
+            .as_ref()
+            .map(|timing| {
+                config
+                    .enabled_lanes()
+                    .into_iter()
+                    .filter(|lane| matches!(lane, LaneId::Critique | LaneId::Security))
+                    .map(|lane| timing.lane_under(lane.as_str(), &lanes_span))
+                    .collect()
+            })
+            .unwrap_or_default()
     } else {
-        None
+        Vec::new()
+    };
+    let large_groups = async move {
+        // These guards cover the shared ranked-group dispatcher and still
+        // record a lane phase if the review is cancelled while it is running.
+        let _lane_phases = large_lane_phases;
+        if is_large {
+            run_large_groups(
+                large_input,
+                large_model,
+                large_plan,
+                large_critique,
+                large_security,
+                large_execution,
+            )
+            .await
+        } else {
+            Ok(BTreeMap::new())
+        }
     };
 
+    let mut lane_runs: Vec<BoxFuture<'_, Result<(LaneId, LaneOutcome)>>> = Vec::new();
     for lane_id in config.enabled_lanes() {
+        if is_large && matches!(lane_id, LaneId::Critique | LaneId::Security) {
+            // Those two lanes run their risk-ranked groups through the one
+            // large-mode dispatcher joined below with independent lanes.
+            continue;
+        }
+        let critique_prepared = (lane_id == LaneId::Critique)
+            .then(|| critique_prepared.take())
+            .flatten();
+        let security_prepared = (lane_id == LaneId::Security)
+            .then(|| security_prepared.take())
+            .flatten();
         let lane_input = LaneInput {
             config,
             pull_request: &context.pull_request,
@@ -1794,49 +1831,67 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             tree: Some(tree),
             graph: graph_for_lanes,
         };
-        let outcome = crate::review_timing::measure_lane_under(
-            timing.as_ref(),
-            lane_id.as_str(),
-            Some(&lanes_span),
-            async {
-                if let Some(outcomes) = &mut large_outcomes
-                    && matches!(lane_id, LaneId::Critique | LaneId::Security)
-                {
-                    return Ok(outcomes
-                        .remove(&lane_id)
-                        .expect("prepared large lane has a scheduled outcome"));
-                }
-                match lane_id {
-                    LaneId::Critique => {
-                        Critique::new(model.clone())
-                            .run_prepared_with_execution(
-                                lane_input,
-                                critique_prepared.take().expect("critique was prepared"),
-                                Some(execution.execution()),
-                            )
-                            .await
+        let model = model.clone();
+        let lane_execution = execution.execution();
+        let timing = timing.as_ref();
+        let lanes_span = lanes_span.clone();
+        lane_runs.push(Box::pin(async move {
+            let outcome = crate::review_timing::measure_lane_under(
+                timing,
+                lane_id.as_str(),
+                Some(&lanes_span),
+                async {
+                    match lane_id {
+                        LaneId::Critique => {
+                            Critique::new(model.clone())
+                                .run_prepared_with_execution(
+                                    lane_input,
+                                    critique_prepared.expect("critique was prepared"),
+                                    Some(lane_execution),
+                                )
+                                .await
+                        }
+                        LaneId::Security => {
+                            Security::new(model.clone())
+                                .run_prepared_with_execution(
+                                    lane_input,
+                                    security_prepared.expect("security was prepared"),
+                                    Some(lane_execution),
+                                )
+                                .await
+                        }
+                        LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
+                        LaneId::Commits => Commits::new().run(lane_input).await,
+                        LaneId::Description => {
+                            Description::new(model.clone()).run(lane_input).await
+                        }
+                        LaneId::E2e => {
+                            crate::lanes::e2e::E2e::new(model.clone())
+                                .run(lane_input)
+                                .await
+                        }
                     }
-                    LaneId::Security => {
-                        Security::new(model.clone())
-                            .run_prepared_with_execution(
-                                lane_input,
-                                security_prepared.take().expect("security was prepared"),
-                                Some(execution.execution()),
-                            )
-                            .await
-                    }
-                    LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
-                    LaneId::Commits => Commits::new().run(lane_input).await,
-                    LaneId::Description => Description::new(model.clone()).run(lane_input).await,
-                    LaneId::E2e => {
-                        crate::lanes::e2e::E2e::new(model.clone())
-                            .run(lane_input)
-                            .await
-                    }
-                }
-            },
-        )
-        .await?;
+                },
+            )
+            .await?;
+            Ok((lane_id, outcome))
+        }));
+    }
+
+    // Large-mode ranked groups and independent lanes share the same poll set.
+    // `join_all` retains canonical lane order for normal lanes, and the map
+    // below restores the complete configured order before spend is folded.
+    let (large_outcomes, lane_results) =
+        tokio::join!(large_groups, futures::future::join_all(lane_runs),);
+    let mut outcomes = large_outcomes?;
+    for lane_result in lane_results {
+        let (lane_id, outcome) = lane_result?;
+        outcomes.insert(lane_id, outcome);
+    }
+    for lane_id in config.enabled_lanes() {
+        let outcome = outcomes
+            .remove(&lane_id)
+            .ok_or_else(|| Error::Model(format!("missing outcome for {lane_id}")))?;
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a
@@ -1926,59 +1981,48 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let (summary, summary_spend, summary_transcript) =
-        crate::review_timing::measure(timing.as_ref(), "summary", async {
-            let full_pr_paths: Vec<String> =
-                context.files.iter().map(|file| file.path.clone()).collect();
-            if config.summary.enabled {
-                if summary_generation_needed(config, &diffs)
-                    && execution.execution().refusal_for_new_work().is_none()
-                {
-                    let (summary, spend, transcript) = crate::summary::generate_with_input(
-                        model.as_ref(),
-                        config,
-                        &context.pull_request,
-                        crate::summary::SummaryGenerationInput {
-                            diffs: &diffs,
-                            full_pr_paths: &full_pr_paths,
-                            full_pr_diffstat: crate::summary::SummaryDiffstat {
-                                files: context.files.len(),
-                                additions: context.files.iter().map(|file| file.additions).sum(),
-                                deletions: context.files.iter().map(|file| file.deletions).sum(),
-                            },
-                            previous_reviewed_head: remembered
-                                .as_ref()
-                                .map(|state| state.head_sha.as_str()),
-                            lanes: &lanes,
-                            prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
-                            prior_transcript: stored
-                                .as_ref()
-                                .map(|state| state.summary_transcript.as_slice())
-                                .unwrap_or_default(),
+    let summary_future = crate::review_timing::measure(timing.as_ref(), "summary", async {
+        let full_pr_paths: Vec<String> =
+            context.files.iter().map(|file| file.path.clone()).collect();
+        if config.summary.enabled {
+            if summary_generation_needed(config, &diffs)
+                && execution.execution().refusal_for_new_work().is_none()
+            {
+                let (summary, spend, transcript) = crate::summary::generate_with_input(
+                    model.as_ref(),
+                    config,
+                    &context.pull_request,
+                    crate::summary::SummaryGenerationInput {
+                        diffs: &diffs,
+                        full_pr_paths: &full_pr_paths,
+                        full_pr_diffstat: crate::summary::SummaryDiffstat {
+                            files: context.files.len(),
+                            additions: context.files.iter().map(|file| file.additions).sum(),
+                            deletions: context.files.iter().map(|file| file.deletions).sum(),
                         },
-                    )
-                    .await;
-                    (Some(summary), spend, transcript)
-                } else {
-                    (
-                        Some(crate::summary::deterministic_with_paths(
-                            config,
-                            &context.pull_request,
-                            &diffs,
-                            &full_pr_paths,
-                            &lanes,
-                            stored.as_ref().and_then(|state| state.summary.as_ref()),
-                        )),
-                        Spend::default(),
-                        stored
+                        previous_reviewed_head: remembered
                             .as_ref()
-                            .map(|state| state.summary_transcript.clone())
+                            .map(|state| state.head_sha.as_str()),
+                        lanes: &lanes,
+                        prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
+                        prior_transcript: stored
+                            .as_ref()
+                            .map(|state| state.summary_transcript.as_slice())
                             .unwrap_or_default(),
-                    )
-                }
+                    },
+                )
+                .await;
+                (Some(summary), spend, transcript)
             } else {
                 (
-                    None,
+                    Some(crate::summary::deterministic_with_paths(
+                        config,
+                        &context.pull_request,
+                        &diffs,
+                        &full_pr_paths,
+                        &lanes,
+                        stored.as_ref().and_then(|state| state.summary.as_ref()),
+                    )),
                     Spend::default(),
                     stored
                         .as_ref()
@@ -1986,9 +2030,81 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                         .unwrap_or_default(),
                 )
             }
-        })
-        .await;
+        } else {
+            (
+                None,
+                Spend::default(),
+                stored
+                    .as_ref()
+                    .map(|state| state.summary_transcript.clone())
+                    .unwrap_or_default(),
+            )
+        }
+    });
+
+    // These three artifacts have independent inputs after the lane outcomes
+    // are folded. Run their model calls together; each call still enters the
+    // same review budget and physical dispatch control.
+    let resolved: std::collections::BTreeSet<String> = lanes
+        .iter()
+        .flat_map(|lane| lane.resolved.iter().cloned())
+        .collect();
+    let threads_future = crate::review_timing::measure(timing.as_ref(), "threads", async {
+        // At the absolute soft cutoff, retain deterministic thread decisions
+        // but do not start a new advisory model call.
+        let thread_model = execution
+            .execution()
+            .refusal_for_new_work()
+            .is_none()
+            .then_some(model.as_ref());
+        match crate::threads::plan(forge, thread_model, config, repo, number, &resolved).await {
+            Ok(result) => result,
+            // Housekeeping must never cost a review its verdict.
+            Err(err) => {
+                tracing::warn!(%err, "could not plan thread resolution");
+                (Default::default(), Spend::default())
+            }
+        }
+    });
+    let wireframe_future = crate::review_timing::measure(timing.as_ref(), "wireframe", async {
+        if config.wireframe.enabled && execution.execution().refusal_for_new_work().is_none() {
+            let outcome = crate::wireframe::build(
+                &crate::wireframe::WireframeInputs {
+                    diffs: &diffs,
+                    max_screens: config.wireframe.max_screens,
+                    max_width: config.wireframe.max_width,
+                    max_height: config.wireframe.max_height,
+                    model: config.model_for_workload(crate::config::types::Workload::Wireframe),
+                    max_tokens: config.models.max_tokens,
+                },
+                model.as_ref(),
+            )
+            .await;
+            match outcome {
+                Ok(outcome) => Ok::<_, Error>((Some(outcome.set), outcome.spend)),
+                // Optional artifacts must not discard a review already made.
+                Err(Error::ModelExecutionRefused {
+                    refusal:
+                        crate::ports::model_execution::ModelExecutionRefusal::CallLimit
+                        | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
+                        | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline,
+                    ..
+                }) => Ok((None, Spend::default())),
+                Err(err) => Err(err),
+            }
+        } else {
+            // `None` leaves a previously published gallery alone. A partial
+            // review must not replace it with content from an incomplete run.
+            Ok::<_, Error>((None, Spend::default()))
+        }
+    });
+    let ((summary, summary_spend, summary_transcript), (threads, thread_spend), wireframe_result) =
+        tokio::join!(summary_future, threads_future, wireframe_future);
+    let (wireframe, wireframe_spend) = wireframe_result?;
+    // Fold shared spend in a stable stage order, independent of completion.
     spend.merge(summary_spend);
+    spend.merge(thread_spend);
+    spend.merge(wireframe_spend);
     if spend.cost_usd() > config.models.budget_usd_per_pr {
         return Err(Error::Budget {
             spent: spend.cost_usd(),
@@ -2060,93 +2176,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         }
     }
 
-    // The review agents received the prior findings and the new diff. Their
-    // explicit `resolved` declarations are advisory evidence that the new code
-    // fixes a thread; `threads` also requires GitHub to mark that thread
-    // outdated before it can be closed.
-    let resolved: std::collections::BTreeSet<String> = lanes
-        .iter()
-        .flat_map(|lane| lane.resolved.iter().cloned())
-        .collect();
-    let threads = crate::review_timing::measure(timing.as_ref(), "threads", async {
-        // At the absolute soft cutoff, retain deterministic thread decisions
-        // but do not start a new advisory model call.
-        let thread_model = execution
-            .execution()
-            .refusal_for_new_work()
-            .is_none()
-            .then_some(model.as_ref());
-        match crate::threads::plan(forge, thread_model, config, repo, number, &resolved).await {
-            Ok((plan, thread_spend)) => {
-                spend.merge(thread_spend);
-                plan
-            }
-            // Housekeeping must never cost a review its verdict.
-            Err(err) => {
-                tracing::warn!(%err, "could not plan thread resolution");
-                Default::default()
-            }
-        }
-    })
-    .await;
-
     // The change map. Built last, from the findings that survived, so the
     // diagram marks the behaviours the review will actually comment on. It
     // makes no model call and cannot fail the review: `change_map` returns
     // `None` for a map nobody asked for and degrades to a graph-less picture
     // for one the store would not answer.
     let overview = change_map(config, &changed_neighbourhood, &diffs, &lanes);
-
-    // The ASCII wireframe gallery: what UI screens and modals this pull
-    // request adds, removes or changes, read from the diff alone. One cheap
-    // model call, independent of `src/preview` end to end — see
-    // `docs/modules/wireframe/README.md`.
-    let (wireframe, wireframe_spend) =
-        crate::review_timing::measure(timing.as_ref(), "wireframe", async {
-            if config.wireframe.enabled && execution.execution().refusal_for_new_work().is_none() {
-                let outcome = crate::wireframe::build(
-                    &crate::wireframe::WireframeInputs {
-                        diffs: &diffs,
-                        max_screens: config.wireframe.max_screens,
-                        max_width: config.wireframe.max_width,
-                        max_height: config.wireframe.max_height,
-                        model: config.model_for_workload(crate::config::types::Workload::Wireframe),
-                        max_tokens: config.models.max_tokens,
-                    },
-                    model.as_ref(),
-                )
-                .await;
-                match outcome {
-                    Ok(outcome) => Ok::<_, Error>((Some(outcome.set), outcome.spend)),
-                    // A physical permit can refuse after this preflight (for
-                    // example, when a sibling just used the last call). These
-                    // optional post-review artifacts must not discard the
-                    // review that already completed.
-                    Err(Error::ModelExecutionRefused {
-                        refusal:
-                            crate::ports::model_execution::ModelExecutionRefusal::CallLimit
-                            | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
-                            | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline,
-                        ..
-                    }) => Ok((None, Spend::default())),
-                    Err(err) => Err(err),
-                }
-            } else {
-                // `None` leaves a previously published gallery alone. A
-                // partial review after the cutoff must not replace it with
-                // content generated from an incomplete run.
-                Ok::<_, Error>((None, Spend::default()))
-            }
-        })
-        .await?;
-    spend.merge(wireframe_spend);
-    if spend.cost_usd() > config.models.budget_usd_per_pr {
-        return Err(Error::Budget {
-            spent: spend.cost_usd(),
-            limit: config.models.budget_usd_per_pr,
-            usage: None,
-        });
-    }
 
     let prior_findings = prior_titles
         .into_iter()
@@ -4185,6 +4220,570 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    /// A panel model whose lane calls can be held at a barrier or delayed to
+    /// expose scheduling decisions made by the complete review path.
+    struct ReviewSchedulingModel {
+        inner: MockModel,
+        barrier: Option<Arc<tokio::sync::Barrier>>,
+        barrier_arrivals: std::sync::atomic::AtomicUsize,
+        optional_seen: Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
+        optional_changed: Arc<tokio::sync::Notify>,
+        critique_delay: std::time::Duration,
+        security_delay: std::time::Duration,
+        execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+        supports_execution_control: bool,
+        review_budget_enabled: Arc<std::sync::atomic::AtomicBool>,
+        review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
+        scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ReviewSchedulingModel {
+        fn new() -> Self {
+            Self {
+                inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})).with_usage(
+                    Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        calls_attempted: 1,
+                        calls_succeeded: 1,
+                        cost_usd: 0.01,
+                        ..Usage::default()
+                    },
+                ),
+                barrier: None,
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
+                optional_seen: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+                optional_changed: Arc::new(tokio::sync::Notify::new()),
+                critique_delay: std::time::Duration::ZERO,
+                security_delay: std::time::Duration::ZERO,
+                execution: None,
+                supports_execution_control: true,
+                review_budget_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                review_budget_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                scheduled_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        async fn schedule(
+            &self,
+            request: &crate::ports::model::ModelRequest,
+        ) -> Result<(
+            bool,
+            Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>,
+        )> {
+            let delay = match request.schema_name.as_str() {
+                "tinysweeper_critique" => self.critique_delay,
+                "tinysweeper_security" => self.security_delay,
+                "tinysweeper_tests" => std::time::Duration::ZERO,
+                "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe" => {
+                    std::time::Duration::ZERO
+                }
+                _ => return Ok((false, None)),
+            };
+            let permit =
+                if let Some(control) = &self.execution {
+                    let permit = control.acquire().await.map_err(|refusal| {
+                        Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        }
+                    })?;
+                    permit
+                        .mark_dispatched()
+                        .map_err(|refusal| Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        })?;
+                    Some(permit)
+                } else {
+                    None
+                };
+            if self
+                .review_budget_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && self
+                    .review_budget_remaining
+                    .try_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |remaining| remaining.checked_sub(1),
+                    )
+                    .is_err()
+            {
+                return Err(Error::Budget {
+                    spent: 0.06,
+                    limit: 0.06,
+                    usage: None,
+                });
+            }
+            self.scheduled_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let active = self
+                .active
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.peak
+                .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+            let optional_schema = matches!(
+                request.schema_name.as_str(),
+                "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe"
+            )
+            .then_some(request.schema_name.as_str());
+            if let Some(schema) = optional_schema {
+                self.optional_seen.lock().await.insert(schema.to_string());
+                self.optional_changed.notify_waiters();
+                loop {
+                    let changed = self.optional_changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    let all_present = {
+                        let seen = self.optional_seen.lock().await;
+                        [
+                            "review_summary",
+                            "tinysweeper_thread_resolution",
+                            "tinysweeper_wireframe",
+                        ]
+                        .iter()
+                        .all(|schema| seen.contains(*schema))
+                    };
+                    if all_present {
+                        break;
+                    }
+                    changed.await;
+                }
+            } else if let Some(barrier) = &self.barrier {
+                let arrival = self
+                    .barrier_arrivals
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if arrival < 2 {
+                    barrier.wait().await;
+                }
+            }
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            Ok((true, permit))
+        }
+
+        async fn invoke(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            let requested_model = request.model.clone();
+            let (lane_request, permit) = self.schedule(&request).await?;
+            let result = self.inner.complete(request).await;
+            if lane_request {
+                self.active
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if let (Some(_), Some(control)) = (&permit, &self.execution) {
+                    let (outcome, answered_model, usage) = match &result {
+                        Ok(response) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
+                            Some(response.model.clone()),
+                            Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                                input_tokens: response.usage.input_tokens,
+                                output_tokens: response.usage.output_tokens,
+                                reasoning_tokens: response.usage.reasoning_tokens,
+                                cached_tokens: response.usage.cached_tokens,
+                                cost_usd: Some(response.usage.cost_usd),
+                            }),
+                        ),
+                        Err(_) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Failed,
+                            None,
+                            None,
+                        ),
+                    };
+                    control.on_terminal(crate::ports::model_execution::ModelExecutionTerminal {
+                        requested_model,
+                        answered_model,
+                        outcome,
+                        refused: false,
+                        usage,
+                    });
+                }
+            }
+            drop(permit);
+            result
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Model for ReviewSchedulingModel {
+        async fn complete(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            self.invoke(request).await
+        }
+
+        async fn review(
+            &self,
+            request: crate::ports::model::ModelRequest,
+            tree: &dyn crate::ports::tree::TreeReader,
+            policy: &crate::config::types::LookupPolicy,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            let requested_model = request.model.clone();
+            let (lane_request, permit) = self.schedule(&request).await?;
+            let result = self.inner.review(request, tree, policy).await;
+            if lane_request {
+                self.active
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if let (Some(_), Some(control)) = (&permit, &self.execution) {
+                    let (outcome, answered_model, usage) = match &result {
+                        Ok(response) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
+                            Some(response.model.clone()),
+                            Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                                input_tokens: response.usage.input_tokens,
+                                output_tokens: response.usage.output_tokens,
+                                reasoning_tokens: response.usage.reasoning_tokens,
+                                cached_tokens: response.usage.cached_tokens,
+                                cost_usd: Some(response.usage.cost_usd),
+                            }),
+                        ),
+                        Err(_) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Failed,
+                            None,
+                            None,
+                        ),
+                    };
+                    control.on_terminal(crate::ports::model_execution::ModelExecutionTerminal {
+                        requested_model,
+                        answered_model,
+                        outcome,
+                        refused: false,
+                        usage,
+                    });
+                }
+            }
+            drop(permit);
+            result
+        }
+
+        fn with_execution_control(
+            &self,
+            control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+        ) -> Option<Arc<dyn Model>> {
+            if !self.supports_execution_control {
+                return None;
+            }
+            Some(Arc::new(Self {
+                inner: self.inner.clone(),
+                barrier: self.barrier.clone(),
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(
+                    self.barrier_arrivals
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                ),
+                optional_seen: self.optional_seen.clone(),
+                optional_changed: self.optional_changed.clone(),
+                critique_delay: self.critique_delay,
+                security_delay: self.security_delay,
+                execution: Some(control),
+                supports_execution_control: true,
+                review_budget_enabled: self.review_budget_enabled.clone(),
+                review_budget_remaining: self.review_budget_remaining.clone(),
+                scheduled_calls: self.scheduled_calls.clone(),
+                active: self.active.clone(),
+                peak: self.peak.clone(),
+            }))
+        }
+
+        fn complete_reports_physical_calls(&self) -> bool {
+            true
+        }
+        fn review_reports_physical_calls(&self) -> bool {
+            true
+        }
+
+        fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            self.review_budget_enabled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.review_budget_remaining.store(
+                (limit_usd * 100.0).floor() as usize,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Some(Arc::new(Self {
+                inner: self.inner.clone(),
+                barrier: self.barrier.clone(),
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(
+                    self.barrier_arrivals
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                ),
+                optional_seen: self.optional_seen.clone(),
+                optional_changed: self.optional_changed.clone(),
+                critique_delay: self.critique_delay,
+                security_delay: self.security_delay,
+                execution: self.execution.clone(),
+                supports_execution_control: self.supports_execution_control,
+                review_budget_enabled: self.review_budget_enabled.clone(),
+                review_budget_remaining: self.review_budget_remaining.clone(),
+                scheduled_calls: self.scheduled_calls.clone(),
+                active: self.active.clone(),
+                peak: self.peak.clone(),
+            }))
+        }
+    }
+
+    fn scheduling_config() -> Config {
+        let mut config = config();
+        config.review.lanes = vec!["critique".into(), "security".into()];
+        config.review.passes = 1;
+        config.council.enabled = false;
+        config.models.agentic_reviewers = false;
+        config.summary.enabled = false;
+        config.wireframe.enabled = false;
+        config.overview.enabled = false;
+        config
+    }
+
+    #[tokio::test]
+    async fn enabled_lanes_overlap_in_the_review_path() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let config = scheduling_config();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            review(&forge, model_trait, &config, &repo(), 7),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "the critique and security model calls must both reach the barrier"
+        );
+        let proposal = result.unwrap().expect("review succeeds");
+        assert_eq!(proposal.lanes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn all_enabled_lanes_share_eight_physical_dispatch_slots() {
+        let files = (0..10)
+            .map(|index| ChangedFile {
+                path: format!("src/{index}.rs"),
+                status: FileStatus::Modified,
+                patch: Some(format!("@@ -0,0 +1 @@\n+fn file_{index}() {{}}\n")),
+                ..ChangedFile::default()
+            })
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.critique_delay = std::time::Duration::from_millis(15);
+        model.security_delay = std::time::Duration::from_millis(15);
+        let peak = model.peak.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let config = scheduling_config();
+
+        let proposal = review(&forge, model_trait, &config, &repo(), 7)
+            .await
+            .expect("review succeeds");
+
+        assert_eq!(proposal.lanes.len(), 2);
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "both lanes must fill, but never exceed, the review-wide dispatch cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn opaque_models_still_share_the_review_dispatch_limit() {
+        let files = (0..10)
+            .map(|index| ChangedFile {
+                path: format!("src/{index}.rs"),
+                status: FileStatus::Modified,
+                patch: Some(format!("@@ -0,0 +1 @@\n+fn file_{index}() {{}}\n")),
+                ..ChangedFile::default()
+            })
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.supports_execution_control = false;
+        model.critique_delay = std::time::Duration::from_millis(15);
+        model.security_delay = std::time::Duration::from_millis(15);
+        let peak = model.peak.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+
+        review(&forge, model_trait, &scheduling_config(), &repo(), 7)
+            .await
+            .expect("review succeeds with an opaque model");
+
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "the compatibility path must bound logical calls without physical admission hooks"
+        );
+    }
+
+    #[tokio::test]
+    async fn lane_results_keep_the_configured_order_when_completion_times_differ() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.critique_delay = std::time::Duration::from_millis(40);
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        // `enabled_lanes` defines the canonical lane order independently of
+        // the order in which config names are supplied.
+        config.review.lanes = vec!["security".into(), "critique".into()];
+
+        let proposal = review(&forge, model_trait, &config, &repo(), 7)
+            .await
+            .expect("review succeeds");
+
+        assert_eq!(
+            proposal
+                .lanes
+                .iter()
+                .map(|lane| lane.lane)
+                .collect::<Vec<_>>(),
+            vec![LaneId::Critique, LaneId::Security]
+        );
+    }
+
+    #[tokio::test]
+    async fn large_mode_overlaps_ranked_groups_with_independent_lanes() {
+        let files = (0..30)
+            .map(|index| {
+                changed_file(
+                    &format!("src/large_{index:02}.rs"),
+                    &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
+                )
+            })
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        config.review.lanes = vec!["critique".into(), "tests".into()];
+        config.review.large_pr.enabled = true;
+        config.review.large_pr.files = 1;
+        config.review.large_pr.max_groups = 1;
+        config.review.large_pr.max_calls = 8;
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            review_with_tree_observed(
+                &forge,
+                model_trait,
+                &config,
+                &repo(),
+                7,
+                None,
+                None,
+                None,
+                None,
+                Some(timing.clone()),
+            ),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "the selected Large-mode critique group and tests lane must overlap"
+        );
+        let proposal = result.unwrap().expect("Large-mode review succeeds");
+        assert_eq!(proposal.lanes.len(), 2);
+        assert!(timing.snapshot().lanes_ms.contains_key("critique"));
+    }
+
+    #[tokio::test]
+    async fn summary_threads_and_wireframe_overlap_after_lanes_finish() {
+        let files = vec![
+            rust_file(),
+            ChangedFile {
+                path: "app/src/Button.tsx".into(),
+                status: FileStatus::Modified,
+                patch: Some(
+                    "@@ -0,0 +1,3 @@\n+export function Button() {\n+  return <button>Save</button>;\n+}\n".into(),
+                ),
+                ..ChangedFile::default()
+            },
+        ];
+        let forge = forge_with(files, vec![]).with_review_threads(
+            7,
+            vec![ReviewThread {
+                id: "PRRT_needs_human_reply".into(),
+                is_resolved: false,
+                is_outdated: false,
+                resolved_by_has_write_access: false,
+                comments: vec![
+                    ThreadComment {
+                        author: "tinysweeper[bot]".into(),
+                        body: "**Review this changed behavior**".into(),
+                        bot: true,
+                        maintainer: false,
+                    },
+                    ThreadComment {
+                        author: "maintainer".into(),
+                        body: "This behavior is intentional.".into(),
+                        bot: false,
+                        maintainer: true,
+                    },
+                ],
+            }],
+        );
+        let model = ReviewSchedulingModel::new();
+        let optional_seen = model.optional_seen.clone();
+        let scheduled_calls = model.scheduled_calls.clone();
+        let budget_remaining = model.review_budget_remaining.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        config.review.lanes = vec!["critique".into()];
+        config.summary.enabled = true;
+        config.wireframe.enabled = true;
+        config.threads.resolve_fixed = true;
+        config.threads.ask_model = true;
+        config.models.budget_usd_per_pr = 0.061;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            review(&forge, model_trait, &config, &repo(), 7),
+        )
+        .await;
+        if result.is_err() {
+            panic!(
+                "independent optional artifacts did not overlap: {:?}",
+                *optional_seen.lock().await
+            );
+        }
+        let result = result.unwrap().expect("review succeeds");
+
+        assert_eq!(
+            *optional_seen.lock().await,
+            [
+                "review_summary".to_string(),
+                "tinysweeper_thread_resolution".to_string(),
+                "tinysweeper_wireframe".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+        let calls = scheduled_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            calls, 6,
+            "the lanes and optional stages share one six-call budget"
+        );
+        assert_eq!(
+            budget_remaining.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(result.usage().calls_attempted, calls as u64);
+        assert!((result.usage().cost_usd - 0.06).abs() < 1e-9);
+        assert!(result.summary.is_some());
+    }
+
     #[derive(Clone)]
     struct TimingLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
     impl std::io::Write for TimingLogWriter {
@@ -4271,13 +4870,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_deadline_keeps_the_partial_timing_record_and_outcome() {
-        struct SlowModel;
+        struct SlowModel(Arc<std::sync::atomic::AtomicBool>);
         #[async_trait::async_trait]
         impl Model for SlowModel {
             async fn complete(
                 &self,
                 _request: crate::ports::model::ModelRequest,
             ) -> Result<crate::ports::model::ModelResponse> {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 unreachable!("deadline cancels the slow model")
             }
@@ -4287,9 +4887,10 @@ mod tests {
         let repo = repo();
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
-        let future = review_with_tree_observed(
+        let model_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut future = Box::pin(review_with_tree_observed(
             &forge,
-            Arc::new(SlowModel),
+            Arc::new(SlowModel(model_started.clone())),
             &config,
             &repo,
             7,
@@ -4298,7 +4899,12 @@ mod tests {
             None,
             None,
             Some(timing.clone()),
-        );
+        ));
+        assert!(matches!(
+            futures::poll!(future.as_mut()),
+            std::task::Poll::Pending
+        ));
+        assert!(model_started.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(20), future)
                 .await

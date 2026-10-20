@@ -144,7 +144,18 @@ fn write_audit(path: &Path, audit: &Audit, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Child, Command};
+
+    struct ChildGuard(Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if matches!(self.0.try_wait(), Ok(None)) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
 
     #[test]
     fn reservations_count_actual_calls_and_crashes_keep_the_full_reservation() {
@@ -199,7 +210,7 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("tempdir");
         let ready_path = directory.path().join("child-ready");
-        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+        let mut child = ChildGuard(Command::new(std::env::current_exe().expect("test executable"))
             .args([
                 "--exact",
                 "eval::recording_budget::tests::reservation_lock_holder_child",
@@ -207,20 +218,20 @@ mod tests {
             ])
             .env(CHILD_DIRECTORY, directory.path())
             .spawn()
-            .expect("start lock holder");
+            .expect("start lock holder"));
         for _ in 0..500 {
             if ready_path.exists() {
                 break;
             }
-            if let Some(status) = child.try_wait().expect("poll lock holder") {
+            if let Some(status) = child.0.try_wait().expect("poll lock holder") {
                 panic!("lock holder exited before acquiring its lock ({status})");
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ready_path.exists(), "lock holder acquired its reservation");
 
-        child.kill().expect("terminate lock holder");
-        child.wait().expect("wait for terminated child");
+        child.0.kill().expect("terminate lock holder");
+        child.0.wait().expect("wait for terminated child");
 
         let remaining = Reservation::begin(directory.path(), 8, 12)
             .expect("OS releases the process lock after termination");

@@ -6774,9 +6774,9 @@ mod tests {
             run_context.execution().soft_deadline(),
             started_at + Duration::from_secs(80)
         );
-        let (held_tx, mut held_rx) = watch::channel(Vec::<String>::new());
+        let (held_tx, held_rx) = watch::channel(Vec::<String>::new());
         let (release_fast_tx, _) = watch::channel(false);
-        let (falsified_tx, mut falsified_rx) = watch::channel(false);
+        let (falsified_tx, falsified_rx) = watch::channel(false);
         let model = Arc::new(ClockModel {
             control: None,
             attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -6870,7 +6870,6 @@ mod tests {
             let checkout_repo = repo.clone();
             let review_repo = repo.clone();
             let context = Arc::clone(&run_context);
-            let proposal_tx = proposal_tx;
             tokio::spawn(async move {
                 review_with_paid_budget_and_status(
                     store.as_ref(),

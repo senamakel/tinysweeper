@@ -119,9 +119,25 @@ or a recall percentage. The earlier `oc-2313-round-boundary-leaks` case also
 remains in the corpus; its prior 0/2 result is a historical replay result, not
 a score for these new cases.
 
+The qualified issue identifiers and local case IDs are:
+
+| External issue | Case ID |
+| --- | --- |
+| `tinymcp-102-memory-pending-store-debug-leaks-oauth-state` | `tm-0102-memory-pending-debug-state` |
+| `openhuman-8061-standalone-local-only-policy-not-installed` | `oh-8061-standalone-local-only-policy` |
+| `openhuman-8061-external-speech-redirects-leak-content-to-undisclosed-origin` | `oh-8061-speech-redirect-origin` |
+| `openhuman-8061-public-privacy-docs-contradict-new-enforcement` | `oh-8061-privacy-docs-contract-mismatch` |
+| `openhuman-8076-unreadable-credential-read-does-not-abort-migration` | `oh-8076-credential-read-failure-migration` |
+
 The new cases select only the `critique` lane. Any future recording measures
 that lane on the frozen diff and read-only source lookups; it does not measure a
 full review across every lane.
+
+Follow the [recording and 48-hour observation runbook](../docs/modules/eval/recording-and-48h-runbook.md)
+for bounded recording, offline replay proof, recall reporting, and deployment
+metrics. Do not publish recall until all five have real strict-hit recordings
+and completed reviews; do not report 48-hour rollout numbers before the full
+window has elapsed.
 
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations

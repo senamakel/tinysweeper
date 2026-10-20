@@ -305,7 +305,8 @@ impl LogicalUsageModel {
         match result {
             Ok(response) => {
                 let mut usage = response.usage;
-                if usage.calls_attempted
+                if usage
+                    .calls_attempted
                     .saturating_add(usage.calls_succeeded)
                     .saturating_add(usage.calls_refused)
                     .saturating_add(usage.calls_errored)
@@ -536,7 +537,9 @@ impl Proposal {
     /// serializable and old proposals still have to load.
     pub fn usage(&self) -> Usage {
         let completion = self.completion_accounting.as_ref();
-        let details = completion.map(|accounting| accounting.usage).or(self.logical_usage);
+        let details = completion
+            .map(|accounting| accounting.usage)
+            .or(self.logical_usage);
         Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -1810,11 +1813,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     if let Some(timing) = &timing {
         record_file_coverage(timing, &context, &uninspected, &lanes);
     }
-    let accounting = proposal_accounting(
-        &execution,
-        reports_raw_completion_usage,
-        &spend.models,
-    );
+    let accounting = proposal_accounting(&execution, reports_raw_completion_usage, &spend.models);
     Ok(Proposal {
         version: PROPOSAL_VERSION,
         repo: repo.to_string(),
@@ -5199,11 +5198,27 @@ mod tests {
         assert_eq!(usage.calls_errored, 0);
         assert_eq!(usage.input_tokens, 22);
         assert_eq!(usage.cost_usd, 0.25);
-        assert!(!proposal
+        assert!(
+            !proposal
+                .completion_accounting
+                .as_ref()
+                .expect("raw accounting")
+                .complete
+        );
+        let completion = proposal
             .completion_accounting
             .as_ref()
-            .expect("raw accounting")
-            .complete);
+            .expect("raw accounting");
+        assert_eq!(completion.committed_calls, 3);
+        assert_eq!(completion.terminal_count, 2);
+        assert_eq!(
+            completion.committed_calls as u64 - completion.terminal_count,
+            1,
+            "one committed call is still awaiting its provider terminal"
+        );
+        let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
+        assert_eq!(serialized["completion_accounting"]["committed_calls"], 3);
+        assert_eq!(serialized["completion_accounting"]["terminal_count"], 2);
 
         response_gate.add_permits(1);
         pending

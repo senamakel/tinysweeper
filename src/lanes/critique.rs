@@ -278,7 +278,7 @@ impl Critique {
         // falsifier gets only its own diff and mechanically related excerpts.
         let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
 
-        let review = |group| {
+        let review = |group: crate::lanes::grouping::FileGroup| {
             let llm = llm.clone();
             let input = &input;
             let changed_paths = &changed_paths;

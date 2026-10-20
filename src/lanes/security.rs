@@ -350,7 +350,7 @@ impl Security {
 
         let changed_paths = input.changed_paths();
 
-        let review = |group| {
+        let review = |group: crate::lanes::grouping::FileGroup| {
             let llm = llm.clone();
             let config = input.config;
             let repo_policy = input.repo_policy;

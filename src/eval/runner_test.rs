@@ -373,7 +373,26 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
     assert_eq!(audit["reservations"][1]["reserved_calls"], 32);
     assert_eq!(audit["reservations"][1]["actual_calls"], 32);
     assert!(!stale_tail.exists(), "old takes must leave the replay directory");
-    let _ = outcome;
+    assert_eq!(
+        outcome.execution_limits.max_physical_calls_per_case,
+        Some(40),
+        "the operator's requested cumulative ceiling remains visible"
+    );
+    assert_eq!(
+        outcome.execution_limits.effective_case_budgets[0]
+            .max_physical_calls_per_case,
+        Some(32),
+        "identity records the allowance actually admitted after prior attempts"
+    );
+    let limits = serde_json::to_value(&outcome.execution_limits).expect("limits serialize");
+    assert_eq!(limits["max_physical_calls_per_case"], 40);
+    assert_eq!(limits["effective_case_budgets"][0]["max_physical_calls_per_case"], 32);
+    let archived = audit_dir.join("prior-takes");
+    assert!(archived.exists(), "replaced takes retain attempt provenance");
+    assert!(std::fs::read_dir(archived)
+        .expect("archive listing")
+        .next()
+        .is_some());
 }
 
 #[tokio::test]

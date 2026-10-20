@@ -100,6 +100,10 @@ impl Reservation {
         &self.id
     }
 
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     /// Record observed committed dispatches. An impossible overrun stays in
     /// the audit and is returned as a hard error instead of being clamped.
     pub(crate) fn finish(self, actual_calls: usize) -> Result<()> {

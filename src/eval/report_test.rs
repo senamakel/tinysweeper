@@ -255,6 +255,23 @@ fn changed_execution_limits_make_scorecards_incomparable() {
 }
 
 #[test]
+fn different_admitted_recording_allowances_make_scorecards_incomparable() {
+    let current = card(vec![case_score("ts-0001", 0, &[], 0)]);
+    let mut baseline = current.clone();
+    baseline
+        .execution_limits
+        .as_mut()
+        .expect("execution limits")
+        .effective_case_budgets[0]
+        .max_physical_calls_per_case = Some(32);
+
+    assert!(matches!(
+        compare(&current, &baseline, false),
+        Comparison::Incomparable(reason) if reason.contains("execution limits changed")
+    ));
+}
+
+#[test]
 fn legacy_scorecards_without_execution_limits_fail_closed() {
     let baseline = card(vec![case_score("ts-0001", 1, &[], 0)]);
     let mut legacy = card(vec![case_score("ts-0001", 1, &[], 0)]);

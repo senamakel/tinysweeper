@@ -134,7 +134,7 @@ pub async fn run(
         )));
     }
 
-    let execution_limits = effective_execution_limits(corpus, &config, options);
+    let mut execution_limits = effective_execution_limits(corpus, &config, options);
 
     // `--tree` names one checkout on disk, but every case in the run would
     // otherwise be handed the same one regardless of which repository or
@@ -161,6 +161,35 @@ pub async fn run(
             continue;
         }
 
+        let reservation = if options.record {
+            Some(crate::eval::recording_budget::Reservation::begin(
+                &corpus.root.join("recording-attempts").join(&case.case.id),
+                options
+                    .max_physical_calls_per_case
+                    .expect("recording cap validated"),
+                // The selected CLI ceiling is cumulative across reruns; the
+                // hard maximum only bounds which ceiling the operator may set.
+                options
+                    .max_physical_calls_per_case
+                    .expect("recording cap validated"),
+            )?)
+        } else {
+            None
+        };
+        if let Some(reservation) = &reservation {
+            let budget = execution_limits
+                .effective_case_budgets
+                .iter_mut()
+                .find(|budget| budget.case_id == case.case.id)
+                .expect("selected case has an execution budget");
+            budget.max_physical_calls_per_case = Some(reservation.reserved_calls());
+            archive_prior_takes(
+                &case.cassette_dir(&corpus.root),
+                &reservation.directory(),
+                reservation.id(),
+            )?;
+        }
+
         // A case whose cassette cannot be opened is scored as failed, not
         // dropped: the same rule `rescore` states below — a corpus that
         // silently scores fewer cases than it holds reports recall that is
@@ -177,21 +206,6 @@ pub async fn run(
                 )?);
                 continue;
             }
-        };
-        let reservation = if options.record {
-            Some(crate::eval::recording_budget::Reservation::begin(
-                &corpus.root.join("recording-attempts").join(&case.case.id),
-                options
-                    .max_physical_calls_per_case
-                    .expect("recording cap validated"),
-                // The selected CLI ceiling is cumulative across reruns; the
-                // hard maximum only bounds which ceiling the operator may set.
-                options
-                    .max_physical_calls_per_case
-                    .expect("recording cap validated"),
-            )?)
-        } else {
-            None
         };
         let started = Instant::now();
         // Lookups replay from the fixture, or record into it. A live tree
@@ -331,6 +345,7 @@ fn effective_execution_limits(
                     .min(case.case.budget.max_cost_usd)
                     .min(options.max_cost_usd / corpus.cases.len() as f64)
             }),
+            max_physical_calls_per_case: None,
         })
         .collect();
     ExecutionLimits {
@@ -452,6 +467,44 @@ fn open_cassette(
         Mode::Strict
     };
     Ok(Arc::new(Cassette::replay(dir, mode)?))
+}
+
+/// Move prior takes out of the active replay directory before a new recording.
+///
+/// This runs only after the persistent physical-call reservation succeeds, so
+/// a rejected rerun never changes the cassette. The attempt archive lives next
+/// to the append-only audit and is not loaded by cassette replay.
+fn archive_prior_takes(cassette_dir: &std::path::Path, audit_dir: &std::path::Path, id: &str) -> Result<()> {
+    let entries = match std::fs::read_dir(cassette_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(crate::error::Error::path(cassette_dir, err)),
+    };
+    let mut takes = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| crate::error::Error::path(cassette_dir, err))?;
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|extension| extension == "json") {
+            takes.push(path);
+        }
+    }
+    if takes.is_empty() {
+        return Ok(());
+    }
+    takes.sort();
+    let archive_dir = audit_dir.join("prior-takes").join(id);
+    std::fs::create_dir_all(&archive_dir)
+        .map_err(|err| crate::error::Error::path(&archive_dir, err))?;
+    for source in takes {
+        let destination = archive_dir.join(
+            source
+                .file_name()
+                .expect("take path has a filename"),
+        );
+        std::fs::rename(&source, &destination)
+            .map_err(|err| crate::error::Error::path(&source, err))?;
+    }
+    Ok(())
 }
 
 /// Re-score proposals already on disk, without calling anything.

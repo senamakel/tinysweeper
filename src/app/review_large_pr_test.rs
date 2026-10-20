@@ -27,7 +27,7 @@ fn changed_file(path: &str) -> ChangedFile {
         additions: 1,
         deletions: 1,
         patch: Some(format!(
-            "@@ -0,0 +1,1 @@\\n+fn {}() {{}}\\n",
+            "@@ -0,0 +1,1 @@\n+fn {}() {{}}\n",
             path.rsplit('/').next().unwrap().trim_end_matches(".rs")
         )),
         ..ChangedFile::default()

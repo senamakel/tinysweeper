@@ -33,6 +33,8 @@ use crate::ports::model::{Model, Spend, Usage};
 use crate::ports::tree::TreeReader;
 use crate::state::memory::MemoryState;
 
+const MAX_RECORDING_PHYSICAL_CALLS_PER_CASE: usize = 8;
+
 /// Failure metadata is separate from labels, so re-scoring uses current ground truth.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RecordedFailure {
@@ -54,6 +56,9 @@ pub struct RunOptions {
     /// Store prompts in the cassette. Off by default — a prompt embeds the
     /// reviewed repository's diff.
     pub record_prompts: bool,
+    /// Maximum physical model dispatches admitted for each recorded case.
+    /// Recording requires an explicit bound; reservations persist across runs.
+    pub max_physical_calls_per_case: Option<usize>,
     /// Stop admitting cases once known spend reaches this amount. Checked
     /// between cases, so the currently running case can take the total over it.
     ///
@@ -73,6 +78,7 @@ impl Default for RunOptions {
             record: false,
             loose: false,
             record_prompts: false,
+            max_physical_calls_per_case: Some(MAX_RECORDING_PHYSICAL_CALLS_PER_CASE),
             max_cost_usd: 5.0,
             tree: None,
         }
@@ -113,6 +119,16 @@ pub async fn run(
         return Err(crate::error::Error::config(
             "recording needs a live model; build with --features harness",
         ));
+    }
+    if options.record
+        && !matches!(
+            options.max_physical_calls_per_case,
+            Some(1..=MAX_RECORDING_PHYSICAL_CALLS_PER_CASE)
+        )
+    {
+        return Err(crate::error::Error::config(format!(
+            "recording requires --max-physical-calls-per-case between 1 and {MAX_RECORDING_PHYSICAL_CALLS_PER_CASE}"
+        )));
     }
 
     // `--tree` names one checkout on disk, but every case in the run would
@@ -157,6 +173,17 @@ pub async fn run(
                 continue;
             }
         };
+        let reservation = if options.record {
+            Some(crate::eval::recording_budget::Reservation::begin(
+                &case.cassette_dir(&corpus.root),
+                options
+                    .max_physical_calls_per_case
+                    .expect("recording cap validated"),
+                MAX_RECORDING_PHYSICAL_CALLS_PER_CASE,
+            )?)
+        } else {
+            None
+        };
         let started = Instant::now();
         // Lookups replay from the fixture, or record into it. A live tree
         // without `--record` would answer lookups the cassette never saw,
@@ -189,7 +216,17 @@ pub async fn run(
                 .min(case.case.budget.max_cost_usd)
                 .min(options.max_cost_usd / corpus.cases.len() as f64);
         }
-        let outcome = review_case(case, &case_config, cassette.clone(), tree).await;
+        let (outcome, physical_calls) = review_case(
+            case,
+            &case_config,
+            cassette.clone(),
+            tree,
+            reservation.as_ref().map(|r| r.reserved_calls()),
+        )
+        .await;
+        if let Some(reservation) = reservation {
+            reservation.finish(physical_calls)?;
+        }
         let wall = started.elapsed();
 
         if let Some(recording) = &recording {
@@ -271,7 +308,8 @@ async fn review_case(
     config: &Config,
     model: Arc<Cassette>,
     tree: &dyn TreeReader,
-) -> Result<Proposal> {
+    max_physical_calls: Option<usize>,
+) -> (Result<Proposal>, usize) {
     let forge = case.forge();
     let store = MemoryState::new();
     let repo = RepoId::parse(&case.case.provenance.repo).unwrap_or_else(|| RepoId {
@@ -279,18 +317,58 @@ async fn review_case(
         name: case.case.id.clone(),
     });
 
-    review_with_tree(
-        &forge,
-        model,
-        config,
-        &repo,
-        case.fixture.pull_request.number,
-        Some(&store),
-        None,
-        None,
-        Some(tree),
-    )
-    .await
+    if let Some(max_calls) = max_physical_calls {
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: Some(max_calls),
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let binding = execution.bind_model(model, config.models.budget_usd_per_pr);
+        #[cfg(not(test))]
+        if !binding.execution_control_bound {
+            return (Err(crate::error::Error::ReviewExecutionUnavailable), 0);
+        }
+        let outcome = crate::app::review::review_with_tree_observed_at_head_in_run(
+            &forge,
+            binding.model.clone(),
+            config,
+            &repo,
+            case.fixture.pull_request.number,
+            Some(&store),
+            None,
+            None,
+            Some(tree),
+            None,
+            execution.clone(),
+            None,
+        )
+        .await;
+        let calls = execution.execution().snapshot().committed_calls;
+        (outcome, calls)
+    } else {
+        (
+            review_with_tree(
+                &forge,
+                model,
+                config,
+                &repo,
+                case.fixture.pull_request.number,
+                Some(&store),
+                None,
+                None,
+                Some(tree),
+            )
+            .await,
+            0,
+        )
+    }
 }
 
 /// The configuration a corpus run is allowed to use.

@@ -105,8 +105,7 @@ impl crate::ports::model::Model for BudgetCaptureModel {
         &self,
         _request: crate::ports::model::ModelRequest,
     ) -> crate::error::Result<crate::ports::model::ModelResponse> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_without_usage {
             return Err(crate::error::Error::Model("unreported test charge".into()));
         }
@@ -117,10 +116,7 @@ impl crate::ports::model::Model for BudgetCaptureModel {
         })
     }
 
-    fn with_review_budget(
-        &self,
-        limit_usd: f64,
-    ) -> Option<Arc<dyn crate::ports::model::Model>> {
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn crate::ports::model::Model>> {
         self.roots.lock().expect("budget roots").push(limit_usd);
         Some(Arc::new(self.clone()))
     }

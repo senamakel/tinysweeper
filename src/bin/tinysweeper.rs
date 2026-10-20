@@ -328,6 +328,11 @@ enum EvalCommand {
         #[arg(long, default_value_t = 5.0)]
         max_cost_usd: f64,
 
+        /// Maximum physical model dispatches reserved per case while recording.
+        /// Reservations persist in each cassette directory across reruns.
+        #[arg(long, default_value_t = 8)]
+        max_physical_calls_per_case: usize,
+
         /// A checkout of the case's head, for the reviewer to look things
         /// up in while recording.
         ///
@@ -570,6 +575,7 @@ async fn run_eval(command: EvalCommand) -> Result<()> {
             record_prompts,
             loose,
             max_cost_usd,
+            max_physical_calls_per_case,
             tree,
         } => {
             let loaded =
@@ -586,6 +592,7 @@ async fn run_eval(command: EvalCommand) -> Result<()> {
                 record,
                 loose,
                 record_prompts,
+                max_physical_calls_per_case: Some(max_physical_calls_per_case),
                 max_cost_usd,
                 tree,
             };

@@ -40,8 +40,8 @@
 #[path = "committed_test.rs"]
 mod committed_test;
 pub mod corpus;
-pub mod report;
 mod recording_budget;
+pub mod report;
 pub mod runner;
 pub mod score;
 pub mod types;

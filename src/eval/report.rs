@@ -129,6 +129,22 @@ pub fn markdown(card: &Scorecard, baseline: Option<&Scorecard>, allow_drift: boo
         card.config_digest,
         card.cases.len()
     );
+    if let Some(limits) = &card.execution_limits {
+        let _ = writeln!(
+            out,
+            "selection `{}` · run ceiling ${:.2} · physical calls/case {} · {}{}",
+            limits.selected_case_ids.join(", "),
+            limits.max_cost_usd,
+            limits
+                .max_physical_calls_per_case
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "unbounded".into()),
+            if limits.recording { "recording" } else { "replay" },
+            if limits.loose_replay { " (loose)" } else { " (strict)" },
+        );
+    } else {
+        out.push_str("execution limits unknown (legacy scorecard)\n");
+    }
     if card.loose_replays > 0 {
         // Loud, because the alternative is a table of numbers describing a
         // prompt nobody is running.

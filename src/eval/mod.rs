@@ -52,4 +52,6 @@ pub use crate::eval::runner::{
     RunOptions, RunOutcome, read_scorecard, rescore, run, write_scorecard,
 };
 pub use crate::eval::score::score;
-pub use crate::eval::types::{Case, CaseScore, Fixture, Scorecard, Verdict};
+pub use crate::eval::types::{
+    Case, CaseScore, EffectiveCaseBudget, ExecutionLimits, Fixture, Scorecard, Verdict,
+};

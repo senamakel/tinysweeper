@@ -1019,6 +1019,23 @@ async fn execution_limits_capture_selected_cases_and_effective_run_ceilings() {
     assert!(base.execution_limits.effective_case_budgets.iter().all(|budget| {
         budget.budget_usd.is_none()
     }));
+    let recording_limits = super::effective_execution_limits(
+        &full,
+        &config(),
+        &RunOptions {
+            record: true,
+            max_cost_usd: 0.025,
+            ..RunOptions::default()
+        },
+    );
+    assert_eq!(
+        recording_limits
+            .effective_case_budgets
+            .iter()
+            .map(|budget| budget.budget_usd)
+            .collect::<Vec<_>>(),
+        [Some(0.0125), Some(0.0125)]
+    );
 }
 
 #[tokio::test]

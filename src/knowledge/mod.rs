@@ -200,6 +200,75 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn pinned_knowledge_survives_instruction_extraction_refused_at_soft_deadline() {
+        let forge = forge_with_agents(
+            "pinned_knowledge_survives_instruction_extraction_refused_at_soft_deadline: retain local context.",
+        );
+        let mock = MockModel::silent();
+        let model: Arc<dyn Model> = Arc::new(mock.clone());
+        let mut config = config();
+        config.knowledge.extract = true;
+        config.review.respect_agents_md = true;
+        config.knowledge.files = vec!["AGENTS.md".into()];
+        let store = MockKnowledgeStore::new();
+        store
+            .put(
+                &KnowledgeDoc::new(
+                    "pinned-before-extraction",
+                    KnowledgeScope::repo(repo().to_string()),
+                    "Curated guidance",
+                    "Preserve the curated convention when extraction cannot run.",
+                )
+                .pinned(),
+            )
+            .await
+            .expect("seed pinned context");
+
+        let started_at = tokio::time::Instant::now();
+        let execution = crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(100),
+                mode: crate::lanes::large_pr::ReviewMode::Large,
+                max_calls: Some(8),
+                soft_deadline_percent: 80,
+                drain_seconds: 5,
+            },
+        );
+        let bound = execution.bind_model(Arc::clone(&model), config.models.budget_usd_per_pr);
+
+        let prepared = prepare(
+            &config,
+            &repo(),
+            &["src/lib.rs".into()],
+            Some(&store as &dyn KnowledgeStore),
+        )
+        .await;
+        assert!(
+            prepared
+                .knowledge
+                .pinned
+                .contains("Preserve the curated convention when extraction cannot run.")
+        );
+        assert_eq!(prepared.instruction_files, vec!["AGENTS.md"]);
+
+        tokio::time::advance(std::time::Duration::from_secs(80)).await;
+        let (knowledge, usage) =
+            extract_prepared(prepared, &forge, &bound.model, &config, &repo(), "headsha").await;
+
+        assert!(
+            knowledge
+                .pinned
+                .contains("Preserve the curated convention when extraction cannot run.")
+        );
+        assert!(knowledge.extracted_rules.is_empty());
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cost_usd, 0.0);
+        assert_eq!(mock.calls(), 0, "refused extraction consumes no response");
+    }
+
     #[tokio::test]
     async fn a_repository_whose_only_policy_file_is_under_dot_github_is_still_read() {
         // The acceptance criterion of issue #37, end to end: nothing at the

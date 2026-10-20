@@ -144,7 +144,7 @@ fn write_audit(path: &Path, audit: &Audit, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::process::{Command, Stdio};
 
     #[test]
@@ -207,13 +207,24 @@ mod tests {
             ])
             .env(CHILD_DIRECTORY, directory.path())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("start lock holder");
         let mut ready = String::new();
         BufReader::new(child.stdout.take().expect("child stdout"))
             .read_line(&mut ready)
             .expect("read lock-holder marker");
-        assert_eq!(ready.trim(), "RESERVATION_HELD");
+        if ready.trim() != "RESERVATION_HELD" {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("child stderr")
+                .read_to_string(&mut stderr)
+                .expect("read child failure");
+            let status = child.wait().expect("wait for failed child");
+            panic!("lock holder exited before acquiring its lock ({status}): {stderr}");
+        }
 
         child.kill().expect("terminate lock holder");
         child.wait().expect("wait for terminated child");

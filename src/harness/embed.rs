@@ -451,6 +451,12 @@ impl openhuman_embed::budget::PhysicalDispatchPermit for GatewayExecutionPermit 
     fn mark_dispatched(&self) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
         self.0.mark_dispatched().map_err(dispatch_refusal)
     }
+
+    fn mark_physical_attempt(
+        &self,
+    ) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
+        self.0.mark_physical_attempt().map_err(dispatch_refusal)
+    }
 }
 
 fn execution_refusal_error(

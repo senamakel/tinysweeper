@@ -129,6 +129,12 @@ impl ReviewTiming {
         }))
     }
 
+    /// Drop the previous proposal snapshot when a retry starts. Observer
+    /// totals remain cumulative across attempts in the same worker run.
+    pub(crate) fn begin_attempt(&self) {
+        self.record(|record| record.finalized_usage = None);
+    }
+
     /// Measure a top-level phase and attach correlation fields.
     pub(crate) fn phase(&self, name: &'static str) -> PhaseGuard {
         let record = self.snapshot();

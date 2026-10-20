@@ -1308,6 +1308,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     execution: Arc<crate::app::review_execution::ReviewRunContext>,
     timing: Option<crate::review_timing::ReviewTiming>,
 ) -> Result<Proposal> {
+    if let Some(timing) = &timing {
+        timing.begin_attempt();
+    }
     let reports_raw_completion_usage = model.reports_raw_completion_usage();
     let logical_model: Arc<dyn Model> = Arc::new(LogicalUsageModel {
         inner: model,

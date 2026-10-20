@@ -171,6 +171,10 @@ async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
     let falsification_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut config = config();
     config.models.agentic_reviewers = true;
+    // This test pins the fixture-revision history lookup. A second adaptive
+    // pass would legitimately issue the same history query again after the
+    // high-severity response, so keep the probe to one review pass.
+    config.review.passes = 1;
 
     run(
         &corpus,

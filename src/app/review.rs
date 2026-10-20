@@ -4533,6 +4533,7 @@ mod tests {
         ));
         let model = execution.bind_model(model, 10.0).model.clone();
         let embedder = ChargedEmbedder;
+        let embed_model = embedder.signature().price_key();
         let index = crate::index::MockChunkIndex::new();
         let retriever = crate::retrieve::Retriever::new(&embedder, &index);
 
@@ -4956,6 +4957,7 @@ mod tests {
         assert_eq!(proposal.embed_tokens, 14);
         assert!((proposal.cost_usd - 1.7).abs() < 1e-9);
         assert_eq!(proposal.usage().calls_attempted, 3);
+        assert!(proposal.models.contains(&embed_model));
     }
 
     #[cfg(feature = "harness")]

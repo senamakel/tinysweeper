@@ -185,7 +185,7 @@ pub async fn run(
             budget.max_physical_calls_per_case = Some(reservation.reserved_calls());
             archive_prior_takes(
                 &case.cassette_dir(&corpus.root),
-                &reservation.directory(),
+                reservation.directory(),
                 reservation.id(),
             )?;
         }

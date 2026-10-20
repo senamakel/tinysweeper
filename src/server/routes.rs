@@ -6612,10 +6612,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_apply_check_failure_keeps_the_last_good_hub_report() {
-        use crate::app::review::{LaneProposal, PROPOSAL_VERSION, Proposal};
-        use crate::forge::types::{ChangedFile, CheckConclusion, PullRequest};
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId};
-        use crate::ports::forge::ForgeWrite;
+        use crate::harness::MockModel;
+        use crate::ports::forge::{ForgeRead, ForgeWrite};
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let repo = RepoId::parse("owner/repo").unwrap();
@@ -6628,61 +6628,87 @@ mod tests {
                 ..PullRequest::default()
             },
         );
-        state.files.insert(7, vec![ChangedFile::default()]);
+        state.files.insert(
+            7,
+            vec![
+                ChangedFile {
+                    path: "src/a.rs".into(),
+                    status: FileStatus::Modified,
+                    patch: Some("@@ -1 +1,2 @@\n fn a() {}\n+fn next_a() {}\n".into()),
+                    additions: 1,
+                    ..ChangedFile::default()
+                },
+                ChangedFile {
+                    path: "src/b.rs".into(),
+                    status: FileStatus::Modified,
+                    patch: Some("@@ -1 +1,2 @@\n fn b() {}\n+fn next_b() {}\n".into()),
+                    additions: 1,
+                    ..ChangedFile::default()
+                },
+            ],
+        );
         let forge = MockForge::with_state(state);
-        let config = Config::default();
-        let proposal = Proposal {
-            version: PROPOSAL_VERSION,
-            repo: repo.to_string(),
-            number: 7,
-            head_sha: "failed-apply-head".into(),
-            lanes: vec![LaneProposal {
-                lane: crate::lanes::LaneId::Critique,
-                check_name: "tinysweeper/critique".into(),
-                conclusion: CheckConclusion::Success,
-                summary: "Reviewed without findings.".into(),
-                completed: true,
-                findings: vec![],
-                noted: vec![],
-                context_degraded: false,
-                resolved: vec![],
-                pending: vec![],
-                skipped: None,
-                deduped: 0,
-                highest_severity: None,
-                usage: Default::default(),
-                models: vec![],
-                unanswered: vec![],
-                omissions: vec![],
-                coverage: None,
-                overflow: vec![],
-            }],
-            overview: None,
-            wireframe: None,
-            summary: None,
-            prior_findings: vec![],
-            unreviewed: vec![],
-            partial_review: None,
-            skipped: None,
-            cost_usd: 0.0,
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: 0,
-            embed_tokens: 0,
-            models: vec![],
-            completion_accounting: None,
-            logical_usage: None,
-            threads: Default::default(),
-        };
-
-        // Seed a trustworthy, completed report and the still-open umbrella
-        // check exactly as the worker has them before it tries to publish.
-        let last_good_report = crate::summary::render(&config, &proposal);
-        assert!(last_good_report.contains("# Tiny Sweeper review"));
-        let hub_comment_id = forge
-            .create_comment(&repo, 7, &last_good_report)
+        let model = Arc::new(MockModel::always(json!({
+            "summary": "A review completed successfully.",
+            "findings": [],
+            "resolved": []
+        })));
+        let mut config = Config::default();
+        config.review.lanes = vec!["critique".into()];
+        config.grouping.enabled = false;
+        config.summary.enabled = true;
+        config.overview.enabled = false;
+        config.automerge.enabled = false;
+        config.review.large_pr.files = 99;
+        let mut last_good = crate::app::review::review_with_tree(
+            &forge,
+            model.clone(),
+            &config,
+            &repo,
+            7,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the baseline review completes");
+        assert!(last_good.complete());
+        // The prior body is a real app-rendered publication, marked uniquely
+        // so the failed partial attempt cannot be mistaken for last-good data.
+        if let Some(summary) = last_good.summary.as_mut() {
+            summary.executive_summary = "LAST-GOOD-REPORT-ONLY".into();
+        }
+        crate::app::apply::apply(&forge, &forge, &config, &last_good, None)
             .await
-            .unwrap();
+            .expect("the complete baseline report publishes");
+        let previous_hub = forge
+            .comments(&repo, 7)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|comment| {
+                comment.author == "tinysweeper[bot]"
+                    && comment.body.contains("LAST-GOOD-REPORT-ONLY")
+            })
+            .expect("the last-good report was published to the review hub");
+        let last_good_report = previous_hub.body;
+        let hub_comment_id = previous_hub.id.expect("published hub has an id");
+
+        // A second real app review is partial by large-review selection. Its
+        // failed apply must not replace the previously completed report.
+        config.review.large_pr.files = 1;
+        config.review.large_pr.groups = 1;
+        config.review.large_pr.max_groups = 1;
+        let partial = crate::app::review::review_with_tree(
+            &forge, model, &config, &repo, 7, None, None, None, None,
+        )
+        .await
+        .expect("the partial review still produces an applicable proposal");
+        assert!(!partial.complete());
+        assert!(partial.partial_review.is_some());
+        assert_eq!(partial.unreviewed.len(), 1);
+
         let check_id = forge
             .publish_check(&repo, status::in_progress("failed-apply-head"))
             .await
@@ -6691,7 +6717,7 @@ mod tests {
         // The real apply path fails while publishing the lane check. The
         // worker then uses its ordinary failure finalizer for the open check.
         forge.fail_next_check_publishes(1);
-        let apply_error = crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        let apply_error = crate::app::apply::apply(&forge, &forge, &config, &partial, None)
             .await
             .expect_err("the lane-check publication failure reaches the worker");
         assert!(matches!(apply_error, Error::Forge(_)));
@@ -6699,7 +6725,7 @@ mod tests {
         let open = ReviewStatus {
             repo: repo.clone(),
             check_id,
-            head_sha: proposal.head_sha.clone(),
+            head_sha: partial.head_sha.clone(),
             installation: 1,
             stage: crate::ports::review_job::ReviewCheckStage::InProgress,
             owned: None,
@@ -6729,7 +6755,7 @@ mod tests {
             crate::forge::Write::CheckUpdate { check_id: updated, check }
                 if *updated == check_id
                     && check.head_sha == "failed-apply-head"
-                    && check.conclusion == Some(CheckConclusion::Failure)
+                    && check.conclusion == Some(crate::forge::types::CheckConclusion::Failure)
         )));
         let failed_hub = writes.iter().find_map(|write| match write {
             crate::forge::Write::CommentUpdate { comment_id, body }
@@ -6741,8 +6767,12 @@ mod tests {
         });
         let failed_hub = failed_hub.expect("the existing hub is updated in place");
         assert!(failed_hub.contains("Last completed report"), "{failed_hub}");
-        assert!(failed_hub.contains("# Tiny Sweeper review"), "{failed_hub}");
-        assert!(failed_hub.contains("failed-apply-head"), "{failed_hub}");
+        assert_eq!(failed_hub.matches("LAST-GOOD-REPORT-ONLY").count(), 1);
+        assert!(failed_hub.contains(&last_good_report), "{failed_hub}");
+        assert!(
+            !failed_hub.contains("not reviewed (large PR)"),
+            "{failed_hub}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

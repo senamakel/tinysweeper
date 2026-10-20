@@ -4229,6 +4229,8 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    type ReviewerEffortLog = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
     /// A panel model whose lane calls can be held at a barrier or delayed to
     /// expose scheduling decisions made by the complete review path.
     struct ReviewSchedulingModel {
@@ -4245,7 +4247,7 @@ mod tests {
         review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
         scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
         security_requests: Arc<std::sync::atomic::AtomicUsize>,
-        reviewer_efforts: Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>,
+        reviewer_efforts: ReviewerEffortLog,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }

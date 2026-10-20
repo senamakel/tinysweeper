@@ -763,44 +763,101 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_worktree_setup_removes_only_its_initializing_registration() {
+        let fixture = tempfile::tempdir().unwrap();
+        let revision = fixture_repo(fixture.path(), "", &[]).await;
         let mirror = tempfile::tempdir().unwrap();
-        let cancelled = tempfile::tempdir().unwrap();
-        let active = tempfile::tempdir().unwrap();
-        let worktrees = mirror.path().join("worktrees");
-        let basename = cancelled.path().file_name().unwrap().to_string_lossy();
-        let sibling_admin = worktrees.join(basename.as_ref());
-        let own_admin = worktrees.join(format!("{basename}-1"));
-        std::fs::create_dir_all(&sibling_admin).unwrap();
-        std::fs::write(sibling_admin.join("locked"), "different active checkout").unwrap();
-        std::fs::write(
-            sibling_admin.join("gitdir"),
-            format!("{}/.git\n", active.path().display()),
+        git(mirror.path(), "", &["init", "--bare", "--quiet"])
+            .await
+            .unwrap();
+        Checkout::fetch_into_mirror(
+            mirror.path(),
+            fixture.path().to_str().unwrap(),
+            &[&revision],
+            "",
+            None,
         )
+        .await
+        .unwrap();
+
+        let cancelled = tempfile::tempdir().unwrap();
+        let basename = cancelled.path().file_name().unwrap();
+        let active_root = tempfile::tempdir().unwrap();
+        let active = active_root.path().join(basename);
+        git(
+            mirror.path(),
+            "",
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                active.to_str().unwrap(),
+                &revision,
+            ],
+        )
+        .await
         .unwrap();
 
         let (registered, wait) = tokio::sync::oneshot::channel();
         let mirror_path = mirror.path().to_path_buf();
-        let checkout_path = cancelled.path().to_path_buf();
-        let task_admin = own_admin.clone();
+        let revision = revision.clone();
+        let cancelled_path = cancelled.path().to_path_buf();
         let setup = tokio::spawn(async move {
-            let _cleanup = WorktreeRegistrationCleanup::for_path(&mirror_path, &checkout_path)
-                .unwrap();
-            std::fs::create_dir_all(&task_admin).unwrap();
-            std::fs::write(task_admin.join("locked"), "initializing").unwrap();
-            std::fs::write(
-                task_admin.join("gitdir"),
-                format!("{}/.git\n", checkout_path.display()),
+            let _checkout = Checkout::from_mirror_at_with_checkpoint(
+                &mirror_path,
+                &revision,
+                cancelled,
+                || async move {
+                    let _ = registered.send(());
+                    std::future::pending::<()>().await;
+                },
             )
-            .unwrap();
-            let _ = registered.send(());
-            std::future::pending::<()>().await;
+            .await;
         });
         wait.await.unwrap();
+        let worktrees = mirror.path().join("worktrees");
+        let active_admin = worktrees
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|admin| {
+                std::fs::read_to_string(admin.join("gitdir"))
+                    .is_ok_and(|target| target.trim() == active.join(".git").to_string_lossy())
+            })
+            .unwrap();
+        let own_admin = worktrees
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|admin| {
+                std::fs::read_to_string(admin.join("gitdir")).is_ok_and(|target| {
+                        target.trim() == cancelled_path.join(".git").to_string_lossy()
+                })
+            })
+            .unwrap();
+        assert_ne!(active_admin, own_admin, "Git selected a distinct suffixed registration");
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
 
         assert!(!own_admin.exists(), "cancelled registration is removed");
-        assert!(sibling_admin.join("locked").is_file(), "live sibling is preserved");
+        assert!(active_admin.join("locked").is_file(), "live sibling is preserved");
+    }
+
+    #[test]
+    fn cancellation_guard_removes_owned_initializing_entry_before_gitdir_exists() {
+        let mirror = tempfile::tempdir().unwrap();
+        let checkout = tempfile::tempdir().unwrap();
+        let basename = checkout.path().file_name().unwrap();
+        let admin = mirror.path().join("worktrees").join(basename);
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("locked"), "initializing").unwrap();
+
+        drop(WorktreeRegistrationCleanup::for_path(mirror.path(), checkout.path()).unwrap());
+
+        assert!(
+            !admin.exists(),
+            "owned initializing metadata must be removed even before Git writes gitdir"
+        );
     }
 
     async fn fixture_repo(root: &Path, modules: &str, links: &[(&str, &str)]) -> String {

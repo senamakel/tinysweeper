@@ -6850,6 +6850,7 @@ mod tests {
         use crate::app::review_execution::ReviewExecutionOptions;
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId, Write};
+        use crate::harness::MockModel;
         use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
         use crate::ports::model_execution::ModelExecutionControl;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7030,8 +7031,8 @@ mod tests {
                 drain_seconds: 5,
             },
         ));
-        let (held_tx, mut held_rx) = watch::channel(false);
-        let (falsified_tx, mut falsified_rx) = watch::channel(false);
+        let (held_tx, held_rx) = watch::channel(false);
+        let (falsified_tx, falsified_rx) = watch::channel(false);
         let dropped_held = Arc::new(AtomicUsize::new(0));
         let drain_model = Arc::new(DrainModel {
             control: None,
@@ -7117,12 +7118,12 @@ mod tests {
                             },
                             move |_| async move {
                                 assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(75));
-                                let proposal = run_if_confirmed_head_needs_review(
+                                run_if_confirmed_head_needs_review(
                                     review_store.as_ref(),
                                     Some(&review_owned),
                                     Mode::Incremental,
                                     || async {
-                                        crate::app::review::review_with_tree_observed_at_head_in_run(
+                                        let proposal = crate::app::review::review_with_tree_observed_at_head_in_run(
                                             &review_forge,
                                             model,
                                             &review_config,
@@ -7137,24 +7138,32 @@ mod tests {
                                             None,
                                         )
                                         .await
+                                        ?;
+                                        apply_a_in_worker.fetch_add(1, Ordering::SeqCst);
+                                        let applied = crate::app::apply::apply(
+                                            &review_forge,
+                                            &review_forge,
+                                            &review_config,
+                                            &proposal,
+                                            None,
+                                        )
+                                        .await?;
+                                        Ok(InnerReview::Complete(published_review_result(
+                                            applied,
+                                            proposal.findings().count(),
+                                            crate::app::apply::requests_changes(
+                                                &review_config,
+                                                &proposal,
+                                            ),
+                                            status::aggregate_coverage(&proposal),
+                                        )))
                                     },
                                 )
-                                .await?;
-                                apply_a_in_worker.fetch_add(1, Ordering::SeqCst);
-                                let applied = crate::app::apply::apply(
-                                    &forge, &forge, &config, &proposal, None,
-                                )
-                                .await?;
-                                Ok::<_, Error>(published_review_result(
-                                    applied,
-                                    proposal.findings().count(),
-                                    crate::app::apply::requests_changes(&config, &proposal),
-                                    status::aggregate_coverage(&proposal),
-                                ))
+                                .await
                             },
                         )
                         .await?;
-                        Ok(InnerReview::Complete(findings))
+                        Ok(findings)
                     },
                 );
                 let result = select_review_control(
@@ -7247,7 +7256,7 @@ mod tests {
             worker.await.unwrap(),
             Err(Error::ReviewSuperseded)
         ));
-        assert!(context_a.is_cancelled());
+        assert!(context_a.execution().is_cancelled());
         assert_eq!(dropped_held.load(Ordering::Acquire), 1);
         assert_eq!(
             apply_a.load(Ordering::SeqCst),

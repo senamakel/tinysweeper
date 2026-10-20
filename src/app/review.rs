@@ -2362,14 +2362,14 @@ async fn run_large_groups<'run>(
     // One capability per lane, shared by its selected groups. This retains the
     // lane's ordinary cumulative budget and spend accounting under fan-out.
     let critique_llm = critique_prepared.as_ref().map(|_| {
-        crate::flows::runner::lane_llm(
+        crate::flows::runner::reviewer_lane_llm(
             model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,
         )
     });
     let security_llm = security_prepared.as_ref().map(|_| {
-        crate::flows::runner::lane_llm(
+        crate::flows::runner::reviewer_lane_llm(
             model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,

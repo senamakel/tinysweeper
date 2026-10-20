@@ -343,7 +343,7 @@ impl Security {
         // One capability for the whole lane, so the pull-request budget holds
         // across every file and every reviewer at once — which is what lets the
         // groups run concurrently rather than one at a time.
-        let llm = runner::lane_llm(
+        let llm = runner::reviewer_lane_llm(
             self.model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,

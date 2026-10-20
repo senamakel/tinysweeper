@@ -269,7 +269,7 @@ impl Critique {
         // lets the groups run concurrently: this lane reviewed them one at a
         // time only because spend is known after a call returns, and there was
         // nowhere else to check it.
-        let llm = runner::lane_llm(
+        let llm = runner::reviewer_lane_llm(
             self.model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,

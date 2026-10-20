@@ -32,18 +32,21 @@ impl Model for LargeReviewModel {
             .control
             .as_ref()
             .ok_or(Error::ReviewExecutionUnavailable)?;
-        let permit = control.acquire().await.map_err(|refusal| {
-            Error::ModelExecutionRefused {
+        let permit = control
+            .acquire()
+            .await
+            .map_err(|refusal| Error::ModelExecutionRefused {
                 refusal,
                 usage: None,
                 accounting_complete: true,
-            }
-        })?;
-        permit.mark_dispatched().map_err(|refusal| Error::ModelExecutionRefused {
-            refusal,
-            usage: None,
-            accounting_complete: true,
-        })?;
+            })?;
+        permit
+            .mark_dispatched()
+            .map_err(|refusal| Error::ModelExecutionRefused {
+                refusal,
+                usage: None,
+                accounting_complete: true,
+            })?;
         self.calls
             .lock()
             .expect("successful call list lock")
@@ -169,7 +172,9 @@ fn large_fixture_files() -> Vec<ChangedFile> {
             status: FileStatus::Modified,
             additions: 1,
             deletions: 1,
-            patch: Some("@@ -0,0 +1,1 @@\n+export function Button() { return <button />; }\n".into()),
+            patch: Some(
+                "@@ -0,0 +1,1 @@\n+export function Button() { return <button />; }\n".into(),
+            ),
             ..ChangedFile::default()
         },
     ];
@@ -294,12 +299,30 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
     let (proposal, forge, model, config) = run_large_fixture(false).await;
     let calls = model.calls.lock().expect("successful calls lock").clone();
     let expected: std::collections::BTreeSet<_> = [
-        ("tinysweeper_critique".to_string(), "src/x_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/x_api.rs".to_string()),
-        ("tinysweeper_critique".to_string(), "src/y_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/y_api.rs".to_string()),
-        ("tinysweeper_critique".to_string(), "src/z_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/z_api.rs".to_string()),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/x_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/x_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/y_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/y_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/z_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/z_api.rs".to_string(),
+        ),
     ]
     .into_iter()
     .collect();
@@ -314,17 +337,28 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
     );
     assert!(calls.len() <= config.review.large_pr.max_calls);
     assert_eq!(proposal.usage().calls_attempted, 8);
-    assert!(calls.iter().any(|request| request.schema_name == "review_summary"));
-    assert!(calls
-        .iter()
-        .any(|request| request.schema_name == "tinysweeper_thread_resolution"));
-    assert!(model
-        .attempts
-        .lock()
-        .expect("attempt list lock")
-        .iter()
-        .any(|request| request.schema_name == "tinysweeper_wireframe"));
-    assert!(proposal.wireframe.is_none(), "the shared ceiling refuses later optional work");
+    assert!(
+        calls
+            .iter()
+            .any(|request| request.schema_name == "review_summary")
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|request| request.schema_name == "tinysweeper_thread_resolution")
+    );
+    assert!(
+        model
+            .attempts
+            .lock()
+            .expect("attempt list lock")
+            .iter()
+            .any(|request| request.schema_name == "tinysweeper_wireframe")
+    );
+    assert!(
+        proposal.wireframe.is_none(),
+        "the shared ceiling refuses later optional work"
+    );
     assert!(proposal.partial_review.is_some());
     assert!(!proposal.complete());
 
@@ -352,7 +386,11 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        proposal.unreviewed.iter().cloned().collect::<std::collections::BTreeSet<_>>(),
+        proposal
+            .unreviewed
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
         expected_unreviewed,
         "coverage is per path across both lanes, so the six selected groups cover three files"
     );
@@ -375,25 +413,53 @@ async fn sixty_file_large_review_places_and_falsifies_a_selected_finding_without
     let (proposal, forge, model, config) = run_large_fixture(true).await;
     let calls = model.calls.lock().expect("successful calls lock").clone();
     let expected: std::collections::BTreeSet<_> = [
-        ("tinysweeper_critique".to_string(), "src/x_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/x_api.rs".to_string()),
-        ("tinysweeper_critique".to_string(), "src/y_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/y_api.rs".to_string()),
-        ("tinysweeper_critique".to_string(), "src/z_api.rs".to_string()),
-        ("tinysweeper_security".to_string(), "src/z_api.rs".to_string()),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/x_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/x_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/y_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/y_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_critique".to_string(),
+            "src/z_api.rs".to_string(),
+        ),
+        (
+            "tinysweeper_security".to_string(),
+            "src/z_api.rs".to_string(),
+        ),
     ]
     .into_iter()
     .collect();
     assert_eq!(selected_lane_paths(&calls), expected);
-    assert!(calls.iter().any(|request| request.schema_name == "tinysweeper_falsify"));
-    assert!(calls.iter().any(|request| request.schema_name == "review_summary"));
+    assert!(
+        calls
+            .iter()
+            .any(|request| request.schema_name == "tinysweeper_falsify")
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|request| request.schema_name == "review_summary")
+    );
     assert!(calls.len() <= config.review.large_pr.max_calls);
     assert_eq!(proposal.usage().calls_attempted, 8);
-    assert!(proposal
-        .lanes
-        .iter()
-        .flat_map(|lane| lane.findings.iter())
-        .any(|finding| finding.title == "Document the public API result"));
+    assert!(
+        proposal
+            .lanes
+            .iter()
+            .flat_map(|lane| lane.findings.iter())
+            .any(|finding| finding.title == "Document the public API result")
+    );
     assert!(!proposal.complete());
 
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)

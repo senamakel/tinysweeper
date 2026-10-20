@@ -605,6 +605,7 @@ mod lane_tests {
         for refusal in [
             ModelExecutionRefusal::CallLimit,
             ModelExecutionRefusal::SoftDeadline,
+            ModelExecutionRefusal::DrainDeadline,
         ] {
             let lane = E2e::new(Arc::new(RefusingModel(refusal)));
             let pr = pull_request();

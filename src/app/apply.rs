@@ -2823,6 +2823,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_incomplete_comments_dedupe_while_a_previous_block_stands() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("head-a");
+        let store = MemoryState::new();
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("head-a", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("publishes initial block");
+
+        for head in ["head-b", "head-c"] {
+            forge.push(7, head, vec![]);
+            let mut partial = proposal(head, vec![]);
+            partial.unreviewed.push("src/withheld.rs".into());
+            apply(&forge, &forge, &config(), &partial, Some(&store))
+                .await
+                .expect("publishes incomplete comment");
+        }
+
+        let reviews: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::Review { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reviews,
+            vec![ReviewEvent::RequestChanges, ReviewEvent::Comment],
+            "the same incomplete comment must dedupe while the old block remains"
+        );
+        let standing = forge
+            .own_review_state(&RepoId::parse("tinyhumansai/tinysweeper").unwrap(), 7)
+            .await
+            .expect("reads standing review")
+            .expect("the request changes still stands");
+        assert_eq!(standing.event, ReviewEvent::RequestChanges);
+        assert_eq!(standing.head_sha.as_deref(), Some("head-a"));
+    }
+
+    #[tokio::test]
     async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
         use crate::state::{memory::MemoryState, PublishedReview, ReviewedState};
 

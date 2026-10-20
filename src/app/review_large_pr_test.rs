@@ -190,6 +190,7 @@ fn large_fixture_files() -> Vec<ChangedFile> {
 fn large_config() -> Config {
     let mut config = config();
     config.review.lanes = vec!["critique".into(), "security".into()];
+    config.review.strictness = 3;
     config.review.passes = 3;
     config.council.enabled = true;
     config.council.agents = vec![CouncilAgent {

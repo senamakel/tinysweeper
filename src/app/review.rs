@@ -4793,9 +4793,11 @@ mod tests {
         use crate::harness::fake_gateway::{FakeGateway, Reply};
         use crate::ports::model::{Message, ModelRequest};
 
+        let mut config = critique_config();
+        let provider_model = config.models.deep.clone();
         let reply = || {
             Reply::completion(
-                "deep",
+                provider_model.clone(),
                 r#"{"ok":true}"#,
                 "stop",
                 json!({"prompt_tokens": 11,"completion_tokens": 4,"cost": 0.125}),
@@ -4803,7 +4805,6 @@ mod tests {
         };
         let (gateway, response_gate) =
             FakeGateway::start_paused(vec![reply(), reply(), reply()]).await;
-        let mut config = critique_config();
         config.models.base_url = gateway.base_url.clone();
         config.models.fallback.clear();
         config.models.agentic_reviewers = false;
@@ -4824,8 +4825,9 @@ mod tests {
         let model: Arc<dyn Model> =
             Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
         let model = execution.bind_model(model, 10.0).model.clone();
-        let request = || ModelRequest {
-            model: "deep".into(),
+        let request_model = config.models.deep.clone();
+        let request = move || ModelRequest {
+            model: request_model.clone(),
             messages: vec![Message::user("record a physical completion")],
             schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
             schema_name: "pending-terminal-accounting".into(),

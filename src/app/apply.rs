@@ -2371,7 +2371,7 @@ mod tests {
         assert_ne!(event, ReviewEvent::Approve, "{body}");
         assert_ne!(event, ReviewEvent::RequestChanges, "{body}");
         assert!(
-            body.contains("not an approval") && body.contains("`src/lib.rs`"),
+            body.contains("not an approval") && body.contains("1 unanswered item"),
             "the reader is told why: {body}"
         );
     }
@@ -2757,13 +2757,17 @@ mod tests {
             })
             .expect("review posted");
 
-        assert!(!body.contains("$0.0100"), "{body}");
+        assert!(body.contains("Total spend: $0.0100"), "{body}");
+        assert_eq!(body.matches("Total spend:").count(), 1, "{body}");
         assert!(!body.contains("10,000 in"), "{body}");
         assert!(!body.contains("400 out"), "{body}");
         assert!(!body.contains("800 cached (8%)"), "{body}");
         assert!(!body.contains("kimi-k3"), "{body}");
         assert!(body.contains("state v=1 sha=abc123"), "{body}");
-        assert!(body.contains("usage=cost:0.0100,input:10000,output:400,cached:800,embed:0"), "{body}");
+        assert!(
+            body.contains("usage=cost:0.0100,input:10000,output:400,cached:800,embed:0"),
+            "{body}"
+        );
     }
 
     #[tokio::test]

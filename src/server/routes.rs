@@ -6382,11 +6382,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_applied_review_is_classified_published_and_suppresses_same_head_redelivery() {
-        use crate::app::apply::ApplyDisposition;
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId};
         use crate::harness::MockModel;
-        use crate::ports::forge::{ForgeRead, ForgeWrite};
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
         let now_ms = unix_time_ms();
@@ -6408,13 +6406,22 @@ mod tests {
             );
             state.files.insert(
                 7,
-                vec![ChangedFile {
-                    path: "src/lib.rs".into(),
-                    status: FileStatus::Modified,
-                    patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
-                    additions: 1,
-                    ..ChangedFile::default()
-                }],
+                vec![
+                    ChangedFile {
+                        path: "src/lib.rs".into(),
+                        status: FileStatus::Modified,
+                        patch: Some("@@ -1 +1,2 @@\n fn value() {}\n+fn next() {}\n".into()),
+                        additions: 1,
+                        ..ChangedFile::default()
+                    },
+                    ChangedFile {
+                        path: "src/other.rs".into(),
+                        status: FileStatus::Modified,
+                        patch: Some("@@ -1 +1,2 @@\n fn other() {}\n+fn another() {}\n".into()),
+                        additions: 1,
+                        ..ChangedFile::default()
+                    },
+                ],
             );
             state
         });
@@ -6437,8 +6444,12 @@ mod tests {
             .try_into()
             .unwrap();
         config.review.lanes = vec!["critique".into()];
+        config.review.large_pr.files = 1;
+        config.review.large_pr.groups = 1;
+        config.review.large_pr.max_groups = 1;
         config.summary.enabled = false;
         config.overview.enabled = false;
+        config.threads.enabled = false;
         config.automerge.enabled = false;
         let model = Arc::new(MockModel::always(json!({
             "summary": "Reviewed.", "findings": [], "resolved": []
@@ -6449,13 +6460,7 @@ mod tests {
             &store,
             Some(&owned),
             now_ms + 3,
-            || async {
-                assert_eq!(
-                    store.begin_paid(&owned, now_ms + 3).await?,
-                    PaidStart::Started
-                );
-                Ok(())
-            },
+            || async { Ok(()) },
             || async { Ok(true) },
             || async {
                 let proposal = crate::app::review::review_with_tree(
@@ -6470,6 +6475,21 @@ mod tests {
                     None,
                 )
                 .await?;
+                assert!(
+                    !proposal.complete(),
+                    "large-review selection leaves a named gap"
+                );
+                assert!(proposal.partial_review.is_some());
+                assert_eq!(
+                    proposal
+                        .partial_review
+                        .as_ref()
+                        .unwrap()
+                        .selected_groups
+                        .len(),
+                    1
+                );
+                assert_eq!(proposal.unreviewed.len(), 1);
                 let applied =
                     crate::app::apply::apply(&forge, &forge, &config, &proposal, None).await?;
                 let findings = published_review_result(

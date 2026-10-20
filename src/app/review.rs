@@ -4286,7 +4286,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 && self
                     .review_budget_remaining
-                    .fetch_update(
+                    .try_update(
                         std::sync::atomic::Ordering::SeqCst,
                         std::sync::atomic::Ordering::SeqCst,
                         |remaining| remaining.checked_sub(1),

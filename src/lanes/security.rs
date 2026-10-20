@@ -861,6 +861,50 @@ mod tests {
         .at_line(3)
     }
 
+    #[test]
+    fn scanner_blocking_fact_survives_an_all_omitted_large_fanout() {
+        let finding = workflow_finding();
+        let prepared = SecurityPreparation {
+            skipped: None,
+            scanner: vec![&finding],
+            groups: Vec::new(),
+            covered_without_model: Vec::new(),
+            mechanical: None,
+            mechanical_verified: Vec::new(),
+            triage_skipped: Vec::new(),
+            review_paths_empty: false,
+        };
+        let outcome = LaneOutcome {
+            summary: "No files received a complete review.".into(),
+            skipped: Some("all groups were omitted".into()),
+            unanswered: vec![finding.path.clone()],
+            omissions: vec![crate::lanes::fanout::OmittedGroup {
+                paths: vec![finding.path.clone()],
+                reason: crate::lanes::fanout::OmissionReason::DrainDeadline,
+            }],
+            ..LaneOutcome::default()
+        };
+
+        let outcome = Security::finish_selected(
+            prepared,
+            outcome,
+            crate::flows::runner::lane_llm(
+                Arc::new(MockModel::silent()),
+                &config(),
+                config().models.budget_usd_per_pr,
+            ),
+        )
+        .expect("scanner finalization is deterministic");
+
+        assert!(outcome.skipped.is_none());
+        assert_eq!(
+            outcome.conclusion(Severity::High),
+            crate::forge::types::CheckConclusion::Failure
+        );
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.omissions.len(), 1);
+    }
+
     /// A synthetic patch whose group is large enough for a coverage pass to
     /// run at all — `diffs()` is deliberately two lines.
     fn large_patch() -> String {

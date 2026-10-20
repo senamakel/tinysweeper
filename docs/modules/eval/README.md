@@ -120,6 +120,8 @@ can admit fewer calls than requested because earlier attempts already consumed
 the cumulative ceiling; that actual allowance is part of comparison identity.
 A legacy scorecard without these limits is unknown and fails closed;
 `--allow-config-drift` is the explicit override, and the report says so.
+Recording scorecards from before admitted allowances were persisted also fail
+closed; replay scorecards may legitimately have no provider-call allowance.
 `eval score` carries these limits forward and re-scores only the original
 selection, so it cannot silently expand a selected run to the full corpus.
 

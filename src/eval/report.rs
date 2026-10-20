@@ -66,9 +66,12 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
                 );
             }
         }
-        for limits in [current.execution_limits.as_ref(), baseline.execution_limits.as_ref()]
-            .into_iter()
-            .flatten()
+        for limits in [
+            current.execution_limits.as_ref(),
+            baseline.execution_limits.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             if limits.recording && !has_known_admitted_call_allowances(limits) {
                 return Comparison::Incomparable(

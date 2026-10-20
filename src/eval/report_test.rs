@@ -256,18 +256,43 @@ fn changed_execution_limits_make_scorecards_incomparable() {
 
 #[test]
 fn different_admitted_recording_allowances_make_scorecards_incomparable() {
-    let current = card(vec![case_score("ts-0001", 0, &[], 0)]);
+    let mut current = card(vec![case_score("ts-0001", 0, &[], 0)]);
+    let mut current_limits = execution_limits("ts-0001");
+    current_limits.recording = true;
+    current_limits.effective_case_budgets[0].max_physical_calls_per_case = Some(40);
+    current.execution_limits = Some(current_limits.clone());
     let mut baseline = current.clone();
-    baseline
-        .execution_limits
-        .as_mut()
-        .expect("execution limits")
-        .effective_case_budgets[0]
-        .max_physical_calls_per_case = Some(32);
+    current_limits.effective_case_budgets[0].max_physical_calls_per_case = Some(32);
+    baseline.execution_limits = Some(current_limits);
 
     assert!(matches!(
         compare(&current, &baseline, false),
         Comparison::Incomparable(reason) if reason.contains("execution limits changed")
+    ));
+}
+
+#[test]
+fn old_recording_scorecards_without_admitted_allowances_fail_closed() {
+    let current = card(vec![case_score("ts-0001", 0, &[], 0)]);
+    let mut old_json = serde_json::to_value(&current).expect("scorecard serializes");
+    let limits = old_json["execution_limits"]
+        .as_object_mut()
+        .expect("execution limits object");
+    limits.insert("recording".into(), serde_json::Value::Bool(true));
+    let budgets = limits["effective_case_budgets"]
+        .as_array_mut()
+        .expect("case budgets");
+    for budget in budgets {
+        budget
+            .as_object_mut()
+            .expect("budget object")
+            .remove("max_physical_calls_per_case");
+    }
+    let legacy: Scorecard = serde_json::from_value(old_json).expect("legacy limits deserialize");
+
+    assert!(matches!(
+        compare(&legacy, &legacy, false),
+        Comparison::Incomparable(reason) if reason.contains("physical-call allowance is unknown")
     ));
 }
 

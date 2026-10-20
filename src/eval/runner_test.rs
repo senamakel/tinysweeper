@@ -183,7 +183,7 @@ impl crate::ports::model::Model for HiddenRetryModel {
         };
 
         let control = self.control.as_ref().expect("physical control bound");
-        for _ in 0..16 {
+        for _ in 0..100 {
             let permit = match control.acquire().await {
                 Ok(permit) => permit,
                 Err(refusal) => {
@@ -351,21 +351,67 @@ async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() 
             out: dir.path().join("runs/cumulative-retry"),
             record: true,
             max_cost_usd: 0.5,
-            max_physical_calls_per_case: Some(56),
+            max_physical_calls_per_case: Some(40),
             ..RunOptions::default()
         },
     )
     .await
     .expect("rerun is admitted against the persisted remainder");
 
-    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 16);
+    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 32);
     let audit: serde_json::Value = serde_json::from_slice(
         &std::fs::read(audit_dir.join("recording-attempts.json")).expect("attempt audit exists"),
     )
     .expect("valid attempt audit");
     assert_eq!(audit["reservations"][0]["actual_calls"], 8);
-    assert_eq!(audit["reservations"][1]["reserved_calls"], 48);
-    assert_eq!(audit["reservations"][1]["actual_calls"], 16);
+    assert_eq!(audit["reservations"][1]["reserved_calls"], 32);
+    assert_eq!(audit["reservations"][1]["actual_calls"], 32);
+}
+
+#[tokio::test]
+async fn default_recording_ceiling_cannot_be_replenished_by_rerunning() {
+    let dir = corpus_dir(EXPECTATION);
+    let corpus = load(dir.path()).expect("loads one-case corpus");
+    let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(HiddenRetryModel {
+        control: None,
+        physical_calls: physical_calls.clone(),
+    });
+    let mut config = config();
+    config.models.budget_usd_per_pr = 0.5;
+
+    run(
+        &corpus,
+        &config,
+        Some(model.clone()),
+        &RunOptions {
+            out: dir.path().join("runs/default-cumulative-first"),
+            record: true,
+            max_cost_usd: 0.5,
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("initial default allowance is admitted");
+    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+
+    let second = run(
+        &corpus,
+        &config,
+        Some(model),
+        &RunOptions {
+            out: dir.path().join("runs/default-cumulative-second"),
+            record: true,
+            max_cost_usd: 0.5,
+            ..RunOptions::default()
+        },
+    )
+    .await;
+    assert!(
+        second.is_err(),
+        "a rerun cannot restore the default allowance"
+    );
+    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
 }
 
 #[tokio::test]

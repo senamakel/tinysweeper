@@ -555,6 +555,182 @@ async fn default_tests_lane_soft_deadline_publishes_the_completed_partial_review
     assert_f1_never_approves(&forge);
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_admitted_whole_pull_request_call_is_dropped_at_the_original_drain_deadline() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::watch;
+
+    struct HeldTestsModel {
+        tests_started: watch::Sender<bool>,
+        release_tests: watch::Receiver<bool>,
+        tests_returned: Arc<AtomicBool>,
+        tests_dropped: Arc<AtomicBool>,
+    }
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Model for HeldTestsModel {
+        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+            let mut value = match request.schema_name.as_str() {
+                "tinysweeper_critique" => {
+                    let prompt = request
+                        .messages
+                        .iter()
+                        .map(|message| message.content.as_str())
+                        .collect::<String>();
+                    if prompt.contains("The file is `src/z_api.rs`.") {
+                        json!({
+                            "summary": "The public API result should be documented.",
+                            "findings": [{
+                                "path": "src/z_api.rs", "line": 1,
+                                "existing_code": "pub fn z_api() -> bool { true }",
+                                "rule": "api-documentation", "title": "Document the public API result",
+                                "body": "The public result contract is not described.",
+                                "severity": "medium", "confidence": 0.95
+                            }]
+                        })
+                    } else {
+                        json!({"summary": "No issue found.", "findings": []})
+                    }
+                }
+                "tinysweeper_falsify" => json!({"incorrect": []}),
+                "tinysweeper_tests" => {
+                    let _drop_probe = DropProbe(self.tests_dropped.clone());
+                    self.tests_started.send_replace(true);
+                    let mut release = self.release_tests.clone();
+                    while !*release.borrow() {
+                        if release.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    self.tests_returned.store(true, Ordering::SeqCst);
+                    json!({"summary": "No additional tests are needed.", "findings": []})
+                }
+                schema => return Err(Error::Model(format!("unexpected schema {schema}"))),
+            };
+            Ok(ModelResponse {
+                value: std::mem::take(&mut value),
+                model: request.model,
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                    cost_usd: 0.0001,
+                    ..Usage::default()
+                },
+            })
+        }
+    }
+
+    let forge = two_file_public_api_forge();
+    let mut config = all_default_lanes_config();
+    config.review.lanes = vec!["critique".into(), "tests".into()];
+    config.review.large_pr.enabled = false;
+    config.review.passes = 1;
+    config.council.enabled = false;
+    config.summary.enabled = false;
+    let (tests_started_tx, mut tests_started_rx) = watch::channel(false);
+    let (release_tests_tx, release_tests_rx) = watch::channel(false);
+    let tests_returned = Arc::new(AtomicBool::new(false));
+    let tests_dropped = Arc::new(AtomicBool::new(false));
+    let model: Arc<dyn Model> = Arc::new(HeldTestsModel {
+        tests_started: tests_started_tx,
+        release_tests: release_tests_rx,
+        tests_returned: tests_returned.clone(),
+        tests_dropped: tests_dropped.clone(),
+    });
+    let started_at = tokio::time::Instant::now();
+    let execution = f1_run_context(started_at, started_at + std::time::Duration::from_secs(100));
+    let task_forge = forge.clone();
+    let task_config = config.clone();
+    let task_execution = execution.clone();
+    let mut task = tokio::spawn(async move {
+        let proposal = run_all_default_lanes(
+            &task_forge,
+            model,
+            &task_config,
+            task_execution,
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Normal"),
+        )
+        .await?;
+        let disposition =
+            crate::app::apply::apply(&task_forge, &task_forge, &task_config, &proposal, None)
+                .await?;
+        Ok::<_, Error>((proposal, disposition, tokio::time::Instant::now()))
+    });
+
+    for _ in 0..2_000 {
+        if *tests_started_rx.borrow() || task.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(*tests_started_rx.borrow(), "the whole-PR Tests call starts");
+
+    for deadline in [80, 84] {
+        let target = started_at + std::time::Duration::from_secs(deadline);
+        tokio::time::advance(target - tokio::time::Instant::now()).await;
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(tokio::time::Instant::now(), target);
+        assert!(
+            !task.is_finished(),
+            "the admitted whole-PR call is retained through t={deadline}"
+        );
+    }
+
+    let drain_cutoff = started_at + std::time::Duration::from_secs(85);
+    tokio::time::advance(drain_cutoff - tokio::time::Instant::now()).await;
+    for _ in 0..128 {
+        tokio::task::yield_now().await;
+        if task.is_finished() {
+            break;
+        }
+    }
+    let finished_at_cutoff = task.is_finished();
+    // On the unfixed implementation this releases the call so the spawned
+    // task exits cleanly after the assertion reports the missing drain bound.
+    release_tests_tx.send_replace(true);
+    let (proposal, disposition, published_at) = task
+        .await
+        .expect("the app task stays alive")
+        .expect("an interrupted Tests call produces a partial proposal");
+
+    assert!(
+        finished_at_cutoff,
+        "the run must drop admitted post-processing work at the original t=85 drain cutoff"
+    );
+    assert_eq!(published_at, drain_cutoff);
+    assert!(!tests_returned.load(Ordering::SeqCst));
+    assert!(tests_dropped.load(Ordering::SeqCst));
+    assert_eq!(disposition, crate::app::apply::ApplyDisposition::Published);
+    assert!(!proposal.complete());
+    let critique = proposal
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == crate::config::types::LaneId::Critique)
+        .expect("the completed critique lane remains in the proposal");
+    assert!(critique.findings.iter().any(|finding| {
+        finding.path == "src/z_api.rs" && finding.title == "Document the public API result"
+    }));
+    assert_eq!(proposal.usage().input_tokens, 6);
+    assert_eq!(proposal.usage().output_tokens, 3);
+    assert!((proposal.usage().cost_usd - 0.0003).abs() < 1e-9);
+    assert_host_stopped_lane(
+        &proposal,
+        crate::config::types::LaneId::Tests,
+        crate::lanes::fanout::OmissionReason::DrainDeadline,
+    );
+    assert_f1_never_approves(&forge);
+}
+
 fn selected_lane_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<(String, String)> {
     let mut selected = std::collections::BTreeSet::new();
     for request in requests {

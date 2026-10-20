@@ -379,10 +379,7 @@ impl LogicalUsageModel {
         })
     }
 
-    async fn finish_within_drain<F>(
-        &self,
-        future: F,
-    ) -> Result<crate::ports::model::ModelResponse>
+    async fn finish_within_drain<F>(&self, future: F) -> Result<crate::ports::model::ModelResponse>
     where
         F: std::future::Future<Output = Result<crate::ports::model::ModelResponse>>,
     {

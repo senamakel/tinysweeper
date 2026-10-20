@@ -2793,7 +2793,6 @@ mod tests {
                 reviewed: 2,
                 total: 3,
                 unreviewed: vec!["README.md".into()],
-                partial_review: None,
             }),
             ..crate::summary::ReviewSummary::default()
         });

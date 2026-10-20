@@ -1423,7 +1423,6 @@ mod tests {
                         reviewed: 7,
                         total: 7,
                         unreviewed: vec![],
-                        partial_review: None,
                     }),
                     ..ReviewSummary::default()
                 },

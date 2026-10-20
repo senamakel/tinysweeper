@@ -4129,14 +4129,6 @@ mod tests {
         config.models.fallback.clear();
         config.models.agentic_reviewers = false;
         config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
-        config.models.budget_prices.insert(
-            "deep".into(),
-            crate::config::types::BudgetPriceBound {
-                input: 5.0,
-                cached: 1.0,
-                output: 20.0,
-            },
-        );
         let model = Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
         config.retrieval.enabled = true;
         let embedder = ChargedEmbedder;
@@ -4840,9 +4832,16 @@ mod tests {
             max_tokens: 32,
         };
 
-        async fn wait_for_request_count(gateway: &FakeGateway, expected: usize) {
+        async fn wait_for_request_count<T: std::fmt::Debug>(
+            gateway: &FakeGateway,
+            expected: usize,
+            calls: &mut tokio::task::JoinSet<T>,
+        ) {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while gateway.requests().len() < expected {
+                    if let Some(result) = calls.try_join_next() {
+                        panic!("model call completed before request {expected}: {result:?}");
+                    }
                     tokio::task::yield_now().await;
                 }
             })
@@ -4854,7 +4853,7 @@ mod tests {
             let model = model.clone();
             let mut calls = tokio::task::JoinSet::new();
             calls.spawn(async move { model.complete(request()).await });
-            wait_for_request_count(&gateway, expected).await;
+            wait_for_request_count(&gateway, expected, &mut calls).await;
             response_gate.add_permits(1);
             calls
                 .join_next()
@@ -4867,7 +4866,7 @@ mod tests {
         let model_for_pending = model.clone();
         let mut pending = tokio::task::JoinSet::new();
         pending.spawn(async move { model_for_pending.complete(request()).await });
-        wait_for_request_count(&gateway, 3).await;
+        wait_for_request_count(&gateway, 3, &mut pending).await;
 
         let skipped_forge = forge_with(
             vec![ChangedFile {

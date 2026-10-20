@@ -197,6 +197,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn concurrent_reviews_of_the_same_repository_share_one_fetch() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let (remote, revision) = local_bare_repository(fixture.path());
+        let cache = RepositoryCache::at(fixture.path().join("cache")).expect("cache root");
+        let remote = remote.to_str().unwrap();
+        let fetches = AtomicUsize::new(0);
+
+        let (first, second) = tokio::join!(
+            cache.checkout_from_url("acme/widgets", &revision, remote, "", &fetches),
+            cache.checkout_from_url("acme/widgets", &revision, remote, "", &fetches),
+        );
+        let first = first.expect("first concurrent review checkout");
+        let second = second.expect("second concurrent review checkout");
+
+        assert_eq!(first.revision(), revision);
+        assert_eq!(second.revision(), revision);
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn cache_root_override_wins_and_empty_override_uses_the_private_user_cache() {
         assert_eq!(

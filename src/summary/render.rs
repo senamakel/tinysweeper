@@ -256,25 +256,30 @@ fn render_unreviewed_labels(proposal: &Proposal, paths: &[String]) -> String {
             .or_default()
             .insert(omission.reason);
     }
-    let mut grouped = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+    let mut grouped = std::collections::BTreeMap::<&'static str, std::collections::BTreeSet<String>>::new();
     for path in paths {
         if let Some(path_reasons) = reasons.get(path.as_str()) {
             for reason in path_reasons {
                 grouped
                     .entry(partial_reason_label(Some(*reason)))
                     .or_default()
-                    .push(path.clone());
+                    .insert(path.clone());
             }
         } else {
             grouped
                 .entry(partial_reason_label(None))
                 .or_default()
-                .push(path.clone());
+                .insert(path.clone());
         }
     }
     grouped
         .into_iter()
-        .map(|(label, paths)| format!("{label}: {}", bounded_paths(&paths, 2)))
+        .map(|(label, paths)| {
+            format!(
+                "{label}: {}",
+                bounded_paths(&paths.into_iter().collect::<Vec<_>>(), 2)
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -1576,6 +1581,74 @@ mod tests {
         );
         assert!(rendered.contains("`src/tested.rs`"), "{rendered}");
         assert!(!rendered.contains("tinysweeper/"), "{rendered}");
+    }
+
+    #[test]
+    fn partial_large_coverage_keeps_each_host_reason_and_escapes_paths() {
+        use crate::app::review::{PartialReview, PartialReviewPath, PartialReviewReason};
+        use crate::config::types::LaneId;
+        use crate::lanes::large_pr::{ReviewEstimate, ReviewMode};
+
+        let mut proposal = proposal(ReviewSummary::default(), &[]);
+        proposal.unreviewed = vec![
+            "src/a`quoted.rs".into(),
+            "src/b.rs".into(),
+            "src/c.rs".into(),
+        ];
+        proposal.partial_review = Some(PartialReview {
+            mode: ReviewMode::Large,
+            stop_reason: Some(PartialReviewReason::DrainDeadline),
+            estimate: ReviewEstimate {
+                files: 3,
+                changed_lines: 3,
+                groups: 4,
+            },
+            selected_groups: vec![],
+            omitted: vec![
+                PartialReviewPath {
+                    path: "src/a`quoted.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::NotSelected,
+                },
+                PartialReviewPath {
+                    path: "src/b.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::CallLimit,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::NotSelected,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Security),
+                    reason: PartialReviewReason::DrainDeadline,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Security),
+                    reason: PartialReviewReason::SoftDeadline,
+                },
+            ],
+        });
+
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+        assert!(visible.contains("not reviewed (large PR):"), "{visible}");
+        assert!(visible.contains("not reviewed (call budget):"), "{visible}");
+        assert!(visible.contains("not reviewed (time limit):"), "{visible}");
+        assert!(visible.contains(&code_span("src/a`quoted.rs")), "{visible}");
+        assert!(rendered.contains("src/c.rs"), "{rendered}");
+        assert!(
+            rendered.contains("not selected by the large-review budget")
+                && rendered.contains("not reviewed (time limit)"),
+            "{rendered}"
+        );
+
+        proposal.partial_review.as_mut().expect("partial metadata").omitted.clear();
+        proposal.unreviewed.clear();
+        assert!(proposal.complete(), "Large metadata alone is not a coverage gap");
     }
 
     #[test]

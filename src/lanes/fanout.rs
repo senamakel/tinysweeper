@@ -211,7 +211,8 @@ impl FanOut {
         for (_, review) in self.partial {
             spend.merge(review.spend);
             findings.extend(review.findings);
-            resolved.extend(review.resolved);
+            // A partial group stopped before its required review stages
+            // completed, so its resolutions are not safe continuity evidence.
         }
 
         // One conversation is the common case for a small pull request or a

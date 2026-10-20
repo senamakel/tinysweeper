@@ -1911,8 +1911,21 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                     },
                     model.as_ref(),
                 )
-                .await?;
-                Ok::<_, Error>((Some(outcome.set), outcome.spend))
+                .await;
+                match outcome {
+                    Ok(outcome) => Ok::<_, Error>((Some(outcome.set), outcome.spend)),
+                    // A physical permit can refuse after this preflight (for
+                    // example, when a sibling just used the last call). These
+                    // optional post-review artifacts must not discard the
+                    // review that already completed.
+                    Err(Error::ModelExecutionRefused {
+                        refusal:
+                            crate::ports::model_execution::ModelExecutionRefusal::CallLimit
+                            | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline,
+                        ..
+                    }) => Ok((None, Spend::default())),
+                    Err(err) => Err(err),
+                }
             } else {
                 // `None` leaves a previously published gallery alone. A
                 // partial review after the cutoff must not replace it with

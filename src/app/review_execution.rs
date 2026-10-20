@@ -359,14 +359,21 @@ impl ReviewExecution {
         self.inner.soft_deadline
     }
 
-    /// Refusal for a new logical model call after ownership loss or the
-    /// absolute soft deadline. This preflight does not reserve a physical
-    /// dispatch permit or emit a terminal event.
+    /// Refusal for optional new work after ownership loss, an exhausted
+    /// committed-call ceiling, or the absolute soft deadline. This preflight
+    /// does not reserve a physical dispatch permit or emit a terminal event;
+    /// refundable reservations alone do not exhaust the ceiling.
     pub(crate) fn refusal_for_new_work(&self) -> Option<ModelExecutionRefusal> {
-        if self.is_cancelled() {
+        let state = lock(&self.inner.state);
+        if state.cancelled {
             Some(ModelExecutionRefusal::Cancelled)
         } else if (self.inner._now)() >= self.inner.soft_deadline {
             Some(ModelExecutionRefusal::SoftDeadline)
+        } else if state
+            .max_calls
+            .is_some_and(|limit| state.committed_calls >= limit)
+        {
+            Some(ModelExecutionRefusal::CallLimit)
         } else {
             None
         }

@@ -2127,7 +2127,8 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                     Err(Error::ModelExecutionRefused {
                         refusal:
                             crate::ports::model_execution::ModelExecutionRefusal::CallLimit
-                            | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline,
+                            | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
+                            | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline,
                         ..
                     }) => Ok((None, Spend::default())),
                     Err(err) => Err(err),
@@ -2554,6 +2555,9 @@ fn large_omission_reason(
         }
         crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline => {
             crate::lanes::fanout::OmissionReason::SoftDeadline
+        }
+        crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline => {
+            crate::lanes::fanout::OmissionReason::DrainDeadline
         }
         crate::ports::model_execution::ModelExecutionRefusal::Cancelled => {
             crate::lanes::fanout::OmissionReason::Cancelled

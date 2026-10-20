@@ -407,6 +407,10 @@ pub(crate) fn stopped_by_execution_policy(
             OmissionReason::SoftDeadline,
             "Review stopped at the original soft deadline.",
         ),
+        ModelExecutionRefusal::DrainDeadline => (
+            OmissionReason::DrainDeadline,
+            "Review stopped at the original drain deadline.",
+        ),
         ModelExecutionRefusal::Cancelled => return None,
     };
 

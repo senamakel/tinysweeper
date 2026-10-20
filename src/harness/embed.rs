@@ -408,6 +408,9 @@ fn dispatch_refusal(
     openhuman_embed::budget::DispatchRefusal::new(match reason {
         ModelExecutionRefusal::CallLimit => DispatchRefusalReason::CallLimit,
         ModelExecutionRefusal::SoftDeadline => DispatchRefusalReason::Deadline,
+        // The adapter has no distinct drain reason; this mapping is only for
+        // representing the host's stop in the adapter's neutral error type.
+        ModelExecutionRefusal::DrainDeadline => DispatchRefusalReason::Deadline,
         ModelExecutionRefusal::Cancelled => DispatchRefusalReason::Cancelled,
     })
 }

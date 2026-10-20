@@ -281,6 +281,9 @@ fn omission_reason(
         crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline => {
             OmissionReason::SoftDeadline
         }
+        crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline => {
+            OmissionReason::DrainDeadline
+        }
         crate::ports::model_execution::ModelExecutionRefusal::Cancelled => {
             OmissionReason::Cancelled
         }

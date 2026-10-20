@@ -223,12 +223,8 @@ fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSumma
     }
 }
 
-fn partial_reason_label(proposal: &Proposal) -> &'static str {
-    match proposal
-        .partial_review
-        .as_ref()
-        .and_then(|partial| partial.stop_reason)
-    {
+fn partial_reason_label(reason: Option<crate::app::review::PartialReviewReason>) -> &'static str {
+    match reason {
         Some(crate::app::review::PartialReviewReason::NotSelected) => "not reviewed (large PR)",
         Some(
             crate::app::review::PartialReviewReason::SoftDeadline
@@ -243,6 +239,27 @@ fn partial_reason_label(proposal: &Proposal) -> &'static str {
         }
         Some(crate::app::review::PartialReviewReason::Unanswered) | None => "not reviewed",
     }
+}
+
+fn render_unreviewed_labels(proposal: &Proposal, paths: &[String]) -> String {
+    let reasons: std::collections::BTreeMap<_, _> = proposal
+        .partial_review
+        .iter()
+        .flat_map(|partial| &partial.omitted)
+        .map(|omission| (omission.path.as_str(), omission.reason))
+        .collect();
+    let mut grouped = std::collections::BTreeMap::<&'static str, Vec<String>>::new();
+    for path in paths {
+        grouped
+            .entry(partial_reason_label(reasons.get(path.as_str()).copied()))
+            .or_default()
+            .push(path.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(label, paths)| format!("{label}: {}", bounded_paths(&paths, 2)))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn partial_reason_description(reason: crate::app::review::PartialReviewReason) -> &'static str {
@@ -297,18 +314,16 @@ fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary)
         if !uncovered.is_empty() {
             let _ = write!(
                 out,
-                "; {}: {}",
-                partial_reason_label(proposal),
-                bounded_paths(&uncovered.into_iter().collect::<Vec<_>>(), 2)
+                "; {}",
+                render_unreviewed_labels(proposal, &uncovered.into_iter().collect::<Vec<_>>())
             );
         }
         out.push_str(".  \n");
     } else if !uncovered.is_empty() {
         let _ = writeln!(
             out,
-            "**Coverage:** File coverage is unavailable; {}: {}.",
-            partial_reason_label(proposal),
-            bounded_paths(&uncovered.into_iter().collect::<Vec<_>>(), 2)
+            "**Coverage:** File coverage is unavailable; {}.",
+            render_unreviewed_labels(proposal, &uncovered.into_iter().collect::<Vec<_>>())
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");

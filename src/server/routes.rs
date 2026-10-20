@@ -6669,7 +6669,11 @@ mod tests {
             "findings": [],
             "resolved": []
         })));
-        let mut config = Config::default();
+        let mut config: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
         config.review.lanes = vec!["critique".into()];
         config.grouping.enabled = false;
         config.summary.enabled = true;
@@ -6691,7 +6695,7 @@ mod tests {
         )
         .await
         .expect("the baseline review completes");
-        assert!(last_good.complete());
+        assert!(last_good.complete(), "baseline proposal: {last_good:#?}");
         assert_eq!(last_good.head_sha, "previous-good-head");
         // The prior body is a real app-rendered publication with a distinct
         // pull-request title, so replacement by the next report is visible.

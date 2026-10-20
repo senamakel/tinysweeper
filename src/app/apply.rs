@@ -2774,12 +2774,20 @@ mod tests {
 
         let forge = forge("abc123");
         let store = MemoryState::new();
-        for _ in 0..2 {
+        for run in 0..2 {
+            let mut proposal = proposal("abc123", vec![finding()]);
+            if run == 1 {
+                let mut informational = finding();
+                informational.severity = Severity::Low;
+                informational.rule = "informational-note".into();
+                informational.title = "A nonblocking note appeared".into();
+                proposal.lanes[0].findings.push(informational);
+            }
             apply(
                 &forge,
                 &forge,
                 &config(),
-                &proposal("abc123", vec![finding()]),
+                &proposal,
                 Some(&store),
             )
             .await
@@ -2806,6 +2814,50 @@ mod tests {
                 .filter(|w| matches!(w, Write::Check(_) | Write::CheckUpdate { .. }))
                 .count(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
+        use crate::state::{memory::MemoryState, PublishedReview, ReviewedState};
+
+        let forge = forge("new-head").with_own_review(7, ReviewEvent::Approve);
+        let store = MemoryState::new();
+        let key = crate::state::key("tinyhumansai/tinysweeper", 7);
+        store
+            .save_state(
+                &key,
+                &ReviewedState {
+                    published_review: Some(PublishedReview {
+                        event: ReviewEvent::Approve,
+                        head_sha: "old-head".into(),
+                        blocking_findings: vec![],
+                    }),
+                    ..ReviewedState::default()
+                },
+            )
+            .await
+            .expect("seeds publication receipt");
+
+        // The mock's live approval has no commit metadata; the durable receipt
+        // for an older commit cannot fill that gap.
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("new-head", vec![]),
+            Some(&store),
+        )
+        .await
+        .expect("applies");
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|write| matches!(write, Write::Review { .. }))
+                .count(),
+            1,
+            "unknown live head metadata must cause a fresh approval"
         );
     }
 

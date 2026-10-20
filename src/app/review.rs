@@ -1986,6 +1986,23 @@ async fn run_large_groups<'run>(
             }));
     }
 
+    // One capability per lane, shared by its selected groups. This retains the
+    // lane's ordinary cumulative budget and spend accounting under fan-out.
+    let critique_llm = critique_prepared.as_ref().map(|_| {
+        crate::flows::runner::lane_llm(
+            model.clone(),
+            input.config,
+            input.config.models.budget_usd_per_pr,
+        )
+    });
+    let security_llm = security_prepared.as_ref().map(|_| {
+        crate::flows::runner::lane_llm(
+            model.clone(),
+            input.config,
+            input.config.models.budget_usd_per_pr,
+        )
+    });
+
     let mut queued: VecDeque<PlannedGroup> = plan.selected.into();
     let mut active: FuturesUnordered<
         BoxFuture<'_, (PlannedGroup, Result<crate::lanes::fanout::FileReview>)>,
@@ -2061,21 +2078,26 @@ async fn run_large_groups<'run>(
             let model = Arc::clone(&model);
             let critique = critique_prepared.as_ref();
             let security = security_prepared.as_ref();
+            let critique_llm = critique_llm.clone();
+            let security_llm = security_llm.clone();
             active.push(Box::pin(async move {
                 let result = match group.lane {
                     LaneId::Critique => {
-                        Critique::new(model)
-                            .review_selected_group(lane_input, &group.group)
-                            .await
+                        Critique::review_selected_group(
+                            critique_llm.expect("critique plan has a shared lane capability"),
+                            lane_input,
+                            &group.group,
+                        )
+                        .await
                     }
                     LaneId::Security => {
-                        Security::new(model)
-                            .review_selected_group(
-                                lane_input,
-                                security.expect("security plan has prepared lane state"),
-                                &group.group,
-                            )
-                            .await
+                        Security::review_selected_group(
+                            security_llm.expect("security plan has a shared lane capability"),
+                            lane_input,
+                            security.expect("security plan has prepared lane state"),
+                            &group.group,
+                        )
+                        .await
                     }
                     _ => unreachable!("only critique and security are planned"),
                 };
@@ -2115,7 +2137,12 @@ async fn run_large_groups<'run>(
             .into_outcome();
         outcomes.insert(
             LaneId::Critique,
-            Critique::finish_selected(&input, prepared, outcome)?,
+            Critique::finish_selected(
+                &input,
+                prepared,
+                outcome,
+                critique_llm.expect("prepared critique has a shared lane capability"),
+            )?,
         );
     }
     if let Some(prepared) = security_prepared {
@@ -2125,7 +2152,11 @@ async fn run_large_groups<'run>(
             .into_outcome();
         outcomes.insert(
             LaneId::Security,
-            Security::finish_selected(prepared, outcome)?,
+            Security::finish_selected(
+                prepared,
+                outcome,
+                security_llm.expect("prepared security has a shared lane capability"),
+            )?,
         );
     }
     Ok(outcomes)

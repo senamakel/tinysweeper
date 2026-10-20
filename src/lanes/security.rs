@@ -240,16 +240,11 @@ impl Lane for Security {
 impl Security {
     /// Review one planner-selected group, retaining scanner evidence for its members.
     pub(crate) async fn review_selected_group<'a>(
-        &self,
+        llm: Arc<crate::flows::caps::ModelCapability>,
         input: &LaneInput<'a>,
         prepared: &SecurityPreparation<'a>,
         group: &FileGroup,
     ) -> Result<FileReview> {
-        let llm = runner::lane_llm(
-            self.model.clone(),
-            input.config,
-            input.config.models.budget_usd_per_pr,
-        );
         let changed_paths = input.changed_paths();
         let group_diffs: Vec<FileDiff> = group
             .paths
@@ -277,7 +272,6 @@ impl Security {
             &scanner,
         )
         .await?;
-        review.spend.merge(llm.spend());
         Ok(review)
     }
 
@@ -285,10 +279,12 @@ impl Security {
     pub(crate) fn finish_selected<'a>(
         prepared: SecurityPreparation<'a>,
         mut outcome: LaneOutcome,
+        llm: Arc<crate::flows::caps::ModelCapability>,
     ) -> Result<LaneOutcome> {
         if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }
+        outcome.spend.merge(llm.spend());
         let mut covered_without_model = prepared.covered_without_model;
         covered_without_model.extend(prepared.mechanical_verified);
         outcome.include_reviewed_paths(covered_without_model);

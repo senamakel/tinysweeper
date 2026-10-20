@@ -189,16 +189,11 @@ impl Lane for Critique {
 impl Critique {
     /// Review one planner-selected group, retaining its exact normal lane path.
     pub(crate) async fn review_selected_group(
-        &self,
+        llm: Arc<crate::flows::caps::ModelCapability>,
         input: &LaneInput<'_>,
         group: &FileGroup,
     ) -> Result<FileReview> {
         let changed_paths = input.changed_paths();
-        let llm = runner::lane_llm(
-            self.model.clone(),
-            input.config,
-            input.config.models.budget_usd_per_pr,
-        );
         let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
         let group_diffs: Vec<FileDiff> = group
             .paths
@@ -214,7 +209,6 @@ impl Critique {
             &cross_file_evidence,
         )
         .await?;
-        review.spend.merge(llm.spend());
         Ok(review)
     }
 
@@ -223,11 +217,13 @@ impl Critique {
         input: &LaneInput<'_>,
         prepared: CritiquePreparation,
         mut outcome: LaneOutcome,
+        llm: Arc<crate::flows::caps::ModelCapability>,
     ) -> Result<LaneOutcome> {
         if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }
         outcome.context_degraded = input.retrieval_status.is_degraded();
+        outcome.spend.merge(llm.spend());
         outcome.include_reviewed_paths(prepared.covered_without_model);
         if let Some(substitution) = &prepared.mechanical {
             outcome.summary = format!(

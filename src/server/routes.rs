@@ -6612,8 +6612,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_apply_check_failure_keeps_the_last_good_hub_report() {
-        use crate::app::review::{LaneProposal, Proposal, PROPOSAL_VERSION};
-        use crate::forge::types::{CheckConclusion, ChangedFile, PullRequest};
+        use crate::app::review::{LaneProposal, PROPOSAL_VERSION, Proposal};
+        use crate::forge::types::{ChangedFile, CheckConclusion, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId};
         use crate::ports::forge::ForgeWrite;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -6733,7 +6733,10 @@ mod tests {
         )));
         let failed_hub = writes.iter().find_map(|write| match write {
             crate::forge::Write::CommentUpdate { comment_id, body }
-                if *comment_id == hub_comment_id => Some(body),
+                if *comment_id == hub_comment_id =>
+            {
+                Some(body)
+            }
             _ => None,
         });
         let failed_hub = failed_hub.expect("the existing hub is updated in place");

@@ -505,9 +505,9 @@ fn assert_gateway_large_coverage(proposal: &Proposal) -> usize {
         .lanes
         .iter()
         .flat_map(|lane| {
-            lane.coverage
-                .iter()
-                .flat_map(move |coverage| coverage.reviewed.iter().map(move |path| (lane.lane, path)))
+            lane.coverage.iter().flat_map(move |coverage| {
+                coverage.reviewed.iter().map(move |path| (lane.lane, path))
+            })
         })
         .collect::<BTreeSet<_>>();
     assert_eq!(

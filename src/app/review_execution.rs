@@ -359,6 +359,19 @@ impl ReviewExecution {
         self.inner.soft_deadline
     }
 
+    /// Refusal for a new logical model call after ownership loss or the
+    /// absolute soft deadline. This preflight does not reserve a physical
+    /// dispatch permit or emit a terminal event.
+    pub(crate) fn refusal_for_new_work(&self) -> Option<ModelExecutionRefusal> {
+        if self.is_cancelled() {
+            Some(ModelExecutionRefusal::Cancelled)
+        } else if (self.inner._now)() >= self.inner.soft_deadline {
+            Some(ModelExecutionRefusal::SoftDeadline)
+        } else {
+            None
+        }
+    }
+
     /// The mode used when this execution scope was created.
     ///
     /// A later per-head plan may tighten the job's call ceiling without

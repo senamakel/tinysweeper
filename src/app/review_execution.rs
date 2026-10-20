@@ -704,7 +704,11 @@ struct ReviewDispatchPermit {
 impl ModelExecutionPermit for ReviewDispatchPermit {
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
         match self.state.load(Ordering::Acquire) {
-            PERMIT_COMMITTED => return Ok(()),
+            // A committed permit can be reused by adapters that retry a
+            // physical send, so it still has to recheck cancellation and the
+            // deadline below. Its already-counted dispatch is never charged
+            // again.
+            PERMIT_COMMITTED => {}
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
@@ -714,7 +718,7 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
 
         let mut state = lock(&self.inner.state);
         match self.state.load(Ordering::Acquire) {
-            PERMIT_COMMITTED => return Ok(()),
+            PERMIT_COMMITTED => {}
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
@@ -723,13 +727,21 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         }
 
         if state.cancelled {
-            self.state.store(PERMIT_CANCELLED, Ordering::Release);
+            if self.state.load(Ordering::Acquire) != PERMIT_COMMITTED {
+                self.state.store(PERMIT_CANCELLED, Ordering::Release);
+            }
             return Err(ModelExecutionRefusal::Cancelled);
         }
 
         if (self.inner._now)() >= self.inner.soft_deadline {
-            self.state.store(PERMIT_REFUSED, Ordering::Release);
+            if self.state.load(Ordering::Acquire) != PERMIT_COMMITTED {
+                self.state.store(PERMIT_REFUSED, Ordering::Release);
+            }
             return Err(ModelExecutionRefusal::SoftDeadline);
+        }
+
+        if self.state.load(Ordering::Acquire) == PERMIT_COMMITTED {
+            return Ok(());
         }
 
         if state

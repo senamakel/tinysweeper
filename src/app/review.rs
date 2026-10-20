@@ -4583,14 +4583,14 @@ mod tests {
             std::time::Duration::from_secs(2),
             review(&forge, model_trait, &config, &repo(), 7),
         )
-        .await
-        .unwrap_or_else(|_| {
+        .await;
+        if result.is_err() {
             panic!(
-                "independent optional artifacts reached barrier {} times",
-                arrivals.load(std::sync::atomic::Ordering::SeqCst)
-            )
-        })
-        .expect("review succeeds");
+                "independent optional artifacts did not overlap: {:?}",
+                *optional_seen.lock().await
+            );
+        }
+        let result = result.unwrap().expect("review succeeds");
 
         assert_eq!(
             *optional_seen.lock().await,

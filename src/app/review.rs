@@ -3347,6 +3347,11 @@ mod tests {
         assert_eq!(record.calls_errored, record.calls_succeeded * 2);
         assert_eq!(record.usage.reasoning_tokens, record.calls_succeeded * 3);
         assert_eq!(record.usage.cached_tokens, record.calls_succeeded * 4);
+        assert!(proposal.completion_accounting.is_none());
+        assert_eq!(proposal.usage().calls_attempted, record.calls_attempted);
+        assert_eq!(proposal.usage().calls_succeeded, record.calls_succeeded);
+        assert_eq!(proposal.usage().reasoning_tokens, record.usage.reasoning_tokens);
+        assert!(proposal.cost_usd > 0.0, "mock logical spend stays visible");
         assert_eq!(record.files_total, 1);
         assert_eq!(
             record.files_answered + record.files_unanswered,
@@ -4187,6 +4192,10 @@ mod tests {
         .await
         .expect("the repair answers the review");
 
+        assert!(
+            crate::harness::pricing::completion_cost("deep", 6, 0, 3) > 0.0,
+            "the unreported repair has a positive legacy price estimate"
+        );
         assert_eq!(gateway.requests().len(), 2);
         let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
         assert_eq!(

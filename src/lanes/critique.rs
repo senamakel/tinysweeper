@@ -573,7 +573,7 @@ async fn review_group(
 
             if let Some(refusal) = coverage.execution_refusal {
                 execution_refusal = Some(refusal);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Refused);
                 break;
             }
@@ -661,8 +661,9 @@ async fn review_group(
             rejected.extend(new_filtered.rejected);
             if let Some(refusal) = new_filtered.execution_refusal {
                 execution_refusal = Some(refusal);
+                let survivors = new_filtered.findings.len();
                 findings.extend(new_filtered.findings);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, new_candidates, survivors);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             }

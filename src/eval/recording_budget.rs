@@ -120,9 +120,12 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        // The process-scoped OS lock releases with this handle, including on
-        // termination. Keep the lock file itself so another process cannot
-        // race us by locking a different inode after an unlink.
+        // A forked child can briefly inherit this open-file-description lock
+        // before close-on-exec takes effect. Unlock explicitly so that child
+        // cannot extend a completed reservation's critical section. A crashed
+        // owner still relies on descriptor closure; keep the lock inode so a
+        // later process cannot race an unlink and lock a different file.
+        let _ = self._lock.unlock();
     }
 }
 

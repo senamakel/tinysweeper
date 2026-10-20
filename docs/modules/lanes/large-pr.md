@@ -102,9 +102,13 @@ retaining the same size, call and deadline policy.
 
 The production Gateway applies execution control at each admitted model
 dispatch, including hidden repairs and agent turns. A dispatch already admitted
-before soft time may finish while the group drains. Known completed usage
-survives cancellation and is counted once; missing provider usage or cost stays
-explicitly incomplete rather than becoming a zero bill.
+before soft time may finish while the group drains. The host uses the same
+absolute drain cutoff around `Embedder::embed` and `embed_query`, including
+retrieval's query call, so a slow embedding cannot hold publication past the
+run window. A dropped embedding result contributes no invented usage. Known
+completed model usage survives cancellation and is counted once; missing
+provider usage or cost stays explicitly incomplete rather than becoming a zero
+bill.
 
 An opaque custom `Model` without execution control remains usable in Normal
 mode: the host stops new logical requests and cancels unfinished work at the

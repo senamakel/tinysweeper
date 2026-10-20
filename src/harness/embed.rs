@@ -3210,6 +3210,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unspecified_request_uses_the_global_effort_at_the_gateway() {
+        use crate::ports::model::Model;
+
+        let (model, gateway, request) = admission_fixture().await;
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["reasoning"]["effort"],
+            json!("high"),
+            "generic lane calls inherit the configured global effort"
+        );
+    }
+
+    #[tokio::test]
     async fn a_fresh_budget_scope_does_not_wait_for_its_parents_admission() {
         let (model, gateway, request) = admission_fixture().await;
         let _held = model

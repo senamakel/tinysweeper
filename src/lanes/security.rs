@@ -600,6 +600,13 @@ async fn review_group(
             looked_up.push('\n');
             looked_up.push_str(&coverage.looked_up);
 
+            if let Some(refusal) = coverage.execution_refusal {
+                execution_refusal = Some(refusal);
+                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.stop(crate::lanes::coverage::StopReason::Refused);
+                break;
+            }
+
             let Some(response) = coverage.response else {
                 metrics.record(coverage_usage, coverage_elapsed, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);

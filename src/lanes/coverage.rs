@@ -41,6 +41,7 @@ use crate::harness::prompt::Prompt;
 use crate::harness::schema::LaneResponse;
 use crate::lanes::reviewer_responses;
 use crate::ports::model::{Spend, Usage};
+use crate::ports::model_execution::ModelExecutionRefusal;
 
 /// Why an adaptive sequence did not ask for another pass.
 #[derive(Debug, Clone, Copy)]
@@ -138,6 +139,10 @@ pub struct CoverageOutcome {
     /// the caller then has nothing new to place or falsify, exactly as a
     /// solo reviewer failing on round one leaves nothing to place either.
     pub response: Option<LaneResponse>,
+    /// A host policy stop after the adaptive invocation's earlier turns.
+    /// Cancellation remains an error so the owning review can yield; other
+    /// refusals are partial results with their scoped usage and elapsed time.
+    pub execution_refusal: Option<ModelExecutionRefusal>,
     /// What the call cost. Dollars are already tallied inside `llm` — every
     /// call here goes through the same [`ModelCapability`] round one used —
     /// so this only carries the model name, for the cost line's own model
@@ -210,13 +215,23 @@ pub async fn coverage_pass(
     // call already is above, not propagated to fail the whole group and
     // discard what round one found. `CoverageOutcome::response`'s own
     // documentation promises exactly this — `None`, not an error.
+    let mut execution_refusal = None;
     let response = match reviewer_responses(
         lane,
         std::slice::from_ref(reviewer),
         std::slice::from_ref(&answer),
     ) {
         Ok(mut responses) => responses.pop().map(|r| r.response),
-        Err(err @ crate::error::Error::ModelExecutionRefused { .. }) => return Err(err),
+        Err(
+            err @ crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::Cancelled,
+                ..
+            },
+        ) => return Err(err),
+        Err(crate::error::Error::ModelExecutionRefused { refusal, .. }) => {
+            execution_refusal = Some(refusal);
+            None
+        }
         Err(err) => {
             tracing::warn!(agent = reviewer.id, %err, "the coverage pass reviewer's answer did not parse");
             None
@@ -225,6 +240,7 @@ pub async fn coverage_pass(
 
     Ok(CoverageOutcome {
         response,
+        execution_refusal,
         spend,
         looked_up,
         usage,

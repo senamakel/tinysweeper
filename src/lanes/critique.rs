@@ -567,6 +567,13 @@ async fn review_group(
             spend.merge(coverage.spend);
             looked_up.push_str(&coverage.looked_up);
 
+            if let Some(refusal) = coverage.execution_refusal {
+                execution_refusal = Some(refusal);
+                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.stop(crate::lanes::coverage::StopReason::Refused);
+                break;
+            }
+
             // No answer this round: nothing new to place, and a round that
             // could not be reached is not evidence a further one would fare
             // better, so stop rather than pay for another.

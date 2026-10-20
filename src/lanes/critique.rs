@@ -2353,7 +2353,7 @@ fn helper() {
             .lines()
             .find(|line| line.contains("adaptive review passes"))
             .expect("adaptive pass accounting is emitted");
-        assert!(event.contains("stop_reason=refused"), "{event}");
+        assert!(event.contains("stop_reason=\"refused\""), "{event}");
         assert!(event.contains("input_tokens=8"), "{event}");
         assert!(event.contains("output_tokens=4"), "{event}");
         assert!(event.contains("cost_usd=0.25"), "{event}");

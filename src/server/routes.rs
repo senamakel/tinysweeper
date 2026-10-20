@@ -6648,8 +6648,13 @@ mod tests {
             ],
         );
         let forge = MockForge::with_state(state);
-        let model = Arc::new(MockModel::always(json!({
-            "summary": "A review completed successfully.",
+        let last_good_model = Arc::new(MockModel::always(json!({
+            "summary": "LAST-GOOD-REPORT-ONLY",
+            "findings": [],
+            "resolved": []
+        })));
+        let partial_model = Arc::new(MockModel::always(json!({
+            "summary": "PARTIAL-ATTEMPT-REPORT-ONLY",
             "findings": [],
             "resolved": []
         })));
@@ -6662,7 +6667,7 @@ mod tests {
         config.review.large_pr.files = 99;
         let mut last_good = crate::app::review::review_with_tree(
             &forge,
-            model.clone(),
+            last_good_model,
             &config,
             &repo,
             7,
@@ -6674,11 +6679,8 @@ mod tests {
         .await
         .expect("the baseline review completes");
         assert!(last_good.complete());
-        // The prior body is a real app-rendered publication, marked uniquely
-        // so the failed partial attempt cannot be mistaken for last-good data.
-        if let Some(summary) = last_good.summary.as_mut() {
-            summary.executive_summary = "LAST-GOOD-REPORT-ONLY".into();
-        }
+        // The prior body is a real app-rendered publication with a distinct
+        // model-authored summary, so replacement by the next report is visible.
         crate::app::apply::apply(&forge, &forge, &config, &last_good, None)
             .await
             .expect("the complete baseline report publishes");
@@ -6701,13 +6703,25 @@ mod tests {
         config.review.large_pr.groups = 1;
         config.review.large_pr.max_groups = 1;
         let partial = crate::app::review::review_with_tree(
-            &forge, model, &config, &repo, 7, None, None, None, None,
+            &forge,
+            partial_model,
+            &config,
+            &repo,
+            7,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("the partial review still produces an applicable proposal");
         assert!(!partial.complete());
         assert!(partial.partial_review.is_some());
         assert_eq!(partial.unreviewed.len(), 1);
+        assert!(partial
+            .summary
+            .as_ref()
+            .is_some_and(|summary| summary.executive_summary.contains("PARTIAL-ATTEMPT-REPORT-ONLY")));
 
         let check_id = forge
             .publish_check(&repo, status::in_progress("failed-apply-head"))

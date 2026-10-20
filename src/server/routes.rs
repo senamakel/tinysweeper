@@ -4156,6 +4156,7 @@ async fn run_lanes(
         run.owned.as_ref(),
         run.owner_lost.clone(),
         run.owner_until.clone(),
+        run.execution.execution(),
     )
     .await?;
 
@@ -4322,6 +4323,7 @@ async fn select_review_control<F, T>(
     owned: Option<&OwnedReview>,
     owner_lost: Option<watch::Receiver<bool>>,
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
+    _execution: Arc<crate::app::review_execution::ReviewExecution>,
 ) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -5688,6 +5690,17 @@ mod tests {
                 Some(&owned_a),
                 None,
                 None,
+                Arc::new(crate::app::review_execution::ReviewExecution::new(
+                    crate::app::review_execution::ReviewExecutionOptions {
+                        started_at: tokio::time::Instant::now(),
+                        hard_deadline: tokio::time::Instant::now()
+                            + std::time::Duration::from_secs(60),
+                        mode: crate::lanes::large_pr::ReviewMode::Normal,
+                        max_calls: None,
+                        soft_deadline_percent: 80,
+                        drain_seconds: 30,
+                    },
+                )),
             )
             .await;
             if matches!(result, Err(Error::ReviewSuperseded)) {
@@ -6191,9 +6204,27 @@ mod tests {
             let _drop_flag = DropFlag(dropped_by_future);
             std::future::pending::<Result<()>>().await
         };
+        let worker_execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at: tokio::time::Instant::now(),
+                hard_deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: Some(2),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let worker_execution_scope = worker_execution.clone();
         let worker = tokio::spawn(async move {
-            let result =
-                select_review_control(review, jobs.as_ref(), Some(&owned), None, None).await;
+            let result = select_review_control(
+                review,
+                jobs.as_ref(),
+                Some(&owned),
+                None,
+                None,
+                worker_execution_scope,
+            )
+            .await;
             if matches!(result, Err(Error::ReviewSuperseded)) {
                 assert!(jobs.defer_yield(&owned, unix_time_ms()).await.unwrap());
             }

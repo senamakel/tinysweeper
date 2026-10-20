@@ -2212,6 +2212,7 @@ fn helper() {
 
     #[tokio::test]
     async fn blank_global_effort_disables_reviewer_and_falsifier_requests() {
+        let mut role_failures = Vec::new();
         for global in ["", "   "] {
             let model = MockModel::new()
                 .then(json!({
@@ -2231,17 +2232,16 @@ fn helper() {
             assert_eq!(requests[0].schema_name, "tinysweeper_critique");
             assert_eq!(requests[1].schema_name, "tinysweeper_falsify");
             assert_eq!(requests[2].schema_name, "tinysweeper_critique");
-            assert!(
-                requests
-                    .iter()
-                    .all(|request| request.reasoning_effort.as_deref() == Some("off")),
-                "global effort {global:?} must disable every role request: {:?}",
-                requests
-                    .iter()
-                    .map(|request| request.reasoning_effort.as_deref())
-                    .collect::<Vec<_>>()
-            );
+            for request in &requests {
+                if request.reasoning_effort.as_deref() != Some("off") {
+                    role_failures.push(format!(
+                        "global {global:?}, schema {}: got {:?}",
+                        request.schema_name, request.reasoning_effort
+                    ));
+                }
+            }
         }
+        assert!(role_failures.is_empty(), "{role_failures:#?}");
     }
 
     #[tokio::test]

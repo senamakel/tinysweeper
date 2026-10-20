@@ -1083,6 +1083,7 @@ mod tests {
 
     #[tokio::test]
     async fn blank_global_effort_disables_summary_requests() {
+        let mut role_failures = Vec::new();
         for global in ["", "   "] {
             let model = MockModel::new().then(json!({
                 "executive_summary": "Purpose retained.",
@@ -1116,12 +1117,14 @@ mod tests {
             let requests = handle.requests();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].schema_name, "review_summary");
-            assert_eq!(
-                requests[0].reasoning_effort.as_deref(),
-                Some("off"),
-                "global effort {global:?} must disable summary reasoning"
-            );
+            if requests[0].reasoning_effort.as_deref() != Some("off") {
+                role_failures.push(format!(
+                    "global {global:?}: got {:?}",
+                    requests[0].reasoning_effort
+                ));
+            }
         }
+        assert!(role_failures.is_empty(), "{role_failures:#?}");
     }
 
     #[tokio::test]

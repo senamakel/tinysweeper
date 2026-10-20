@@ -371,6 +371,7 @@ fn model_roles_have_independent_effort_and_global_off_is_a_kill_switch() {
 
 #[test]
 fn blank_global_effort_keeps_all_roles_disabled_and_preserves_the_small_token_floor() {
+    let mut role_failures = Vec::new();
     for global in ["", "   "] {
         let config = parse(&format!(
             "version = 1\n[models]\nmax_tokens = 8000\nreasoning_effort = {global:?}\n"
@@ -385,11 +386,10 @@ fn blank_global_effort_keeps_all_roles_disabled_and_preserves_the_small_token_fl
             crate::config::types::ReasoningRole::Falsify,
             crate::config::types::ReasoningRole::Summary,
         ] {
-            assert_eq!(
-                config.models.role_reasoning_effort(role),
-                "off",
-                "global effort {global:?} must disable {role:?}"
-            );
+            let actual = config.models.role_reasoning_effort(role);
+            if actual != "off" {
+                role_failures.push(format!("global {global:?}, role {role:?}: got {actual:?}"));
+            }
         }
     }
 
@@ -402,6 +402,7 @@ fn blank_global_effort_keeps_all_roles_disabled_and_preserves_the_small_token_fl
         "blank global effort keeps an 8000-token route valid: {:?}",
         validate::validate(&routed)
     );
+    assert!(role_failures.is_empty(), "{role_failures:#?}");
 }
 
 #[test]

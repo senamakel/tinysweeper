@@ -3967,6 +3967,28 @@ mod tests {
     async fn proposal_publishes_raw_completion_accounting_from_the_shared_execution() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::index::types::{Embedded, EmbedSignature};
+        use crate::ports::embed::Embedder;
+
+        struct ChargedEmbedder;
+
+        #[async_trait::async_trait]
+        impl Embedder for ChargedEmbedder {
+            fn signature(&self) -> EmbedSignature {
+                EmbedSignature::new("fixture", "charged-query", 2)
+            }
+
+            async fn embed(&self, texts: &[String]) -> Result<Embedded> {
+                Ok(Embedded {
+                    vectors: vec![vec![0.5, 0.5]; texts.len()],
+                    usage: Usage {
+                        embed_tokens: 7,
+                        cost_usd: 0.75,
+                        ..Usage::default()
+                    },
+                })
+            }
+        }
 
         let gateway = FakeGateway::start(vec![Reply::completion(
             "deep",
@@ -3995,6 +4017,10 @@ mod tests {
         config.models.agentic_reviewers = false;
         config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
         let model = Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        config.retrieval.enabled = true;
+        let embedder = ChargedEmbedder;
+        let index = crate::index::MockChunkIndex::new();
+        let retriever = crate::retrieve::Retriever::new(&embedder, &index);
 
         let proposal = review_with_tree_observed(
             &forge,
@@ -4004,7 +4030,7 @@ mod tests {
             7,
             None,
             None,
-            None,
+            Some(&retriever),
             None,
             None,
         )
@@ -4012,11 +4038,14 @@ mod tests {
         .expect("the fake provider answers the review");
 
         assert_eq!(gateway.requests().len(), 1);
-        assert_eq!(proposal.cost_usd, 0.125);
+        assert_eq!(proposal.cost_usd, 0.875);
+        assert_eq!(proposal.embed_tokens, 7);
         let usage = proposal.usage();
         assert_eq!(usage.calls_attempted, 1);
         assert_eq!(usage.calls_succeeded, 1);
         assert_eq!(usage.reasoning_tokens, 2);
+        assert_eq!(usage.embed_tokens, 7);
+        assert_eq!(usage.cost_usd, 0.875);
         let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
         assert_eq!(
             serialized["completion_accounting"]["usage"]["input_tokens"],

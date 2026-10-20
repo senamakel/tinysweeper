@@ -165,3 +165,6 @@ its own score by breaking.
 
 The labelling contract lives in [`evals/README.md`](../../../evals/README.md),
 including what the corpus does **not** measure yet.
+
+Use the [recording and 48-hour observation runbook](recording-and-48h-runbook.md)
+for bounded live recording, recall reporting, and the post-rollout metrics.

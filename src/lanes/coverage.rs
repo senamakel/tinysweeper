@@ -438,6 +438,11 @@ pub(crate) mod test_support {
             }
         }
 
+        // Keep a registered dispatcher alive so callsite registration remains
+        // correct when this telemetry event is first emitted alongside
+        // unobserved lane tests on other threads.
+        let _callsite_registry_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let writer = bytes.clone();
         let subscriber = tracing_subscriber::fmt()

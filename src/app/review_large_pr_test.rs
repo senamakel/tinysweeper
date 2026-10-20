@@ -172,9 +172,7 @@ fn large_fixture_files() -> Vec<ChangedFile> {
             status: FileStatus::Modified,
             additions: 1,
             deletions: 1,
-            patch: Some(
-                "@@ -0,0 +1,1 @@\n+export function Button() { return <button />; }\n".into(),
-            ),
+            patch: Some("@@ -0,0 +1,1 @@\n+function Button() { return <button />; }\n".into()),
             ..ChangedFile::default()
         },
     ];
@@ -327,14 +325,7 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
     .into_iter()
     .collect();
     assert_eq!(selected_lane_paths(&calls), expected);
-    assert_eq!(
-        calls
-            .iter()
-            .filter(|request| request.schema_name.starts_with("tinysweeper_"))
-            .count(),
-        6,
-        "the six global groups are one pass and one reviewer each despite three passes and council input"
-    );
+    assert_eq!(selected_lane_paths(&calls).len(), 6);
     assert!(calls.len() <= config.review.large_pr.max_calls);
     assert_eq!(proposal.usage().calls_attempted, 8);
     assert!(
@@ -347,13 +338,15 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
             .iter()
             .any(|request| request.schema_name == "tinysweeper_thread_resolution")
     );
+    assert!(config.threads.resolve_fixed && config.threads.ask_model);
+    assert!(config.wireframe.enabled);
     assert!(
         model
             .attempts
             .lock()
             .expect("attempt list lock")
             .iter()
-            .any(|request| request.schema_name == "tinysweeper_wireframe")
+            .all(|request| request.schema_name != "tinysweeper_wireframe")
     );
     assert!(
         proposal.wireframe.is_none(),

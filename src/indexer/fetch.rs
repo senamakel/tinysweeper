@@ -1527,7 +1527,7 @@ mod tests {
         // delete a test that says not to.
         let source = std::fs::read_to_string(file!()).expect("reads its own source");
         let body = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests {")
             .next()
             .expect("source before the tests");
         let spawned: Vec<&str> = body

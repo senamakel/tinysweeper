@@ -596,6 +596,92 @@ async fn a_typed_settling_refusal_does_not_leave_the_provisional_answer_usable()
 }
 
 #[tokio::test]
+async fn soft_deadline_refusals_in_question_and_settling_turns_remain_typed() {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let usage = Usage {
+        input_tokens: 3,
+        output_tokens: 1,
+        cost_usd: 0.01,
+        ..Usage::default()
+    };
+
+    for settling_turn in [false, true] {
+        let mut model = MockModel::new().then(asking(&["Does the caller validate this?"]));
+        if settling_turn {
+            model = model.then(answered(true));
+        }
+        let model = model
+            .then_execution_refusal(ModelExecutionRefusal::SoftDeadline)
+            .with_usage(usage);
+        let llm = lane_llm(Arc::new(model), &config(), 100.0);
+        let outcome = ask_all_accounted(
+            llm,
+            LaneId::Critique,
+            &[call("a")],
+            &schema(),
+            Asking {
+                subagent_model: Some("vendor/flash"),
+                ..Asking::default()
+            },
+        )
+        .await
+        .expect("a soft stop is a partial runner result");
+
+        let answer = &outcome.answers[0];
+        assert!(answer.value.is_none());
+        assert_eq!(
+            answer.execution_refusal,
+            Some(ModelExecutionRefusal::SoftDeadline)
+        );
+        assert_eq!(
+            outcome.usage.input_tokens,
+            if settling_turn { 6 } else { 3 }
+        );
+        assert_eq!(
+            outcome.usage.output_tokens,
+            if settling_turn { 2 } else { 1 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_in_question_and_settling_turns_remains_terminal() {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    for settling_turn in [false, true] {
+        let mut model = MockModel::new().then(asking(&["Does the caller validate this?"]));
+        if settling_turn {
+            model = model.then(answered(true));
+        }
+        let llm = lane_llm(
+            Arc::new(model.then_execution_refusal(ModelExecutionRefusal::Cancelled)),
+            &config(),
+            100.0,
+        );
+        let result = ask_all_accounted(
+            llm,
+            LaneId::Critique,
+            &[call("a")],
+            &schema(),
+            Asking {
+                subagent_model: Some("vendor/flash"),
+                ..Asking::default()
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::Cancelled,
+                ..
+            })
+        ));
+    }
+}
+
+#[tokio::test]
 async fn an_unconfident_answer_still_earns_a_second_turn() {
     // "The evidence does not say" is a real input to a verdict — it is the
     // difference between a doubt resolved and one that could not be. Hiding it

@@ -250,13 +250,13 @@ async fn answer_questions(
 }
 
 fn refusal_error(answer: &Answer) -> Option<crate::error::Error> {
-    answer.execution_refusal.map(|refusal| {
-        crate::error::Error::ModelExecutionRefused {
+    answer
+        .execution_refusal
+        .map(|refusal| crate::error::Error::ModelExecutionRefused {
             refusal,
             usage: answer.execution_usage.clone(),
             accounting_complete: answer.execution_accounting_complete.unwrap_or(true),
-        }
-    })
+        })
 }
 
 /// How a lane wants its reviewers asked, beyond the one call.
@@ -525,8 +525,9 @@ pub async fn ask_all_accounted(
 
         if let Some(mut refused) = execution_refusal {
             if refused.execution_refusal == Some(ModelExecutionRefusal::Cancelled) {
-                return Err(refusal_error(&refused)
-                    .expect("typed refusal retains its original error"));
+                return Err(
+                    refusal_error(&refused).expect("typed refusal retains its original error")
+                );
             }
             // A provisional verdict that requested more evidence cannot stand
             // when the host stopped one of those required sub-agent turns.
@@ -556,8 +557,9 @@ pub async fn ask_all_accounted(
             && (settled.value.is_some() || settled.execution_refusal.is_some())
         {
             if settled.execution_refusal == Some(ModelExecutionRefusal::Cancelled) {
-                return Err(refusal_error(&settled)
-                    .expect("typed refusal retains its original error"));
+                return Err(
+                    refusal_error(&settled).expect("typed refusal retains its original error")
+                );
             }
             // The evidence the reviewer read travels with its final answer.
             settled.looked_up = answers[index].looked_up.clone();

@@ -176,6 +176,15 @@ impl MockModel {
         self
     }
 
+    /// Queue a typed host execution refusal at the model boundary.
+    pub(crate) fn then_execution_refusal(self, refusal: ModelExecutionRefusal) -> Self {
+        self.responses
+            .lock()
+            .expect("mock model lock")
+            .push(Err(execution_refusal_error(refusal)));
+        self
+    }
+
     /// Answer as `model` whatever model was asked for.
     ///
     /// This is what a provider fallback looks like from the port: the request

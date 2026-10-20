@@ -144,7 +144,7 @@ fn write_audit(path: &Path, audit: &Audit, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::Write;
     use std::process::{Command, Stdio};
 
     #[test]
@@ -199,6 +199,7 @@ mod tests {
         const CHILD_DIRECTORY: &str = "TINYSWEEPER_RECORDING_BUDGET_CHILD_DIRECTORY";
 
         let directory = tempfile::tempdir().expect("tempdir");
+        let ready_path = directory.path().join("child-ready");
         let mut child = Command::new(std::env::current_exe().expect("test executable"))
             .args([
                 "--exact",
@@ -206,26 +207,18 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD_DIRECTORY, directory.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .spawn()
             .expect("start lock holder");
-        let mut ready = String::new();
-        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
-        stdout
-            .read_line(&mut ready)
-            .expect("read lock-holder marker");
-        if ready.trim() != "RESERVATION_HELD" {
-            let mut stderr = String::new();
-            child
-                .stderr
-                .take()
-                .expect("child stderr")
-                .read_to_string(&mut stderr)
-                .expect("read child failure");
-            let status = child.wait().expect("wait for failed child");
-            panic!("lock holder exited before acquiring its lock ({status}): {stderr}");
+        for _ in 0..500 {
+            if ready_path.exists() {
+                break;
+            }
+            if let Some(status) = child.try_wait().expect("poll lock holder") {
+                panic!("lock holder exited before acquiring its lock ({status})");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert!(ready_path.exists(), "lock holder acquired its reservation");
 
         child.kill().expect("terminate lock holder");
         child.wait().expect("wait for terminated child");
@@ -244,8 +237,8 @@ mod tests {
         };
         let _reservation = Reservation::begin(Path::new(&directory), 8, 12)
             .expect("child reservation");
-        println!("RESERVATION_HELD");
-        std::io::stdout().flush().expect("flush child marker");
+        fs::write(Path::new(&directory).join("child-ready"), b"held")
+            .expect("write lock-holder marker");
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }

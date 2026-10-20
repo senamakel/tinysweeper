@@ -1976,13 +1976,20 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // fails or the head moves. Save fingerprints only after apply publishes
     // them: identities of findings that are never shown must not suppress the
     // only actionable inline comments for up to the state TTL.
+    let certified_replay_paths = certified_replay_paths(&diffs, &lanes);
+    let certified_replay_diffs: Vec<_> = diffs
+        .iter()
+        .filter(|diff| certified_replay_paths.contains(&diff.path))
+        .cloned()
+        .collect();
+
     if let Some(store) = store {
         let e2e = e2e_watch(&lanes, &context.pull_request.head_sha);
         if config.review.incremental {
             let next_titles = still_open_titles(&prior_titles, &lanes);
             let next = ReviewedState {
                 head_sha: context.pull_request.head_sha.clone(),
-                evidence: replay::render(&diffs),
+                evidence: replay::render(&certified_replay_diffs),
                 // New identities are recorded by `apply` after their review has
                 // been created successfully. Retaining only known posted values
                 // here makes a stale or failed publish retryable.
@@ -2207,6 +2214,49 @@ fn large_review_candidates(
                 group: group.clone(),
                 risk,
             }
+        })
+        .collect()
+}
+
+/// Paths whose changed evidence every eligible per-file lane actually covered.
+///
+/// Persisting the whole diff makes a later push treat files omitted by a
+/// large-review plan as already reviewed. A lane's explicit coverage, unanswered
+/// paths and host omissions define its eligible set: policy-excluded files do
+/// not veto replay, while any unanswered or omitted eligible path does.
+fn certified_replay_paths(diffs: &[FileDiff], lanes: &[LaneProposal]) -> BTreeSet<String> {
+    let per_file_lanes: Vec<_> = lanes
+        .iter()
+        .filter(|lane| matches!(lane.lane, LaneId::Critique | LaneId::Security))
+        .collect();
+
+    diffs
+        .iter()
+        .filter(|diff| !diff.changed_lines.is_empty())
+        .filter_map(|diff| {
+            let eligible: Vec<_> = per_file_lanes
+                .iter()
+                .filter(|lane| {
+                    lane.coverage.as_ref().is_some_and(|coverage| {
+                        coverage.reviewed.contains(&diff.path)
+                            || coverage.unanswered.contains(&diff.path)
+                    }) || lane
+                        .omissions
+                        .iter()
+                        .any(|omission| omission.paths.contains(&diff.path))
+                })
+                .collect();
+            (!eligible.is_empty()
+                && eligible.iter().all(|lane| {
+                    lane.coverage.as_ref().is_some_and(|coverage| {
+                        coverage.reviewed.contains(&diff.path)
+                            && !coverage.unanswered.contains(&diff.path)
+                    }) && !lane
+                        .omissions
+                        .iter()
+                        .any(|omission| omission.paths.contains(&diff.path))
+                }))
+            .then(|| diff.path.clone())
         })
         .collect()
 }

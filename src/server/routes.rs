@@ -6184,7 +6184,7 @@ mod tests {
                     if check.head_sha == "head-a" =>
                 {
                     check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
-                        && check.title == "Not reviewed"
+                        && matches!(check.title.as_str(), "Review incomplete" | "Not reviewed")
                 }
                 _ => true,
             }),

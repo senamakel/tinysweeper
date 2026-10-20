@@ -267,7 +267,15 @@ async fn hidden_physical_retries_share_the_recording_cap_and_failed_attempt_audi
     .expect("persists bounded failed review");
 
     assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
-    assert!(outcome.scores[0].error.is_some());
+    let proposal: crate::app::review::Proposal = serde_json::from_slice(
+        &std::fs::read(dir.path().join("runs/hidden-retries/ts-0001/proposal.json"))
+            .expect("bounded review proposal exists"),
+    )
+    .expect("proposal decodes");
+    assert!(
+        proposal.skipped.is_some() || !proposal.unreviewed.is_empty(),
+        "call-limit refusal must remain visibly incomplete, never look like a clean review"
+    );
     let audit: serde_json::Value = serde_json::from_slice(
         &std::fs::read(
             corpus.cases[0]

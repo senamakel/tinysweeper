@@ -204,6 +204,20 @@ fn priority(diff: &FileDiff) -> i32 {
     score
 }
 
+/// Whether this diff has a deterministic signal that warrants adaptive review
+/// even when the first reviewer produces no candidate findings.
+///
+/// Reuse triage's security signals without its test-path priority penalty:
+/// test files are still risk-bearing when they change an instruction, supply
+/// chain, trust boundary, or added dangerous sink.
+pub(crate) fn high_risk(diff: &FileDiff) -> bool {
+    let name = diff.path.rsplit('/').next().unwrap_or(&diff.path);
+    is_agent_instruction_file(name)
+        || is_supply_chain_file(&diff.path)
+        || sensitive_path(&diff.path)
+        || added_sinks(diff) > 0
+}
+
 /// Files where a change alters **what runs or what it runs as**, rather than
 /// what the program computes.
 ///
@@ -724,5 +738,25 @@ mod tests {
 
         assert!(out.review.is_empty());
         assert!(out.skipped.is_empty());
+    }
+
+    #[test]
+    fn high_risk_reuses_security_triage_signals_without_the_test_path_penalty() {
+        for (path, added) in [
+            ("AGENTS.md", "review instructions"),
+            ("package.json", "\"install\": \"node install.js\""),
+            ("src/auth.rs", "let allowed = true;"),
+            ("src/handler.rs", "Command::new(user_input)"),
+        ] {
+            assert!(high_risk(&diff(path, added)), "{path} should be high risk");
+        }
+        assert!(
+            !high_risk(&diff("tests/handler_test.rs", "let expected = 1;")),
+            "the ordinary test-file ordering penalty is not a risk signal"
+        );
+        assert!(
+            high_risk(&diff("tests/auth_test.rs", "Command::new(input)")),
+            "test-path priority must not erase an added dangerous sink"
+        );
     }
 }

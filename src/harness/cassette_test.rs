@@ -712,6 +712,7 @@ async fn recording_agentic_review_keeps_the_physical_cap_across_repository_reads
             "properties":{"summary":{"type":"string"}}, "required":["summary"]
         }),
         schema_name: "review".into(),
+        reasoning_effort: None,
         max_tokens: 128,
     };
     let result = crate::ports::model::with_model_call_observer(
@@ -828,6 +829,7 @@ fn request(model: &str, prompt: &str) -> ModelRequest {
         messages: vec![Message::system("instructions"), Message::user(prompt)],
         schema: json!({"type": "object"}),
         schema_name: "tinysweeper_critique".into(),
+        reasoning_effort: None,
         max_tokens: 8000,
     }
 }
@@ -869,6 +871,14 @@ fn the_key_covers_everything_that_can_change_an_answer() {
         key(&base),
         key(&other_ceiling),
         "a model that runs out of tokens answers differently"
+    );
+
+    let mut other_effort = base.clone();
+    other_effort.reasoning_effort = Some("low".into());
+    assert_ne!(
+        key(&base),
+        key(&other_effort),
+        "a role-specific reasoning override changes the model request"
     );
 }
 
@@ -1323,6 +1333,7 @@ async fn partial_gateway_refusal_keeps_known_spend_and_marks_unknown_usage() {
             ],
             schema: json!({"type":"object"}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         }),
     )

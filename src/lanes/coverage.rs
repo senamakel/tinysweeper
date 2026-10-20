@@ -80,7 +80,8 @@ impl StopReason {
 pub struct Metrics {
     started: Instant,
     attempted: usize,
-    new_findings: Vec<usize>,
+    candidates_per_pass: Vec<usize>,
+    survivors_per_pass: Vec<usize>,
     usage: Usage,
     elapsed: Duration,
     stop_reason: StopReason,
@@ -88,11 +89,17 @@ pub struct Metrics {
 
 impl Metrics {
     /// Start accounting with round one's already-completed review.
-    pub fn start(usage: Usage, elapsed: Duration, new_findings: usize) -> Self {
+    pub(crate) fn start(
+        usage: Usage,
+        elapsed: Duration,
+        candidates: usize,
+        survivors: usize,
+    ) -> Self {
         Self {
             started: Instant::now(),
             attempted: 1,
-            new_findings: vec![new_findings],
+            candidates_per_pass: vec![candidates],
+            survivors_per_pass: vec![survivors],
             usage,
             elapsed,
             stop_reason: StopReason::Ceiling,
@@ -100,9 +107,10 @@ impl Metrics {
     }
 
     /// Record one attempted extra pass and what survived it.
-    pub fn record(&mut self, usage: Usage, elapsed: Duration, new_findings: usize) {
+    pub fn record(&mut self, usage: Usage, elapsed: Duration, candidates: usize, survivors: usize) {
         self.attempted += 1;
-        self.new_findings.push(new_findings);
+        self.candidates_per_pass.push(candidates);
+        self.survivors_per_pass.push(survivors);
         self.usage.add(usage);
         self.elapsed += elapsed;
     }
@@ -119,7 +127,8 @@ impl Metrics {
             group = %paths.join(" + "),
             passes_attempted = self.attempted,
             stop_reason = self.stop_reason.as_str(),
-            new_findings_per_pass = ?self.new_findings,
+            candidate_findings_per_pass = ?self.candidates_per_pass,
+            surviving_findings_per_pass = ?self.survivors_per_pass,
             input_tokens = self.usage.input_tokens,
             output_tokens = self.usage.output_tokens,
             cached_tokens = self.usage.cached_tokens,
@@ -344,13 +353,14 @@ mod tests {
             embed_tokens: 0,
             cost_usd: 0.005,
         };
-        let mut metrics = Metrics::start(round_one, Duration::from_millis(20), 2);
+        let mut metrics = Metrics::start(round_one, Duration::from_millis(20), 3, 2);
 
-        metrics.record(round_two, Duration::from_millis(10), 1);
-        metrics.record(Usage::default(), Duration::from_millis(5), 0);
+        metrics.record(round_two, Duration::from_millis(10), 2, 1);
+        metrics.record(Usage::default(), Duration::from_millis(5), 1, 0);
 
         assert_eq!(metrics.attempted, 3);
-        assert_eq!(metrics.new_findings, vec![2, 1, 0]);
+        assert_eq!(metrics.candidates_per_pass, vec![3, 2, 1]);
+        assert_eq!(metrics.survivors_per_pass, vec![2, 1, 0]);
         assert_eq!(metrics.usage.input_tokens, 150);
         assert_eq!(metrics.usage.output_tokens, 15);
         assert_eq!(metrics.usage.cached_tokens, 120);

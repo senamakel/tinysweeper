@@ -42,6 +42,9 @@ fn models(base_url: &str) -> Models {
         routes: vec![],
         max_tokens: 1000,
         reasoning_effort: "high".into(),
+        reviewer_reasoning_effort: "medium".into(),
+        falsify_reasoning_effort: "low".into(),
+        summary_reasoning_effort: "low".into(),
         structured_output: StructuredOutput::Schema,
         budget_usd_per_pr: 1.0,
         budget_prices: Default::default(),
@@ -57,6 +60,7 @@ fn request(model: &str) -> ModelRequest {
         ],
         schema: crate::harness::schema::json_schema(),
         schema_name: "tinysweeper_critique".into(),
+        reasoning_effort: None,
         max_tokens: 1000,
     }
 }

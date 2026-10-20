@@ -63,11 +63,10 @@ note_confidence = 0.65
 incremental = true
 draft_prs = false
 respect_agents_md = true
-# Maximum adaptive review depth over the same evidence. Small groups stop
-# after round one. Qualifying groups may take up to two more looks, stopping
-# as soon as a pass adds no distinct surviving finding. Each extra pass is
-# another model call, so this remains an operator-owned ceiling.
-passes = 3
+# Maximum review passes over the same evidence. Pass one always runs; later
+# passes run only when the previous pass proposed a candidate or the group has
+# a deterministic high-risk signal. Each extra pass is another model call.
+passes = 2
 
 # Block the merge button at this severity; "off" never blocks. A blocking review
 # has to be cleared by a human if it turns out to be wrong, so the floor sits at
@@ -338,6 +337,12 @@ max_tokens = 16000
 # cheap tier cost more than the expensive one, which is the entire reason the
 # tier exists. `tinysweeper doctor` warns when the two are configured together.
 reasoning_effort = "medium"
+# Per-role settings keep reviewer judgment at medium effort while the factual
+# falsifier and narrative summary use less reasoning. Setting the global value
+# to `off` remains a kill switch for every role.
+reviewer_reasoning_effort = "medium"
+falsify_reasoning_effort = "low"
+summary_reasoning_effort = "low"
 # Who enforces the response schema, and the reason the model above is usable at
 # all.
 #

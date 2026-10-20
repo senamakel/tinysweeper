@@ -513,6 +513,18 @@ pub fn digest_of(config: &Config) -> String {
     field(b"fallback\0", models.fallback.join(",").as_bytes());
     field(b"max_tokens\0", &models.max_tokens.to_le_bytes());
     field(b"reasoning_effort\0", models.reasoning_effort.as_bytes());
+    field(
+        b"reviewer_reasoning_effort\0",
+        models.reviewer_reasoning_effort.as_bytes(),
+    );
+    field(
+        b"falsify_reasoning_effort\0",
+        models.falsify_reasoning_effort.as_bytes(),
+    );
+    field(
+        b"summary_reasoning_effort\0",
+        models.summary_reasoning_effort.as_bytes(),
+    );
     // Preserve historical one-shot digests, but never compare an agentic
     // tool run or different physical-call admission bounds as the same run.
     if models.agentic_reviewers {

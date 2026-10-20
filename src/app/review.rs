@@ -1760,6 +1760,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         e2e: e2e_evidence.as_ref(),
         tree: Some(tree),
         graph: graph_for_lanes,
+        pass_yield_observer: timing
+            .as_ref()
+            .map(|timing| timing as &dyn crate::lanes::PassYieldObserver),
     };
     let large_plan = plan.clone();
     let large_model = model.clone();
@@ -1830,6 +1833,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             e2e: e2e_evidence.as_ref(),
             tree: Some(tree),
             graph: graph_for_lanes,
+            pass_yield_observer: timing
+                .as_ref()
+                .map(|timing| timing as &dyn crate::lanes::PassYieldObserver),
         };
         let model = model.clone();
         let lane_execution = execution.execution();
@@ -2356,14 +2362,14 @@ async fn run_large_groups<'run>(
     // One capability per lane, shared by its selected groups. This retains the
     // lane's ordinary cumulative budget and spend accounting under fan-out.
     let critique_llm = critique_prepared.as_ref().map(|_| {
-        crate::flows::runner::lane_llm(
+        crate::flows::runner::reviewer_lane_llm(
             model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,
         )
     });
     let security_llm = security_prepared.as_ref().map(|_| {
-        crate::flows::runner::lane_llm(
+        crate::flows::runner::reviewer_lane_llm(
             model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,
@@ -3906,6 +3912,7 @@ mod tests {
             messages: vec![],
             schema: json!({"type":"object"}),
             schema_name: "review-root-probe".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         };
 
@@ -3983,6 +3990,7 @@ mod tests {
                     messages: vec![Message::user("model request")],
                     schema: json!({"type":"object"}),
                     schema_name: "observed-dispatch-control".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 };
 
@@ -4027,6 +4035,7 @@ mod tests {
             messages: vec![crate::ports::model::Message::user("observe this call")],
             schema: json!({"type":"object"}),
             schema_name: "observed-execution-control".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         }
     }
@@ -4220,6 +4229,8 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    type ReviewerEffortLog = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
     /// A panel model whose lane calls can be held at a barrier or delayed to
     /// expose scheduling decisions made by the complete review path.
     struct ReviewSchedulingModel {
@@ -4235,6 +4246,8 @@ mod tests {
         review_budget_enabled: Arc<std::sync::atomic::AtomicBool>,
         review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
         scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
+        security_requests: Arc<std::sync::atomic::AtomicUsize>,
+        reviewer_efforts: ReviewerEffortLog,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -4263,6 +4276,8 @@ mod tests {
                 review_budget_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 review_budget_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 scheduled_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                security_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                reviewer_efforts: Arc::new(std::sync::Mutex::new(Vec::new())),
                 active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
@@ -4275,6 +4290,10 @@ mod tests {
             bool,
             Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>,
         )> {
+            self.reviewer_efforts.lock().unwrap().push((
+                request.schema_name.clone(),
+                request.reasoning_effort.clone(),
+            ));
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
@@ -4284,6 +4303,10 @@ mod tests {
                 }
                 _ => return Ok((false, None)),
             };
+            if request.schema_name == "tinysweeper_security" {
+                self.security_requests
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let permit =
                 if let Some(control) = &self.execution {
                     let permit = control.acquire().await.map_err(|refusal| {
@@ -4490,6 +4513,8 @@ mod tests {
                 review_budget_enabled: self.review_budget_enabled.clone(),
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
+                security_requests: self.security_requests.clone(),
+                reviewer_efforts: self.reviewer_efforts.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4525,6 +4550,8 @@ mod tests {
                 review_budget_enabled: self.review_budget_enabled.clone(),
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
+                security_requests: self.security_requests.clone(),
+                reviewer_efforts: self.reviewer_efforts.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4653,21 +4680,37 @@ mod tests {
     async fn large_mode_overlaps_ranked_groups_with_independent_lanes() {
         let files = (0..30)
             .map(|index| {
+                let path = if index == 0 {
+                    ".github/workflows/ci.yml".to_string()
+                } else {
+                    format!("src/large_{index:02}.rs")
+                };
                 changed_file(
-                    &format!("src/large_{index:02}.rs"),
-                    &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
+                    &path,
+                    if index == 0 {
+                        "@@ -0,0 +1,2 @@\n+name: CI\n+permissions: write-all\n"
+                    } else {
+                        "@@ -0,0 +1,1 @@\n+fn large() {}\n"
+                    },
                 )
             })
             .collect();
         let forge = forge_with(files, vec![]);
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let security_requests = model.security_requests.clone();
+        let reviewer_efforts = model.reviewer_efforts.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
-        config.review.lanes = vec!["critique".into(), "tests".into()];
+        // Normal mode would adapt for high-risk workflow edits. Large mode
+        // must clamp this configured ceiling back to one pass.
+        config.review.passes = 3;
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
+        config.review.lanes = vec!["critique".into(), "security".into(), "tests".into()];
         config.review.large_pr.enabled = true;
         config.review.large_pr.files = 1;
-        config.review.large_pr.max_groups = 1;
+        config.review.large_pr.max_groups = 2;
         config.review.large_pr.max_calls = 8;
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
@@ -4694,8 +4737,37 @@ mod tests {
             "the selected Large-mode critique group and tests lane must overlap"
         );
         let proposal = result.unwrap().expect("Large-mode review succeeds");
-        assert_eq!(proposal.lanes.len(), 2);
-        assert!(timing.snapshot().lanes_ms.contains_key("critique"));
+        assert_eq!(proposal.lanes.len(), 3);
+        assert!(
+            security_requests.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the selected high-risk Large group must execute a security request"
+        );
+        let reviewer_efforts = reviewer_efforts.lock().unwrap();
+        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
+            schema == "tinysweeper_critique" && effort.as_deref() == Some("low")
+        }));
+        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
+            schema == "tinysweeper_security" && effort.as_deref() == Some("low")
+        }));
+        assert!(
+            reviewer_efforts
+                .iter()
+                .any(|(schema, effort)| { schema == "tinysweeper_tests" && effort.is_none() })
+        );
+        let record = timing.snapshot();
+        assert!(record.lanes_ms.contains_key("critique"));
+        let security_yield = record
+            .pass_yields
+            .get("security:1")
+            .expect("effective one-pass Large security group is recorded");
+        assert_eq!(security_yield.groups, 1);
+        assert!(!record.pass_yields.contains_key("security:2"));
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("effective one-pass Large mode records its completed group");
+        assert_eq!(yield_one.groups, 1);
+        assert!(!record.pass_yields.contains_key("critique:2"));
     }
 
     #[tokio::test]
@@ -4869,6 +4941,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_timing_records_zero_yield_for_an_empty_one_pass_review() {
+        let forge = forge_with(vec![rust_file()], vec![]);
+        let mut config = critique_config();
+        config.review.passes = 1;
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        review_with_tree_observed(
+            &forge,
+            Arc::new(MockModel::always(json!({"summary":"Fine.","findings":[]}))),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(timing.clone()),
+        )
+        .await
+        .expect("mock review completes");
+        timing.finish("success");
+
+        let record = timing.snapshot();
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("one-pass critique yield is in the terminal record");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 0);
+        assert_eq!(yield_one.survivors, 0);
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(
+            line.contains(
+                "pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":0,\"survivors\":0}}"
+            ),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_timing_keeps_pass_one_yield_when_pass_two_is_cancelled() {
+        use crate::ports::model::{ModelRequest, ModelResponse};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::mpsc;
+
+        struct BlockCoverage {
+            critique_calls: AtomicUsize,
+            second_pass_started: mpsc::UnboundedSender<()>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for BlockCoverage {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                let value = match request.schema_name.as_str() {
+                    "tinysweeper_falsify" => json!({"incorrect":[{
+                        "index":1,"reason":"The candidate is disproved."
+                    }]}),
+                    "tinysweeper_critique" => {
+                        if self.critique_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            json!({
+                                "summary":"Candidate found.",
+                                "findings":[{
+                                    "path":"src/main.rs",
+                                    "existing_code":"let x0 = 0;",
+                                    "rule":"unchecked-index",
+                                    "title":"Guard x0",
+                                    "body":"The value may be invalid.",
+                                    "severity":"high",
+                                    "confidence":0.9
+                                }]
+                            })
+                        } else {
+                            self.second_pass_started.send(()).unwrap();
+                            return std::future::pending::<Result<ModelResponse>>().await;
+                        }
+                    }
+                    other => panic!("unexpected model schema {other}"),
+                };
+                Ok(ModelResponse {
+                    value,
+                    model: request.model,
+                    usage: Usage::default(),
+                })
+            }
+        }
+
+        let mut patch = String::from("@@ -1,2 +1,82 @@\n fn main() {\n");
+        patch.push_str("+    let x0 = 0;\n");
+        for index in 1..80 {
+            patch.push_str(&format!("+    let x{index} = {index};\n"));
+        }
+        patch.push_str(" }\n");
+        let file = ChangedFile {
+            path: "src/main.rs".into(),
+            status: FileStatus::Modified,
+            patch: Some(patch),
+            ..ChangedFile::default()
+        };
+        let forge = forge_with(vec![file], vec![]);
+        let mut config = critique_config();
+        config.review.passes = 2;
+        config.models.agentic_reviewers = false;
+        config.overview.enabled = false;
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let model = Arc::new(BlockCoverage {
+            critique_calls: AtomicUsize::new(0),
+            second_pass_started: started,
+        });
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let review_timing = timing.clone();
+        let repository = repo();
+        let mut running = Box::pin(review_with_tree_observed(
+            &forge,
+            model,
+            &config,
+            &repository,
+            7,
+            None,
+            None,
+            None,
+            None,
+            Some(review_timing),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut running => panic!("review completed before pass-two cancellation: {result:?}"),
+                signal = started_rx.recv() => signal.expect("the model sent its start signal"),
+            }
+        })
+        .await
+        .expect("the second reviewer pass started");
+        drop(running);
+
+        let record = timing.snapshot();
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("the completed first pass remains after cancellation");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 1);
+        assert_eq!(yield_one.survivors, 0);
+        assert!(!record.pass_yields.contains_key("critique:2"));
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(
+            line.contains(
+                "pass_yields={\"critique:1\":{\"groups\":1,\"candidates\":1,\"survivors\":0}}"
+            ),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_deadline_keeps_the_partial_timing_record_and_outcome() {
         struct SlowModel(Arc<std::sync::atomic::AtomicBool>);
         #[async_trait::async_trait]
@@ -4960,6 +5207,7 @@ mod tests {
                 messages: vec![],
                 schema: json!({}),
                 schema_name: "answer".into(),
+                reasoning_effort: None,
                 max_tokens: 8,
             })
             .await;
@@ -5007,6 +5255,7 @@ mod tests {
             messages: vec![crate::ports::model::Message::user("Review this.")],
             schema: json!({"type":"object"}),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let tree = crate::ports::tree::MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -5104,6 +5353,7 @@ mod tests {
             messages: vec![Message::user("Review this evidence.")],
             schema: json!({"type":"object"}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let mut running = Box::pin(model.review(request, &tree, &policy));
@@ -5183,6 +5433,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let running = observed
@@ -5292,6 +5543,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         observed
@@ -5379,6 +5631,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "critique".into(),
+            reasoning_effort: None,
             max_tokens: 32,
         };
         let result = observed
@@ -5463,6 +5716,7 @@ mod tests {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("deterministic scanner completes");
@@ -6480,6 +6734,7 @@ mod tests {
                 messages: vec![Message::user("record a physical completion")],
                 schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}}}),
                 schema_name: "pending-terminal-accounting".into(),
+                reasoning_effort: None,
                 max_tokens: 32,
             }
         }

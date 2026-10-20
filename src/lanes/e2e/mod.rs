@@ -462,6 +462,7 @@ mod lane_tests {
                 e2e: evidence,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs")
@@ -635,6 +636,7 @@ mod lane_tests {
                     e2e: Some(&evidence),
                     tree: None,
                     graph: None,
+                    pass_yield_observer: None,
                 })
                 .await
                 .expect("a budget refusal leaves deterministic job facts publishable");
@@ -796,6 +798,7 @@ mod lane_tests {
                 e2e: Some(&evidence),
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");

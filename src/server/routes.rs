@@ -4968,6 +4968,7 @@ mod tests {
                 messages: vec![Message::user("review the leased head")],
                 schema: json!({"type":"object"}),
                 schema_name: "review-root-probe".into(),
+                reasoning_effort: None,
                 max_tokens: 16,
             };
 
@@ -5046,6 +5047,7 @@ mod tests {
                     messages: vec![Message::user("review the leased head")],
                     schema: json!({"type":"object"}),
                     schema_name: "owned-dispatch-control".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 };
 
@@ -5593,6 +5595,7 @@ mod tests {
                 messages: vec![Message::user("review this head")],
                 schema: json!({"type": "object"}),
                 schema_name: "review".into(),
+                reasoning_effort: None,
                 max_tokens: 16,
             })
             .await;
@@ -5770,6 +5773,7 @@ mod tests {
                 messages: vec![Message::user("must not dispatch after local lease expiry")],
                 schema: json!({"type": "object"}),
                 schema_name: "review".into(),
+                reasoning_effort: None,
                 max_tokens: 16,
             })
             .await;
@@ -5829,6 +5833,7 @@ mod tests {
                         messages: vec![Message::user("review confirmed head-c")],
                         schema: json!({"type": "object"}),
                         schema_name: "review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -5967,6 +5972,7 @@ mod tests {
             messages: vec![Message::user("review head-a")],
             schema: serde_json::json!({"type": "object"}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 16,
         };
         let control_execution = execution.clone();
@@ -6116,6 +6122,7 @@ mod tests {
                         messages: vec![Message::user("review head-b")],
                         schema: serde_json::json!({"type": "object"}),
                         schema_name: "review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -6250,6 +6257,7 @@ mod tests {
                         messages: vec![Message::user("review the live head")],
                         schema: json!({"type": "object"}),
                         schema_name: "review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -6326,6 +6334,7 @@ mod tests {
                         messages: vec![Message::user("review the live head again")],
                         schema: json!({"type": "object"}),
                         schema_name: "review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -6568,6 +6577,7 @@ mod tests {
                         messages: vec![crate::ports::model::Message::user("duplicate review")],
                         schema: json!({"type": "object"}),
                         schema_name: "duplicate-review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -8033,6 +8043,7 @@ mod tests {
                         messages: vec![Message::user("review live head-b after retry yield")],
                         schema: serde_json::json!({"type": "object"}),
                         schema_name: "review".into(),
+                        reasoning_effort: None,
                         max_tokens: 16,
                     })
                     .await?;
@@ -8371,6 +8382,7 @@ mod tests {
                             messages: vec![Message::user("retry this review")],
                             schema: json!({"type": "object"}),
                             schema_name: "review".into(),
+                            reasoning_effort: None,
                             max_tokens: 16,
                         })
                         .await?;
@@ -10525,6 +10537,7 @@ mod tests {
                     messages: vec![Message::user("run the review")],
                     schema: json!({"type": "object"}),
                     schema_name: "review".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 })
                 .await?;
@@ -10581,6 +10594,7 @@ mod tests {
                     messages: vec![Message::user("run the review")],
                     schema: json!({"type": "object"}),
                     schema_name: "review".into(),
+                    reasoning_effort: None,
                     max_tokens: 16,
                 })
                 .await?;

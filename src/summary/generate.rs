@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::app::review::LaneProposal;
-use crate::config::types::{Config, LaneId, Workload};
+use crate::config::types::{Config, LaneId, ReasoningRole, Workload};
 use crate::evidence::diff::FileDiff;
 use crate::forge::types::PullRequest;
 use crate::ports::model::{Message, Model, ModelRequest, Role, Spend};
@@ -207,6 +207,12 @@ pub async fn generate_with_input(
         messages,
         schema: schema(),
         schema_name: "review_summary".into(),
+        reasoning_effort: Some(
+            config
+                .models
+                .role_reasoning_effort(ReasoningRole::Summary)
+                .to_string(),
+        ),
         max_tokens: config.models.max_tokens.min(4_000),
     };
 
@@ -1097,9 +1103,16 @@ mod tests {
                 cost_usd: 0.01,
                 ..Default::default()
             });
+        let mut config: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.models.reasoning_effort = "high".into();
+        config.models.summary_reasoning_effort = "off".into();
         let (summary, spend, transcript) = generate(
             &model,
-            &Config::default(),
+            &config,
             &PullRequest {
                 body: "Purpose retained".into(),
                 ..PullRequest::default()
@@ -1135,6 +1148,12 @@ mod tests {
         assert!((spend.usage.cost_usd - 0.02).abs() < f64::EPSILON);
         assert_eq!(transcript.len(), 1);
         let request = model.requests();
+        assert!(
+            request
+                .iter()
+                .all(|request| request.reasoning_effort.as_deref() == Some("off")),
+            "both summary generation and its schema repair carry the custom summary effort"
+        );
         assert!(
             request[0].schema["properties"]["positive_observations"]["additionalProperties"]
                 == false

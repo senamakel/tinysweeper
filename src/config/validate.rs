@@ -336,6 +336,30 @@ fn validate_models(config: &Config, problems: &mut Vec<String>) {
         problems.push("`models.max_tokens = 0` would produce no output".into());
     }
 
+    const REASONING_EFFORTS: &[&str] = &["off", "low", "medium", "high", "gateway"];
+    for (key, effort) in [
+        (
+            "models.reviewer_reasoning_effort",
+            &models.reviewer_reasoning_effort,
+        ),
+        (
+            "models.falsify_reasoning_effort",
+            &models.falsify_reasoning_effort,
+        ),
+        (
+            "models.summary_reasoning_effort",
+            &models.summary_reasoning_effort,
+        ),
+    ] {
+        if !REASONING_EFFORTS.contains(&effort.trim()) {
+            problems.push(format!(
+                "`{key} = \"{}\"` is not a reasoning effort; expected one of {}",
+                effort.trim(),
+                known(REASONING_EFFORTS)
+            ));
+        }
+    }
+
     // Reasoning is drawn from the same allowance as the answer, and the effort
     // key does not bound it — measured, both configured models spend the
     // *entire* budget thinking at `high` and at `low` alike, then return empty

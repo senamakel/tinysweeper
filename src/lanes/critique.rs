@@ -269,7 +269,7 @@ impl Critique {
         // lets the groups run concurrently: this lane reviewed them one at a
         // time only because spend is known after a call returns, and there was
         // nowhere else to check it.
-        let llm = runner::lane_llm(
+        let llm = runner::reviewer_lane_llm(
             self.model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,
@@ -471,6 +471,7 @@ async fn review_group(
     } else {
         per_reviewer.into_iter().flatten().collect()
     };
+    let round_one_candidates = findings.len();
 
     // Step 5, once over the merged set rather than once per reviewer. The
     // filter can only reject, so more inputs in one pass is identical semantics
@@ -481,27 +482,38 @@ async fn review_group(
     spend.merge(filtered.spend);
 
     let mut findings = filtered.findings;
+    let round_one_survivors = findings.len();
     let mut execution_refusal = filtered.execution_refusal;
     let mut rejected = filtered.rejected;
     let mut capped_for_degraded_context = 0usize;
+    let mut metrics = crate::lanes::coverage::Metrics::start(
+        round_one_usage,
+        round_one_elapsed,
+        round_one_candidates,
+        round_one_survivors,
+    );
+    if execution_refusal.is_none()
+        && let Some(observer) = input.pass_yield_observer
+    {
+        observer.record_pass_yield(
+            LaneId::Critique,
+            1,
+            round_one_candidates,
+            round_one_survivors,
+        );
+    }
 
-    // Adaptive coverage passes. Gated on the group's own size, not the whole
-    // pull request's — a lane fans out per group, so a two-line group must
-    // not build a second prompt just because the change elsewhere is large.
+    // Candidate yield and deterministic high-risk files trigger an extra look;
+    // unrelated large files in the pull request do not affect this group.
     let mut added_by_coverage = 0usize;
     if execution_refusal.is_none()
         && config.review.passes > 1
-        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+        && (round_one_candidates > 0 || group_diffs.iter().any(crate::lanes::triage::high_risk))
     {
         // Fed cumulatively: the second coverage pass (pass 3) is told about
         // everything round one *and* the first coverage pass found, so it
         // does not rediscover the first pass's own additions.
         let mut confirmed = findings.clone();
-        let mut metrics = crate::lanes::coverage::Metrics::start(
-            round_one_usage,
-            round_one_elapsed,
-            findings.len(),
-        );
 
         for pass_index in 1..config.review.passes {
             let reviewer = &reviewers[0];
@@ -553,7 +565,7 @@ async fn review_group(
                     // No per-call usage is observable when the round itself
                     // fails to return an outcome; count the attempt without
                     // attributing concurrent groups' shared lane spend to it.
-                    metrics.record(Usage::default(), Duration::ZERO, 0);
+                    metrics.record(Usage::default(), Duration::ZERO, 0, 0);
                     metrics.stop(if refusal.is_some() {
                         crate::lanes::coverage::StopReason::Refused
                     } else {
@@ -569,7 +581,7 @@ async fn review_group(
 
             if let Some(refusal) = coverage.execution_refusal {
                 execution_refusal = Some(refusal);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Refused);
                 break;
             }
@@ -578,7 +590,7 @@ async fn review_group(
             // could not be reached is not evidence a further one would fare
             // better, so stop rather than pay for another.
             let Some(response) = coverage.response else {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             };
@@ -593,7 +605,7 @@ async fn review_group(
                 Ok(asked) => asked,
                 Err(err) => {
                     tracing::warn!(%err, "a coverage pass failed to place its findings");
-                    metrics.record(coverage_usage, coverage_elapsed, 0);
+                    metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                     metrics.stop(crate::lanes::coverage::StopReason::PlacementFailure);
                     break;
                 }
@@ -630,7 +642,10 @@ async fn review_group(
             // Nothing new: a further pass over the same evidence would not
             // find more either, so stop rather than pay for one.
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                if let Some(observer) = input.pass_yield_observer {
+                    observer.record_pass_yield(LaneId::Critique, pass_index + 1, 0, 0);
+                }
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if had_proposals {
                     crate::lanes::coverage::StopReason::Duplicate
                 } else {
@@ -641,6 +656,7 @@ async fn review_group(
 
             // Falsify only what this pass added — free when empty, and it
             // never re-judges what round one's own pass already kept.
+            let new_candidates = new_findings.len();
             let mut new_filtered = Falsifier::new(llm.model().as_ref(), config)
                 .filter_with(
                     LaneId::Critique,
@@ -656,14 +672,25 @@ async fn review_group(
             rejected.extend(new_filtered.rejected);
             if let Some(refusal) = new_filtered.execution_refusal {
                 execution_refusal = Some(refusal);
+                let survivors = new_filtered.findings.len();
                 findings.extend(new_filtered.findings);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, new_candidates, survivors);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             }
 
+            let survivors = new_filtered.findings.len();
+            if let Some(observer) = input.pass_yield_observer {
+                observer.record_pass_yield(
+                    LaneId::Critique,
+                    pass_index + 1,
+                    new_candidates,
+                    survivors,
+                );
+            }
+
             if new_filtered.findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, new_candidates, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::NonSurviving);
                 break;
             }
@@ -671,14 +698,17 @@ async fn review_group(
             metrics.record(
                 coverage_usage,
                 coverage_elapsed,
+                new_candidates,
                 new_filtered.findings.len(),
             );
             added_by_coverage += new_filtered.findings.len();
             confirmed.extend(new_filtered.findings.clone());
             findings.extend(new_filtered.findings);
         }
-        metrics.emit(LaneId::Critique, group_paths);
     }
+    // Emit one yield record for every reviewed group, including one-pass and
+    // adaptively ineligible groups, so zero yield remains observable.
+    metrics.emit(LaneId::Critique, group_paths);
 
     // The application's typed context-degraded path keeps these findings as
     // non-blocking structured notes. A Likely cap makes that caveat visible
@@ -707,25 +737,6 @@ async fn review_group(
         spend,
         execution_refusal,
     })
-}
-
-/// Minimum changed lines a group needs before adaptive coverage passes
-/// (`review.passes > 1`) are worth their extra calls.
-///
-/// Not configurable: a repository that wants coverage passes at all is opting
-/// into the per-pass cost already, and a second dial here would only let it
-/// re-enable the noise this threshold exists to avoid on the two-line groups
-/// that make up most pull requests. 40 is comfortably above what a rename or a
-/// one-line fix touches, and comfortably below what a group large enough to
-/// need a second reviewer look would be.
-const COVERAGE_PASS_MIN_LINES: usize = 40;
-
-/// How many lines this group's diffs changed, summed across every file in it.
-fn changed_lines(group_diffs: &[FileDiff]) -> usize {
-    group_diffs
-        .iter()
-        .map(|diff| diff.changed_lines.len())
-        .sum()
 }
 
 /// What one reviewer said about one group.
@@ -1045,6 +1056,20 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[derive(Clone)]
+    struct MetricsLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for MetricsLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[derive(Debug)]
     struct CountingTree {
         inner: crate::ports::tree::MockTree,
@@ -1164,6 +1189,7 @@ fn helper() {
                 e2e: None,
                 tree,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs")
@@ -1194,6 +1220,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -1807,6 +1834,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -1900,6 +1928,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs");
@@ -1912,8 +1941,8 @@ fn helper() {
         assert!(outcome.summary.contains("capped at Likely confidence"));
     }
 
-    /// How many changed lines a group needs to clear [`COVERAGE_PASS_MIN_LINES`].
-    const LARGE_LINES: usize = COVERAGE_PASS_MIN_LINES;
+    /// Keep the fixture large enough to exercise multi-pass prompt handling.
+    const LARGE_LINES: usize = 40;
 
     /// A synthetic patch whose group is large enough for a coverage pass to
     /// run at all — `diffs()` is deliberately two lines, so every coverage
@@ -2020,11 +2049,202 @@ fn helper() {
     }
 
     #[tokio::test]
+    async fn a_low_risk_group_without_candidates_uses_one_reviewer_call() {
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+
+        run_with(model, &config_with_passes(2), &large_diffs()).await;
+
+        assert_eq!(
+            handle.calls(),
+            1,
+            "an empty first-pass result on an ordinary group must not buy another look"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_high_risk_group_without_candidates_gets_an_adaptive_pass() {
+        let model = MockModel::new()
+            .then(json!({"summary": "Nothing to report.", "findings": []}))
+            .then(json!({"summary": "Nothing to report.", "findings": []}));
+        let handle = model.clone();
+        let auth_diff = vec![parse_file_patch("src/auth.rs", PATCH)];
+
+        run_with(model, &config_with_passes(2), &auth_diff).await;
+
+        assert_eq!(
+            handle.calls(),
+            2,
+            "a sensitive path keeps a second look even when the first found no candidate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_small_group_with_a_candidate_gets_an_adaptive_pass() {
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "let x = items[i];",
+                    "rule": "unchecked-index",
+                    "title": "Guard the index",
+                    "body": "The index may be out of bounds.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": []}))
+            .then(json!({"summary": "No further findings.", "findings": []}));
+        let handle = model.clone();
+
+        run_with(model, &config_with_passes(2), &diffs()).await;
+
+        assert_eq!(
+            handle.calls(),
+            3,
+            "a small group's first-pass candidate should earn one further review"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_small_candidate_rejected_by_falsification_still_gets_a_second_review() {
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [{
+                    "path": "src/main.rs",
+                    "existing_code": "let x = items[i];",
+                    "rule": "unchecked-index",
+                    "title": "Guard the index",
+                    "body": "The index may be out of bounds.",
+                    "severity": "high",
+                    "confidence": 0.9
+                }]
+            }))
+            .then(json!({"incorrect": [{"index": 1, "reason": "The diff proves i is in bounds."}]}))
+            .then(json!({"summary": "No further findings.", "findings": []}));
+        let handle = model.clone();
+        let config = config_with_passes(2);
+        let pr = pull_request();
+        let diffs = diffs();
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Normal");
+        let outcome = Critique::new(Arc::new(model))
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+                pass_yield_observer: Some(&timing),
+            })
+            .await
+            .expect("lane runs");
+
+        assert!(
+            outcome.findings.is_empty(),
+            "falsification rejected the candidate"
+        );
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.schema_name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "tinysweeper_critique",
+                "tinysweeper_falsify",
+                "tinysweeper_critique"
+            ],
+            "the final request is a second reviewer call, even though no finding survived"
+        );
+        let yields = timing.snapshot().pass_yields;
+        assert_eq!(yields["critique:1"].groups, 1);
+        assert_eq!(yields["critique:1"].candidates, 1);
+        assert_eq!(yields["critique:1"].survivors, 0);
+        assert_eq!(yields["critique:2"].groups, 1);
+        assert_eq!(yields["critique:2"].candidates, 0);
+        assert_eq!(yields["critique:2"].survivors, 0);
+    }
+
+    #[tokio::test]
+    async fn critique_coverage_and_falsify_requests_use_their_custom_efforts() {
+        let model = MockModel::new()
+            .then(json!({
+                "summary": "Unchecked index.",
+                "findings": [finding_named("Guard the first index", 3)]
+            }))
+            .then(json!({"incorrect": []}))
+            .then(json!({"summary": "No additional findings.", "findings": []}));
+        let handle = model.clone();
+        let mut config = config_with_passes(2);
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
+        config.models.falsify_reasoning_effort = "medium".into();
+        config.models.summary_reasoning_effort = "off".into();
+
+        run_with(model, &config, &large_diffs()).await;
+
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].schema_name, "tinysweeper_critique");
+        assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(requests[1].schema_name, "tinysweeper_falsify");
+        assert_eq!(requests[1].reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(requests[2].schema_name, "tinysweeper_critique");
+        assert_eq!(requests[2].reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[tokio::test]
+    async fn one_pass_empty_groups_emit_zero_yield_metrics() {
+        use tracing::instrument::WithSubscriber;
+
+        let model = MockModel::new().then(json!({
+            "summary": "Nothing to report.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || MetricsLogWriter(writer_bytes.clone()))
+            .finish();
+
+        run_with(model, &config_with_passes(1), &diffs())
+            .with_subscriber(subscriber)
+            .await;
+
+        assert_eq!(handle.calls(), 1);
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("adaptive review passes").count(), 1, "{line}");
+        assert!(line.contains("passes_attempted=1"), "{line}");
+        assert!(line.contains("candidate_findings_per_pass=[0]"), "{line}");
+        assert!(line.contains("surviving_findings_per_pass=[0]"), "{line}");
+    }
+
+    #[tokio::test]
     async fn adaptive_requests_keep_path_rules_and_redaction_guidance() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![
             PathInstruction {
-                glob: "src/large.rs".into(),
+                glob: "src/auth.rs".into(),
                 instructions: "Check every index against the collection length.".into(),
                 rules: None,
                 lanes: vec![LaneId::Critique],
@@ -2042,7 +2262,7 @@ fn helper() {
             "+    let x0 = 0;",
             "+    let x0 = \"<redacted, 12 chars>\";",
         );
-        let diffs = vec![parse_file_patch("src/large.rs", &patch)];
+        let diffs = vec![parse_file_patch("src/auth.rs", &patch)];
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({"summary": "Nothing further.", "findings": []}));
@@ -2131,15 +2351,19 @@ fn helper() {
         // If round one found nothing and the coverage pass then adds a
         // surviving finding, the summary must say so rather than keep
         // reading "Nothing to report." while `findings` says otherwise.
+        let mut coverage_finding = finding_named("Guard the second index", 30);
+        coverage_finding["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({
                 "summary": "…",
-                "findings": [finding_named("Guard the second index", 30)]
+                "findings": [coverage_finding]
             }))
             .then(json!({"incorrect": []}));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
+        let mut diff = large_diffs();
+        diff[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diff).await;
 
         assert_eq!(outcome.findings.len(), 1, "{:#?}", outcome.findings);
         assert!(
@@ -2305,7 +2529,8 @@ fn helper() {
             std::time::Duration::from_millis(15),
         );
         let config = config_with_passes(2);
-        let diffs = large_diffs();
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
         let pr = pull_request();
         let file_contents = BTreeMap::new();
 
@@ -2328,6 +2553,7 @@ fn helper() {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             };
             let prepared = prepare(input.preparation());
             lane.run_prepared_with_execution(input, prepared, Some(execution))
@@ -2344,9 +2570,9 @@ fn helper() {
         assert_eq!(outcome.spend.usage.input_tokens, 8);
         assert_eq!(outcome.spend.usage.output_tokens, 4);
         assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
-        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.unanswered.contains(&"src/auth.rs".to_string()));
         assert!(outcome.omissions.iter().any(|omission| {
-            omission.paths.contains(&"src/large.rs".to_string())
+            omission.paths.contains(&"src/auth.rs".to_string())
                 && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
         }));
         let event = trace
@@ -2687,6 +2913,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2748,6 +2975,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2808,6 +3036,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -2858,6 +3087,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("the failure is isolated, not propagated");
@@ -3000,6 +3230,7 @@ fn helper() {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");

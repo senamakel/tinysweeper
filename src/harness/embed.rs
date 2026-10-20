@@ -873,7 +873,7 @@ impl GatewayModel {
         } else {
             self.routing_for(model)
         };
-        let options = provider_options(&self.reasoning_effort, &routing);
+        let options = provider_options(self.effort_for(request), &routing);
         let physical = Arc::new(PhysicalModelObserver {
             lane: request.schema_name.clone(),
             output_cap: base,
@@ -1165,7 +1165,7 @@ impl GatewayModel {
             },
         );
         completion.max_tokens = Some(request.max_tokens);
-        completion.provider_options = provider_options(&self.reasoning_effort, routing);
+        completion.provider_options = provider_options(self.effort_for(&request), routing);
         let budget = self
             .budget
             .as_ref()
@@ -1204,12 +1204,13 @@ impl GatewayModel {
             output_cap: request.max_tokens,
             downstream: Some(observer),
         });
+        let options = provider_options(self.effort_for(&request), routing);
         crate::harness::agentic::review_accounted(
             request,
             tree,
             policy,
             provider,
-            provider_options(&self.reasoning_effort, routing),
+            options,
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
                 lookup_budget: resources.lookup_budget,
@@ -1255,6 +1256,15 @@ fn langfuse_client() -> Option<Arc<crate::harness::langfuse::LangfuseExporter>> 
 }
 
 impl GatewayModel {
+    /// The request override travels unchanged across routes and repairs; `None`
+    /// retains the deployment-wide setting used by existing callers.
+    fn effort_for<'a>(&'a self, request: &'a ModelRequest) -> &'a str {
+        request
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or(&self.reasoning_effort)
+    }
+
     /// The routing for one call: the model's own route when it has one,
     /// otherwise the ladder-wide pin with the first-party-vendor bypass.
     fn routing_for(&self, model: &str) -> std::borrow::Cow<'_, ProviderRouting> {
@@ -1632,6 +1642,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -1795,6 +1806,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         struct CountingTree {
@@ -1924,6 +1936,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -1998,6 +2011,9 @@ mod tests {
         Models {
             agentic_reviewers: false,
             reasoning_effort: "high".into(),
+            reviewer_reasoning_effort: "medium".into(),
+            falsify_reasoning_effort: "low".into(),
+            summary_reasoning_effort: "low".into(),
             structured_output: StructuredOutput::Schema,
             gateway: "openrouter".into(),
             base_url: "https://openrouter.ai/api/v1".into(),
@@ -2049,6 +2065,7 @@ mod tests {
             ],
             schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         (model, gateway, request)
@@ -2102,6 +2119,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
 
@@ -2204,6 +2222,7 @@ mod tests {
                     "properties":{"summary":{"type":"string"}}, "required":["summary"]
                 }),
                 schema_name: "review".into(),
+                reasoning_effort: None,
                 max_tokens: 100,
             })
             .await
@@ -2305,6 +2324,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
@@ -2379,6 +2399,7 @@ mod tests {
                 "properties":{"summary":{"type":"string"}}, "required":["summary"]
             }),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 100,
         };
         let waiting = tokio::spawn(async move { model.complete(request).await });
@@ -2502,6 +2523,7 @@ mod tests {
             messages: vec![Message::system("Review."), Message::user("Review source.")],
             schema: json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
             schema_name: "review".into(),
+            reasoning_effort: None,
             max_tokens: 128,
         };
         let tree = MockTree::from_files([("src/lib.rs", "pub fn reviewed() {}")]);
@@ -3155,6 +3177,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_off_disables_reasoning_on_the_actual_request() {
+        use crate::ports::model::Model;
+
+        let (mut model, gateway, request) = admission_fixture().await;
+        model.reasoning_effort = "off".into();
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["reasoning"],
+            json!({"enabled": false}),
+            "the global off setting must survive request construction"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_request_effort_reaches_the_actual_gateway_request() {
+        use crate::ports::model::Model;
+
+        let (model, gateway, mut request) = admission_fixture().await;
+        // The fixture's configured global effort is high. A low request-level
+        // override makes this fail if the adapter silently falls back to that
+        // global setting.
+        request.reasoning_effort = Some("low".into());
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["reasoning"]["effort"], json!("low"));
+    }
+
+    #[tokio::test]
+    async fn an_unspecified_request_uses_the_global_effort_at_the_gateway() {
+        use crate::ports::model::Model;
+
+        let (model, gateway, request) = admission_fixture().await;
+        model.complete(request).await.expect("completion succeeds");
+
+        let requests = gateway.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["reasoning"]["effort"],
+            json!("high"),
+            "generic lane calls inherit the configured global effort"
+        );
+    }
+
+    #[tokio::test]
     async fn a_fresh_budget_scope_does_not_wait_for_its_parents_admission() {
         let (model, gateway, request) = admission_fixture().await;
         let _held = model
@@ -3646,6 +3717,7 @@ mod tests {
             messages: vec![],
             schema: json!({"type": "object"}),
             schema_name: "tinysweeper_critique".into(),
+            reasoning_effort: None,
             max_tokens,
         }
     }

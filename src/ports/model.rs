@@ -128,6 +128,12 @@ pub struct ModelRequest {
     pub schema: Value,
     /// A name for the schema, surfaced to providers that want one.
     pub schema_name: String,
+    /// Optional per-request reasoning effort override.
+    ///
+    /// `None` preserves the gateway's configured global setting. A caller that
+    /// has a role-specific policy may provide an explicit setting; adapters
+    /// carry it through every physical retry and fallback for this request.
+    pub reasoning_effort: Option<String>,
     /// Ceiling on generated tokens.
     pub max_tokens: u32,
 }

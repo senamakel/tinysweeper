@@ -172,6 +172,41 @@ fn a_repository_cannot_repartition_the_shared_index() {
 }
 
 #[test]
+fn a_repository_cannot_set_model_reasoning_effort() {
+    // Role effort changes the operator's model spend, so the reviewed repo's
+    // base-branch config cannot choose it for the deployment.
+    let (config, ignored) = applied(
+        r#"
+        [models]
+        reviewer_reasoning_effort = "high"
+        falsify_reasoning_effort = "off"
+        summary_reasoning_effort = "high"
+        "#,
+    );
+
+    assert_eq!(
+        config.models.reviewer_reasoning_effort,
+        base().models.reviewer_reasoning_effort
+    );
+    assert_eq!(
+        config.models.falsify_reasoning_effort,
+        base().models.falsify_reasoning_effort
+    );
+    assert_eq!(
+        config.models.summary_reasoning_effort,
+        base().models.summary_reasoning_effort
+    );
+    assert_eq!(
+        ignored,
+        vec![
+            "models.falsify_reasoning_effort".to_string(),
+            "models.reviewer_reasoning_effort".to_string(),
+            "models.summary_reasoning_effort".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn a_repository_cannot_turn_on_the_thing_that_presses_merge() {
     // Auto-merge is a write action against the operator's installation. A
     // repository that could enable it from a branch could merge that branch.

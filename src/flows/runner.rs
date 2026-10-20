@@ -97,6 +97,19 @@ pub fn lane_llm(
     Arc::new(ModelCapability::new(model, config.models.clone()).with_budget(budget_usd))
 }
 
+/// Build a Critique or Security lane capability with its reviewer effort.
+pub fn reviewer_lane_llm(
+    model: Arc<dyn Model>,
+    config: &crate::config::types::Config,
+    budget_usd: f64,
+) -> Arc<ModelCapability> {
+    Arc::new(
+        ModelCapability::new(model, config.models.clone())
+            .with_reviewer_role()
+            .with_budget(budget_usd),
+    )
+}
+
 /// Ask every call in one round at once, and read an answer per call, in order.
 ///
 /// A reviewer that fails must not fail the round: one provider timeout would

@@ -689,7 +689,34 @@ pub struct ProviderRouting {
     pub unpinned_vendors: Vec<String>,
 }
 
+/// Model call role with an independent reasoning budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningRole {
+    /// Critique or security review.
+    Reviewer,
+    /// Factual finding rejection.
+    Falsify,
+    /// Review summary generation.
+    Summary,
+}
+
 impl Models {
+    /// The effective override for one reasoning role.
+    ///
+    /// A global `off` is a kill switch and disables reasoning for every role;
+    /// otherwise the role-specific setting is used. Requests with no override
+    /// continue to inherit the gateway's global setting.
+    pub fn role_reasoning_effort(&self, role: ReasoningRole) -> &str {
+        if self.reasoning_effort.trim() == "off" {
+            return "off";
+        }
+        match role {
+            ReasoningRole::Reviewer => &self.reviewer_reasoning_effort,
+            ReasoningRole::Falsify => &self.falsify_reasoning_effort,
+            ReasoningRole::Summary => &self.summary_reasoning_effort,
+        }
+    }
+
     /// The per-model route for `model`, if one is configured.
     pub fn route_for(&self, model: &str) -> Option<&ModelRoute> {
         self.routes.iter().find(|r| r.model == model)
@@ -876,6 +903,12 @@ pub struct Models {
     /// `gateway` omits the provider-specific reasoning block so a relay can
     /// choose the settings and protocol for each model it routes to.
     pub reasoning_effort: String,
+    /// Reasoning effort for critique and security reviewer calls.
+    pub reviewer_reasoning_effort: String,
+    /// Reasoning effort for the factual falsification pass.
+    pub falsify_reasoning_effort: String,
+    /// Reasoning effort for generated review summaries.
+    pub summary_reasoning_effort: String,
     /// Who enforces the response schema — see [`StructuredOutput`].
     ///
     /// Applies to the whole chain, `fallback` included, because a single review

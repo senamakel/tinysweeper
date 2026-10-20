@@ -270,6 +270,7 @@ impl Security {
             &group.paths,
             &group_diffs,
             &scanner,
+            input.pass_yield_observer,
         )
         .await?;
         Ok(review)
@@ -342,7 +343,7 @@ impl Security {
         // One capability for the whole lane, so the pull-request budget holds
         // across every file and every reviewer at once — which is what lets the
         // groups run concurrently rather than one at a time.
-        let llm = runner::lane_llm(
+        let llm = runner::reviewer_lane_llm(
             self.model.clone(),
             input.config,
             input.config.models.budget_usd_per_pr,
@@ -358,6 +359,7 @@ impl Security {
             let prior_findings = input.prior_findings;
             let retrieved_context = input.retrieved_context;
             let redaction_note = input.redaction_note;
+            let pass_yield_observer = input.pass_yield_observer;
             let input = &input;
             let diffs = input.diffs;
             let scanner = &scanner;
@@ -382,6 +384,7 @@ impl Security {
                     &group.paths,
                     &group_diffs,
                     scanner,
+                    pass_yield_observer,
                 )
                 .await
             }
@@ -451,6 +454,7 @@ async fn review_group(
     group_paths: &[String],
     group_diffs: &[FileDiff],
     scanner: &[&ScanFinding],
+    pass_yield_observer: Option<&dyn crate::lanes::PassYieldObserver>,
 ) -> Result<FileReview> {
     let evidence = render_diffs(group_diffs);
     let scanner_evidence = render_scanner(scanner, group_paths);
@@ -520,28 +524,41 @@ async fn review_group(
 
     // Only model proposals enter this filter. Scanner facts are merged later
     // and never depend on a model's ability to confirm them.
+    let round_one_candidates = outcome.findings.len();
     let filtered = Falsifier::new(llm.model().as_ref(), config)
         .filter_with(LaneId::Security, outcome.findings, &evidence, &looked_up)
         .await;
     let mut findings = filtered.findings;
+    let round_one_survivors = findings.len();
     let mut execution_refusal = filtered.execution_refusal;
     let mut rejected = filtered.rejected;
     let mut spend = outcome.spend;
     spend.merge(filtered.spend);
+    let mut metrics = crate::lanes::coverage::Metrics::start(
+        round_one_usage,
+        round_one_elapsed,
+        round_one_candidates,
+        round_one_survivors,
+    );
+    if execution_refusal.is_none()
+        && let Some(observer) = pass_yield_observer
+    {
+        observer.record_pass_yield(
+            LaneId::Security,
+            1,
+            round_one_candidates,
+            round_one_survivors,
+        );
+    }
 
     // Adaptive coverage uses the same strict anchoring and falsification as
     // round one, judging only new proposals against the evidence already read.
     let mut added_by_coverage = 0usize;
     if execution_refusal.is_none()
         && config.review.passes > 1
-        && changed_lines(group_diffs) >= COVERAGE_PASS_MIN_LINES
+        && (round_one_candidates > 0 || group_diffs.iter().any(crate::lanes::triage::high_risk))
     {
         let mut confirmed = findings.clone();
-        let mut metrics = crate::lanes::coverage::Metrics::start(
-            round_one_usage,
-            round_one_elapsed,
-            findings.len(),
-        );
 
         for pass_index in 1..config.review.passes {
             let reviewer = &reviewers[0];
@@ -585,7 +602,7 @@ async fn review_group(
                     // The graph returned no scoped accounting. Count the
                     // attempt, but do not borrow usage from the lane-wide
                     // cumulative tally shared by concurrent groups.
-                    metrics.record(Usage::default(), Duration::ZERO, 0);
+                    metrics.record(Usage::default(), Duration::ZERO, 0, 0);
                     metrics.stop(if refusal.is_some() {
                         crate::lanes::coverage::StopReason::Refused
                     } else {
@@ -602,13 +619,13 @@ async fn review_group(
 
             if let Some(refusal) = coverage.execution_refusal {
                 execution_refusal = Some(refusal);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Refused);
                 break;
             }
 
             let Some(response) = coverage.response else {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             };
@@ -648,7 +665,10 @@ async fn review_group(
             }
 
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                if let Some(observer) = pass_yield_observer {
+                    observer.record_pass_yield(LaneId::Security, pass_index + 1, 0, 0);
+                }
+                metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if !had_proposals && had_raw_proposals {
                     crate::lanes::coverage::StopReason::PlacementFailure
                 } else if had_proposals {
@@ -659,6 +679,7 @@ async fn review_group(
                 break;
             }
 
+            let candidate_count = new_findings.len();
             let filtered = Falsifier::new(llm.model().as_ref(), config)
                 .filter_with(LaneId::Security, new_findings, &evidence, &looked_up)
                 .await;
@@ -666,25 +687,39 @@ async fn review_group(
             rejected.extend(filtered.rejected);
             if let Some(refusal) = filtered.execution_refusal {
                 execution_refusal = Some(refusal);
+                let survivors = filtered.findings.len();
                 findings.extend(filtered.findings);
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, candidate_count, survivors);
                 metrics.stop(crate::lanes::coverage::StopReason::Failed);
                 break;
             }
             let new_findings = filtered.findings;
+            if let Some(observer) = pass_yield_observer {
+                observer.record_pass_yield(
+                    LaneId::Security,
+                    pass_index + 1,
+                    candidate_count,
+                    new_findings.len(),
+                );
+            }
             if new_findings.is_empty() {
-                metrics.record(coverage_usage, coverage_elapsed, 0);
+                metrics.record(coverage_usage, coverage_elapsed, candidate_count, 0);
                 metrics.stop(crate::lanes::coverage::StopReason::NonSurviving);
                 break;
             }
 
-            metrics.record(coverage_usage, coverage_elapsed, new_findings.len());
+            metrics.record(
+                coverage_usage,
+                coverage_elapsed,
+                candidate_count,
+                new_findings.len(),
+            );
             added_by_coverage += new_findings.len();
             confirmed.extend(new_findings.clone());
             findings.extend(new_findings);
         }
-        metrics.emit(LaneId::Security, group_paths);
     }
+    metrics.emit(LaneId::Security, group_paths);
 
     // The reviewer wrote its summary before filtering. Even a partial
     // rejection can make that prose assert a bug we have now disproved.
@@ -705,21 +740,6 @@ async fn review_group(
         spend,
         execution_refusal,
     })
-}
-
-/// Minimum changed lines a group needs before adaptive coverage passes
-/// (`review.passes > 1`) is worth its extra call — identical threshold and
-/// reasoning to `critique::COVERAGE_PASS_MIN_LINES`, kept as its own constant
-/// per lane rather than shared, so either lane's noise-control knobs can move
-/// independently of the other's.
-const COVERAGE_PASS_MIN_LINES: usize = 40;
-
-/// How many lines this group's diffs changed, summed across every file in it.
-fn changed_lines(group_diffs: &[FileDiff]) -> usize {
-    group_diffs
-        .iter()
-        .map(|diff| diff.changed_lines.len())
-        .sum()
 }
 
 /// Say, in the summary, when adaptive coverage found something round
@@ -851,6 +871,51 @@ mod tests {
         config
     }
 
+    #[tokio::test]
+    async fn one_pass_empty_security_group_records_first_pass_yield() {
+        let mut config = config();
+        config.review.lanes = vec!["security".into()];
+        let model = MockModel::new().then(json!({
+            "summary": "No security findings.",
+            "findings": []
+        }));
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let pull_request = pull_request();
+        Security::new(Arc::new(model))
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pull_request,
+                diffs: &diffs(),
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+                pass_yield_observer: Some(&timing),
+            })
+            .await
+            .expect("security lane runs");
+
+        let yield_one = timing
+            .snapshot()
+            .pass_yields
+            .get("security:1")
+            .copied()
+            .expect("one-pass security yield is recorded");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 0);
+        assert_eq!(yield_one.survivors, 0);
+    }
+
     const PATCH: &str = "@@ -1,3 +1,5 @@\n fn handler(req: Request) {\n+    let cmd = req.query(\"cmd\");\n+    Command::new(\"sh\").arg(\"-c\").arg(cmd).spawn();\n }\n";
 
     fn diffs() -> Vec<FileDiff> {
@@ -912,6 +977,7 @@ mod tests {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("lane runs")
@@ -973,11 +1039,10 @@ mod tests {
         assert_eq!(outcome.omissions.len(), 1);
     }
 
-    /// A synthetic patch whose group is large enough for a coverage pass to
-    /// run at all — `diffs()` is deliberately two lines.
+    /// A synthetic patch large enough to exercise multi-pass prompt handling.
     fn large_patch() -> String {
         let mut patch = String::from("@@ -1,2 +1,42 @@\n fn handler(req: Request) {\n");
-        for i in 0..COVERAGE_PASS_MIN_LINES {
+        for i in 0..40 {
             patch.push_str(&format!("+    let x{i} = {i};\n"));
         }
         patch.push_str(" }\n");
@@ -1007,13 +1072,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_coverage_pass_is_not_run_below_the_line_threshold() {
-        let model = MockModel::new().then(json!({"summary": "Nothing to report.", "findings": []}));
+    async fn a_small_group_with_a_candidate_gets_an_adaptive_pass() {
+        let mut candidate = finding_at_line("Review the changed behavior", 2);
+        candidate["path"] = json!("src/ordinary.rs");
+        let model = MockModel::new()
+            .then(json!({"summary":"Potential issue.", "findings":[candidate]}))
+            .then(json!({"incorrect":[], "security_scope":[{
+                "index":1, "verdict":"in_scope", "attacker_input":"request input",
+                "dangerous_operation":"ordinary operation", "security_impact":"unexpected access",
+                "reason":"The claim describes a changed trust boundary."}]}))
+            .then(json!({"summary":"Nothing further.", "findings":[]}));
         let handle = model.clone();
+        let low_risk = vec![parse_file_patch(
+            "src/ordinary.rs",
+            "@@ -1,1 +1,2 @@\n fn ordinary() {}\n+    let value = 1;\n",
+        )];
 
-        run_with(model, &config_with_passes(2), &diffs(), &[]).await;
+        run_with(model, &config_with_passes(2), &low_risk, &[]).await;
 
-        assert_eq!(handle.calls(), 1, "no coverage call should have been made");
+        assert_eq!(
+            handle.calls(),
+            3,
+            "review, falsification, and adaptive review"
+        );
     }
 
     #[tokio::test]
@@ -1048,11 +1129,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_review_request_uses_its_custom_reviewer_effort() {
+        let model = MockModel::new().then(json!({
+            "summary": "No security findings.",
+            "findings": []
+        }));
+        let handle = model.clone();
+        let mut config = config();
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
+
+        run_with(model, &config, &diffs(), &[]).await;
+
+        let requests = handle.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[tokio::test]
     async fn adaptive_requests_keep_path_rules_and_redaction_guidance() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![
             PathInstruction {
-                glob: "src/large.rs".into(),
+                glob: "src/auth.rs".into(),
                 instructions: "Treat request-derived shell arguments as tainted.".into(),
                 rules: None,
                 lanes: vec![LaneId::Security],
@@ -1072,7 +1171,9 @@ mod tests {
         let handle = model.clone();
         let redaction_note = "1 credential value was removed; never ask for or guess it.";
 
-        run_with_context(model, &config, &large_diffs(), &[], "", redaction_note).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        run_with_context(model, &config, &diffs, &[], "", redaction_note).await;
 
         let requests = handle.requests();
         assert_eq!(requests.len(), 2);
@@ -1215,7 +1316,8 @@ mod tests {
             std::time::Duration::from_millis(15),
         );
         let config = config_with_passes(2);
-        let diffs = large_diffs();
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
         let pr = pull_request();
         let file_contents = BTreeMap::new();
 
@@ -1238,6 +1340,7 @@ mod tests {
                 e2e: None,
                 tree: Some(&tree),
                 graph: None,
+                pass_yield_observer: None,
             };
             let prepared = prepare(input.preparation());
             lane.run_prepared_with_execution(input, prepared, Some(execution))
@@ -1254,9 +1357,9 @@ mod tests {
         assert_eq!(outcome.spend.usage.input_tokens, 8);
         assert_eq!(outcome.spend.usage.output_tokens, 4);
         assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
-        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.unanswered.contains(&"src/auth.rs".to_string()));
         assert!(outcome.omissions.iter().any(|omission| {
-            omission.paths.contains(&"src/large.rs".to_string())
+            omission.paths.contains(&"src/auth.rs".to_string())
                 && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
         }));
         let event = trace
@@ -1281,15 +1384,19 @@ mod tests {
         // Round one said "Nothing to report." before the coverage pass ever
         // ran. If the coverage pass then finds something, the summary must
         // not keep declaring the group clean while `findings` says otherwise.
+        let mut coverage_finding = finding_at_line("Guard the second index", 9);
+        coverage_finding["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({
                 "summary": "…",
-                "findings": [finding_at_line("Guard the second index", 9)]
+                "findings": [coverage_finding]
             }))
             .then(json!({"incorrect": []}));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diffs, &[]).await;
 
         assert_eq!(outcome.findings.len(), 1, "{:#?}", outcome.findings);
         assert!(
@@ -1561,6 +1668,7 @@ mod tests {
                 e2e: None,
                 tree: None,
                 graph: None,
+                pass_yield_observer: None,
             })
             .await
             .expect("runs");
@@ -1738,11 +1846,15 @@ mod tests {
 
     #[tokio::test]
     async fn disproved_coverage_proposals_do_not_unlock_another_pass() {
+        let mut proposal = finding_at_line("Unsupported claim", 5);
+        proposal["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary":"Nothing to report.", "findings":[]}))
-            .then(json!({"summary":"An invalid index.", "findings":[finding_at_line("Unsupported claim",5)]}))
+            .then(json!({"summary":"An invalid index.", "findings":[proposal]}))
             .then(disprove_first());
-        let outcome = run_with(model.clone(), &config_with_passes(3), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model.clone(), &config_with_passes(3), &diffs, &[]).await;
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert_eq!(model.requests().len(), 3);
     }
@@ -1769,6 +1881,7 @@ mod tests {
     #[tokio::test]
     async fn out_of_scope_coverage_proposals_do_not_unlock_another_pass() {
         let mut proposal = finding_at_line("Add focused tests for round behavior", 5);
+        proposal["path"] = json!("src/auth.rs");
         proposal["body"] =
             json!("The behavior changed without focused tests; add generic behavior coverage.");
         let model = MockModel::new()
@@ -1778,7 +1891,9 @@ mod tests {
                 "index":1, "verdict":"out_of_scope", "attacker_input":"",
                 "dangerous_operation":"", "security_impact":"",
                 "reason":"Generic behavior-test coverage asserts no security exploit."}]}));
-        let outcome = run_with(model.clone(), &config_with_passes(3), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model.clone(), &config_with_passes(3), &diffs, &[]).await;
         assert!(outcome.findings.is_empty(), "{outcome:?}");
         assert_eq!(model.requests().len(), 3);
     }
@@ -1820,6 +1935,7 @@ mod tests {
             &paths,
             &diffs(),
             &[],
+            None,
         )
         .await
         .expect("review runs");

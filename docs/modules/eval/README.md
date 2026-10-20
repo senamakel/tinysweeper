@@ -127,19 +127,23 @@ valid; they are not outputs from the current TinySweeper pipeline.
 
 The following measurements use the recording-only GPT-OSS 120B profile pinned
 to Novita (`evals/recording.gptoss-novita.toml`), not the production review
-configuration. All five reviews completed the `critique` lane and covered every
-fixture file. The per-case score is:
+configuration. All five reviews completed the `critique` lane. The lane covered
+every eligible added or modified file; the first fixture also contains one
+deletion-only file, which has no changed head lines to anchor a critique and is
+excluded by lane policy. The per-case score is:
 
 | Case | Coverage | Expected matched | Expected missed | Unscored | Known cost |
 | --- | ---: | ---: | --- | ---: | ---: |
-| `tm-0102-memory-pending-debug-state` | 10/10 | 0/1 | E1 | 3 | $0.011998 |
+| `tm-0102-memory-pending-debug-state` | 10/11 (1 deletion-only file excluded) | 0/1 | E1 | 3 | $0.011998 |
 | `oh-8061-standalone-local-only-policy` | 9/9 | 0/1 | E1 | 3 | $0.009062 |
 | `oh-8061-speech-redirect-origin` | 9/9 | 0/1 | E1 | 1 | $0.010656 |
 | `oh-8061-privacy-docs-contract-mismatch` | 9/9 | 0/1 | E1 | 3 | $0.010875 |
 | `oh-8076-credential-read-failure-migration` | 6/6 | 0/1 | E1 | 1 | $0.008242 |
-| **Aggregate** | **43/43** | **0/5** | **5** | **11** | **$0.050833** |
+| **Aggregate** | **43/44 (1 deletion-only file excluded)** | **0/5** | **5** | **11** | **$0.050833** |
 
-All five completed reviews missed their labelled finding. The aggregate is the
+All five completed eligible reviews missed their labelled finding. The 43
+reviewed paths are the 44 changed fixture paths minus the one deletion-only
+path; there were no unanswered eligible paths. The aggregate is the
 measured result for this corpus and recording profile, not a production
 benchmark or a claim about other lanes. The initial DeepSeek V3.2 capture for
 `tm-0102-memory-pending-debug-state` is a separate partial baseline: it stopped

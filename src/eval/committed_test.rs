@@ -165,12 +165,33 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
             .iter()
             .find(|case| case.case.id == score.id)
             .expect("the loaded case exists");
-        let expected_files = case
+        let fixture_files = case
             .fixture
             .files
             .iter()
-            .map(|file| file.path.as_str())
+            .map(|file| (file.path.as_str(), file))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // Critique needs changed head lines to anchor a finding. A deletion-only
+        // patch has no head-line range, so it is intentionally outside this
+        // lane's reviewable set even though it remains in the fixture.
+        let expected_files = fixture_files
+            .iter()
+            .filter(|(_, file)| file.additions > 0)
+            .map(|(path, _)| *path)
             .collect::<std::collections::BTreeSet<_>>();
+        if case.case.id == CASES[0] {
+            let excluded = fixture_files
+                .values()
+                .filter(|file| file.additions == 0 && file.deletions > 0)
+                .map(|file| file.path.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(fixture_files.len(), 11);
+            assert_eq!(excluded, ["crates/tinymcp/src/registry/oauth/types.rs"].into());
+            let deletion_only = fixture_files["crates/tinymcp/src/registry/oauth/types.rs"];
+            assert_eq!(deletion_only.status, "modified");
+            assert_eq!(deletion_only.additions, 0);
+            assert_eq!(deletion_only.deletions, 22);
+        }
         let proposal_path = out.path().join(&score.id).join("proposal.json");
         let proposal: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&proposal_path)

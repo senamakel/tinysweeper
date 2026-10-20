@@ -4200,6 +4200,9 @@ mod tests {
         security_delay: std::time::Duration,
         execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
         supports_execution_control: bool,
+        review_budget_enabled: Arc<std::sync::atomic::AtomicBool>,
+        review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
+        scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -4207,7 +4210,16 @@ mod tests {
     impl ReviewSchedulingModel {
         fn new() -> Self {
             Self {
-                inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})),
+                inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})).with_usage(
+                    Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        calls_attempted: 1,
+                        calls_succeeded: 1,
+                        cost_usd: 0.01,
+                        ..Usage::default()
+                    },
+                ),
                 barrier: None,
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
                 optional_seen: Arc::new(tokio::sync::Mutex::new(
@@ -4218,6 +4230,9 @@ mod tests {
                 security_delay: std::time::Duration::ZERO,
                 execution: None,
                 supports_execution_control: true,
+                review_budget_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                review_budget_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                scheduled_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
@@ -4250,6 +4265,26 @@ mod tests {
             } else {
                 None
             };
+            if self
+                .review_budget_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && self
+                    .review_budget_remaining
+                    .fetch_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |remaining| remaining.checked_sub(1),
+                    )
+                    .is_err()
+            {
+                return Err(Error::Budget {
+                    spent: 0.06,
+                    limit: 0.06,
+                    usage: None,
+                });
+            }
+            self.scheduled_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let active = self.active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.peak.fetch_max(active, std::sync::atomic::Ordering::SeqCst);
             let optional_schema = matches!(
@@ -4406,6 +4441,9 @@ mod tests {
                 security_delay: self.security_delay,
                 execution: Some(control),
                 supports_execution_control: true,
+                review_budget_enabled: self.review_budget_enabled.clone(),
+                review_budget_remaining: self.review_budget_remaining.clone(),
+                scheduled_calls: self.scheduled_calls.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4413,6 +4451,33 @@ mod tests {
 
         fn complete_reports_physical_calls(&self) -> bool { true }
         fn review_reports_physical_calls(&self) -> bool { true }
+
+        fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+            self.review_budget_enabled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.review_budget_remaining.store(
+                (limit_usd * 100.0).floor() as usize,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Some(Arc::new(Self {
+                inner: self.inner.clone(),
+                barrier: self.barrier.clone(),
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(
+                    self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
+                ),
+                optional_seen: self.optional_seen.clone(),
+                optional_changed: self.optional_changed.clone(),
+                critique_delay: self.critique_delay,
+                security_delay: self.security_delay,
+                execution: self.execution.clone(),
+                supports_execution_control: self.supports_execution_control,
+                review_budget_enabled: self.review_budget_enabled.clone(),
+                review_budget_remaining: self.review_budget_remaining.clone(),
+                scheduled_calls: self.scheduled_calls.clone(),
+                active: self.active.clone(),
+                peak: self.peak.clone(),
+            }))
+        }
     }
 
     fn scheduling_config() -> Config {
@@ -4571,6 +4636,8 @@ mod tests {
         );
         let model = ReviewSchedulingModel::new();
         let optional_seen = model.optional_seen.clone();
+        let scheduled_calls = model.scheduled_calls.clone();
+        let budget_remaining = model.review_budget_remaining.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
         config.review.lanes = vec!["commits".into()];
@@ -4578,6 +4645,7 @@ mod tests {
         config.wireframe.enabled = true;
         config.threads.resolve_fixed = true;
         config.threads.ask_model = true;
+        config.models.budget_usd_per_pr = 0.06;
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -4602,6 +4670,11 @@ mod tests {
             .into_iter()
             .collect()
         );
+        let calls = scheduled_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(calls, 6, "the lanes and optional stages share one six-call budget");
+        assert_eq!(budget_remaining.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(result.usage().calls_attempted, calls as u64);
+        assert!((result.usage().cost_usd - 0.06).abs() < 1e-9);
         assert!(result.summary.is_some());
     }
 

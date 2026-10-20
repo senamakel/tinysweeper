@@ -4662,9 +4662,18 @@ mod tests {
     async fn large_mode_overlaps_ranked_groups_with_independent_lanes() {
         let files = (0..30)
             .map(|index| {
+                let path = if index == 0 {
+                    ".github/workflows/ci.yml".to_string()
+                } else {
+                    format!("src/large_{index:02}.rs")
+                };
                 changed_file(
-                    &format!("src/large_{index:02}.rs"),
-                    &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
+                    &path,
+                    if index == 0 {
+                        "@@ -0,0 +1,2 @@\n+name: CI\n+permissions: write-all\n"
+                    } else {
+                        "@@ -0,0 +1,1 @@\n+fn large() {}\n"
+                    },
                 )
             })
             .collect();
@@ -4673,6 +4682,9 @@ mod tests {
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
+        // Normal mode would adapt for high-risk workflow edits. Large mode
+        // must clamp this configured ceiling back to one pass.
+        config.review.passes = 3;
         config.review.lanes = vec![
             "critique".into(),
             "security".into(),

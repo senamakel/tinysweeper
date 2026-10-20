@@ -751,13 +751,14 @@ impl Drop for CancelGitTask {
     }
 }
 
-/// Run one git command in `root` and return what it printed.
-async fn git_stdout(root: &Path, token: &str, args: &[&str]) -> Result<String> {
-    let mut command = git_command(root, token, args);
+/// Construct Git with the same isolated, hook-free configuration for every
+/// process path, including the cancellation-supervised worktree add.
+fn git_command(root: &Path, token: &str, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .arg("-C")
+        .arg(root)
+        .args(args)
         // Dropping `command.output()` — GIT_TIMEOUT firing below, or the
         // caller's own deadline cancelling this future first, `review_inner`'s
         // `run.deadline` among them — must not leave `git` running unsupervised.
@@ -784,7 +785,16 @@ async fn git_stdout(root: &Path, token: &str, args: &[&str]) -> Result<String> {
             "GIT_CONFIG_VALUE_1",
             format!("Authorization: Basic {}", basic_auth(token)),
         );
+    command
+}
 
+/// Run one git command in `root` and return what it printed.
+async fn git_stdout(root: &Path, token: &str, args: &[&str]) -> Result<String> {
+    let mut command = git_command(root, token, args);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let output = tokio::time::timeout(GIT_TIMEOUT, command.output())
         .await
         .map_err(|_| Error::Forge(format!("git {} timed out", args[0])))?

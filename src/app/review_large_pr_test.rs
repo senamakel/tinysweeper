@@ -609,8 +609,8 @@ async fn assert_adaptive_refusal_is_partial(
     assert!(lane_proposal.findings.iter().any(|finding| {
         finding.title == "Document the public API result" && finding.path == "src/z_api.rs"
     }));
-    assert!(proposal.usage().input_tokens >= 6);
-    assert!(proposal.usage().output_tokens >= 3);
+    assert_eq!(proposal.usage().input_tokens, 4);
+    assert_eq!(proposal.usage().output_tokens, 2);
     assert!((proposal.usage().cost_usd - 0.0002).abs() < 1e-9);
     assert_f1_never_approves(&forge);
     assert_eq!(

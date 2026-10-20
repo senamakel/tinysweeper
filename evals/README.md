@@ -115,10 +115,14 @@ about which lane landed where, and no vocabulary expresses it.
 reviewed head and changed-file patches, and cites the acted-on review comment
 and fix. The initial V3.2 `tinymcp#102` capture reached its eight-call ceiling
 with ten unanswered files and is only a partial baseline. A separate GPT-OSS
-120B/Novita recording completed the critique lane across all ten files but
-missed its expected finding (0/1); three additional findings were unscored.
-This is a completed per-case miss, not a hit. The other four cases still need
-recordings, so the corpus has no aggregate recall result. The earlier
+120B/Novita recording completed the critique lane on all ten eligible added or
+modified files but missed its expected finding (0/1); three additional
+findings were unscored. The fixture contains eleven changed paths, including a
+deletion-only `crates/tinymcp/src/registry/oauth/types.rs` with no changed head
+lines, which critique intentionally excludes. The four other cases were also
+recorded: all five completed eligible reviews missed their expected finding
+(0/5), with 43 of 44 fixture paths reviewed and one deletion-only path
+excluded. The earlier
 `oc-2313-round-boundary-leaks` case also remains in the corpus; its prior 0/2
 result is a historical replay result, not a score for these new cases.
 
@@ -140,9 +144,9 @@ Follow the [recording and 48-hour observation runbook](../docs/modules/eval/reco
 for bounded recording, offline replay proof, recall reporting, and deployment
 metrics. The initial V3.2 partial capture and completed GPT-OSS 120B/Novita
 miss are separate artifacts; preserve both model/config identities. Do not
-publish recall until all five have real strict-hit recordings and completed
-reviews; do not report 48-hour rollout numbers before the full window has
-elapsed.
+report the measured 0/5 recall result for this recording profile without
+presenting it as production performance; do not report 48-hour rollout numbers
+before the full window has elapsed.
 
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations

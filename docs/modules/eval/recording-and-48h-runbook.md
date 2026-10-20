@@ -37,12 +37,16 @@ and its proposal remains in the original output directory; rerunning Record
 mode makes new provider calls and can replace cassette data.
 
 An explicitly authorized GPT-OSS 120B/Novita continuation completed the same
-case's critique lane across all ten files with no unanswered files. It made 30
-successful calls, reported $0.011998 known cost, and missed the sole expected
-label (0/1); three other findings were unscored. This is a completed case miss,
-not an incomplete review. The other four labelled cases remain unrecorded, so
-there is no aggregate recall result. The first capture and continuation use
-separate model identities, cassettes, and output directories.
+case's critique lane on all ten eligible added or modified files, with no
+unanswered eligible files. The fixture has eleven changed paths; its
+deletion-only `crates/tinymcp/src/registry/oauth/types.rs` has no changed head
+lines and is excluded by critique policy. The continuation made 30 successful
+calls, reported $0.011998 known cost, and missed the sole expected label (0/1);
+three other findings were unscored. The four other labelled cases were also
+recorded: all five completed eligible reviews missed their expected label
+(0/5), with 43 of 44 fixture paths reviewed and one deletion-only path excluded.
+The first capture and continuation use separate model identities, cassettes,
+and output directories.
 
 The bounded continuation candidate is
 [`evals/recording.gptoss-novita.toml`](../../../evals/recording.gptoss-novita.toml).

@@ -705,7 +705,7 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         .is_some_and(|accounting| !accounting.complete)
     {
         out.push_str(
-            "- **Completion usage:** incomplete; reported provider completion spend is a known lower bound.\n",
+            "- **Completion usage:** incomplete; some provider completion costs are unavailable.\n",
         );
     }
     let _ = writeln!(
@@ -1134,7 +1134,10 @@ mod tests {
             rendered.contains("Completion usage is incomplete"),
             "{rendered}"
         );
-        assert!(rendered.contains("known lower bound"), "{rendered}");
+        assert!(
+            rendered.contains("some provider completion costs are unavailable"),
+            "{rendered}"
+        );
     }
 
     #[test]

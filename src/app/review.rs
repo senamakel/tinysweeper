@@ -4529,7 +4529,6 @@ mod tests {
         config.retrieval.enabled = true;
         let model: Arc<dyn Model> =
             Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
-        let embed_model = ChargedEmbedder.signature().price_key();
         let started_at = tokio::time::Instant::now();
         let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
             crate::app::review_execution::ReviewExecutionOptions {
@@ -5032,6 +5031,7 @@ mod tests {
         config.retrieval.enabled = true;
         let model: Arc<dyn Model> =
             Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        let embed_model = ChargedEmbedder.signature().price_key();
         let started_at = tokio::time::Instant::now();
         let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
             crate::app::review_execution::ReviewExecutionOptions {

@@ -256,7 +256,8 @@ fn render_unreviewed_labels(proposal: &Proposal, paths: &[String]) -> String {
             .or_default()
             .insert(omission.reason);
     }
-    let mut grouped = std::collections::BTreeMap::<&'static str, std::collections::BTreeSet<String>>::new();
+    let mut grouped =
+        std::collections::BTreeMap::<&'static str, std::collections::BTreeSet<String>>::new();
     for path in paths {
         if let Some(path_reasons) = reasons.get(path.as_str()) {
             for reason in path_reasons {
@@ -1646,9 +1647,17 @@ mod tests {
             "{rendered}"
         );
 
-        proposal.partial_review.as_mut().expect("partial metadata").omitted.clear();
+        proposal
+            .partial_review
+            .as_mut()
+            .expect("partial metadata")
+            .omitted
+            .clear();
         proposal.unreviewed.clear();
-        assert!(proposal.complete(), "Large metadata alone is not a coverage gap");
+        assert!(
+            proposal.complete(),
+            "Large metadata alone is not a coverage gap"
+        );
     }
 
     #[test]

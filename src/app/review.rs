@@ -4307,6 +4307,241 @@ mod tests {
         assert_eq!(replayed.cost_usd, 0.125);
     }
 
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn retry_proposal_keeps_embedding_spend_from_each_attempt_in_the_shared_run() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::index::types::{EmbedSignature, Embedded};
+        use crate::ports::embed::Embedder;
+
+        struct ChargedEmbedder;
+
+        #[async_trait::async_trait]
+        impl Embedder for ChargedEmbedder {
+            fn signature(&self) -> EmbedSignature {
+                EmbedSignature::new("fixture", "retry-query", 2)
+            }
+
+            async fn embed(&self, texts: &[String]) -> Result<Embedded> {
+                Ok(Embedded {
+                    vectors: vec![vec![0.5, 0.5]; texts.len()],
+                    usage: Usage {
+                        embed_tokens: 7,
+                        cost_usd: 0.25,
+                        ..Usage::default()
+                    },
+                })
+            }
+        }
+
+        let response = || {
+            Reply::completion(
+                "deep",
+                r#"{"summary":"Nothing to report.","findings":[]}"#,
+                "stop",
+                json!({"prompt_tokens": 11,"completion_tokens": 4,"cost": 0.4}),
+            )
+        };
+        let gateway = FakeGateway::start(vec![response(), response()]).await;
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
+        let mut config = critique_config();
+        config.models.base_url = gateway.base_url.clone();
+        config.models.fallback.clear();
+        config.models.agentic_reviewers = false;
+        config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        config.retrieval.enabled = true;
+        let model: Arc<dyn Model> =
+            Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                #[cfg(test)]
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let model = execution.bind_model(model, 10.0).model.clone();
+        let embedder = ChargedEmbedder;
+        let index = crate::index::MockChunkIndex::new();
+        let retriever = crate::retrieve::Retriever::new(&embedder, &index);
+
+        let mut first_config = config.clone();
+        first_config.models.budget_usd_per_pr = 0.5;
+        let first = review_with_tree_observed_at_head_in_run(
+            &forge,
+            model.clone(),
+            &first_config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution.clone(),
+            None,
+        )
+        .await;
+        assert!(matches!(first, Err(Error::Budget { .. })));
+
+        let proposal = review_with_tree_observed_at_head_in_run(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution,
+            None,
+        )
+        .await
+        .expect("retry finishes inside the same run");
+
+        assert_eq!(gateway.requests().len(), 2);
+        assert_eq!(proposal.input_tokens, 22);
+        assert_eq!(proposal.embed_tokens, 14);
+        assert_eq!(proposal.cost_usd, 1.3);
+        assert_eq!(proposal.usage().calls_attempted, 2);
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn kill_switch_after_a_paid_attempt_keeps_the_shared_run_accounting() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::index::types::{EmbedSignature, Embedded};
+        use crate::ports::embed::Embedder;
+
+        struct ChargedEmbedder;
+
+        #[async_trait::async_trait]
+        impl Embedder for ChargedEmbedder {
+            fn signature(&self) -> EmbedSignature {
+                EmbedSignature::new("fixture", "skip-query", 2)
+            }
+
+            async fn embed(&self, texts: &[String]) -> Result<Embedded> {
+                Ok(Embedded {
+                    vectors: vec![vec![0.5, 0.5]; texts.len()],
+                    usage: Usage {
+                        embed_tokens: 7,
+                        cost_usd: 0.25,
+                        ..Usage::default()
+                    },
+                })
+            }
+        }
+
+        let gateway = FakeGateway::start(vec![Reply::completion(
+            "deep",
+            r#"{"summary":"Nothing to report.","findings":[]}"#,
+            "stop",
+            json!({"prompt_tokens": 11,"completion_tokens": 4,"cost": 0.125}),
+        )])
+        .await;
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
+        let skipped_forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec!["tinysweeper:human-review".into()],
+        );
+        let mut config = critique_config();
+        config.models.base_url = gateway.base_url.clone();
+        config.models.fallback.clear();
+        config.models.agentic_reviewers = false;
+        config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        config.retrieval.enabled = true;
+        let model: Arc<dyn Model> =
+            Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                #[cfg(test)]
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let model = execution.bind_model(model, 10.0).model.clone();
+        let embedder = ChargedEmbedder;
+        let index = crate::index::MockChunkIndex::new();
+        let retriever = crate::retrieve::Retriever::new(&embedder, &index);
+
+        review_with_tree_observed_at_head_in_run(
+            &forge,
+            model.clone(),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution.clone(),
+            None,
+        )
+        .await
+        .expect("first paid attempt completes");
+        let skipped = review_with_tree_observed_at_head_in_run(
+            &skipped_forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution,
+            None,
+        )
+        .await
+        .expect("kill switch returns a neutral proposal");
+
+        assert_eq!(gateway.requests().len(), 1, "the skipped attempt is free");
+        assert_eq!(
+            skipped.skipped.as_deref(),
+            Some("`tinysweeper:human-review` is applied")
+        );
+        assert_eq!(skipped.input_tokens, 11);
+        assert_eq!(skipped.embed_tokens, 7);
+        assert_eq!(skipped.cost_usd, 0.375);
+        assert_eq!(skipped.usage().calls_attempted, 1);
+    }
+
     #[test]
     fn grouping_alone_needs_no_walk_when_no_enabled_lane_consumes_it() {
         // A tests-only review — neither `critique` nor `security` on — never

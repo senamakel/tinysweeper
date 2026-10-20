@@ -885,7 +885,7 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
     let baseline = crate::eval::types::Scorecard {
         corpus_digest: "same-corpus".into(),
         config_digest: digest_of(&base),
-        execution_limits_digest: Some("limits-same".into()),
+        execution_limits: None,
         loose_replays: 0,
         cases: vec![],
     };
@@ -893,7 +893,7 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
         let current = crate::eval::types::Scorecard {
             corpus_digest: baseline.corpus_digest.clone(),
             config_digest: digest_of(changed),
-            execution_limits_digest: Some("limits-same".into()),
+            execution_limits: None,
             loose_replays: 0,
             cases: vec![],
         };
@@ -966,6 +966,59 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
     );
 
     assert_eq!(digest_of(&base), digest_of(&config()));
+}
+
+#[tokio::test]
+async fn execution_limits_capture_selected_cases_and_effective_run_ceilings() {
+    let dir = corpus_dir(EXPECTATION);
+    std::fs::write(
+        dir.path().join("cases/ts-0002.toml"),
+        case_toml(EXPECTATION).replace("ts-0001", "ts-0002"),
+    )
+    .expect("write second case");
+    let full = load(dir.path()).expect("loads both cases");
+    let selected = full
+        .clone()
+        .select(&["ts-0001".to_owned()])
+        .expect("select known case");
+    let base_options = RunOptions {
+        out: dir.path().join("runs/identity-base"),
+        max_cost_usd: 0.25,
+        max_physical_calls_per_case: Some(8),
+        ..RunOptions::default()
+    };
+    let base = run(&full, &config(), None, &base_options)
+        .await
+        .expect("empty spend ceiling skips cases");
+    let selected_options = RunOptions {
+        out: dir.path().join("runs/identity-selected"),
+        ..base_options.clone()
+    };
+    let selected_run = run(&selected, &config(), None, &selected_options)
+        .await
+        .expect("selected empty run");
+    let different_bound = RunOptions {
+        out: dir.path().join("runs/identity-bound"),
+        max_cost_usd: 0.2,
+        max_physical_calls_per_case: Some(7),
+        ..base_options
+    };
+    let bounded_run = run(&full, &config(), None, &different_bound)
+        .await
+        .expect("bounded empty run");
+
+    assert_eq!(
+        base.execution_limits.selected_case_ids,
+        ["ts-0001", "ts-0002"]
+    );
+    assert_eq!(selected_run.execution_limits.selected_case_ids, ["ts-0001"]);
+    assert_eq!(base.execution_limits.max_cost_usd, 0.25);
+    assert_eq!(base.execution_limits.max_physical_calls_per_case, Some(8));
+    assert_ne!(base.execution_limits, selected_run.execution_limits);
+    assert_ne!(base.execution_limits, bounded_run.execution_limits);
+    assert!(base.execution_limits.effective_case_budgets.iter().all(|budget| {
+        budget.budget_usd.is_none()
+    }));
 }
 
 #[tokio::test]

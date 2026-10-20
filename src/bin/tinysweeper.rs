@@ -601,6 +601,7 @@ async fn run_eval(command: EvalCommand) -> Result<()> {
             let card = eval::Scorecard {
                 corpus_digest: corpus_data.digest.clone(),
                 config_digest: outcome.config_digest.clone(),
+                execution_limits: Some(outcome.execution_limits.clone()),
                 loose_replays: outcome.loose_replays,
                 cases: outcome.scores,
             };
@@ -621,17 +622,27 @@ async fn run_eval(command: EvalCommand) -> Result<()> {
         } => {
             let loaded =
                 tinysweeper::config::load_validated(std::path::Path::new("."), config.as_deref())?;
+            let previous = eval::read_scorecard(&run.join("scorecard.json")).ok();
             let corpus_data = eval::load(&corpus)?;
+            let corpus_data = match previous
+                .as_ref()
+                .and_then(|card| card.execution_limits.as_ref())
+            {
+                Some(limits) => corpus_data.select(&limits.selected_case_ids)?,
+                None => corpus_data,
+            };
             let scores = eval::rescore(&corpus_data, &run)?;
 
             // Re-scoring reads proposals, not cassettes, so nothing is replayed
             // here. `loose_replays` does not describe this command, though — it
             // describes the run whose proposals are being scored, so carry the
             // recorded figure over rather than erasing it from the scorecard.
-            let previous = eval::read_scorecard(&run.join("scorecard.json")).ok();
             let card = eval::Scorecard {
                 corpus_digest: corpus_data.digest.clone(),
                 config_digest: eval::runner::digest_of(&loaded.config),
+                execution_limits: previous
+                    .as_ref()
+                    .and_then(|card| card.execution_limits.clone()),
                 loose_replays: previous
                     .as_ref()
                     .map(|card| card.loose_replays)

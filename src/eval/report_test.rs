@@ -4,7 +4,21 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::config::types::LaneId;
-use crate::eval::types::{Judged, Verdict};
+use crate::eval::types::{EffectiveCaseBudget, ExecutionLimits, Judged, Verdict};
+
+fn execution_limits(case_id: &str) -> ExecutionLimits {
+    ExecutionLimits {
+        selected_case_ids: vec![case_id.into()],
+        max_cost_usd: 5.0,
+        max_physical_calls_per_case: Some(8),
+        recording: false,
+        loose_replay: false,
+        effective_case_budgets: vec![EffectiveCaseBudget {
+            case_id: case_id.into(),
+            budget_usd: None,
+        }],
+    }
+}
 
 fn case_score(id: &str, found: usize, missed: &[&str], fp: usize) -> CaseScore {
     CaseScore {
@@ -34,7 +48,7 @@ fn card(cases: Vec<CaseScore>) -> Scorecard {
     Scorecard {
         corpus_digest: "aaaaaaaaaaaaaaaa".into(),
         config_digest: "bbbbbbbbbbbbbbbb".into(),
-        execution_limits_digest: Some("limits-same".into()),
+        execution_limits: Some(execution_limits("ts-0001")),
         loose_replays: 0,
         cases,
     }
@@ -229,7 +243,9 @@ fn a_configuration_that_moved_is_not_comparable_without_saying_so() {
 fn changed_execution_limits_make_scorecards_incomparable() {
     let baseline = card(vec![case_score("ts-0001", 1, &[], 0)]);
     let mut current = card(vec![case_score("ts-0001", 1, &[], 0)]);
-    current.execution_limits_digest = Some("limits-different-case-or-budget".into());
+    let mut changed = execution_limits("ts-0001");
+    changed.max_physical_calls_per_case = Some(4);
+    current.execution_limits = Some(changed);
 
     assert!(matches!(
         compare(&current, &baseline, false),
@@ -241,7 +257,7 @@ fn changed_execution_limits_make_scorecards_incomparable() {
 fn legacy_scorecards_without_execution_limits_fail_closed() {
     let baseline = card(vec![case_score("ts-0001", 1, &[], 0)]);
     let mut legacy = card(vec![case_score("ts-0001", 1, &[], 0)]);
-    legacy.execution_limits_digest = None;
+    legacy.execution_limits = None;
 
     assert!(matches!(
         compare(&legacy, &baseline, false),

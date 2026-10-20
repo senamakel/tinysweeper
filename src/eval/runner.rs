@@ -26,7 +26,7 @@ use crate::app::review::{Proposal, review_with_tree};
 use crate::config::types::Config;
 use crate::error::Result;
 use crate::eval::corpus::{Corpus, LoadedCase};
-use crate::eval::types::CaseScore;
+use crate::eval::types::{CaseScore, EffectiveCaseBudget, ExecutionLimits};
 use crate::forge::types::RepoId;
 use crate::harness::cassette::{Cassette, Mode};
 use crate::ports::model::{Model, Spend, Usage};
@@ -96,6 +96,8 @@ pub struct RunOutcome {
     /// A hash of the effective configuration, so two runs are comparable only
     /// when they were configured the same way.
     pub config_digest: String,
+    /// The selected cases and their effective run/admission limits.
+    pub execution_limits: ExecutionLimits,
     /// Cases not run because the corpus ceiling was reached.
     pub skipped: Vec<String>,
 }
@@ -131,6 +133,8 @@ pub async fn run(
             "recording requires --max-physical-calls-per-case between 1 and {MAX_RECORDING_PHYSICAL_CALLS_PER_CASE}"
         )));
     }
+
+    let execution_limits = effective_execution_limits(corpus, &config, options);
 
     // `--tree` names one checkout on disk, but every case in the run would
     // otherwise be handed the same one regardless of which repository or
@@ -210,16 +214,13 @@ pub async fn run(
             None => &recorded,
         };
         let mut case_config = with_lanes(&config, case);
-        if options.record && !corpus.cases.is_empty() {
-            // The provider budget binds the Gateway's shared spend root. Divide
-            // the run ceiling across every admitted case so one case cannot
-            // consume the next case's allowance, while respecting the corpus
-            // label and operator's per-review ceiling.
-            case_config.models.budget_usd_per_pr = config
-                .models
-                .budget_usd_per_pr
-                .min(case.case.budget.max_cost_usd)
-                .min(options.max_cost_usd / corpus.cases.len() as f64);
+        if let Some(budget) = execution_limits
+            .effective_case_budgets
+            .iter()
+            .find(|budget| budget.case_id == case.case.id)
+            .and_then(|budget| budget.budget_usd)
+        {
+            case_config.models.budget_usd_per_pr = budget;
         }
         let (outcome, physical_calls) = review_case(
             case,
@@ -303,8 +304,43 @@ pub async fn run(
         scores,
         loose_replays,
         config_digest,
+        execution_limits,
         skipped,
     })
+}
+
+fn effective_execution_limits(
+    corpus: &Corpus,
+    config: &Config,
+    options: &RunOptions,
+) -> ExecutionLimits {
+    let selected_case_ids = corpus
+        .cases
+        .iter()
+        .map(|case| case.case.id.clone())
+        .collect();
+    let effective_case_budgets = corpus
+        .cases
+        .iter()
+        .map(|case| EffectiveCaseBudget {
+            case_id: case.case.id.clone(),
+            budget_usd: (options.record && !corpus.cases.is_empty()).then(|| {
+                config
+                    .models
+                    .budget_usd_per_pr
+                    .min(case.case.budget.max_cost_usd)
+                    .min(options.max_cost_usd / corpus.cases.len() as f64)
+            }),
+        })
+        .collect();
+    ExecutionLimits {
+        selected_case_ids,
+        max_cost_usd: options.max_cost_usd,
+        max_physical_calls_per_case: options.max_physical_calls_per_case,
+        recording: options.record,
+        loose_replay: options.loose,
+        effective_case_budgets,
+    }
 }
 
 /// Review one case against a fresh, empty state store.

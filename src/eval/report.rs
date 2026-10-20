@@ -52,6 +52,19 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
                 baseline.config_digest, current.config_digest
             ));
         }
+        match (&current.execution_limits, &baseline.execution_limits) {
+            (Some(current), Some(baseline)) if current != baseline => {
+                return Comparison::Incomparable(
+                    "the execution limits changed (selected cases or admission bounds differ)".into(),
+                );
+            }
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Comparison::Incomparable(
+                    "execution limits are unknown for at least one scorecard; re-run it with the current evaluator".into(),
+                );
+            }
+        }
     }
 
     let mut failures = Vec::new();

@@ -4245,6 +4245,7 @@ mod tests {
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
+                "tinysweeper_tests" => std::time::Duration::ZERO,
                 "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe" => {
                     std::time::Duration::ZERO
                 }
@@ -4596,6 +4597,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![LaneId::Critique, LaneId::Security]
         );
+    }
+
+    #[tokio::test]
+    async fn large_mode_overlaps_ranked_groups_with_independent_lanes() {
+        let files = (0..30)
+            .map(|index| changed_file(
+                &format!("src/large_{index:02}.rs"),
+                &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
+            ))
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        config.review.lanes = vec!["critique".into(), "tests".into()];
+        config.review.large_pr.enabled = true;
+        config.review.large_pr.files = 1;
+        config.review.large_pr.max_groups = 1;
+        config.review.large_pr.max_calls = 8;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            review(&forge, model_trait, &config, &repo(), 7),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "the selected Large-mode critique group and tests lane must overlap"
+        );
+        let proposal = result.unwrap().expect("Large-mode review succeeds");
+        assert_eq!(proposal.lanes.len(), 2);
     }
 
     #[tokio::test]

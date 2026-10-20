@@ -5232,7 +5232,6 @@ mod tests {
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
         use crate::forge::{MockForge, MockState, RepoId};
         use crate::harness::MockModel;
-        use crate::ports::forge::{ForgeRead, ForgeWrite};
 
         struct DelayedModel(MockModel);
         #[async_trait::async_trait]
@@ -6485,9 +6484,9 @@ mod tests {
         assert!(matches!(completed, InnerReview::Complete(Some(_))));
         assert!(forge.writes().iter().any(|write| matches!(
             write,
-            crate::forge::Write::Review { review, .. }
-                if review.event == crate::forge::types::ReviewEvent::Approve
-                    || review.event == crate::forge::types::ReviewEvent::Comment
+            crate::forge::Write::Review { event, .. }
+                if *event == crate::forge::types::ReviewEvent::Approve
+                    || *event == crate::forge::types::ReviewEvent::Comment
         )), "the real apply path writes its review: {:#?}", forge.writes());
         assert_eq!(model.requests().len(), 1, "one critique call reviewed the head");
 
@@ -6563,8 +6562,6 @@ mod tests {
             Some(TerminalOutcome::Published),
             "a duplicate delivery cannot downgrade the published head"
         );
-        let _: &dyn ForgeRead = &forge;
-        let _: &dyn ForgeWrite = &forge;
     }
 
     #[tokio::test]

@@ -4100,6 +4100,83 @@ mod tests {
         assert_eq!(serialized["completion_accounting"]["complete"], true);
     }
 
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn proposal_keeps_known_completion_cost_when_a_repair_cost_is_unreported() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "deep",
+                "{malformed first response",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "deep",
+                r#"{"summary":"Nothing to report.","findings":[]}"#,
+                "stop",
+                json!({"prompt_tokens":6,"completion_tokens":3}),
+            ),
+        ])
+        .await;
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
+        let mut config = critique_config();
+        config.models.base_url = gateway.base_url.clone();
+        config.models.fallback.clear();
+        config.models.agentic_reviewers = false;
+        config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        let model = Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+
+        let proposal = review_with_tree_observed(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the repair answers the review");
+
+        assert_eq!(gateway.requests().len(), 2);
+        let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["input_tokens"],
+            11
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["output_tokens"],
+            5
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["cost_usd"],
+            0.125
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["calls_attempted"],
+            2
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["calls_succeeded"],
+            2
+        );
+        assert_eq!(serialized["completion_accounting"]["complete"], false);
+        assert_eq!(proposal.cost_usd, 0.125);
+    }
+
     #[test]
     fn grouping_alone_needs_no_walk_when_no_enabled_lane_consumes_it() {
         // A tests-only review — neither `critique` nor `security` on — never

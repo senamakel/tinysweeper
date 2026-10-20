@@ -606,6 +606,7 @@ fn precision_ignores_cases_that_never_claimed_to_be_complete() {
     let card = crate::eval::types::Scorecard {
         corpus_digest: "a".repeat(16),
         config_digest: "b".repeat(16),
+        execution_limits_digest: Some("limits-same".into()),
         loose_replays: 0,
         cases: vec![partial, complete],
     };

@@ -885,6 +885,7 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
     let baseline = crate::eval::types::Scorecard {
         corpus_digest: "same-corpus".into(),
         config_digest: digest_of(&base),
+        execution_limits_digest: Some("limits-same".into()),
         loose_replays: 0,
         cases: vec![],
     };
@@ -892,6 +893,7 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
         let current = crate::eval::types::Scorecard {
             corpus_digest: baseline.corpus_digest.clone(),
             config_digest: digest_of(changed),
+            execution_limits_digest: Some("limits-same".into()),
             loose_replays: 0,
             cases: vec![],
         };

@@ -1953,7 +1953,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // its findings itself. This is the fallback for when the owner did not run
     // at all — disabled in config, or skipped as a draft — in which case it
     // reported Neutral and its findings would otherwise vanish silently.
-    publish_unclaimed(&mut lanes, &scan_findings);
+    publish_unclaimed(&mut lanes, &scan_findings, config.request_changes_at());
     group_co_located_findings(&mut lanes);
     // One budget for the pull request, not for this cycle: conversations an
     // earlier push opened and nobody has resolved are still spending it.
@@ -3540,7 +3540,11 @@ fn cap_proposal_findings(
 /// matches, `commits` adjudicates secrets, blobs and junk. When the owner ran it
 /// has already republished them verbatim, and doing it again here would report
 /// the same committed key twice.
-fn publish_unclaimed(lanes: &mut Vec<LaneProposal>, scan_findings: &[scan::types::Finding]) {
+fn publish_unclaimed(
+    lanes: &mut Vec<LaneProposal>,
+    scan_findings: &[scan::types::Finding],
+    request_changes_at: Option<Severity>,
+) {
     for owner in [LaneId::Security, LaneId::Commits] {
         let ran = lanes
             .iter()
@@ -3581,6 +3585,19 @@ fn publish_unclaimed(lanes: &mut Vec<LaneProposal>, scan_findings: &[scan::types
             .flat_map(|l| l.unanswered.iter().cloned())
             .collect();
         lanes.retain(|l| l.lane != owner);
+        let blocking_findings = request_changes_at
+            .map(|threshold| {
+                unclaimed
+                    .iter()
+                    .filter(|finding| finding.severity >= threshold)
+                    .map(|finding| {
+                        finding.identity.clone().unwrap_or_else(|| {
+                            finding.fingerprint(&finding.title)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         lanes.push(LaneProposal {
             lane: owner,
             check_name: owner.check_name(),
@@ -3591,7 +3608,7 @@ fn publish_unclaimed(lanes: &mut Vec<LaneProposal>, scan_findings: &[scan::types
             ),
             completed: true,
             findings: unclaimed,
-            blocking_findings: Some(vec![]),
+            blocking_findings: Some(blocking_findings),
             noted: Vec::new(),
             context_degraded: false,
             resolved: vec![],

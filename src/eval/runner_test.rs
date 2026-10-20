@@ -124,6 +124,38 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
     );
 }
 
+#[test]
+fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
+    let loaded = crate::config::load_validated(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        Some(std::path::Path::new("evals/recording.gptoss-deepinfra.toml")),
+    )
+    .expect("continuation candidate validates");
+    let config = loaded.config;
+    assert_eq!(config.models.scan, "openai/gpt-oss-120b");
+    assert_eq!(config.models.deep, config.models.scan);
+    assert_eq!(config.models.flash, config.models.scan);
+    assert!(config.models.fallback.is_empty());
+    assert!(config.models.routes.is_empty());
+    assert_eq!(config.models.provider.order, ["deepinfra"]);
+    assert!(!config.models.provider.allow_fallbacks);
+    assert!(!config.models.provider.last_resort_unpinned);
+    assert!(config.models.provider.unpinned_vendors.is_empty());
+    assert!(!config.models.agentic_reviewers);
+    assert_eq!(config.models.max_tokens, 4096);
+    assert_eq!(config.models.reasoning_effort, "low");
+    assert_eq!(config.models.reviewer_reasoning_effort, "low");
+    assert_eq!(config.models.falsify_reasoning_effort, "low");
+    assert_eq!(config.models.summary_reasoning_effort, "low");
+    assert_eq!(config.models.budget_usd_per_pr, 0.48);
+    let price = config
+        .models
+        .budget_prices
+        .get("openai/gpt-oss-120b")
+        .expect("verified reservation rate");
+    assert_eq!((price.input, price.cached, price.output), (0.037, 0.037, 0.17));
+}
+
 #[derive(Clone)]
 struct BudgetCaptureModel {
     roots: Arc<std::sync::Mutex<Vec<f64>>>,

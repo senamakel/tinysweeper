@@ -1742,51 +1742,57 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         None
     };
 
-    let large_outcomes = if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
-        Some(
+    let is_large = plan.mode == crate::lanes::large_pr::ReviewMode::Large;
+    let large_input = LaneInput {
+        config,
+        pull_request: &context.pull_request,
+        diffs: &diffs,
+        file_contents: &file_contents,
+        scan_findings: &scan_findings,
+        commits: &context.commits,
+        repo_policy: knowledge.pinned_text(),
+        extracted_rules: &knowledge.extracted_rules,
+        reviewed_evidence: &reviewed_evidence,
+        prior_findings: &prior_lines,
+        retrieval_status: retrieved.status.clone(),
+        retrieved_context: &retrieved_context,
+        redaction_note: &redaction_note,
+        e2e: e2e_evidence.as_ref(),
+        tree: Some(tree),
+        graph: graph_for_lanes,
+    };
+    let large_plan = plan.clone();
+    let large_model = model.clone();
+    let large_critique = is_large.then(|| critique_prepared.take()).flatten();
+    let large_security = is_large.then(|| security_prepared.take()).flatten();
+    let large_execution = execution_scope.clone();
+    let large_groups = async move {
+        if is_large {
             run_large_groups(
-                LaneInput {
-                    config,
-                    pull_request: &context.pull_request,
-                    diffs: &diffs,
-                    file_contents: &file_contents,
-                    scan_findings: &scan_findings,
-                    commits: &context.commits,
-                    repo_policy: knowledge.pinned_text(),
-                    extracted_rules: &knowledge.extracted_rules,
-                    reviewed_evidence: &reviewed_evidence,
-                    prior_findings: &prior_lines,
-                    retrieval_status: retrieved.status.clone(),
-                    retrieved_context: &retrieved_context,
-                    redaction_note: &redaction_note,
-                    e2e: e2e_evidence.as_ref(),
-                    tree: Some(tree),
-                    graph: graph_for_lanes,
-                },
-                model.clone(),
-                plan.clone(),
-                critique_prepared.take(),
-                security_prepared.take(),
-                execution_scope.clone(),
+                large_input,
+                large_model,
+                large_plan,
+                large_critique,
+                large_security,
+                large_execution,
             )
-            .await?,
-        )
-    } else {
-        None
+            .await
+        } else {
+            Ok(BTreeMap::new())
+        }
     };
 
-    let mut prepared_large_outcomes = large_outcomes.unwrap_or_default();
     let mut lane_runs: Vec<BoxFuture<'_, Result<(LaneId, LaneOutcome)>>> = Vec::new();
     for lane_id in config.enabled_lanes() {
-        let large_outcome = if matches!(lane_id, LaneId::Critique | LaneId::Security) {
-            prepared_large_outcomes.remove(&lane_id)
-        } else {
-            None
-        };
-        let critique_prepared = (lane_id == LaneId::Critique && large_outcome.is_none())
+        if is_large && matches!(lane_id, LaneId::Critique | LaneId::Security) {
+            // Those two lanes run their risk-ranked groups through the one
+            // large-mode dispatcher joined below with independent lanes.
+            continue;
+        }
+        let critique_prepared = (lane_id == LaneId::Critique)
             .then(|| critique_prepared.take())
             .flatten();
-        let security_prepared = (lane_id == LaneId::Security && large_outcome.is_none())
+        let security_prepared = (lane_id == LaneId::Security)
             .then(|| security_prepared.take())
             .flatten();
         let lane_input = LaneInput {
@@ -1817,9 +1823,6 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                 lane_id.as_str(),
                 Some(&lanes_span),
                 async {
-                    if let Some(outcome) = large_outcome {
-                        return Ok(outcome);
-                    }
                     match lane_id {
                         LaneId::Critique => {
                             Critique::new(model.clone())
@@ -1855,10 +1858,22 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         }));
     }
 
-    // `join_all` retains configured (canonical) lane order even though work
-    // and model calls complete in whichever order their providers allow.
-    for lane_result in futures::future::join_all(lane_runs).await {
+    // Large-mode ranked groups and independent lanes share the same poll set.
+    // `join_all` retains canonical lane order for normal lanes, and the map
+    // below restores the complete configured order before spend is folded.
+    let (large_outcomes, lane_results) = tokio::join!(
+        large_groups,
+        futures::future::join_all(lane_runs),
+    );
+    let mut outcomes = large_outcomes?;
+    for lane_result in lane_results {
         let (lane_id, outcome) = lane_result?;
+        outcomes.insert(lane_id, outcome);
+    }
+    for lane_id in config.enabled_lanes() {
+        let outcome = outcomes
+            .remove(&lane_id)
+            .ok_or_else(|| Error::Model(format!("missing outcome for {lane_id}")))?;
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a

@@ -4245,6 +4245,7 @@ mod tests {
         review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
         scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
         security_requests: Arc<std::sync::atomic::AtomicUsize>,
+        reviewer_efforts: Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -4274,6 +4275,7 @@ mod tests {
                 review_budget_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 scheduled_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 security_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                reviewer_efforts: Arc::new(std::sync::Mutex::new(Vec::new())),
                 active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
@@ -4286,6 +4288,10 @@ mod tests {
             bool,
             Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>,
         )> {
+            self.reviewer_efforts.lock().unwrap().push((
+                request.schema_name.clone(),
+                request.reasoning_effort.clone(),
+            ));
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
@@ -4506,6 +4512,7 @@ mod tests {
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
                 security_requests: self.security_requests.clone(),
+                reviewer_efforts: self.reviewer_efforts.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4542,6 +4549,7 @@ mod tests {
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
                 security_requests: self.security_requests.clone(),
+                reviewer_efforts: self.reviewer_efforts.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4689,11 +4697,14 @@ mod tests {
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let security_requests = model.security_requests.clone();
+        let reviewer_efforts = model.reviewer_efforts.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
         // Normal mode would adapt for high-risk workflow edits. Large mode
         // must clamp this configured ceiling back to one pass.
         config.review.passes = 3;
+        config.models.reasoning_effort = "high".into();
+        config.models.reviewer_reasoning_effort = "low".into();
         config.review.lanes = vec!["critique".into(), "security".into(), "tests".into()];
         config.review.large_pr.enabled = true;
         config.review.large_pr.files = 1;
@@ -4729,6 +4740,16 @@ mod tests {
             security_requests.load(std::sync::atomic::Ordering::SeqCst) > 0,
             "the selected high-risk Large group must execute a security request"
         );
+        let reviewer_efforts = reviewer_efforts.lock().unwrap();
+        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
+            schema == "tinysweeper_critique" && effort.as_deref() == Some("low")
+        }));
+        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
+            schema == "tinysweeper_security" && effort.as_deref() == Some("low")
+        }));
+        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
+            schema == "tinysweeper_tests" && effort.is_none()
+        }));
         let record = timing.snapshot();
         assert!(record.lanes_ms.contains_key("critique"));
         let security_yield = record

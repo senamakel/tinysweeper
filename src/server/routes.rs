@@ -6675,6 +6675,8 @@ mod tests {
         config.summary.enabled = true;
         config.overview.enabled = false;
         config.automerge.enabled = false;
+        config.review.max_changed_files = 10;
+        config.review.max_changed_lines = 100;
         config.review.large_pr.files = 99;
         let last_good = crate::app::review::review_with_tree(
             &forge,

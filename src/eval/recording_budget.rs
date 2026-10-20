@@ -4,8 +4,7 @@
 //! reservation charged, so rerunning a recorder cannot silently reset the
 //! physical-attempt ceiling.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,8 +33,7 @@ pub(crate) struct Reservation {
     directory: PathBuf,
     id: String,
     reserved_calls: usize,
-    lock_path: PathBuf,
-    completed: bool,
+    _lock: File,
 }
 
 impl Reservation {
@@ -49,14 +47,14 @@ impl Reservation {
     ) -> Result<Self> {
         fs::create_dir_all(directory).map_err(|err| Error::path(directory, err))?;
         let lock_path = directory.join(LOCK_FILE);
-        let mut lock = OpenOptions::new()
+        let lock = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
-            .create_new(true)
+            .truncate(false)
             .open(&lock_path)
             .map_err(|err| Error::path(&lock_path, err))?;
-        writeln!(lock, "pid={}", std::process::id())
-            .and_then(|()| lock.sync_all())
+        lock.try_lock()
             .map_err(|err| Error::path(&lock_path, err))?;
 
         let audit_path = directory.join(AUDIT_FILE);
@@ -67,7 +65,6 @@ impl Reservation {
         let available = total_limit.saturating_sub(used);
         let reserved_calls = requested_calls.min(available);
         if reserved_calls == 0 {
-            let _ = fs::remove_file(&lock_path);
             return Err(Error::config(format!(
                 "recording physical-call allowance is exhausted ({used}/{total_limit} calls reserved or used)"
             )));
@@ -91,8 +88,7 @@ impl Reservation {
             directory: directory.to_path_buf(),
             id,
             reserved_calls,
-            lock_path,
-            completed: false,
+            _lock: lock,
         })
     }
 
@@ -102,7 +98,7 @@ impl Reservation {
 
     /// Record observed committed dispatches. An impossible overrun stays in
     /// the audit and is returned as a hard error instead of being clamped.
-    pub(crate) fn finish(mut self, actual_calls: usize) -> Result<()> {
+    pub(crate) fn finish(self, actual_calls: usize) -> Result<()> {
         let path = self.directory.join(AUDIT_FILE);
         let mut audit = read_audit(&path)?;
         let record = audit
@@ -112,8 +108,6 @@ impl Reservation {
             .ok_or_else(|| Error::config("recording attempt reservation disappeared"))?;
         record.actual_calls = Some(actual_calls);
         write_audit(&path, &audit, &self.id)?;
-        self.completed = true;
-        fs::remove_file(&self.lock_path).map_err(|err| Error::path(&self.lock_path, err))?;
         if actual_calls > self.reserved_calls {
             return Err(Error::config(format!(
                 "physical call control overran its reservation: {actual_calls} calls used from {} reserved",
@@ -126,12 +120,9 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        // A dropped in-flight reservation intentionally remains charged at its
-        // full reserved amount. Removing the lock is safe because the audit
-        // already contains that amount.
-        if !self.completed {
-            let _ = fs::remove_file(&self.lock_path);
-        }
+        // The process-scoped OS lock releases with this handle, including on
+        // termination. Keep the lock file itself so another process cannot
+        // race us by locking a different inode after an unlink.
     }
 }
 
@@ -153,8 +144,7 @@ fn write_audit(path: &Path, audit: &Audit, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     #[test]
     fn reservations_count_actual_calls_and_crashes_keep_the_full_reservation() {

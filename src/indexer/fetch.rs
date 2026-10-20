@@ -440,17 +440,16 @@ impl Checkout {
 /// add is cancelled. `worktree prune` deliberately preserves locked entries,
 /// so this guard owns and removes only the unique admin path for its tempdir.
 struct WorktreeRegistrationCleanup {
-    admin_path: std::path::PathBuf,
+    worktrees_path: std::path::PathBuf,
+    worktree_gitdir: std::path::PathBuf,
     armed: bool,
 }
 
 impl WorktreeRegistrationCleanup {
     fn for_path(mirror: &Path, worktree: &Path) -> Result<Self> {
-        let name = worktree
-            .file_name()
-            .ok_or_else(|| Error::config("review worktree path has no final component"))?;
         Ok(Self {
-            admin_path: mirror.join("worktrees").join(name),
+            worktrees_path: mirror.join("worktrees"),
+            worktree_gitdir: worktree.join(".git"),
             armed: true,
         })
     }
@@ -465,20 +464,37 @@ impl Drop for WorktreeRegistrationCleanup {
         if !self.armed {
             return;
         }
-        match std::fs::symlink_metadata(&self.admin_path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                if let Err(err) = std::fs::remove_dir_all(&self.admin_path) {
-                    tracing::warn!(path = %self.admin_path.display(), %err, "could not clean cancelled worktree metadata");
-                }
-            }
-            Ok(_) => {
-                if let Err(err) = std::fs::remove_file(&self.admin_path) {
-                    tracing::warn!(path = %self.admin_path.display(), %err, "could not remove cancelled worktree metadata link");
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        let entries = match std::fs::read_dir(&self.worktrees_path) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
             Err(err) => {
-                tracing::warn!(path = %self.admin_path.display(), %err, "could not inspect cancelled worktree metadata");
+                tracing::warn!(path = %self.worktrees_path.display(), %err, "could not inspect cancelled worktree metadata");
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let admin = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let gitdir = admin.join("gitdir");
+            let Ok(metadata) = std::fs::symlink_metadata(&gitdir) else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            let Ok(target) = std::fs::read_to_string(&gitdir) else {
+                continue;
+            };
+            if Path::new(target.trim()) != self.worktree_gitdir {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_dir_all(&admin) {
+                tracing::warn!(path = %admin.display(), %err, "could not clean cancelled worktree metadata");
             }
         }
     }
@@ -725,16 +741,17 @@ mod tests {
         let mirror = tempfile::tempdir().unwrap();
         let cancelled = tempfile::tempdir().unwrap();
         let active = tempfile::tempdir().unwrap();
-        let own_admin = mirror
-            .path()
-            .join("worktrees")
-            .join(cancelled.path().file_name().unwrap());
-        let sibling_admin = mirror
-            .path()
-            .join("worktrees")
-            .join(active.path().file_name().unwrap());
+        let worktrees = mirror.path().join("worktrees");
+        let basename = cancelled.path().file_name().unwrap().to_string_lossy();
+        let sibling_admin = worktrees.join(basename.as_ref());
+        let own_admin = worktrees.join(format!("{basename}-1"));
         std::fs::create_dir_all(&sibling_admin).unwrap();
         std::fs::write(sibling_admin.join("locked"), "different active checkout").unwrap();
+        std::fs::write(
+            sibling_admin.join("gitdir"),
+            format!("{}/.git\n", active.path().display()),
+        )
+        .unwrap();
 
         let (registered, wait) = tokio::sync::oneshot::channel();
         let mirror_path = mirror.path().to_path_buf();
@@ -745,6 +762,11 @@ mod tests {
                 .unwrap();
             std::fs::create_dir_all(&task_admin).unwrap();
             std::fs::write(task_admin.join("locked"), "initializing").unwrap();
+            std::fs::write(
+                task_admin.join("gitdir"),
+                format!("{}/.git\n", checkout_path.display()),
+            )
+            .unwrap();
             let _ = registered.send(());
             std::future::pending::<()>().await;
         });

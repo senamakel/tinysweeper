@@ -4216,6 +4216,7 @@ mod tests {
         critique_delay: std::time::Duration,
         security_delay: std::time::Duration,
         execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+        supports_execution_control: bool,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -4229,6 +4230,7 @@ mod tests {
                 critique_delay: std::time::Duration::ZERO,
                 security_delay: std::time::Duration::ZERO,
                 execution: None,
+                supports_execution_control: true,
                 active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
@@ -4237,11 +4239,11 @@ mod tests {
         async fn schedule(
             &self,
             request: &crate::ports::model::ModelRequest,
-        ) -> Result<Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>> {
+        ) -> Result<(bool, Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>)> {
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
-                _ => return Ok(None),
+                _ => return Ok((false, None)),
             };
             let permit = if let Some(control) = &self.execution {
                 let permit = control.acquire().await.map_err(|refusal| Error::ModelExecutionRefused {
@@ -4271,7 +4273,7 @@ mod tests {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-            Ok(permit)
+            Ok((true, permit))
         }
 
         async fn invoke(
@@ -4279,11 +4281,11 @@ mod tests {
             request: crate::ports::model::ModelRequest,
         ) -> Result<crate::ports::model::ModelResponse> {
             let requested_model = request.model.clone();
-            let permit = self.schedule(&request).await?;
+            let (lane_request, permit) = self.schedule(&request).await?;
             let result = self.inner.complete(request).await;
-            if permit.is_some() {
+            if lane_request {
                 self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if let Some(control) = &self.execution {
+                if let (Some(permit), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
                             crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
@@ -4332,11 +4334,11 @@ mod tests {
             policy: &crate::config::types::LookupPolicy,
         ) -> Result<crate::ports::model::ModelResponse> {
             let requested_model = request.model.clone();
-            let permit = self.schedule(&request).await?;
+            let (lane_request, permit) = self.schedule(&request).await?;
             let result = self.inner.review(request, tree, policy).await;
-            if permit.is_some() {
+            if lane_request {
                 self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if let Some(control) = &self.execution {
+                if let (Some(permit), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
                             crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
@@ -4372,6 +4374,9 @@ mod tests {
             &self,
             control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
         ) -> Option<Arc<dyn Model>> {
+            if !self.supports_execution_control {
+                return None;
+            }
             Some(Arc::new(Self {
                 inner: self.inner.clone(),
                 barrier: self.barrier.clone(),
@@ -4381,6 +4386,7 @@ mod tests {
                 critique_delay: self.critique_delay,
                 security_delay: self.security_delay,
                 execution: Some(control),
+                supports_execution_control: true,
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4451,6 +4457,35 @@ mod tests {
             peak.load(std::sync::atomic::Ordering::SeqCst),
             8,
             "both lanes must fill, but never exceed, the review-wide dispatch cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn opaque_models_still_share_the_review_dispatch_limit() {
+        let files = (0..10)
+            .map(|index| ChangedFile {
+                path: format!("src/{index}.rs"),
+                status: FileStatus::Modified,
+                patch: Some(format!("@@ -0,0 +1 @@\n+fn file_{index}() {{}}\n")),
+                ..ChangedFile::default()
+            })
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.supports_execution_control = false;
+        model.critique_delay = std::time::Duration::from_millis(15);
+        model.security_delay = std::time::Duration::from_millis(15);
+        let peak = model.peak.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+
+        review(&forge, model_trait, &scheduling_config(), &repo(), 7)
+            .await
+            .expect("review succeeds with an opaque model");
+
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "the compatibility path must bound logical calls without physical admission hooks"
         );
     }
 

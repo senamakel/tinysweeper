@@ -146,16 +146,14 @@ operator believes. Blocking the first review on the first index would trade a
 thin review for a late one, and a late review is the one nobody reads.
 
 Both paths use the server-owned repository cache: one private bare mirror per
-canonical repository, with separate exact-head disposable worktrees for
-indexing and review. Git operations for one repository are serialized, and
-review worktrees are removed when the run ends. The cache is disposable
-optimization state. To reclaim it manually, stop the service first, then
-remove the configured `TINYSWEEPER_REPOSITORY_CACHE_DIR` (or the default
-private cache directory); do not clean it while workers may hold checkouts.
-Review checkouts fetch allowlisted gitlinks changed between base and head;
-unchanged or unavailable submodule content is read through the forge API.
-Indexing recursively fetches allowed gitlinks under the configured host and
-submodule allowlist policy.
+canonical repository, with separate exact-head disposable worktrees. Git
+operations for one repository are serialized, and review worktrees are removed
+when the run ends. The cache is disposable state. To reclaim it, stop the
+service first, then remove `TINYSWEEPER_REPOSITORY_CACHE_DIR` or the default
+private cache directory; do not clean it while workers may hold checkouts.
+Reviews fetch allowlisted gitlinks changed between base and head; unchanged or
+unavailable submodule content comes through the forge API. Indexing recursively
+fetches allowed gitlinks under the configured host and allowlist policy.
 
 ### Closed pull requests stop before review work
 

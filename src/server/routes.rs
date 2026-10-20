@@ -2833,7 +2833,6 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         return;
     };
 
-    use crate::ports::forge::ForgeWrite;
     let write = match state
         .auth
         .installation_token(open.installation)

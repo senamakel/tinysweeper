@@ -3,7 +3,7 @@
 //! Review-wide execution limits and model bindings shared by one review job.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 #[cfg(test)]
 use std::time::Duration;
@@ -670,6 +670,7 @@ impl ModelExecutionControl for ReviewExecution {
                     return Ok(Box::new(ReviewDispatchPermit {
                         inner: Arc::clone(&self.inner),
                         state: AtomicU8::new(PERMIT_RESERVED),
+                        physical_attempts: AtomicUsize::new(0),
                     }));
                 }
             }
@@ -699,6 +700,7 @@ const PERMIT_CALL_LIMIT: u8 = 5;
 struct ReviewDispatchPermit {
     inner: Arc<ExecutionInner>,
     state: AtomicU8,
+    physical_attempts: AtomicUsize,
 }
 
 impl ModelExecutionPermit for ReviewDispatchPermit {
@@ -755,6 +757,48 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         state.reserved_calls = state.reserved_calls.saturating_sub(1);
         state.committed_calls = state.committed_calls.saturating_add(1);
         self.state.store(PERMIT_COMMITTED, Ordering::Release);
+        drop(state);
+        self.inner
+            .availability_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        Ok(())
+    }
+
+    fn mark_physical_attempt(&self) -> std::result::Result<(), ModelExecutionRefusal> {
+        let mut state = lock(&self.inner.state);
+        match self.state.load(Ordering::Acquire) {
+            PERMIT_COMMITTED => {}
+            PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
+            PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
+            PERMIT_REFUSED | PERMIT_RELEASED | PERMIT_RESERVED => {
+                return Err(ModelExecutionRefusal::SoftDeadline);
+            }
+            _ => return Err(ModelExecutionRefusal::SoftDeadline),
+        }
+
+        if state.cancelled {
+            return Err(ModelExecutionRefusal::Cancelled);
+        }
+
+        if (self.inner._now)() >= self.inner.soft_deadline {
+            return Err(ModelExecutionRefusal::SoftDeadline);
+        }
+
+        let physical_attempts = self.physical_attempts.load(Ordering::Relaxed);
+        if physical_attempts == 0 {
+            self.physical_attempts.store(1, Ordering::Release);
+            return Ok(());
+        }
+
+        if state.max_calls.is_some_and(|limit| {
+            state.committed_calls.saturating_add(state.reserved_calls) >= limit
+        }) {
+            return Err(ModelExecutionRefusal::CallLimit);
+        }
+
+        state.committed_calls = state.committed_calls.saturating_add(1);
+        self.physical_attempts
+            .store(physical_attempts.saturating_add(1), Ordering::Release);
         drop(state);
         self.inner
             .availability_generation
@@ -1495,6 +1539,39 @@ mod tests {
             "a second physical send on the same permit needs another slot"
         );
         assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn a_physical_retry_preserves_capacity_reserved_for_another_call() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(2),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let first = execution.acquire().await.expect("first reservation");
+        let pending = execution.acquire().await.expect("pending reservation");
+        first.mark_dispatched().expect("commit first call");
+        first
+            .mark_physical_attempt()
+            .expect("first physical send uses its committed slot");
+
+        assert_eq!(
+            first.mark_physical_attempt(),
+            Err(ModelExecutionRefusal::CallLimit),
+            "an extra send cannot consume a slot already reserved for another call"
+        );
+        let during_retry = execution.snapshot();
+        assert_eq!(during_retry.committed_calls, 1);
+        assert_eq!(during_retry.reserved_calls, 1);
+
+        pending
+            .mark_dispatched()
+            .expect("the pending call still owns the second slot");
+        let after_pending_commit = execution.snapshot();
+        assert_eq!(after_pending_commit.committed_calls, 2);
+        assert_eq!(after_pending_commit.reserved_calls, 0);
     }
 
     #[tokio::test]

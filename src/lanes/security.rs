@@ -548,7 +548,6 @@ async fn review_group(
             round_one_elapsed,
             round_one_candidates,
             round_one_survivors,
-            pass_yield_observer,
         );
 
         for pass_index in 1..config.review.passes {

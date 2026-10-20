@@ -491,7 +491,6 @@ async fn review_group(
         round_one_elapsed,
         round_one_candidates,
         round_one_survivors,
-        input.pass_yield_observer,
     );
 
     // Adaptive coverage passes. Gated on the group's own size, not the whole

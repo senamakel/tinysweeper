@@ -526,7 +526,10 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
         "fixture-key".into(),
     ));
     let run_config = config.clone();
-    let task = tokio::spawn(async move { review(&forge, model, &run_config, &repo, 7).await });
+    let task = tokio::spawn(async move {
+        let result = review(&forge, model, &run_config, &repo, 7).await;
+        result.map(|proposal| (proposal, forge))
+    });
 
     wait_for_gateway_requests(&gateway, 6).await;
     let initial = gateway.requests();
@@ -540,6 +543,7 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
         .expect("the call-limited review finishes after its two repairs")
         .expect("review task joins")
         .expect("partial review is returned");
+    let (proposal, forge) = proposal;
     let requests = gateway.requests();
     assert_eq!(requests.len(), 8, "repairs consume the shared physical limit");
     assert!(requests.iter().all(|request| request["model"] == primary));
@@ -552,6 +556,34 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
             .and_then(|partial| partial.stop_reason),
         Some(crate::app::review::PartialReviewReason::CallLimit)
     );
+    crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("the partial repair-limited proposal is published");
+    let writes = forge.writes();
+    let check = writes
+        .iter()
+        .find_map(|write| match write {
+            Write::Check(check) | Write::CheckUpdate { check, .. } => Some(check),
+            _ => None,
+        })
+        .expect("the check publishes retained coverage");
+    assert_eq!(
+        check.conclusion,
+        Some(crate::forge::types::CheckConclusion::Neutral)
+    );
+    assert!(check.summary.contains("not reviewed (call budget)"));
+    let hub = writes.iter().find_map(|write| match write {
+        Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
+        _ => None,
+    });
+    assert!(hub.is_some_and(|body| body.contains("not reviewed (call budget)")));
+    assert!(!writes.iter().any(|write| matches!(
+        write,
+        Write::Review {
+            event: crate::forge::types::ReviewEvent::Approve,
+            ..
+        } | Write::Merged { .. }
+    )));
 }
 
 #[cfg(feature = "harness")]
@@ -579,7 +611,10 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
         "fixture-key".into(),
     ));
     let run_config = config.clone();
-    let task = tokio::spawn(async move { review(&forge, model, &run_config, &repo, 7).await });
+    let task = tokio::spawn(async move {
+        let result = review(&forge, model, &run_config, &repo, 7).await;
+        result.map(|proposal| (proposal, forge))
+    });
 
     wait_for_gateway_requests(&gateway, 6).await;
     let initial = gateway.requests();
@@ -593,6 +628,7 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
         .expect("the call-limited review finishes after two fallback dispatches")
         .expect("review task joins")
         .expect("partial review is returned");
+    let (proposal, forge) = proposal;
     let requests = gateway.requests();
     assert_eq!(requests.len(), 8, "fallbacks consume the shared physical limit");
     assert!(requests[..6].iter().all(|request| request["model"] == primary));
@@ -606,6 +642,34 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
             .and_then(|partial| partial.stop_reason),
         Some(crate::app::review::PartialReviewReason::CallLimit)
     );
+    crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+        .await
+        .expect("the partial fallback-limited proposal is published");
+    let writes = forge.writes();
+    let check = writes
+        .iter()
+        .find_map(|write| match write {
+            Write::Check(check) | Write::CheckUpdate { check, .. } => Some(check),
+            _ => None,
+        })
+        .expect("the check publishes retained coverage");
+    assert_eq!(
+        check.conclusion,
+        Some(crate::forge::types::CheckConclusion::Neutral)
+    );
+    assert!(check.summary.contains("not reviewed (call budget)"));
+    let hub = writes.iter().find_map(|write| match write {
+        Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
+        _ => None,
+    });
+    assert!(hub.is_some_and(|body| body.contains("not reviewed (call budget)")));
+    assert!(!writes.iter().any(|write| matches!(
+        write,
+        Write::Review {
+            event: crate::forge::types::ReviewEvent::Approve,
+            ..
+        } | Write::Merged { .. }
+    )));
 }
 
 #[tokio::test]

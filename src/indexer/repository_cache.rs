@@ -16,6 +16,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::Result;
 use crate::indexer::fetch::Checkout;
@@ -28,6 +30,7 @@ use crate::indexer::fetch::Checkout;
 #[derive(Debug, Clone)]
 pub struct RepositoryCache {
     root: PathBuf,
+    locks: Arc<Mutex<std::collections::HashMap<PathBuf, Weak<AsyncMutex<()>>>>>,
 }
 
 impl RepositoryCache {
@@ -40,6 +43,13 @@ impl RepositoryCache {
         std::fs::create_dir_all(&root).map_err(|err| {
             crate::error::Error::Forge(format!("could not create repository cache: {err}"))
         })?;
+        if std::fs::symlink_metadata(&root)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_dir())
+        {
+            return Err(crate::error::Error::config(
+                "repository cache root must be a real directory",
+            ));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -49,7 +59,10 @@ impl RepositoryCache {
                 },
             )?;
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        })
     }
 
     /// Resolve the trusted cache root from `TINYSWEEPER_REPOSITORY_CACHE_DIR`
@@ -77,7 +90,9 @@ impl RepositoryCache {
         revision: &str,
         token: &str,
     ) -> Result<Checkout> {
-        Checkout::fetch(host, repo, revision, token).await
+        let url = format!("https://{host}/{repo}.git");
+        self.checkout_from_url_locked(repo, revision, &url, token, None)
+            .await
     }
 
     #[cfg(test)]
@@ -89,14 +104,90 @@ impl RepositoryCache {
         token: &str,
         fetch_count: &std::sync::atomic::AtomicUsize,
     ) -> Result<Checkout> {
-        let _cache_root = self.root();
-        if repo.starts_with('-') || !repo.contains('/') || repo.contains("..") {
-            return Err(crate::error::Error::config(format!(
-                "`{repo}` is not owner/name"
-            )));
-        }
-        Checkout::fetch_from_url_for_test(url, revision, token, fetch_count).await
+        self.checkout_from_url_locked(repo, revision, url, token, Some(fetch_count))
+            .await
     }
+
+    async fn checkout_from_url_locked(
+        &self,
+        repo: &str,
+        revision: &str,
+        url: &str,
+        token: &str,
+        fetch_count: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> Result<Checkout> {
+        validate_repo(repo)?;
+        let mirror = self.mirror_path(repo)?;
+        let lock = self.lock_for(&mirror);
+        let _guard = lock.lock().await;
+        if !crate::indexer::fetch::Checkout::mirror_has_revision(&mirror, revision).await? {
+            if let Some(parent) = mirror.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| {
+                    crate::error::Error::Forge(format!("could not create cache owner path: {err}"))
+                })?;
+                protect_directory(parent)?;
+            }
+            std::fs::create_dir_all(&mirror).map_err(|err| {
+                crate::error::Error::Forge(format!("could not create repository mirror: {err}"))
+            })?;
+            protect_directory(&mirror)?;
+            Checkout::fetch_into_mirror(&mirror, url, revision, token, fetch_count).await?;
+        }
+        drop(_guard);
+        Checkout::from_mirror(&mirror, revision).await
+    }
+
+    fn mirror_path(&self, repo: &str) -> Result<PathBuf> {
+        let (owner, name) = repo.split_once('/').expect("validated owner/name");
+        Ok(self.root.join(owner).join(format!("{name}.git")))
+    }
+
+    fn lock_for(&self, path: &Path) -> Arc<AsyncMutex<()>> {
+        let mut locks = self.locks.lock().expect("repository cache lock map");
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+        lock
+    }
+}
+
+fn validate_repo(repo: &str) -> Result<()> {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return Err(crate::error::Error::config(format!("`{repo}` is not owner/name")));
+    };
+    let component = |value: &str| {
+        !value.is_empty()
+            && value != "."
+            && value != ".."
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    };
+    if repo.starts_with('-') || !component(owner) || !component(name) || name.ends_with(".git") {
+        return Err(crate::error::Error::config(format!("`{repo}` is not owner/name")));
+    }
+    Ok(())
+}
+
+fn protect_directory(path: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_dir())
+    {
+        return Err(crate::error::Error::config(
+            "repository cache path contains a symlink or non-directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|err| {
+            crate::error::Error::Forge(format!("could not protect repository cache path: {err}"))
+        })?;
+    }
+    Ok(())
 }
 
 fn cache_root(configured: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {

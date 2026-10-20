@@ -1205,7 +1205,9 @@ fn safe_relative(path: &str) -> bool {
         && !path.starts_with('/')
         && !path.contains("..")
         && !path.contains('\\')
-        && !path.starts_with(".git/")
+        && !path
+            .split('/')
+            .any(|component| component.eq_ignore_ascii_case(".git"))
 }
 
 #[async_trait]

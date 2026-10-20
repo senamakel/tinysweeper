@@ -4238,10 +4238,11 @@ async fn run_lanes(
         || async {
             if config_ref.lookup.enabled && config_ref.lookup.checkout {
                 let head = &pull_request.head_sha;
-                match state.repository_cache.checkout(
+                match state.repository_cache.checkout_for_diff(
                     &super::indexing::git_host(),
                     &repo.to_string(),
                     head,
+                    &pull_request.base_sha,
                     read_token,
                 )
                 .await

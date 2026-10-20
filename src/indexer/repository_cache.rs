@@ -91,7 +91,23 @@ impl RepositoryCache {
         token: &str,
     ) -> Result<Checkout> {
         let url = format!("https://{host}/{repo}.git");
-        self.checkout_from_url_locked(repo, revision, &url, token, None)
+        self.checkout_from_url_locked(repo, revision, None, &url, token, None)
+            .await
+    }
+
+    /// Check out one exact head and cache its base commit when needed for
+    /// changed-gitlink detection.
+    pub async fn checkout_for_diff(
+        &self,
+        host: &str,
+        repo: &str,
+        revision: &str,
+        base_revision: &str,
+        token: &str,
+    ) -> Result<Checkout> {
+        validate_host(host)?;
+        let url = format!("https://{host}/{repo}.git");
+        self.checkout_from_url_locked(repo, revision, Some(base_revision), &url, token, None)
             .await
     }
 
@@ -104,7 +120,7 @@ impl RepositoryCache {
         token: &str,
         fetch_count: &std::sync::atomic::AtomicUsize,
     ) -> Result<Checkout> {
-        self.checkout_from_url_locked(repo, revision, url, token, Some(fetch_count))
+        self.checkout_from_url_locked(repo, revision, None, url, token, Some(fetch_count))
             .await
     }
 
@@ -112,15 +128,29 @@ impl RepositoryCache {
         &self,
         repo: &str,
         revision: &str,
+        base_revision: Option<&str>,
         url: &str,
         token: &str,
         fetch_count: Option<&std::sync::atomic::AtomicUsize>,
     ) -> Result<Checkout> {
         validate_repo(repo)?;
+        if let Some(base_revision) = base_revision {
+            validate_revision(base_revision)?;
+        }
         let mirror = self.mirror_path(repo)?;
         let lock = self.lock_for(&mirror);
         let _guard = lock.lock().await;
-        if !crate::indexer::fetch::Checkout::mirror_has_revision(&mirror, revision).await? {
+        let mut missing = Vec::new();
+        if !Checkout::mirror_has_revision(&mirror, revision).await? {
+            missing.push(revision);
+        }
+        if let Some(base_revision) = base_revision
+            && base_revision != revision
+            && !Checkout::mirror_has_revision(&mirror, base_revision).await?
+        {
+            missing.push(base_revision);
+        }
+        if !missing.is_empty() {
             if let Some(parent) = mirror.parent() {
                 std::fs::create_dir_all(parent).map_err(|err| {
                     crate::error::Error::Forge(format!("could not create cache owner path: {err}"))
@@ -131,7 +161,7 @@ impl RepositoryCache {
                 crate::error::Error::Forge(format!("could not create repository mirror: {err}"))
             })?;
             protect_directory(&mirror)?;
-            Checkout::fetch_into_mirror(&mirror, url, revision, token, fetch_count).await?;
+            Checkout::fetch_into_mirror(&mirror, url, &missing, token, fetch_count).await?;
         }
         let checkout = Checkout::from_mirror(&mirror, revision).await?;
         drop(_guard);
@@ -153,6 +183,26 @@ impl RepositoryCache {
         locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
         lock
     }
+}
+
+fn validate_host(host: &str) -> Result<()> {
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+    {
+        return Err(crate::error::Error::config("invalid Git host"));
+    }
+    Ok(())
+}
+
+fn validate_revision(revision: &str) -> Result<()> {
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(crate::error::Error::config(format!(
+            "`{revision}` is not a commit sha"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_repo(repo: &str) -> Result<()> {

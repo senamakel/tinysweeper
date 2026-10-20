@@ -263,10 +263,8 @@ impl Checkout {
     /// Fetch allowlisted submodules needed by a change from `base_revision`
     /// to this checkout's pinned revision.
     ///
-    /// This entry point is the test-first seam for lazy gitlink fetching. Its
-    /// initial implementation retains the old eager behavior; the cache
-    /// change will narrow it to gitlinks changed by the diff or requested by a
-    /// lane.
+    /// Only changed gitlinks are fetched here. Later tree reads under an
+    /// unchanged or unavailable submodule fall back to the forge reader.
     pub async fn fetch_submodules_for_diff(
         &self,
         base_revision: &str,
@@ -755,7 +753,7 @@ mod tests {
             let outer = outer.clone();
             let inner = inner.clone();
             let result = checkout
-                .fetch_submodules_with("github.com", "", &allowed, move |dir, url, pin| {
+                .fetch_submodules_with("github.com", "", &allowed, None, move |dir, url, pin| {
                     recorded.lock().unwrap().push((url.clone(), pin.clone()));
                     let source = if url.ends_with("acme/outer.git") {
                         outer.clone()
@@ -831,6 +829,7 @@ mod tests {
                 "github.com",
                 "",
                 &["acme/outer".to_string(), "acme/inner".to_string()],
+                None,
                 move |dir, url, pin| {
                     let source = outer.clone();
                     async move {
@@ -862,7 +861,7 @@ mod tests {
             revision: "0".repeat(40),
         };
         let result = checkout
-            .fetch_submodules_with("github.com", "", &[], |_, _, _| async {
+            .fetch_submodules_with("github.com", "", &[], None, |_, _, _| async {
                 panic!("no gitlinks to fetch")
             })
             .await
@@ -982,6 +981,7 @@ mod tests {
                 "github.com",
                 "",
                 &["acme/lib".to_string()],
+                None,
                 |_, _, _| async { panic!("symlink destination must not be fetched") },
             )
             .await
@@ -1013,6 +1013,7 @@ mod tests {
                     "github.com",
                     "",
                     &["acme/lib".to_string()],
+                    None,
                     |_, _, _| async { panic!("external manifest must not be read") }
                 )
                 .await

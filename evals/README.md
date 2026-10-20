@@ -113,13 +113,14 @@ about which lane landed where, and no vocabulary expresses it.
 `[[expected]]` labels: one in `tinymcp#102`, three distinct findings in
 `openhuman#8061`, and one in `openhuman#8076`. Each pins the exact externally
 reviewed head and changed-file patches, and cites the acted-on review comment
-and fix. The first `tinymcp#102` recording is preserved, but it reached its
-eight-call ceiling with a partial review, ten unanswered files, and no fully
-completed file. Its missed label is not a completed review result. The other
-four cases still need recordings, so these artifacts do not establish a recall
-percentage. The earlier `oc-2313-round-boundary-leaks` case also remains in
-the corpus; its prior 0/2 result is a historical replay result, not a score for
-these new cases.
+and fix. The initial V3.2 `tinymcp#102` capture reached its eight-call ceiling
+with ten unanswered files and is only a partial baseline. A separate GPT-OSS
+120B/Novita recording completed the critique lane across all ten files but
+missed its expected finding (0/1); three additional findings were unscored.
+This is a completed per-case miss, not a hit. The other four cases still need
+recordings, so the corpus has no aggregate recall result. The earlier
+`oc-2313-round-boundary-leaks` case also remains in the corpus; its prior 0/2
+result is a historical replay result, not a score for these new cases.
 
 The qualified issue identifiers and local case IDs are:
 
@@ -137,10 +138,11 @@ full review across every lane.
 
 Follow the [recording and 48-hour observation runbook](../docs/modules/eval/recording-and-48h-runbook.md)
 for bounded recording, offline replay proof, recall reporting, and deployment
-metrics. The initial V3.2 capture and bounded GPT-OSS 120B/Novita continuation
-candidate are separate artifacts; preserve both model/config identities. Do not publish
-recall until all five have real strict-hit recordings and completed reviews;
-do not report 48-hour rollout numbers before the full window has elapsed.
+metrics. The initial V3.2 partial capture and completed GPT-OSS 120B/Novita
+miss are separate artifacts; preserve both model/config identities. Do not
+publish recall until all five have real strict-hit recordings and completed
+reviews; do not report 48-hour rollout numbers before the full window has
+elapsed.
 
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations

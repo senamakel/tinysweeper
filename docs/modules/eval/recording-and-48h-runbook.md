@@ -32,8 +32,17 @@ The first `tm-0102-memory-pending-debug-state` capture used
 DeepSeek V3.2 at pinned DeepInfra. It exhausted its eight-call initial limit:
 the proposal marked the review partial, left ten files unanswered, and did not
 complete a file. Treat its missed label as a cap-interrupted partial baseline,
-not a completed recall measurement. Its cassette and proposal are preserved;
-rerunning Record mode makes new provider calls and can replace cassette data.
+not a completed recall measurement. Its cassette set is archived separately,
+and its proposal remains in the original output directory; rerunning Record
+mode makes new provider calls and can replace cassette data.
+
+An explicitly authorized GPT-OSS 120B/Novita continuation completed the same
+case's critique lane across all ten files with no unanswered files. It made 30
+successful calls, reported $0.011998 known cost, and missed the sole expected
+label (0/1); three other findings were unscored. This is a completed case miss,
+not an incomplete review. The other four labelled cases remain unrecorded, so
+there is no aggregate recall result. The first capture and continuation use
+separate model identities, cassettes, and output directories.
 
 The bounded continuation candidate is
 [`evals/recording.gptoss-novita.toml`](../../../evals/recording.gptoss-novita.toml).
@@ -52,19 +61,21 @@ an API key's account limit, a corpus label, or the CLI admission threshold as
 authorization to exceed those limits. If usage is unknown or the bound cannot
 be established, stop paid work and preserve the case as unrecorded.
 
-The first case has already reserved and used eight physical attempts. Its
-persistent ledger permits at most 40 total attempts for this provider, so a
-continuation can reserve only the remaining 32. The other four cases may each
-reserve at most 32. Never delete or reset these ledgers. Using the verified
-GPT-OSS Novita endpoint bounds, one worst-case dispatch (131072 input and
-32768 native output tokens) is at most $0.014746 after micro-dollar rounding.
-The five-case upper bound, including the first case's known $0.011331, is
-$2.370691. Recheck the live endpoint and recalculate these bounds immediately
-before use; stop if any usage is unknown or the bound changes.
+The first case's initial V3.2 run used eight calls. Its authorized Novita
+continuation reserved 32 and committed 30, leaving a cumulative audit of
+38/40. Reconcile the ledger with the parent before using either remaining slot.
+The other four cases may each reserve at most 32 attempts. Never delete or
+reset these ledgers. Using the verified GPT-OSS Novita endpoint bounds, one
+worst-case dispatch (131072 input and 32768 native output tokens) is at most
+$0.014746 after micro-dollar rounding. The five-case upper bound, including
+the first case's known initial $0.011331, is $2.370691. Recheck the live
+endpoint and recalculate these bounds immediately before use; stop if any
+usage is unknown or the bound changes.
 
-Record the five cases individually so failures and spend are attributable.
-The first case may be continued only after the parent reconciles the existing
-ledger and explicitly authorizes another call:
+Record the remaining cases individually so failures and spend are attributable.
+The command used for the first Novita continuation is recorded here for audit;
+it must not be repeated without a new ledger reconciliation and explicit
+authorization from the parent:
 
 ```sh
 cargo run --locked --features harness --bin tinysweeper -- eval run \

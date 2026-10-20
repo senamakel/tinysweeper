@@ -700,6 +700,64 @@ struct ProposalAccounting {
 
 fn proposal_accounting(
 
+    execution: &crate::app::review_execution::ReviewRunContext,
+    reports_raw_completion_usage: bool,
+    current_models: &[String],
+) -> ProposalAccounting {
+    if reports_raw_completion_usage {
+        let snapshot = execution.execution().snapshot();
+        let completion = CompletionAccounting {
+            usage: snapshot.physical_usage,
+            usage_by_model: snapshot.physical_usage_by_model,
+            committed_calls: snapshot.committed_calls,
+            terminal_count: snapshot.physical_terminal_count,
+            complete: snapshot.physical_accounting_complete,
+        };
+        let retrieval = execution.retrieval_usage();
+        let mut usage = completion.usage;
+        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
+        let cost = usage.cost_usd + retrieval.cost_usd;
+        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+        let mut models = current_models.to_vec();
+        for model in execution.retrieval_models() {
+            if !models.iter().any(|known| known == &model) {
+                models.push(model);
+            }
+        }
+        for model in completion.usage_by_model.keys() {
+            if !models.iter().any(|known| known == model) {
+                models.push(model.clone());
+            }
+        }
+        ProposalAccounting {
+            usage,
+            completion: Some(completion),
+            logical: None,
+            models,
+        }
+    } else {
+        let logical = execution.logical_usage();
+        let retrieval = execution.retrieval_usage();
+        let mut usage = logical;
+        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
+        let cost = usage.cost_usd + retrieval.cost_usd;
+        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+        let mut models = execution.logical_models();
+        for model in execution.retrieval_models() {
+            if !models.contains(&model) {
+                models.push(model);
+            }
+        }
+        ProposalAccounting {
+            usage,
+            completion: None,
+            logical: (logical != Usage::default()).then_some(logical),
+            models,
+        }
+    }
+}
+
+/// One lane's verdict.
 fn partial_review_metadata(
     plan: &crate::lanes::large_pr::ReviewPlan,
     lanes: &[LaneProposal],
@@ -785,64 +843,7 @@ fn partial_review_metadata(
     (partial, unreviewed)
 }
 
-    execution: &crate::app::review_execution::ReviewRunContext,
-    reports_raw_completion_usage: bool,
-    current_models: &[String],
-) -> ProposalAccounting {
-    if reports_raw_completion_usage {
-        let snapshot = execution.execution().snapshot();
-        let completion = CompletionAccounting {
-            usage: snapshot.physical_usage,
-            usage_by_model: snapshot.physical_usage_by_model,
-            committed_calls: snapshot.committed_calls,
-            terminal_count: snapshot.physical_terminal_count,
-            complete: snapshot.physical_accounting_complete,
-        };
-        let retrieval = execution.retrieval_usage();
-        let mut usage = completion.usage;
-        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
-        let cost = usage.cost_usd + retrieval.cost_usd;
-        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
-        let mut models = current_models.to_vec();
-        for model in execution.retrieval_models() {
-            if !models.iter().any(|known| known == &model) {
-                models.push(model);
-            }
-        }
-        for model in completion.usage_by_model.keys() {
-            if !models.iter().any(|known| known == model) {
-                models.push(model.clone());
-            }
-        }
-        ProposalAccounting {
-            usage,
-            completion: Some(completion),
-            logical: None,
-            models,
-        }
-    } else {
-        let logical = execution.logical_usage();
-        let retrieval = execution.retrieval_usage();
-        let mut usage = logical;
-        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
-        let cost = usage.cost_usd + retrieval.cost_usd;
-        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
-        let mut models = execution.logical_models();
-        for model in execution.retrieval_models() {
-            if !models.contains(&model) {
-                models.push(model);
-            }
-        }
-        ProposalAccounting {
-            usage,
-            completion: None,
-            logical: (logical != Usage::default()).then_some(logical),
-            models,
-        }
-    }
-}
 
-/// One lane's verdict.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneProposal {
     /// The lane.

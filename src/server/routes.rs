@@ -6881,7 +6881,7 @@ mod tests {
                     || async move {
                         let timing =
                             crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
-                        let (proposal, findings) = checkout_then_review_before_deadline(
+                        let findings = checkout_then_review_before_deadline(
                             &timing,
                             hard_deadline,
                             &checkout_repo,
@@ -6927,7 +6927,7 @@ mod tests {
                             },
                         )
                         .await?;
-                        Ok((InnerReview::Complete(findings), proposal))
+                        Ok(InnerReview::Complete(findings))
                     },
                 )
                 .await

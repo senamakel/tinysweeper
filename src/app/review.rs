@@ -4194,8 +4194,8 @@ mod tests {
         inner: MockModel,
         barrier: Option<Arc<tokio::sync::Barrier>>,
         barrier_arrivals: std::sync::atomic::AtomicUsize,
-        optional_barrier: Option<Arc<tokio::sync::Barrier>>,
-        optional_barrier_arrivals: Arc<std::sync::atomic::AtomicUsize>,
+        optional_seen: Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
+        optional_changed: Arc<tokio::sync::Notify>,
         critique_delay: std::time::Duration,
         security_delay: std::time::Duration,
         execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
@@ -4210,8 +4210,10 @@ mod tests {
                 inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})),
                 barrier: None,
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
-                optional_barrier: None,
-                optional_barrier_arrivals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                optional_seen: Arc::new(tokio::sync::Mutex::new(
+                    std::collections::BTreeSet::new(),
+                )),
+                optional_changed: Arc::new(tokio::sync::Notify::new()),
                 critique_delay: std::time::Duration::ZERO,
                 security_delay: std::time::Duration::ZERO,
                 execution: None,
@@ -4250,18 +4252,32 @@ mod tests {
             };
             let active = self.active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.peak.fetch_max(active, std::sync::atomic::Ordering::SeqCst);
-            let optional = matches!(
+            let optional_schema = matches!(
                 request.schema_name.as_str(),
                 "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe"
-            );
-            if optional {
-                if let Some(barrier) = &self.optional_barrier {
-                    let arrival = self
-                        .optional_barrier_arrivals
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if arrival < 3 {
-                        barrier.wait().await;
+            )
+            .then_some(request.schema_name.as_str());
+            if let Some(schema) = optional_schema {
+                self.optional_seen.lock().await.insert(schema.to_string());
+                self.optional_changed.notify_waiters();
+                loop {
+                    let changed = self.optional_changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    let all_present = {
+                        let seen = self.optional_seen.lock().await;
+                        [
+                            "review_summary",
+                            "tinysweeper_thread_resolution",
+                            "tinysweeper_wireframe",
+                        ]
+                        .iter()
+                        .all(|schema| seen.contains(*schema))
+                    };
+                    if all_present {
+                        break;
                     }
+                    changed.await;
                 }
             } else if let Some(barrier) = &self.barrier {
                 let arrival = self
@@ -4384,8 +4400,8 @@ mod tests {
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(
                     self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
                 ),
-                optional_barrier: self.optional_barrier.clone(),
-                optional_barrier_arrivals: self.optional_barrier_arrivals.clone(),
+                optional_seen: self.optional_seen.clone(),
+                optional_changed: self.optional_changed.clone(),
                 critique_delay: self.critique_delay,
                 security_delay: self.security_delay,
                 execution: Some(control),
@@ -4554,8 +4570,7 @@ mod tests {
             }],
         );
         let mut model = ReviewSchedulingModel::new();
-        model.optional_barrier = Some(Arc::new(tokio::sync::Barrier::new(3)));
-        let arrivals = model.optional_barrier_arrivals.clone();
+        let optional_seen = model.optional_seen.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
         config.review.lanes = vec!["commits".into()];
@@ -4577,7 +4592,16 @@ mod tests {
         })
         .expect("review succeeds");
 
-        assert!(arrivals.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+        assert_eq!(
+            *optional_seen.lock().await,
+            [
+                "review_summary".to_string(),
+                "tinysweeper_thread_resolution".to_string(),
+                "tinysweeper_wireframe".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
         assert!(result.summary.is_some());
     }
 

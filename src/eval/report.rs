@@ -66,6 +66,16 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
                 );
             }
         }
+        for limits in [current.execution_limits.as_ref(), baseline.execution_limits.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if limits.recording && !has_known_admitted_call_allowances(limits) {
+                return Comparison::Incomparable(
+                    "an admitted per-case physical-call allowance is unknown; re-run the recording with the current evaluator".into(),
+                );
+            }
+        }
     }
 
     let mut failures = Vec::new();
@@ -113,6 +123,17 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
     } else {
         Comparison::Fail(failures)
     }
+}
+
+fn has_known_admitted_call_allowances(limits: &super::ExecutionLimits) -> bool {
+    limits.effective_case_budgets.len() == limits.selected_case_ids.len()
+        && limits
+            .selected_case_ids
+            .iter()
+            .zip(&limits.effective_case_budgets)
+            .all(|(selected, budget)| {
+                selected == &budget.case_id && budget.max_physical_calls_per_case.is_some()
+            })
 }
 
 /// Render a scorecard as markdown, optionally against a baseline.

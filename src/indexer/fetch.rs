@@ -170,8 +170,8 @@ impl Checkout {
         checkpoint: F,
     ) -> Result<Self>
     where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         validate_revision(revision)?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;

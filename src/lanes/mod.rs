@@ -116,6 +116,16 @@ pub struct LaneInput<'a> {
     /// Optional terminal-review telemetry sink for completed adaptive passes.
     /// Optional sink for completed adaptive-pass yield totals. Set to `None`
     /// when the caller does not collect terminal review timing.
+    ///
+    /// External lane callers can leave it unset with struct update syntax:
+    ///
+    /// ```
+    /// use tinysweeper::lanes::LaneInput;
+    ///
+    /// fn without_timing<'a>(input: LaneInput<'a>) -> LaneInput<'a> {
+    ///     LaneInput { pass_yield_observer: None, ..input }
+    /// }
+    /// ```
     pub pass_yield_observer: Option<&'a dyn PassYieldObserver>,
 }
 

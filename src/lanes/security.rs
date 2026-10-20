@@ -1138,7 +1138,7 @@ mod tests {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![
             PathInstruction {
-                glob: "src/large.rs".into(),
+                glob: "src/auth.rs".into(),
                 instructions: "Treat request-derived shell arguments as tainted.".into(),
                 rules: None,
                 lanes: vec![LaneId::Security],
@@ -1158,7 +1158,9 @@ mod tests {
         let handle = model.clone();
         let redaction_note = "1 credential value was removed; never ask for or guess it.";
 
-        run_with_context(model, &config, &large_diffs(), &[], "", redaction_note).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        run_with_context(model, &config, &diffs, &[], "", redaction_note).await;
 
         let requests = handle.requests();
         assert_eq!(requests.len(), 2);
@@ -1301,7 +1303,8 @@ mod tests {
             std::time::Duration::from_millis(15),
         );
         let config = config_with_passes(2);
-        let diffs = large_diffs();
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
         let pr = pull_request();
         let file_contents = BTreeMap::new();
 
@@ -1341,9 +1344,9 @@ mod tests {
         assert_eq!(outcome.spend.usage.input_tokens, 8);
         assert_eq!(outcome.spend.usage.output_tokens, 4);
         assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
-        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.unanswered.contains(&"src/auth.rs".to_string()));
         assert!(outcome.omissions.iter().any(|omission| {
-            omission.paths.contains(&"src/large.rs".to_string())
+            omission.paths.contains(&"src/auth.rs".to_string())
                 && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
         }));
         let event = trace
@@ -1368,15 +1371,19 @@ mod tests {
         // Round one said "Nothing to report." before the coverage pass ever
         // ran. If the coverage pass then finds something, the summary must
         // not keep declaring the group clean while `findings` says otherwise.
+        let mut coverage_finding = finding_at_line("Guard the second index", 9);
+        coverage_finding["path"] = json!("src/auth.rs");
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({
                 "summary": "…",
-                "findings": [finding_at_line("Guard the second index", 9)]
+                "findings": [coverage_finding]
             }))
             .then(json!({"incorrect": []}));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs(), &[]).await;
+        let mut diffs = large_diffs();
+        diffs[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diffs, &[]).await;
 
         assert_eq!(outcome.findings.len(), 1, "{:#?}", outcome.findings);
         assert!(

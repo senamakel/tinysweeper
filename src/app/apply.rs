@@ -219,6 +219,42 @@ pub async fn apply(
     let (previous_review, previous_known) = own_review_state(read, &repo, proposal.number).await;
     let previous = previous_review.as_ref().map(|review| review.event);
     let event = review_event(config, proposal, previous, live.draft);
+    let blocking_findings = blocking_finding_set(proposal);
+    let published_before = match store {
+        Some(store) => store
+            .load_state(&crate::state::key(&proposal.repo, proposal.number))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|state| state.published_review),
+        None => None,
+    };
+    let same_published_decision = published_before.as_ref().is_some_and(|published| {
+        blocking_findings.as_ref().is_some_and(|blocking| {
+            published.event == event && published.blocking_findings == *blocking
+        })
+    });
+    let same_standing_review = previous_known
+        && published_before
+            .as_ref()
+            .is_some_and(|published| match event {
+                ReviewEvent::Approve | ReviewEvent::RequestChanges => {
+                    previous_review.as_ref().is_some_and(|review| {
+                        review.event == event
+                            && review.head_sha.as_deref() == Some(published.head_sha.as_str())
+                    })
+                }
+                ReviewEvent::Comment => match (&published.standing_review, &previous_review) {
+                    (Some(expected), Some(actual)) => expected == actual,
+                    // Before standing snapshots were persisted, only a live
+                    // COMMENT on the exact published head is enough evidence.
+                    (None, Some(actual)) => {
+                        actual.event == ReviewEvent::Comment
+                            && actual.head_sha.as_deref() == Some(published.head_sha.as_str())
+                    }
+                    _ => false,
+                },
+            });
     // Every lane is expected to leave an unpostable finding without a line,
     // but `apply` is the final boundary before GitHub sees it. One invalid
     // anchor makes GitHub reject the entire review, including otherwise valid
@@ -269,6 +305,22 @@ pub async fn apply(
             == Some(proposal.head_sha.as_str())
         && comments.is_empty();
 
+    // A known publication can be repeated on a new head only while that exact
+    // decision still stands in forge history. Approvals require complete
+    // current-head coverage; a later incomplete push must still withdraw them.
+    let redundant_decision = same_published_decision
+        && same_standing_review
+        && match event {
+            ReviewEvent::Approve => proposal.complete(),
+            ReviewEvent::RequestChanges => true,
+            ReviewEvent::Comment => {
+                published_before
+                    .as_ref()
+                    .and_then(|published| published.coverage_complete)
+                    == Some(proposal.complete())
+            }
+        };
+
     // A push this review could not vouch for — a model that never answered,
     // a file the forge withheld — cannot leave an earlier approval standing
     // over it: a comment does not withdraw one, and a repository that does
@@ -313,7 +365,9 @@ pub async fn apply(
     // above is what a standing approval needed. A kill-switched one is
     // nothing at all: nobody asked.
     let must_say = !proposal.answered() || proposal.version != PROPOSAL_VERSION;
+    let mut review_published = false;
     if !redundant_approval
+        && !redundant_decision
         && (!comments.is_empty()
             || event == ReviewEvent::Approve
             || event == ReviewEvent::RequestChanges
@@ -328,6 +382,7 @@ pub async fn apply(
                 event,
             )
             .await?;
+        review_published = true;
 
         // After successful publish, extend the stored state with newly posted
         // fingerprints so the next review dedupes them correctly.
@@ -343,6 +398,31 @@ pub async fn apply(
             }
         }
     }
+
+    record_apply_state(
+        store,
+        proposal,
+        if review_published {
+            blocking_findings.map(|blocking_findings| {
+                (
+                    event,
+                    blocking_findings,
+                    standing_review_after_success(
+                        event,
+                        proposal,
+                        previous_review.as_ref(),
+                        previous_known,
+                        unvouched,
+                        withdrawal_failed.is_some(),
+                    ),
+                    proposal.complete(),
+                )
+            })
+        } else {
+            None
+        },
+    )
+    .await;
 
     // The change map, as one comment edited in place forever. Deliberately
     // *not* folded into the review body: a review is submitted only when there
@@ -592,6 +672,91 @@ fn review_event(
     }
 
     ReviewEvent::Comment
+}
+
+/// Every lane must carry the pre-dedupe identities for this comparison to be
+/// trusted. Older proposal files deserialize them as `None` and remain noisy.
+fn blocking_finding_set(proposal: &Proposal) -> Option<Vec<String>> {
+    let mut identities = std::collections::BTreeSet::new();
+    for lane in &proposal.lanes {
+        identities.extend(lane.blocking_findings.as_ref()?.iter().cloned());
+    }
+    Some(identities.into_iter().collect())
+}
+
+/// Record a successful publication without replacing the incremental replay
+/// state prepared by the read half.
+async fn record_apply_state(
+    store: Option<&dyn ReviewStateStore>,
+    proposal: &Proposal,
+    publication: Option<(
+        ReviewEvent,
+        Vec<String>,
+        Option<crate::forge::types::OwnReview>,
+        bool,
+    )>,
+) {
+    let Some(store) = store else { return };
+    let key = crate::state::key(&proposal.repo, proposal.number);
+    let mut state = match store.load_state(&key).await {
+        Ok(Some(state)) => state,
+        Ok(None) => crate::state::ReviewedState {
+            head_sha: proposal.head_sha.clone(),
+            ..crate::state::ReviewedState::default()
+        },
+        Err(err) => {
+            tracing::warn!(%err, "could not load review state to record the published decision");
+            return;
+        }
+    };
+    state.latest_usage = Some(crate::state::ReviewUsage {
+        cost_usd: proposal.usage().cost_usd.to_string(),
+        input_tokens: proposal.usage().input_tokens,
+        output_tokens: proposal.usage().output_tokens,
+        cached_tokens: proposal.usage().cached_tokens,
+        embed_tokens: proposal.usage().embed_tokens,
+        models: proposal.models.clone(),
+    });
+    if let Some((event, blocking_findings, standing_review, coverage_complete)) = publication {
+        state.published_review = Some(crate::state::PublishedReview {
+            event,
+            head_sha: proposal.head_sha.clone(),
+            blocking_findings,
+            standing_review,
+            coverage_complete: Some(coverage_complete),
+        });
+    }
+    if let Err(err) = store.save_state(&key, &state).await {
+        tracing::warn!(%err, "could not record the published review decision");
+    }
+}
+
+/// Record the forge state that should still stand after the successful review.
+/// A later COMMENT does not retire a prior approval or changes request, and a
+/// failed approval withdrawal must remain visible in the next comparison.
+fn standing_review_after_success(
+    event: ReviewEvent,
+    proposal: &Proposal,
+    previous: Option<&crate::forge::types::OwnReview>,
+    previous_known: bool,
+    unvouched: bool,
+    withdrawal_failed: bool,
+) -> Option<crate::forge::types::OwnReview> {
+    if event == ReviewEvent::Comment {
+        if !previous_known {
+            return None;
+        }
+        if let Some(previous) = previous
+            && (previous.event == ReviewEvent::RequestChanges
+                || (previous.event == ReviewEvent::Approve && (!unvouched || withdrawal_failed)))
+        {
+            return Some(previous.clone());
+        }
+    }
+    Some(crate::forge::types::OwnReview {
+        event,
+        head_sha: Some(proposal.head_sha.clone()),
+    })
 }
 
 /// tinysweeper's own last review verdict on this pull request.
@@ -876,22 +1041,9 @@ fn review_body(
         // Not approving a clean-looking review is a decision, and the reader
         // deserves the reason: silence here reads as an all-clear.
         ReviewEvent::Comment if blocking == 0 && !proposal.complete() => {
-            let unanswered = proposal.unanswered();
-            let shown: Vec<&str> = unanswered.iter().copied().take(8).collect();
-            let more = unanswered.len().saturating_sub(shown.len());
+            let unanswered = proposal.unanswered().len();
             format!(
-                "tinysweeper found nothing blocking, but could not review everything, so this \
-                 is not an approval: {}{}.",
-                shown
-                    .iter()
-                    .map(|name| crate::markdown::code_span(name))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if more > 0 {
-                    format!(" and {more} more")
-                } else {
-                    String::new()
-                }
+                "tinysweeper could not complete coverage ({unanswered} unanswered item(s)), so this is not an approval."
             )
         }
         ReviewEvent::Comment if blocking == 0 => "tinysweeper found nothing blocking.".to_string(),
@@ -939,23 +1091,20 @@ fn review_body(
         body.push('\n');
     }
 
-    // The full token breakdown goes in the body deliberately. Cache hit rate is
-    // the difference between a cheap re-review and a ruinous one, and nobody
-    // tunes a number they cannot see.
-    //
-    // A fenced, column-aligned block rather than a `<sub>` sentence per lane:
-    // the point of the breakdown is comparing lanes, and six numbers that land
-    // in a different place on every row cannot be compared at a glance. The
-    // fence also stops the renderer reflowing away the alignment.
-    body.push_str("\n\n");
-    body.push_str(&crate::findings::render::cost_table(
-        &proposal.usage(),
-        &proposal.models,
-        &proposal.lane_costs(),
+    // Detailed usage remains in the machine-readable marker and timing log.
+    // A collapsed total is enough context for someone reading the review.
+    body.push_str(&format!(
+        "\n\n<details>\n<summary>Diagnostics</summary>\n\nTotal spend: ${:.4}\n\n</details>",
+        proposal.usage().cost_usd
     ));
     body.push_str(&format!(
-        "\n<!-- {MARKER_PREFIX}state v=1 sha={} -->",
-        proposal.head_sha
+        "\n<!-- {MARKER_PREFIX}state v=1 sha={} usage=cost:{:.4},input:{},output:{},cached:{},embed:{} -->",
+        proposal.head_sha,
+        proposal.usage().cost_usd,
+        proposal.usage().input_tokens,
+        proposal.usage().output_tokens,
+        proposal.usage().cached_tokens,
+        proposal.usage().embed_tokens,
     ));
     body
 }
@@ -1165,6 +1314,7 @@ mod tests {
                 summary: "Reviewed.".into(),
                 completed: true,
                 findings,
+                blocking_findings: Some(vec![]),
                 noted: Vec::new(),
                 context_degraded: false,
                 resolved: vec![],
@@ -2296,7 +2446,7 @@ mod tests {
         assert_ne!(event, ReviewEvent::Approve, "{body}");
         assert_ne!(event, ReviewEvent::RequestChanges, "{body}");
         assert!(
-            body.contains("not an approval") && body.contains("`src/lib.rs`"),
+            body.contains("not an approval") && body.contains("1 unanswered item"),
             "the reader is told why: {body}"
         );
     }
@@ -2682,12 +2832,393 @@ mod tests {
             })
             .expect("review posted");
 
-        assert!(body.contains("$0.0100"), "{body}");
-        assert!(body.contains("10,000 in"), "{body}");
-        assert!(body.contains("400 out"), "{body}");
-        assert!(body.contains("800 cached (8%)"), "{body}");
-        assert!(body.contains("kimi-k3"), "{body}");
+        assert!(body.contains("Total spend: $0.0100"), "{body}");
+        assert_eq!(body.matches("Total spend:").count(), 1, "{body}");
+        assert!(!body.contains("10,000 in"), "{body}");
+        assert!(!body.contains("400 out"), "{body}");
+        assert!(!body.contains("800 cached (8%)"), "{body}");
+        assert!(!body.contains("kimi-k3"), "{body}");
+        assert!(body.contains("state v=1 sha=abc123"), "{body}");
+        assert!(
+            body.contains("usage=cost:0.0100,input:10000,output:400,cached:800,embed:0"),
+            "{body}"
+        );
     }
+
+    #[tokio::test]
+    async fn unchanged_verdict_and_blocking_findings_skip_review_but_update_hub() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        let store = MemoryState::new();
+        for run in 0..2 {
+            let mut proposal = proposal("abc123", vec![finding()]);
+            if run == 1 {
+                let mut informational = finding();
+                informational.severity = Severity::Low;
+                informational.rule = "informational-note".into();
+                informational.title = "A nonblocking note appeared".into();
+                proposal.lanes[0].findings.push(informational);
+            }
+            apply(&forge, &forge, &config(), &proposal, Some(&store))
+                .await
+                .expect("applies");
+        }
+        let writes = forge.writes();
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Review { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Comment { .. } | Write::CommentUpdate { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Check(_) | Write::CheckUpdate { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_incomplete_comments_dedupe_while_a_previous_block_stands() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("head-a");
+        let store = MemoryState::new();
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("head-a", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("publishes initial block");
+
+        for head in ["head-b", "head-c"] {
+            forge.push(7, head, vec![]);
+            let mut partial = proposal(head, vec![]);
+            partial.unreviewed.push("src/withheld.rs".into());
+            partial.lanes[0].conclusion = CheckConclusion::Neutral;
+            partial.lanes[0].unanswered.push("src/withheld.rs".into());
+            apply(&forge, &forge, &config(), &partial, Some(&store))
+                .await
+                .expect("publishes incomplete comment");
+        }
+
+        let reviews: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::Review { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reviews,
+            vec![ReviewEvent::RequestChanges, ReviewEvent::Comment],
+            "the same incomplete comment must dedupe while the old block remains"
+        );
+        let standing = forge
+            .own_review_state(&RepoId::parse("tinyhumansai/tinysweeper").unwrap(), 7)
+            .await
+            .expect("reads standing review")
+            .expect("the request changes still stands");
+        assert_eq!(standing.event, ReviewEvent::RequestChanges);
+        assert_eq!(standing.head_sha.as_deref(), Some("head-a"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_review_write_does_not_claim_a_publication_receipt() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        forge.fail_next_review_publishes(1);
+        let store = MemoryState::new();
+        let result = apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "the failed review must remain an apply error"
+        );
+        assert!(
+            store
+                .load_state(&crate::state::key("tinyhumansai/tinysweeper", 7))
+                .await
+                .expect("state store works")
+                .is_none(),
+            "a failed write is not a durable publication"
+        );
+        assert!(
+            !forge
+                .writes()
+                .iter()
+                .any(|write| matches!(write, Write::Review { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
+        use crate::state::{PublishedReview, ReviewedState, memory::MemoryState};
+
+        let mut mock_state = MockState::default();
+        mock_state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                head_sha: "new-head".into(),
+                ..PullRequest::default()
+            },
+        );
+        mock_state.own_reviews.insert(
+            7,
+            crate::forge::types::OwnReview {
+                event: ReviewEvent::Approve,
+                head_sha: None,
+            },
+        );
+        let forge = MockForge::with_state(mock_state);
+        let store = MemoryState::new();
+        let key = crate::state::key("tinyhumansai/tinysweeper", 7);
+        store
+            .save_state(
+                &key,
+                &ReviewedState {
+                    published_review: Some(PublishedReview {
+                        event: ReviewEvent::Approve,
+                        head_sha: "old-head".into(),
+                        blocking_findings: vec![],
+                        standing_review: None,
+                        coverage_complete: Some(true),
+                    }),
+                    ..ReviewedState::default()
+                },
+            )
+            .await
+            .expect("seeds publication receipt");
+
+        // The mock's live approval has no commit metadata; the durable receipt
+        // for an older commit cannot fill that gap.
+        apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("new-head", vec![]),
+            Some(&store),
+        )
+        .await
+        .expect("applies");
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|write| matches!(write, Write::Review { .. }))
+                .count(),
+            1,
+            "unknown live head metadata must cause a fresh approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deduped_push_updates_hidden_usage_without_rewriting_the_review_receipt() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("initial");
+        let store = MemoryState::new();
+        for (head, cost, input) in [("head-one", 0.01, 100), ("head-two", 0.025, 250)] {
+            forge.push(
+                7,
+                head,
+                vec![ChangedFile {
+                    path: "src/main.rs".into(),
+                    patch: Some("@@ -1,1 +1,2 @@\n x\n+y\n".into()),
+                    ..ChangedFile::default()
+                }],
+            );
+            let mut proposal = proposal(head, vec![finding()]);
+            proposal.cost_usd = cost;
+            proposal.input_tokens = input;
+            proposal.output_tokens = 40;
+            proposal.cached_tokens = 25;
+            apply(&forge, &forge, &config(), &proposal, Some(&store))
+                .await
+                .expect("applies");
+        }
+
+        let reviews: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::Review { body, .. } => Some(body),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reviews.len(),
+            1,
+            "the second head repeats the same decision"
+        );
+        assert!(reviews[0].contains("sha=head-one"), "{}", reviews[0]);
+        assert!(reviews[0].contains("usage=cost:0.0100,input:100,output:40,cached:25,embed:0"));
+
+        let state = store
+            .load_state(&crate::state::key("tinyhumansai/tinysweeper", 7))
+            .await
+            .expect("loads")
+            .expect("state retained");
+        assert_eq!(
+            state
+                .latest_usage
+                .as_ref()
+                .map(|usage| usage.cost_usd.as_str()),
+            Some("0.025")
+        );
+        assert_eq!(
+            state.latest_usage.as_ref().map(|usage| usage.input_tokens),
+            Some(250)
+        );
+        assert_eq!(
+            state
+                .published_review
+                .as_ref()
+                .map(|review| review.head_sha.as_str()),
+            Some("head-one")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_verdict_still_posts_a_review() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        let store = MemoryState::new();
+        let mut config = config();
+        apply(
+            &forge,
+            &forge,
+            &config,
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("first apply");
+        config.review.request_changes_at = "off".into();
+        apply(
+            &forge,
+            &forge,
+            &config,
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("second apply");
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|w| matches!(w, Write::Review { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_blocking_identity_posts_a_new_request_changes_review() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("head-one");
+        let store = MemoryState::new();
+        let first = proposal("head-one", vec![finding()]);
+        apply(&forge, &forge, &config(), &first, Some(&store))
+            .await
+            .expect("publishes first blocker");
+
+        forge.push(7, "head-two", vec![]);
+        let mut second = proposal("head-two", vec![finding()]);
+        second.lanes[0].blocking_findings = Some(vec!["different-blocker".into()]);
+        apply(&forge, &forge, &config(), &second, Some(&store))
+            .await
+            .expect("publishes changed blocker");
+
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|write| matches!(
+                    write,
+                    Write::Review {
+                        event: ReviewEvent::RequestChanges,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "the blocker identity is part of the decision signature"
+        );
+    }
+
+    #[tokio::test]
+    async fn recording_a_decision_does_not_replace_state_after_a_load_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct UnavailableState(Arc<AtomicUsize>);
+
+        #[async_trait::async_trait]
+        impl crate::ports::ReviewStateStore for UnavailableState {
+            async fn load_state(
+                &self,
+                _key: &str,
+            ) -> crate::error::Result<Option<crate::state::ReviewedState>> {
+                Err(crate::error::Error::Forge("state store unavailable".into()))
+            }
+
+            async fn save_state(
+                &self,
+                _key: &str,
+                _state: &crate::state::ReviewedState,
+            ) -> crate::error::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn clear_e2e_watch(
+                &self,
+                _key: &str,
+                _watch: &crate::lanes::e2e::runs::Watch,
+            ) -> crate::error::Result<bool> {
+                Ok(false)
+            }
+        }
+
+        let saves = Arc::new(AtomicUsize::new(0));
+        let store = UnavailableState(saves.clone());
+        record_apply_state(
+            Some(&store),
+            &proposal("head", vec![]),
+            Some((ReviewEvent::Approve, vec![], None, true)),
+        )
+        .await;
+        assert_eq!(saves.load(Ordering::SeqCst), 0);
+    }
+
     // --- the change map ----------------------------------------------------
 
     /// A proposal carrying enough changed behaviours to warrant a flow map.
@@ -2939,6 +3470,7 @@ mod tests {
                 completed: outcome.completed,
                 context_degraded: false,
                 findings: vec![],
+                blocking_findings: Some(vec![]),
                 noted: vec![],
                 resolved: vec![],
                 pending: vec![],

@@ -88,6 +88,9 @@ pub(crate) struct Record {
     pub(crate) calls_errored: u64,
     /// Aggregated tokens and cost retained by model adapters.
     pub(crate) usage: Usage,
+    /// Authoritative accounting for a completed proposal, including retrieval
+    /// work that does not pass through the model observer.
+    finalized_usage: Option<FinalizedUsage>,
     /// Bounded yield totals keyed by stable lane id and pass number.
     pub(crate) pass_yields: BTreeMap<String, PassYield>,
     /// Files changed in the pull request.
@@ -96,6 +99,13 @@ pub(crate) struct Record {
     pub(crate) files_answered: usize,
     /// Files omitted or unanswered by review lanes.
     pub(crate) files_unanswered: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct FinalizedUsage {
+    usage: Usage,
+    models: Vec<String>,
+    lane_usage: Vec<(String, Usage, Vec<String>)>,
 }
 
 impl ReviewTiming {
@@ -117,6 +127,12 @@ impl ReviewTiming {
             record: Mutex::new(record),
             worker_span: tracing::Span::current(),
         }))
+    }
+
+    /// Drop the previous proposal snapshot when a retry starts. Observer
+    /// totals remain cumulative across attempts in the same worker run.
+    pub(crate) fn begin_attempt(&self) {
+        self.record(|record| record.finalized_usage = None);
     }
 
     /// Measure a top-level phase and attach correlation fields.
@@ -207,6 +223,33 @@ impl ReviewTiming {
         self.0.record.lock().expect("review timing lock").clone()
     }
 
+    /// Attach finalized proposal accounting without changing physical-call
+    /// counters collected by the observer.
+    pub(crate) fn finalize_usage(
+        &self,
+        usage: Usage,
+        models: &[String],
+        lane_usage: &[(String, Usage, Vec<String>)],
+    ) {
+        let clean_models = |models: &[String]| {
+            models
+                .iter()
+                .filter(|model| !model.trim().is_empty())
+                .cloned()
+                .collect()
+        };
+        self.record(|record| {
+            record.finalized_usage = Some(FinalizedUsage {
+                usage,
+                models: clean_models(models),
+                lane_usage: lane_usage
+                    .iter()
+                    .map(|(lane, usage, models)| (lane.clone(), *usage, clean_models(models)))
+                    .collect(),
+            });
+        });
+    }
+
     /// Mark the terminal outcome emitted when the final handle is dropped.
     #[cfg(any(feature = "serve", test))]
     pub(crate) fn finish(&self, outcome: &str) {
@@ -253,6 +296,15 @@ pub(crate) async fn measure_lane_under<F: Future>(
 impl Drop for Inner {
     fn drop(&mut self) {
         let r = self.record.get_mut().expect("review timing lock");
+        let (usage, usage_source, models, lane_usage) = match &r.finalized_usage {
+            Some(finalized) => (
+                finalized.usage,
+                "proposal",
+                serde_json::to_string(&finalized.models).unwrap_or_default(),
+                serde_json::to_string(&finalized.lane_usage).unwrap_or_default(),
+            ),
+            None => (r.usage, "observed", "[]".into(), "[]".into()),
+        };
         let total_ms = r
             .started
             .map(|s| s.elapsed().as_millis() as u64)
@@ -266,6 +318,8 @@ impl Drop for Inner {
             calls_refused = r.calls_refused, calls_errored = r.calls_errored,
             input_tokens = r.usage.input_tokens, output_tokens = r.usage.output_tokens,
             reasoning_tokens = r.usage.reasoning_tokens, cached_tokens = r.usage.cached_tokens,
+            usage_source, cost_usd = usage.cost_usd, embed_tokens = usage.embed_tokens,
+            models = %models, lane_usage = %lane_usage,
             pass_yields = %serde_json::to_string(&r.pass_yields).unwrap_or_default(),
             files_total = r.files_total, files_answered = r.files_answered,
             files_unanswered = r.files_unanswered, "review timing");

@@ -39,7 +39,7 @@ thiserror = "2"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "sync", "time", "signal"] }
 # URL validation is offline and also checks configured embedding endpoints.
 url = "2"
 

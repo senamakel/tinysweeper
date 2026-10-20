@@ -176,6 +176,7 @@ mod tests {
                 summary: "Reviewed.".into(),
                 completed: true,
                 findings: vec![],
+                blocking_findings: Some(vec![]),
                 noted: vec![],
                 context_degraded: false,
                 resolved: vec![],

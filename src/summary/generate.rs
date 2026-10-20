@@ -1050,6 +1050,7 @@ mod tests {
             completed: !models.is_empty(),
             context_degraded: false,
             findings: vec![],
+            blocking_findings: Some(vec![]),
             noted: vec![],
             resolved: vec![],
             pending: vec![],

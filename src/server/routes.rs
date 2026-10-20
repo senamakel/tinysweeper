@@ -6610,6 +6610,138 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn an_apply_check_failure_keeps_the_last_good_hub_report() {
+        use crate::app::review::{LaneProposal, Proposal, PROPOSAL_VERSION};
+        use crate::forge::types::{CheckConclusion, ChangedFile, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId};
+        use crate::ports::forge::ForgeWrite;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let repo = RepoId::parse("owner/repo").unwrap();
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                head_sha: "failed-apply-head".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(7, vec![ChangedFile::default()]);
+        let forge = MockForge::with_state(state);
+        let config = Config::default();
+        let proposal = Proposal {
+            version: PROPOSAL_VERSION,
+            repo: repo.to_string(),
+            number: 7,
+            head_sha: "failed-apply-head".into(),
+            lanes: vec![LaneProposal {
+                lane: crate::lanes::LaneId::Critique,
+                check_name: "tinysweeper/critique".into(),
+                conclusion: CheckConclusion::Success,
+                summary: "Reviewed without findings.".into(),
+                completed: true,
+                findings: vec![],
+                noted: vec![],
+                context_degraded: false,
+                resolved: vec![],
+                pending: vec![],
+                skipped: None,
+                deduped: 0,
+                highest_severity: None,
+                usage: Default::default(),
+                models: vec![],
+                unanswered: vec![],
+                omissions: vec![],
+                coverage: None,
+                overflow: vec![],
+            }],
+            overview: None,
+            wireframe: None,
+            summary: None,
+            prior_findings: vec![],
+            unreviewed: vec![],
+            partial_review: None,
+            skipped: None,
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            embed_tokens: 0,
+            models: vec![],
+            completion_accounting: None,
+            logical_usage: None,
+            threads: Default::default(),
+        };
+
+        // Seed a trustworthy, completed report and the still-open umbrella
+        // check exactly as the worker has them before it tries to publish.
+        let last_good_report = crate::summary::render(&config, &proposal);
+        assert!(last_good_report.contains("# Tiny Sweeper review"));
+        let hub_comment_id = forge
+            .create_comment(&repo, 7, &last_good_report)
+            .await
+            .unwrap();
+        let check_id = forge
+            .publish_check(&repo, status::in_progress("failed-apply-head"))
+            .await
+            .unwrap();
+
+        // The real apply path fails while publishing the lane check. The
+        // worker then uses its ordinary failure finalizer for the open check.
+        forge.fail_next_check_publishes(1);
+        let apply_error = crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect_err("the lane-check publication failure reaches the worker");
+        assert!(matches!(apply_error, Error::Forge(_)));
+
+        let open = ReviewStatus {
+            repo: repo.clone(),
+            check_id,
+            head_sha: proposal.head_sha.clone(),
+            installation: 1,
+            stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+            owned: None,
+            hub_comment_id: Some(hub_comment_id),
+            prior_hub_body: Some(last_good_report.clone()),
+        };
+        let stage_completed = Arc::new(AtomicBool::new(false));
+        let callback_stage = stage_completed.clone();
+        let (check_result, hub_result) = conclude_status_with_writer(
+            &open,
+            Conclusion::Failed(&apply_error),
+            &forge,
+            || async move {
+                callback_stage.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+        check_result.expect("the worker concludes the existing check");
+        hub_result
+            .expect("the failed review updates its existing hub")
+            .expect("the hub update succeeds");
+        assert!(stage_completed.load(Ordering::SeqCst));
+
+        let writes = forge.writes();
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CheckUpdate { check_id: updated, check }
+                if *updated == check_id
+                    && check.head_sha == "failed-apply-head"
+                    && check.conclusion == Some(CheckConclusion::Failure)
+        )));
+        let failed_hub = writes.iter().find_map(|write| match write {
+            crate::forge::Write::CommentUpdate { comment_id, body }
+                if *comment_id == hub_comment_id => Some(body),
+            _ => None,
+        });
+        let failed_hub = failed_hub.expect("the existing hub is updated in place");
+        assert!(failed_hub.contains("Last completed report"), "{failed_hub}");
+        assert!(failed_hub.contains("# Tiny Sweeper review"), "{failed_hub}");
+        assert!(failed_hub.contains("failed-apply-head"), "{failed_hub}");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn checkout_keeps_the_original_window_and_publishes_drained_work_at_the_deadline() {
         use crate::app::review_execution::ReviewExecutionOptions;

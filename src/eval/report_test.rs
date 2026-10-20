@@ -34,6 +34,7 @@ fn card(cases: Vec<CaseScore>) -> Scorecard {
     Scorecard {
         corpus_digest: "aaaaaaaaaaaaaaaa".into(),
         config_digest: "bbbbbbbbbbbbbbbb".into(),
+        execution_limits_digest: Some("limits-same".into()),
         loose_replays: 0,
         cases,
     }
@@ -222,6 +223,30 @@ fn a_configuration_that_moved_is_not_comparable_without_saying_so() {
         Comparison::Incomparable(why) => assert!(why.contains("configuration changed"), "{why}"),
         other => panic!("expected incomparable, got {other:?}"),
     }
+}
+
+#[test]
+fn changed_execution_limits_make_scorecards_incomparable() {
+    let baseline = card(vec![case_score("ts-0001", 1, &[], 0)]);
+    let mut current = card(vec![case_score("ts-0001", 1, &[], 0)]);
+    current.execution_limits_digest = Some("limits-different-case-or-budget".into());
+
+    assert!(matches!(
+        compare(&current, &baseline, false),
+        Comparison::Incomparable(reason) if reason.contains("execution limits changed")
+    ));
+}
+
+#[test]
+fn legacy_scorecards_without_execution_limits_fail_closed() {
+    let baseline = card(vec![case_score("ts-0001", 1, &[], 0)]);
+    let mut legacy = card(vec![case_score("ts-0001", 1, &[], 0)]);
+    legacy.execution_limits_digest = None;
+
+    assert!(matches!(
+        compare(&legacy, &baseline, false),
+        Comparison::Incomparable(reason) if reason.contains("execution limits are unknown")
+    ));
 }
 
 #[test]

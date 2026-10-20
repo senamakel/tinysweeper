@@ -333,6 +333,11 @@ pub struct Scorecard {
     pub corpus_digest: String,
     /// The configuration digest the run used.
     pub config_digest: String,
+    /// A digest of the selected cases and their effective run/admission
+    /// limits. `None` means a legacy scorecard did not record these bounds and
+    /// cannot be compared safely with a bounded run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_limits_digest: Option<String>,
     /// Whether any answer was replayed by call order rather than by key.
     pub loose_replays: usize,
     /// Per case, sorted by id so two reports diff cleanly.

@@ -251,7 +251,7 @@ async fn hidden_physical_retries_share_the_recording_cap_and_failed_attempt_audi
     let mut config = config();
     config.models.budget_usd_per_pr = 0.5;
 
-    let outcome = run(
+    run(
         &corpus,
         &config,
         Some(model),

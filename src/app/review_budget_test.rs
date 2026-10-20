@@ -306,6 +306,7 @@ fn lane_of(findings: Vec<Finding>) -> LaneProposal {
         summary: "Reviewed.".into(),
         completed: true,
         findings,
+        blocking_findings: vec![],
         noted: Vec::new(),
         context_degraded: false,
         resolved: vec![],

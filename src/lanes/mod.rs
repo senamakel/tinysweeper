@@ -41,7 +41,7 @@ use crate::scan::types::{Finding as ScanFinding, ScanKind};
 ///
 /// Implementations aggregate by lane and pass number; they must not retain
 /// group paths, prompts, or findings.
-pub(crate) trait PassYieldObserver: Send + Sync {
+pub trait PassYieldObserver: Send + Sync {
     /// Record one group's candidate and surviving finding counts for a pass.
     fn record_pass_yield(&self, lane: LaneId, pass: u8, candidates: usize, survivors: usize);
 }
@@ -114,7 +114,9 @@ pub struct LaneInput<'a> {
     /// what a forge-only review without a graph store does too.
     pub graph: Option<&'a crate::index::types::Neighbourhood>,
     /// Optional terminal-review telemetry sink for completed adaptive passes.
-    pub(crate) pass_yield_observer: Option<&'a dyn PassYieldObserver>,
+    /// Optional sink for completed adaptive-pass yield totals. Set to `None`
+    /// when the caller does not collect terminal review timing.
+    pub pass_yield_observer: Option<&'a dyn PassYieldObserver>,
 }
 
 impl<'a> LaneInput<'a> {

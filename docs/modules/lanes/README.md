@@ -251,9 +251,10 @@ Each group emits one structured telemetry event after it stops. The review
 timing record also aggregates completed pass yields by lane and pass, counting
 candidate findings before falsification and survivors after it. The yield is
 recorded as soon as a pass finishes, so later cancellation does not erase it.
-`passes_attempted` and `new_findings_per_pass` both begin with round one, then
-list every adaptive attempt; `stop_reason` distinguishes reaching the ceiling
-from an empty, failed, unplaceable, duplicate, or filtered response.
+`passes_attempted`, `candidate_findings_per_pass`, and
+`surviving_findings_per_pass` begin with round one, then list every adaptive
+attempt; `stop_reason` distinguishes reaching the ceiling from an empty,
+failed, unplaceable, duplicate, or filtered response.
 `input_tokens`, `output_tokens`, `cached_tokens`, and `cost_usd` are summed from
 the model responses made by that group rather than inferred from the lane-wide
 spend tally, which is shared by concurrently reviewed groups.

@@ -1742,7 +1742,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         None
     };
 
-    let mut large_outcomes = if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
+    let large_outcomes = if plan.mode == crate::lanes::large_pr::ReviewMode::Large {
         Some(
             run_large_groups(
                 LaneInput {
@@ -1775,7 +1775,20 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         None
     };
 
+    let mut prepared_large_outcomes = large_outcomes.unwrap_or_default();
+    let mut lane_runs: Vec<BoxFuture<'_, Result<(LaneId, LaneOutcome)>>> = Vec::new();
     for lane_id in config.enabled_lanes() {
+        let large_outcome = if matches!(lane_id, LaneId::Critique | LaneId::Security) {
+            prepared_large_outcomes.remove(&lane_id)
+        } else {
+            None
+        };
+        let critique_prepared = (lane_id == LaneId::Critique && large_outcome.is_none())
+            .then(|| critique_prepared.take())
+            .flatten();
+        let security_prepared = (lane_id == LaneId::Security && large_outcome.is_none())
+            .then(|| security_prepared.take())
+            .flatten();
         let lane_input = LaneInput {
             config,
             pull_request: &context.pull_request,
@@ -1794,49 +1807,58 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             tree: Some(tree),
             graph: graph_for_lanes,
         };
-        let outcome = crate::review_timing::measure_lane_under(
-            timing.as_ref(),
-            lane_id.as_str(),
-            Some(&lanes_span),
-            async {
-                if let Some(outcomes) = &mut large_outcomes
-                    && matches!(lane_id, LaneId::Critique | LaneId::Security)
-                {
-                    return Ok(outcomes
-                        .remove(&lane_id)
-                        .expect("prepared large lane has a scheduled outcome"));
-                }
-                match lane_id {
-                    LaneId::Critique => {
-                        Critique::new(model.clone())
-                            .run_prepared_with_execution(
-                                lane_input,
-                                critique_prepared.take().expect("critique was prepared"),
-                                Some(execution.execution()),
-                            )
-                            .await
+        let model = model.clone();
+        let lane_execution = execution.execution();
+        let timing = timing.as_ref();
+        let lanes_span = lanes_span.clone();
+        lane_runs.push(Box::pin(async move {
+            let outcome = crate::review_timing::measure_lane_under(
+                timing,
+                lane_id.as_str(),
+                Some(&lanes_span),
+                async {
+                    if let Some(outcome) = large_outcome {
+                        return Ok(outcome);
                     }
-                    LaneId::Security => {
-                        Security::new(model.clone())
-                            .run_prepared_with_execution(
-                                lane_input,
-                                security_prepared.take().expect("security was prepared"),
-                                Some(execution.execution()),
-                            )
-                            .await
+                    match lane_id {
+                        LaneId::Critique => {
+                            Critique::new(model.clone())
+                                .run_prepared_with_execution(
+                                    lane_input,
+                                    critique_prepared.expect("critique was prepared"),
+                                    Some(lane_execution),
+                                )
+                                .await
+                        }
+                        LaneId::Security => {
+                            Security::new(model.clone())
+                                .run_prepared_with_execution(
+                                    lane_input,
+                                    security_prepared.expect("security was prepared"),
+                                    Some(lane_execution),
+                                )
+                                .await
+                        }
+                        LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
+                        LaneId::Commits => Commits::new().run(lane_input).await,
+                        LaneId::Description => Description::new(model.clone()).run(lane_input).await,
+                        LaneId::E2e => {
+                            crate::lanes::e2e::E2e::new(model.clone())
+                                .run(lane_input)
+                                .await
+                        }
                     }
-                    LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
-                    LaneId::Commits => Commits::new().run(lane_input).await,
-                    LaneId::Description => Description::new(model.clone()).run(lane_input).await,
-                    LaneId::E2e => {
-                        crate::lanes::e2e::E2e::new(model.clone())
-                            .run(lane_input)
-                            .await
-                    }
-                }
-            },
-        )
-        .await?;
+                },
+            )
+            .await?;
+            Ok((lane_id, outcome))
+        }));
+    }
+
+    // `join_all` retains configured (canonical) lane order even though work
+    // and model calls complete in whichever order their providers allow.
+    for lane_result in futures::future::join_all(lane_runs).await {
+        let (lane_id, outcome) = lane_result?;
 
         // From the responses, not from `config.model_for(lane_id)`. Asking the
         // config which model was used answers which one was *requested*: a

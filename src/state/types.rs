@@ -154,4 +154,24 @@ mod tests {
         assert!(decoded.latest_usage.is_none());
         assert_eq!(decoded.titles, vec!["Guard the index".to_string()]);
     }
+
+    #[test]
+    fn a_publication_receipt_without_a_standing_review_remains_unknown() {
+        let receipt = PublishedReview {
+            event: crate::forge::types::ReviewEvent::Comment,
+            head_sha: "comment-head".into(),
+            blocking_findings: vec![],
+            standing_review: Some(crate::forge::types::OwnReview {
+                event: crate::forge::types::ReviewEvent::RequestChanges,
+                head_sha: Some("blocked-head".into()),
+            }),
+        };
+        let mut encoded = serde_json::to_value(&receipt).expect("serializes");
+        encoded
+            .as_object_mut()
+            .expect("receipt object")
+            .remove("standing_review");
+        let decoded: PublishedReview = serde_json::from_value(encoded).expect("legacy receipt");
+        assert!(decoded.standing_review.is_none());
+    }
 }

@@ -578,6 +578,160 @@ fn selected_lane_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<
     selected
 }
 
+fn observed_group_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<(String, String)> {
+    requests
+        .iter()
+        .filter(|request| {
+            matches!(
+                request.schema_name.as_str(),
+                "tinysweeper_critique" | "tinysweeper_security"
+            )
+        })
+        .map(|request| {
+            let prompt = request
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<String>();
+            let path = prompt
+                .split("The file is `")
+                .nth(1)
+                .and_then(|remainder| remainder.split("`.").next())
+                .expect("per-file request identifies its selected path");
+            (request.schema_name.clone(), path.to_string())
+        })
+        .collect()
+}
+
+fn replay_fixture_files(include_new_file: bool) -> Vec<ChangedFile> {
+    let mut files = vec![
+        ChangedFile {
+            path: "src/a_api.rs".into(),
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -0,0 +1,1 @@\n+pub fn a_api() -> bool { true }\n".into()),
+            ..ChangedFile::default()
+        },
+        changed_file("src/b_private.rs"),
+    ];
+    if include_new_file {
+        files.push(changed_file("src/c_private.rs"));
+    }
+    files
+}
+
+fn replay_fixture_config() -> Config {
+    let mut config = config();
+    config.review.lanes = vec!["critique".into(), "security".into()];
+    config.review.large_pr.files = 1;
+    config.review.large_pr.max_groups = 2;
+    config.review.large_pr.max_calls = 12;
+    config.review.strictness = 3;
+    config.grouping.enabled = false;
+    config.knowledge.extract = false;
+    config.retrieval.enabled = false;
+    config.summary.enabled = false;
+    config.threads.resolve_fixed = false;
+    config.threads.ask_model = false;
+    config.wireframe.enabled = false;
+    config
+}
+
+fn replay_fixture_forge() -> MockForge {
+    let mut state = MockState::default();
+    state.pull_requests.insert(
+        7,
+        PullRequest {
+            number: 7,
+            title: "feat: review changed files".into(),
+            body: "Review the changed source files.".into(),
+            head_sha: "head-a".into(),
+            ..PullRequest::default()
+        },
+    );
+    state.files.insert(7, replay_fixture_files(false));
+    MockForge::with_state(state)
+}
+
+#[tokio::test]
+async fn large_review_does_not_replay_an_omitted_file_as_covered() {
+    use crate::ports::review_state::ReviewStateStore;
+
+    let forge = replay_fixture_forge();
+    let store = crate::state::memory::MemoryState::new();
+    let config = replay_fixture_config();
+    let model = Arc::new(LargeReviewModel {
+        control: None,
+        attempts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(Mutex::new(Vec::new())),
+        finding: false,
+        advance_after: None,
+    });
+    let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
+
+    let first = crate::app::review::review_with_state(
+        &forge,
+        model.clone(),
+        &config,
+        &repo,
+        7,
+        Some(&store),
+    )
+    .await
+    .expect("first large review");
+    assert!(first.unreviewed.contains(&"src/b_private.rs".to_string()));
+    crate::app::apply::apply(&forge, &forge, &config, &first, Some(&store))
+        .await
+        .expect("first partial review publishes");
+
+    let remembered = store
+        .load_state("tinyhumansai/tinysweeper#7")
+        .await
+        .expect("state loads")
+        .expect("first review saves replay evidence");
+    assert!(remembered.evidence.contains("--- src/a_api.rs"));
+    assert!(remembered.evidence.contains("--- src/b_private.rs"));
+
+    model.attempts.lock().expect("attempt list lock").clear();
+    model
+        .calls
+        .lock()
+        .expect("successful call list lock")
+        .clear();
+    forge.push(7, "head-b", replay_fixture_files(true));
+
+    let second = crate::app::review::review_with_state(
+        &forge,
+        model.clone(),
+        &config,
+        &repo,
+        7,
+        Some(&store),
+    )
+    .await
+    .expect("second large review");
+    let requests = model
+        .calls
+        .lock()
+        .expect("successful call list lock")
+        .clone();
+    let observed = observed_group_paths(&requests);
+
+    assert_eq!(
+        observed,
+        std::collections::BTreeSet::from([
+            ("tinysweeper_critique".into(), "src/b_private.rs".into()),
+            ("tinysweeper_security".into(), "src/b_private.rs".into()),
+        ]),
+        "the public A file is valid replay, but previously omitted B must be rereviewed"
+    );
+    assert!(second.unreviewed.contains(&"src/c_private.rs".to_string()));
+    crate::app::apply::apply(&forge, &forge, &config, &second, Some(&store))
+        .await
+        .expect("second review publishes");
+}
+
 #[tokio::test]
 async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_call_ceiling() {
     let (proposal, forge, model, config) = run_large_fixture(false).await;

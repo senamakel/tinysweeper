@@ -474,7 +474,11 @@ fn open_cassette(
 /// This runs only after the persistent physical-call reservation succeeds, so
 /// a rejected rerun never changes the cassette. The attempt archive lives next
 /// to the append-only audit and is not loaded by cassette replay.
-fn archive_prior_takes(cassette_dir: &std::path::Path, audit_dir: &std::path::Path, id: &str) -> Result<()> {
+fn archive_prior_takes(
+    cassette_dir: &std::path::Path,
+    audit_dir: &std::path::Path,
+    id: &str,
+) -> Result<()> {
     let entries = match std::fs::read_dir(cassette_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -484,7 +488,11 @@ fn archive_prior_takes(cassette_dir: &std::path::Path, audit_dir: &std::path::Pa
     for entry in entries {
         let entry = entry.map_err(|err| crate::error::Error::path(cassette_dir, err))?;
         let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|extension| extension == "json") {
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        {
             takes.push(path);
         }
     }
@@ -496,11 +504,7 @@ fn archive_prior_takes(cassette_dir: &std::path::Path, audit_dir: &std::path::Pa
     std::fs::create_dir_all(&archive_dir)
         .map_err(|err| crate::error::Error::path(&archive_dir, err))?;
     for source in takes {
-        let destination = archive_dir.join(
-            source
-                .file_name()
-                .expect("take path has a filename"),
-        );
+        let destination = archive_dir.join(source.file_name().expect("take path has a filename"));
         std::fs::rename(&source, &destination)
             .map_err(|err| crate::error::Error::path(&source, err))?;
     }

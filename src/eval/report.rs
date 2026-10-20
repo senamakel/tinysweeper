@@ -151,6 +151,24 @@ pub fn markdown(card: &Scorecard, baseline: Option<&Scorecard>, allow_drift: boo
                 " (strict)"
             },
         );
+        if limits.recording {
+            let admitted = limits
+                .effective_case_budgets
+                .iter()
+                .map(|budget| {
+                    format!(
+                        "{}={}",
+                        budget.case_id,
+                        budget
+                            .max_physical_calls_per_case
+                            .map(|limit| limit.to_string())
+                            .unwrap_or_else(|| "not-admitted".into())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "admitted physical calls/case `{admitted}`");
+        }
     } else {
         out.push_str("execution limits unknown (legacy scorecard)\n");
     }

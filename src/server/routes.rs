@@ -6294,7 +6294,10 @@ mod tests {
         );
         let waiter_result =
             tokio::time::timeout(std::time::Duration::from_millis(100), &mut waiting).await;
-        let cancelled = matches!(waiter_result, Ok(Ok(Err(ModelExecutionRefusal::Cancelled))));
+        let cancelled = matches!(
+            &waiter_result,
+            Ok(Ok(Err(ModelExecutionRefusal::Cancelled)))
+        );
         drop(held_reservation);
         if waiter_result.is_err() {
             if let Ok(Ok(Ok(replacement))) =

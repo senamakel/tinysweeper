@@ -270,6 +270,7 @@ impl Security {
             &group.paths,
             &group_diffs,
             &scanner,
+            input.pass_yield_observer,
         )
         .await?;
         Ok(review)
@@ -358,6 +359,7 @@ impl Security {
             let prior_findings = input.prior_findings;
             let retrieved_context = input.retrieved_context;
             let redaction_note = input.redaction_note;
+            let pass_yield_observer = input.pass_yield_observer;
             let input = &input;
             let diffs = input.diffs;
             let scanner = &scanner;
@@ -382,6 +384,7 @@ impl Security {
                     &group.paths,
                     &group_diffs,
                     scanner,
+                    pass_yield_observer,
                 )
                 .await
             }
@@ -451,6 +454,7 @@ async fn review_group(
     group_paths: &[String],
     group_diffs: &[FileDiff],
     scanner: &[&ScanFinding],
+    pass_yield_observer: Option<&dyn crate::lanes::PassYieldObserver>,
 ) -> Result<FileReview> {
     let evidence = render_diffs(group_diffs);
     let scanner_evidence = render_scanner(scanner, group_paths);
@@ -544,7 +548,7 @@ async fn review_group(
             round_one_elapsed,
             round_one_candidates,
             round_one_survivors,
-            input.pass_yield_observer,
+            pass_yield_observer,
         );
 
         for pass_index in 1..config.review.passes {
@@ -1852,6 +1856,7 @@ mod tests {
             &paths,
             &diffs(),
             &[],
+            None,
         )
         .await
         .expect("review runs");

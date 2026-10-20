@@ -963,6 +963,14 @@ mod tests {
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
 
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while own_admin.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled setup supervisor removes its registration");
+
         assert!(!own_admin.exists(), "cancelled registration is removed");
         assert!(active_admin.is_dir(), "live sibling registration is preserved");
         assert_eq!(
@@ -971,6 +979,52 @@ mod tests {
                 .trim(),
             active.join(".git").to_string_lossy()
         );
+    }
+
+    #[tokio::test]
+    async fn worktree_registration_uses_canonical_path_under_symlinked_tempdir() {
+        let fixture = tempfile::tempdir().unwrap();
+        let revision = fixture_repo(fixture.path(), "", &[]).await;
+        let mirror = tempfile::tempdir().unwrap();
+        git(mirror.path(), "", &["init", "--bare", "--quiet"])
+            .await
+            .unwrap();
+        Checkout::fetch_into_mirror(
+            mirror.path(),
+            fixture.path().to_str().unwrap(),
+            &[&revision],
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let physical_parent = tempfile::tempdir().unwrap();
+        let symlink_parent = physical_parent.path().join("tmp-alias");
+        std::os::unix::fs::symlink(physical_parent.path(), &symlink_parent).unwrap();
+        let checkout_dir = tempfile::Builder::new()
+            .prefix("review-")
+            .tempdir_in(&symlink_parent)
+            .unwrap();
+        let lexical_path = checkout_dir.path().to_path_buf();
+        let canonical_path = std::fs::canonicalize(&lexical_path).unwrap();
+
+        let checkout = Checkout::from_mirror_at(mirror.path(), &revision, checkout_dir)
+            .await
+            .unwrap();
+        let git_file = std::fs::read_to_string(checkout.path().join(".git")).unwrap();
+        let admin_path = git_file
+            .trim()
+            .strip_prefix("gitdir: ")
+            .map(Path::new)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(admin_path.join("gitdir"))
+                .unwrap()
+                .trim(),
+            canonical_path.join(".git").to_string_lossy()
+        );
+        assert!(checkout.path().join(".git").is_file());
     }
 
     #[test]

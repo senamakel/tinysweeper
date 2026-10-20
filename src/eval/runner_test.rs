@@ -128,9 +128,7 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
 fn continuation_candidate_pins_gpt_oss_novita_and_its_recording_limits() {
     let loaded = crate::config::load_validated(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-        Some(std::path::Path::new(
-            "evals/recording.gptoss-novita.toml",
-        )),
+        Some(std::path::Path::new("evals/recording.gptoss-novita.toml")),
     )
     .expect("continuation candidate validates");
     let config = loaded.config;

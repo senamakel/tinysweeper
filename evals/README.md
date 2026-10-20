@@ -137,8 +137,8 @@ full review across every lane.
 
 Follow the [recording and 48-hour observation runbook](../docs/modules/eval/recording-and-48h-runbook.md)
 for bounded recording, offline replay proof, recall reporting, and deployment
-metrics. The initial V3.2 capture and bounded GPT-OSS continuation candidate
-are separate artifacts; preserve both model/config identities. Do not publish
+metrics. The initial V3.2 capture and bounded GPT-OSS 120B/Novita continuation
+candidate are separate artifacts; preserve both model/config identities. Do not publish
 recall until all five have real strict-hit recordings and completed reviews;
 do not report 48-hour rollout numbers before the full window has elapsed.
 

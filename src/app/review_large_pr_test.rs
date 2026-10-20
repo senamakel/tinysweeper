@@ -1,3 +1,5 @@
+//! End-to-end acceptance fixtures for bounded large pull-request reviews.
+
 use crate::app::review::{Proposal, review};
 use crate::config::types::{Config, CouncilAgent};
 use crate::error::{Error, Result};
@@ -7,9 +9,7 @@ use crate::forge::types::{
 };
 use crate::harness::mock::MockModel;
 use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
-use crate::ports::model_execution::{
-    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
-};
+use crate::ports::model_execution::ModelExecutionControl;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -203,7 +203,7 @@ fn large_config() -> Config {
     config.review.large_pr.max_calls = 8;
     config.grouping.enabled = false;
     config.review.approve_when_clean = true;
-    config.auto_merge.enabled = true;
+    config.automerge.enabled = true;
     config.threads.resolve_fixed = true;
     config.threads.ask_model = true;
     config.summary.enabled = true;

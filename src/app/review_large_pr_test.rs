@@ -2,11 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gaps() {
-    use crate::ports::forge::ForgeRead;
-
     let files = vec![
-        changed_file("src/a.rs", "@@ -0,0 +1,1 @@\\n+fn a() {}\\n"),
-        changed_file("src/b.rs", "@@ -0,0 +1,1 @@\\n+fn b() {}\\n"),
+        changed_file("src/a.rs", "@@ -0,0 +1,1 @@\n+fn a() {}\n"),
+        changed_file("src/b.rs", "@@ -0,0 +1,1 @@\n+fn b() {}\n"),
     ];
     let forge = forge_with(files, vec![]);
     let model = MockModel::always(json!({ "summary": "No finding.", "findings": [] }));

@@ -699,6 +699,92 @@ struct ProposalAccounting {
 }
 
 fn proposal_accounting(
+
+fn partial_review_metadata(
+    plan: &crate::lanes::large_pr::ReviewPlan,
+    lanes: &[LaneProposal],
+    changed_files: &[crate::forge::types::ChangedFile],
+    unavailable_diffs: &[String],
+) -> (Option<PartialReview>, Vec<String>) {
+    use crate::lanes::fanout::OmissionReason;
+
+    let changed: BTreeSet<&str> = changed_files.iter().map(|file| file.path.as_str()).collect();
+    let mut omissions = BTreeSet::new();
+    for path in unavailable_diffs.iter().filter(|path| changed.contains(path.as_str())) {
+        omissions.insert(PartialReviewPath {
+            path: path.clone(),
+            lane: None,
+            reason: PartialReviewReason::UnavailableDiff,
+        });
+    }
+    for lane in lanes {
+        for omission in &lane.omissions {
+            let reason = match omission.reason {
+                OmissionReason::NotSelected => PartialReviewReason::NotSelected,
+                OmissionReason::SoftDeadline => PartialReviewReason::SoftDeadline,
+                OmissionReason::DrainDeadline => PartialReviewReason::DrainDeadline,
+                OmissionReason::CallLimit => PartialReviewReason::CallLimit,
+                OmissionReason::Cancelled => PartialReviewReason::Cancelled,
+            };
+            for path in &omission.paths {
+                if changed.contains(path.as_str()) {
+                    omissions.insert(PartialReviewPath {
+                        path: path.clone(),
+                        lane: Some(lane.lane),
+                        reason,
+                    });
+                }
+            }
+        }
+        for path in &lane.unanswered {
+            if changed.contains(path.as_str()) {
+                omissions.insert(PartialReviewPath {
+                    path: path.clone(),
+                    lane: Some(lane.lane),
+                    reason: PartialReviewReason::Unanswered,
+                });
+            }
+        }
+    }
+
+    let omitted: Vec<_> = omissions.into_iter().collect();
+    let mut unreviewed = unavailable_diffs.to_vec();
+    let mut seen: BTreeSet<String> = unreviewed.iter().cloned().collect();
+    for omission in &omitted {
+        if seen.insert(omission.path.clone()) {
+            unreviewed.push(omission.path.clone());
+        }
+    }
+
+    let stop_reason = omitted
+        .iter()
+        .map(|omission| omission.reason)
+        .min_by_key(|reason| match reason {
+            PartialReviewReason::Cancelled => 0,
+            PartialReviewReason::DrainDeadline => 1,
+            PartialReviewReason::SoftDeadline => 2,
+            PartialReviewReason::CallLimit => 3,
+            PartialReviewReason::NotSelected => 4,
+            PartialReviewReason::UnavailableDiff | PartialReviewReason::Unanswered => 5,
+        });
+    let partial = (plan.mode == crate::lanes::large_pr::ReviewMode::Large || !omitted.is_empty())
+        .then(|| PartialReview {
+            mode: plan.mode,
+            stop_reason,
+            estimate: plan.estimate,
+            selected_groups: plan
+                .selected
+                .iter()
+                .map(|group| PartialReviewGroup {
+                    lane: group.lane,
+                    paths: group.group.paths.clone(),
+                })
+                .collect(),
+            omitted,
+        });
+    (partial, unreviewed)
+}
+
     execution: &crate::app::review_execution::ReviewRunContext,
     reports_raw_completion_usage: bool,
     current_models: &[String],
@@ -2017,6 +2103,8 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         record_file_coverage(timing, &context, &uninspected, &lanes);
     }
     let accounting = proposal_accounting(&execution, reports_raw_completion_usage, &spend.models);
+    let (partial_review, unreviewed) =
+        partial_review_metadata(&plan, &lanes, &context.files, &uninspected);
     Ok(Proposal {
         version: PROPOSAL_VERSION,
         repo: repo.to_string(),
@@ -2027,8 +2115,8 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         wireframe,
         summary,
         prior_findings,
-        unreviewed: uninspected,
-        partial_review: None,
+        unreviewed,
+        partial_review,
         skipped: None,
         threads,
         cost_usd: accounting.usage.cost_usd,

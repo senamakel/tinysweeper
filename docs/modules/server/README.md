@@ -56,16 +56,16 @@ Separate review and triage pools, queued check identity and status recovery,
 including the status-only pre-permit ordering, are documented in
 [Review queue status and capacity](review-queue-status.md).
 
-Webhook and manual reviews are atomically admitted to one bounded Mongo
-scheduler document before the server acknowledges them. Up to 260 unfinished
-records, queued or running, are durable; the in-memory channel carries wakeup
-hints only, and a polling dispatcher recovers work when a hint is lost or a process
+Webhook and manual reviews are atomically admitted to one bounded Mongo scheduler
+document before the server acknowledges them. Up to 260 unfinished
+records, queued or running, are durable; the in-memory channel carries wakeup hints only,
+and a polling dispatcher recovers work when a hint is lost or a process
 restarts. Admission also reserves space for seven days of dedupe tombstones
 under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
 without acknowledging the delivery; GitHub does not retry automatically, so an
 operator must redeliver that overflowed event. Manual batches are admitted
 atomically, or refused as a whole. Other webhook actions keep their existing
-dispatch path.
+dispatch path; corpus recall recording and post-rollout observation are covered by [the evaluation runbook](../eval/recording-and-48h-runbook.md).
 
 The manual endpoint checks durable capacity before resolving installations or
 pull requests. Its final whole-batch admission is still authoritative, so a

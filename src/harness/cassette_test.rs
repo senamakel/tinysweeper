@@ -803,6 +803,326 @@ async fn cancelled_cassette_dispatch_with_no_paid_call_is_not_unknown_usage() {
     assert_eq!(cassette.served(), 0);
 }
 
+struct ConcurrentScopedModel {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    start: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait::async_trait]
+impl Model for ConcurrentScopedModel {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        self.start.wait().await;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if request
+            .messages
+            .last()
+            .is_some_and(|message| message.content == "fail")
+        {
+            return Err(Error::Model("scoped refusal".into()).with_usage(Usage {
+                input_tokens: 50,
+                output_tokens: 7,
+                cost_usd: 0.005,
+                ..Default::default()
+            }));
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/concurrent".into(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cost_usd: 0.001,
+                ..Default::default()
+            },
+        })
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        Some(Arc::new(Self {
+            calls: self.calls.clone(),
+            start: self.start.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn concurrent_scoped_clones_share_recorded_takes_and_usage_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model = Arc::new(ConcurrentScopedModel {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        start: Arc::new(tokio::sync::Barrier::new(3)),
+    });
+    let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
+    let first_scope = recorder.scoped_budget(1.0).expect("first scoped model");
+    let second_scope = recorder.scoped_budget(1.0).expect("second scoped model");
+
+    let (root_result, first_result, second_result) = tokio::join!(
+        recorder.complete(request("test/concurrent", "root")),
+        first_scope.complete(request("test/concurrent", "scope one")),
+        second_scope.complete(request("test/concurrent", "fail")),
+    );
+
+    assert!(root_result.is_ok());
+    assert!(first_result.is_ok());
+    assert!(second_result.is_err());
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(recorder.served(), 2);
+    assert_eq!(recorder.spend().usage.input_tokens, 70);
+    assert_eq!(recorder.cost_usd(), 0.007);
+    assert_eq!(recorder.flush().expect("root sees both scoped takes"), 2);
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("cassette dir").count(),
+        2
+    );
+}
+
+struct ScopedPhysicalModel {
+    flags: (bool, bool),
+    scoped_flags: (bool, bool),
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl Model for ScopedPhysicalModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.events.lock().expect("event log").push("complete");
+        if self.flags.0
+            && let Some(observer) = crate::ports::model::current_model_call_observer()
+        {
+            observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/scoped-physical".into(),
+            usage: Usage {
+                calls_attempted: 1,
+                calls_succeeded: 1,
+                cost_usd: 0.001,
+                ..Default::default()
+            },
+        })
+    }
+
+    async fn review(
+        &self,
+        _request: ModelRequest,
+        _tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.events.lock().expect("event log").push("review");
+        if self.flags.1
+            && let Some(observer) = crate::ports::model::current_model_call_observer()
+        {
+            observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/scoped-physical".into(),
+            usage: Usage {
+                calls_attempted: 1,
+                calls_succeeded: 1,
+                cost_usd: 0.002,
+                ..Default::default()
+            },
+        })
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        self.flags.0
+    }
+
+    fn review_reports_physical_calls(&self) -> bool {
+        self.flags.1
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        Some(Arc::new(Self {
+            flags: self.scoped_flags,
+            scoped_flags: self.scoped_flags,
+            events: self.events.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn physical_call_capabilities_follow_each_live_scope_and_replay_emits_none() {
+    use crate::ports::model::with_model_call_observer;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = Arc::new(Cassette::record(
+        Arc::new(ScopedPhysicalModel {
+            flags: (true, false),
+            scoped_flags: (false, true),
+            events: events.clone(),
+        }),
+        dir.path(),
+    ));
+    assert!(recorder.complete_reports_physical_calls());
+    assert!(!recorder.review_reports_physical_calls());
+
+    let observer = Arc::new(PhysicalEventCounter(std::sync::atomic::AtomicUsize::new(0)));
+    with_model_call_observer(
+        observer.clone(),
+        recorder.complete(request("test/scoped-physical", "root complete")),
+    )
+    .await
+    .expect("records root completion");
+    with_model_call_observer(
+        observer.clone(),
+        recorder.review(
+            request("test/scoped-physical", "root review"),
+            &ReviewTree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
+    )
+    .await
+    .expect("records root review");
+
+    let scoped = recorder.scoped_budget(1.0).expect("scoped recorder");
+    assert!(!scoped.complete_reports_physical_calls());
+    assert!(scoped.review_reports_physical_calls());
+    with_model_call_observer(
+        observer.clone(),
+        scoped.complete(request("test/scoped-physical", "scoped complete")),
+    )
+    .await
+    .expect("records scoped completion");
+    with_model_call_observer(
+        observer.clone(),
+        scoped.review(
+            request("test/scoped-physical", "scoped review"),
+            &ReviewTree,
+            &crate::config::types::LookupPolicy::default(),
+        ),
+    )
+    .await
+    .expect("records scoped review");
+
+    assert_eq!(observer.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert!((recorder.cost_usd() - 0.006).abs() < 1e-12);
+    assert_eq!(recorder.flush().expect("flushes scoped takes"), 4);
+    assert_eq!(
+        events.lock().expect("model events").as_slice(),
+        ["complete", "review", "complete", "review"]
+    );
+
+    let replay = Cassette::replay(dir.path(), Mode::Strict).expect("loads physical tape");
+    assert!(!replay.complete_reports_physical_calls());
+    assert!(!replay.review_reports_physical_calls());
+    with_model_call_observer(
+        observer.clone(),
+        replay.complete(request("test/scoped-physical", "root complete")),
+    )
+    .await
+    .expect("replays completion");
+    assert_eq!(observer.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+struct ScopedQuotaModel {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    scopes: Arc<std::sync::atomic::AtomicUsize>,
+    reviews: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Model for ScopedQuotaModel {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call > 0 {
+            return Err(Error::Model("scope exhausted".into()).with_usage(Usage {
+                input_tokens: 50,
+                output_tokens: 7,
+                cost_usd: 0.005,
+                ..Default::default()
+            }));
+        }
+        Ok(ModelResponse {
+            value: answer(),
+            model: "test/scoped".into(),
+            usage: Usage {
+                input_tokens: 100,
+                output_tokens: 12,
+                cost_usd: 0.01,
+                ..Default::default()
+            },
+        })
+    }
+
+    async fn review(
+        &self,
+        request: ModelRequest,
+        tree: &dyn TreeReader,
+        _policy: &crate::config::types::LookupPolicy,
+    ) -> Result<ModelResponse> {
+        self.reviews
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tree.lookup(&Lookup::Read {
+            path: "src/lib.rs".into(),
+            start: Some(1),
+            end: Some(2),
+        })
+        .await?;
+        self.complete(request).await
+    }
+
+    fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+        assert!(budget_usd > 0.0);
+        self.scopes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Arc::new(Self {
+            calls: self.calls.clone(),
+            scopes: self.scopes.clone(),
+            reviews: self.reviews.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model = Arc::new(ScopedQuotaModel {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scopes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        reviews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
+    let models = crate::config::types::Models {
+        agentic_reviewers: true,
+        budget_usd_per_pr: 100.0,
+        ..Default::default()
+    };
+    let capability = crate::flows::caps::ModelCapability::new(recorder.clone(), models);
+    let policy = crate::config::types::LookupPolicy::default();
+    let call = crate::flows::panel::Call {
+        id: "reviewer".into(),
+        model: "test/scoped".into(),
+        system: "inspect".into(),
+        prompt: "change evidence".into(),
+        schema_name: "tinysweeper_critique".into(),
+    };
+    capability
+        .review(&call, &json!({}), &ReviewTree, &policy)
+        .await
+        .expect("first call goes through scoped review");
+    let err = capability
+        .model()
+        .complete(request("test/scoped", "direct follow-up"))
+        .await
+        .expect_err("the same finite model scope refuses the second call");
+
+    assert!(err.to_string().contains("scope exhausted"));
+    assert!(model.scopes.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert_eq!(model.reviews.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(recorder.served(), 1);
+    assert_eq!(recorder.spend().usage.input_tokens, 150);
+    assert_eq!(recorder.cost_usd(), 0.015);
+    assert_eq!(recorder.flush().expect("root sees scoped response"), 1);
+}
+
 #[cfg(feature = "harness")]
 struct CountingReviewTree {
     inner: crate::ports::tree::MockTree,

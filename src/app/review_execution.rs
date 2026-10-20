@@ -704,7 +704,11 @@ struct ReviewDispatchPermit {
 impl ModelExecutionPermit for ReviewDispatchPermit {
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
         match self.state.load(Ordering::Acquire) {
-            PERMIT_COMMITTED => return Ok(()),
+            // A committed permit can be reused by adapters that retry a
+            // physical send, so it still has to recheck cancellation and the
+            // deadline below. Its already-counted dispatch is never charged
+            // again.
+            PERMIT_COMMITTED => {}
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
@@ -714,7 +718,7 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
 
         let mut state = lock(&self.inner.state);
         match self.state.load(Ordering::Acquire) {
-            PERMIT_COMMITTED => return Ok(()),
+            PERMIT_COMMITTED => {}
             PERMIT_REFUSED => return Err(ModelExecutionRefusal::SoftDeadline),
             PERMIT_CANCELLED => return Err(ModelExecutionRefusal::Cancelled),
             PERMIT_CALL_LIMIT => return Err(ModelExecutionRefusal::CallLimit),
@@ -723,13 +727,21 @@ impl ModelExecutionPermit for ReviewDispatchPermit {
         }
 
         if state.cancelled {
-            self.state.store(PERMIT_CANCELLED, Ordering::Release);
+            if self.state.load(Ordering::Acquire) != PERMIT_COMMITTED {
+                self.state.store(PERMIT_CANCELLED, Ordering::Release);
+            }
             return Err(ModelExecutionRefusal::Cancelled);
         }
 
         if (self.inner._now)() >= self.inner.soft_deadline {
-            self.state.store(PERMIT_REFUSED, Ordering::Release);
+            if self.state.load(Ordering::Acquire) != PERMIT_COMMITTED {
+                self.state.store(PERMIT_REFUSED, Ordering::Release);
+            }
             return Err(ModelExecutionRefusal::SoftDeadline);
+        }
+
+        if self.state.load(Ordering::Acquire) == PERMIT_COMMITTED {
+            return Ok(());
         }
 
         if state
@@ -1461,6 +1473,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_committed_permit_rechecks_the_soft_deadline_before_a_later_send() {
+        let started_at = Instant::now();
+        let crossed_deadline = Arc::new(AtomicBool::new(false));
+        let clock_flag = Arc::clone(&crossed_deadline);
+        let now: Arc<dyn Fn() -> Instant + Send + Sync> = Arc::new(move || {
+            if clock_flag.load(Ordering::Acquire) {
+                started_at + Duration::from_secs(81)
+            } else {
+                started_at
+            }
+        });
+        let execution = ReviewExecution::with_clock(
+            options(
+                ReviewMode::Large,
+                Some(1),
+                started_at,
+                started_at + Duration::from_secs(100),
+            ),
+            now,
+        );
+        let permit = execution.acquire().await.expect("reservation");
+
+        permit.mark_dispatched().expect("first physical send");
+        crossed_deadline.store(true, Ordering::Release);
+
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::SoftDeadline)
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
     async fn cancellation_refuses_an_uncommitted_permit_and_drop_refunds_it() {
         let started_at = Instant::now();
         let execution = ReviewExecution::new(options(
@@ -1559,9 +1604,11 @@ mod tests {
             .expect("commit before cancellation");
 
         execution.cancel();
-        permit
-            .mark_dispatched()
-            .expect("an already committed dispatch stays idempotent after cancellation");
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::Cancelled),
+            "a subsequent physical send must observe cancellation"
+        );
         drop(permit);
 
         assert_eq!(

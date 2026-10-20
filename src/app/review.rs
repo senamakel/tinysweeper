@@ -4194,6 +4194,8 @@ mod tests {
         inner: MockModel,
         barrier: Option<Arc<tokio::sync::Barrier>>,
         barrier_arrivals: std::sync::atomic::AtomicUsize,
+        optional_barrier: Option<Arc<tokio::sync::Barrier>>,
+        optional_barrier_arrivals: Arc<std::sync::atomic::AtomicUsize>,
         critique_delay: std::time::Duration,
         security_delay: std::time::Duration,
         execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
@@ -4208,6 +4210,8 @@ mod tests {
                 inner: MockModel::panel(json!({"summary": "Fine.", "findings": []})),
                 barrier: None,
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
+                optional_barrier: None,
+                optional_barrier_arrivals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 critique_delay: std::time::Duration::ZERO,
                 security_delay: std::time::Duration::ZERO,
                 execution: None,
@@ -4224,6 +4228,9 @@ mod tests {
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
+                "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe" => {
+                    std::time::Duration::ZERO
+                }
                 _ => return Ok((false, None)),
             };
             let permit = if let Some(control) = &self.execution {
@@ -4243,7 +4250,17 @@ mod tests {
             };
             let active = self.active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.peak.fetch_max(active, std::sync::atomic::Ordering::SeqCst);
-            if let Some(barrier) = &self.barrier {
+            let optional = matches!(
+                request.schema_name.as_str(),
+                "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe"
+            );
+            if optional {
+                if let Some(barrier) = &self.optional_barrier {
+                    self.optional_barrier_arrivals
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    barrier.wait().await;
+                }
+            } else if let Some(barrier) = &self.barrier {
                 let arrival = self
                     .barrier_arrivals
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -4364,6 +4381,8 @@ mod tests {
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(
                     self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
                 ),
+                optional_barrier: self.optional_barrier.clone(),
+                optional_barrier_arrivals: self.optional_barrier_arrivals.clone(),
                 critique_delay: self.critique_delay,
                 security_delay: self.security_delay,
                 execution: Some(control),
@@ -4493,6 +4512,65 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![LaneId::Critique, LaneId::Security]
         );
+    }
+
+    #[tokio::test]
+    async fn summary_threads_and_wireframe_overlap_after_lanes_finish() {
+        let files = vec![
+            rust_file(),
+            ChangedFile {
+                path: "app/src/Button.tsx".into(),
+                status: FileStatus::Modified,
+                patch: Some(
+                    "@@ -0,0 +1,3 @@\n+export function Button() {\n+  return <button>Save</button>;\n+}\n".into(),
+                ),
+                ..ChangedFile::default()
+            },
+        ];
+        let forge = forge_with(
+            files,
+            vec![ReviewThread {
+                id: "PRRT_needs_human_reply".into(),
+                is_resolved: false,
+                is_outdated: false,
+                resolved_by_has_write_access: false,
+                comments: vec![
+                    ThreadComment {
+                        author: "tinysweeper[bot]".into(),
+                        body: "**Review this changed behavior**".into(),
+                        bot: true,
+                        maintainer: false,
+                    },
+                    ThreadComment {
+                        author: "maintainer".into(),
+                        body: "This behavior is intentional.".into(),
+                        bot: false,
+                        maintainer: true,
+                    },
+                ],
+            }],
+        );
+        let mut model = ReviewSchedulingModel::new();
+        model.optional_barrier = Some(Arc::new(tokio::sync::Barrier::new(3)));
+        let arrivals = model.optional_barrier_arrivals.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let mut config = scheduling_config();
+        config.review.lanes = vec!["commits".into()];
+        config.summary.enabled = true;
+        config.wireframe.enabled = true;
+        config.threads.resolve_fixed = true;
+        config.threads.ask_model = true;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            review(&forge, model_trait, &config, &repo(), 7),
+        )
+        .await
+        .expect("independent optional artifacts reach the barrier together")
+        .expect("review succeeds");
+
+        assert_eq!(arrivals.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(result.summary.is_some());
     }
 
     #[derive(Clone)]

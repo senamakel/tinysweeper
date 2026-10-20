@@ -222,6 +222,9 @@ pub struct Config {
     pub version: u32,
     /// The preset this config builds on, if any.
     pub preset: Option<String>,
+    /// Operator-owned server process limits. Repository overlays must preserve
+    /// the deployment's values rather than changing global worker pools.
+    pub server: Server,
     /// Review behaviour and the noise gates.
     pub review: Review,
     /// Which paths are reviewed at all.
@@ -270,6 +273,29 @@ pub struct Config {
     pub preview: Preview,
     /// ASCII wireframes of the UI screens and modals a pull request touches.
     pub wireframe: Wireframe,
+}
+
+/// Global worker pools configured by the operator at server startup.
+///
+/// This section is data in `.tinysweeper.toml`, but it is not repository
+/// review policy: remote per-repository overlays must keep the deployment's
+/// values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Server {
+    /// Maximum concurrent pull request reviews.
+    pub review_concurrency: usize,
+    /// Maximum concurrent issue and pull request triage jobs.
+    pub triage_concurrency: usize,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            review_concurrency: 4,
+            triage_concurrency: 2,
+        }
+    }
 }
 
 /// The public, agent-facing MCP surface.
@@ -355,6 +381,11 @@ pub struct Review {
     /// threshold, and that is the operator's money to spend, not a reviewed
     /// repository's.
     pub passes: u8,
+    /// Operator-owned thresholds and ceilings for large pull requests.
+    ///
+    /// This policy is not loaded from a reviewed repository's remote config:
+    /// its call and deadline ceilings spend operator resources.
+    pub large_pr: LargePr,
     /// Block the merge button when a finding reaches this severity.
     ///
     /// `"off"` never blocks. Anything else names the severity floor. Blocking
@@ -374,6 +405,43 @@ pub struct Review {
     /// and a second approval is not submitted while the previous one still
     /// stands — otherwise every push would add a review nobody asked for.
     pub approve_when_clean: bool,
+}
+
+/// Thresholds and resource ceilings for large pull-request reviews.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LargePr {
+    /// Whether size thresholds select large-review mode.
+    pub enabled: bool,
+    /// Changed file count that selects large mode.
+    pub files: usize,
+    /// Added plus deleted lines that select large mode.
+    pub changed_lines: u64,
+    /// Eligible critique and security groups that select large mode.
+    pub groups: usize,
+    /// Maximum selected model groups across both lanes.
+    pub max_groups: usize,
+    /// Maximum admitted physical provider calls for one review.
+    pub max_calls: usize,
+    /// Percent of the hard review window after which new work stops.
+    pub soft_deadline_percent: u8,
+    /// Maximum time allowed for already-started groups to finish.
+    pub drain_seconds: u64,
+}
+
+impl Default for LargePr {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            files: 30,
+            changed_lines: 2_000,
+            groups: 24,
+            max_groups: 12,
+            max_calls: 48,
+            soft_deadline_percent: 80,
+            drain_seconds: 30,
+        }
+    }
 }
 
 /// When tinysweeper closes its own review conversations.

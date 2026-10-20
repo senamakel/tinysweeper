@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::ports::model_execution::ModelExecutionControl;
 
 /// Observe one settled model call without exposing its request or response.
 pub(crate) trait ModelCallObserver: Send + Sync {
@@ -292,10 +293,48 @@ pub trait Model: Send + Sync {
         self.complete_reports_physical_calls()
     }
 
+    /// Whether a controlled model reports each raw physical completion to its
+    /// review execution scope before applying any estimated price.
+    ///
+    /// This is separate from timing telemetry: adapters may report elapsed
+    /// calls without retaining provider-reported usage. A model returning
+    /// `true` must emit exactly one terminal callback per committed physical
+    /// completion through the bound [`ModelExecutionControl`].
+    fn reports_raw_completion_usage(&self) -> bool {
+        false
+    }
+
     /// Create a fresh shared budget scope for a lane, when supported.
     /// Replaces any prior scope rather than nesting ledgers. Offline models
     /// need no provider budget and keep returning `None`.
     fn scoped_budget(&self, _budget_usd: f64) -> Option<Arc<dyn Model>> {
+        None
+    }
+
+    /// Bind a shared monetary budget to one review, when supported.
+    ///
+    /// Lane scopes created from the returned model must be children of this
+    /// review budget, so their local caps also consume the shared review
+    /// allowance. Clones derived through `scoped_budget` or
+    /// `with_execution_control` must retain the same review root rather than
+    /// creating or resetting one. This neutral hook accepts a dollar limit
+    /// without exposing a provider or Embed budget type. The default keeps
+    /// legacy models source-compatible; `None` means the adapter cannot bind a
+    /// review-wide monetary ledger.
+    fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn Model>> {
+        None
+    }
+
+    /// Return a model clone that preserves one review-wide dispatch control.
+    ///
+    /// The default keeps existing offline and custom models source-compatible.
+    /// Returning `None` means this adapter cannot enforce a physical-call
+    /// ceiling; normal-mode scheduling may still cancel its logical work, but
+    /// a large-mode caller must fail closed before paid model work.
+    fn with_execution_control(
+        &self,
+        _control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
         None
     }
 }
@@ -303,6 +342,13 @@ pub trait Model: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_models_keep_the_default_review_budget_binding_absent() {
+        let model = crate::harness::mock::MockModel::new();
+
+        assert!(model.with_review_budget(1.0).is_none());
+    }
 
     #[test]
     fn usage_accumulates_across_calls() {

@@ -54,13 +54,12 @@ Lane check titles use deterministic finding counts and, when a lane reports it,
 its reviewed-versus-unanswered file counts. They never quote or cut off
 model-authored summary prose; that explanation belongs in the check body.
 
-**Complete** means `Proposal::unreviewed` is empty — no file changed that the
-forge declined to show us. This is the job the aggregate `tinysweeper/gate`
-check run used to do by degrading itself to `Neutral`. That check is gone, and
-the approval is the whole verdict now, so it has to carry what the check
-carried: a file nobody saw is not a file anyone can vouch for. Nothing blocks,
-so there is nothing to object to — and nothing to endorse either, which is a
-`Comment`.
+**Complete** requires no unreviewed files or unanswered lane work. Missing
+patches, groups omitted by Large selection, and work interrupted by call or time
+limits prevent approval. A stopped lane is Neutral unless a qualifying finding
+still makes it Failure; partial coverage never weakens a known blocking defect.
+The host records these facts in `Proposal.partial_review` and publishes actual
+coverage through the existing apply path. See [bounded review planning](../lanes/large-pr.md).
 
 **Not a draft** closes a trap. With `review.draft_prs = false` every lane skips
 a draft, so the proposal comes back with nothing blocking and nothing

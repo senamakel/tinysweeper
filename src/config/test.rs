@@ -61,6 +61,17 @@ fn parse(text: &str) -> Config {
 }
 
 #[test]
+fn server_pool_sizes_default_to_four_reviews_and_two_triage_jobs() {
+    let defaults = parse("version = 1");
+    assert_eq!(defaults.server.review_concurrency, 4);
+    assert_eq!(defaults.server.triage_concurrency, 2);
+
+    let custom = parse("version = 1\n[server]\nreview_concurrency = 7\ntriage_concurrency = 1\n");
+    assert_eq!(custom.server.review_concurrency, 7);
+    assert_eq!(custom.server.triage_concurrency, 1);
+}
+
+#[test]
 fn reasoning_with_too_small_a_budget_is_rejected() {
     // The production failure this exists to stop: reasoning and the answer are
     // drawn from one allowance, and at 8000 both configured models — the
@@ -400,6 +411,44 @@ fn review_passes_defaults_to_two_adaptive_attempts() {
     let config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
 
     assert_eq!(config.review.passes, 2);
+}
+
+#[test]
+fn large_pr_limits_default_to_the_operator_policy() {
+    let config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
+
+    assert!(config.review.large_pr.enabled);
+    assert_eq!(config.review.large_pr.files, 30);
+    assert_eq!(config.review.large_pr.changed_lines, 2_000);
+    assert_eq!(config.review.large_pr.groups, 24);
+    assert_eq!(config.review.large_pr.max_groups, 12);
+    assert_eq!(config.review.large_pr.max_calls, 48);
+    assert_eq!(config.review.large_pr.soft_deadline_percent, 80);
+    assert_eq!(config.review.large_pr.drain_seconds, 30);
+}
+
+#[test]
+fn large_pr_limits_must_be_positive_and_deadline_percent_is_bounded() {
+    let config = parse(
+        "version = 1\n[review.large_pr]\nfiles = 0\nchanged_lines = 0\ngroups = 0\n\
+         max_groups = 0\nmax_calls = 0\nsoft_deadline_percent = 96\ndrain_seconds = 0\n",
+    );
+    let joined = validate::validate(&config).join("\n");
+
+    for key in [
+        "files",
+        "changed_lines",
+        "groups",
+        "max_groups",
+        "max_calls",
+        "soft_deadline_percent",
+        "drain_seconds",
+    ] {
+        assert!(
+            joined.contains(&format!("review.large_pr.{key}")),
+            "{joined}"
+        );
+    }
 }
 
 #[test]
@@ -1491,6 +1540,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
         Some(
             "version = 1\nunknown_root = true\n[review]\nunknown_review = true\n\
              [models.provider]\nunknown_provider = true\n\
+             [review.large_pr]\nunknown_limit = true\n\
              [lanes.custom]\nunknown_lane = true\n",
         ),
         &[],
@@ -1501,6 +1551,7 @@ fn load_reports_every_unknown_key_with_its_dotted_path() {
     for key in [
         "unknown_root",
         "review.unknown_review",
+        "review.large_pr.unknown_limit",
         "models.provider.unknown_provider",
         "lanes.custom.unknown_lane",
     ] {
@@ -1778,4 +1829,14 @@ fn removed_memory_configuration_is_rejected_instead_of_silently_ignored() {
             .get("memory")
             .is_none()
     );
+}
+
+#[test]
+fn server_pool_sizes_must_fit_semaphore_bounds() {
+    let mut config = parse("version = 1\n");
+    config.server.review_concurrency = 0;
+    config.server.triage_concurrency = tokio::sync::Semaphore::MAX_PERMITS + 1;
+    let problems = validate::validate(&config).join("\n");
+    assert!(problems.contains("server.review_concurrency"), "{problems}");
+    assert!(problems.contains("server.triage_concurrency"), "{problems}");
 }

@@ -1054,6 +1054,7 @@ mod tests {
             usage: Default::default(),
             models: models.iter().map(|model| (*model).into()).collect(),
             unanswered: unanswered.iter().map(|path| (*path).into()).collect(),
+            omissions: vec![],
             coverage,
             overflow: vec![],
         }

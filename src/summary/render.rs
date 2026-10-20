@@ -73,6 +73,16 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     let summary = proposal.summary.as_ref().cloned().unwrap_or_default();
     let mut body = String::with_capacity(8_192);
     let _ = write!(body, "{MARKER}\n\n# Tiny Sweeper review\n\n");
+    // Failure reports trust only a previously completed report. Recording the
+    // reviewed head gives that preservation boundary an explicit identity;
+    // partial reports must not be mistaken for completed work.
+    if proposal.complete() {
+        let _ = writeln!(
+            body,
+            "**Reviewed head:** {}\n",
+            code_span(&proposal.head_sha)
+        );
+    }
     let show_findings = config.summary.sections.contains(&SummarySection::Findings);
     let has_findings = show_findings && has_finding_signal(proposal);
     if has_findings {
@@ -192,17 +202,110 @@ fn bounded_paths(paths: &[String], shown: usize) -> String {
 }
 
 fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
-    let paths = summary
-        .file_coverage
-        .as_ref()
-        .map(|coverage| coverage.unreviewed.as_slice())
-        .filter(|paths| !paths.is_empty())
-        .or_else(|| (!proposal.unreviewed.is_empty()).then_some(proposal.unreviewed.as_slice()));
-    if let Some(paths) = paths {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(coverage) = &summary.file_coverage {
+        paths.extend(coverage.unreviewed.iter().cloned());
+    }
+    paths.extend(proposal.unreviewed.iter().cloned());
+    if !paths.is_empty() {
         out.push_str("\n**Unreviewed paths**\n\n");
-        for path in paths {
+        for path in &paths {
             let _ = writeln!(out, "- {}", code_span(path));
         }
+    }
+    if let Some(partial) = &proposal.partial_review
+        && !partial.omitted.is_empty()
+    {
+        out.push_str("\n**Partial review reasons**\n\n");
+        for omission in &partial.omitted {
+            let lane = omission
+                .lane
+                .map(|lane| format!("{}: ", lane))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "- {}{} — {}",
+                lane,
+                code_span(&omission.path),
+                partial_reason_description(omission.reason)
+            );
+        }
+    }
+}
+
+fn partial_reason_label(reason: Option<crate::app::review::PartialReviewReason>) -> &'static str {
+    match reason {
+        Some(crate::app::review::PartialReviewReason::NotSelected) => "not reviewed (large PR)",
+        Some(
+            crate::app::review::PartialReviewReason::SoftDeadline
+            | crate::app::review::PartialReviewReason::DrainDeadline,
+        ) => "not reviewed (time limit)",
+        Some(crate::app::review::PartialReviewReason::CallLimit) => "not reviewed (call budget)",
+        Some(crate::app::review::PartialReviewReason::Cancelled) => {
+            "not reviewed (review cancelled)"
+        }
+        Some(crate::app::review::PartialReviewReason::UnavailableDiff) => {
+            "not reviewed (unavailable diff)"
+        }
+        Some(crate::app::review::PartialReviewReason::Unanswered) | None => "not reviewed",
+    }
+}
+
+fn render_unreviewed_labels(proposal: &Proposal, paths: &[String]) -> String {
+    let mut reasons = std::collections::BTreeMap::<
+        &str,
+        std::collections::BTreeSet<crate::app::review::PartialReviewReason>,
+    >::new();
+    for omission in proposal
+        .partial_review
+        .iter()
+        .flat_map(|partial| &partial.omitted)
+    {
+        reasons
+            .entry(omission.path.as_str())
+            .or_default()
+            .insert(omission.reason);
+    }
+    let mut grouped =
+        std::collections::BTreeMap::<&'static str, std::collections::BTreeSet<String>>::new();
+    for path in paths {
+        if let Some(path_reasons) = reasons.get(path.as_str()) {
+            for reason in path_reasons {
+                grouped
+                    .entry(partial_reason_label(Some(*reason)))
+                    .or_default()
+                    .insert(path.clone());
+            }
+        } else {
+            grouped
+                .entry(partial_reason_label(None))
+                .or_default()
+                .insert(path.clone());
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(label, paths)| {
+            format!(
+                "{label}: {}",
+                bounded_paths(&paths.into_iter().collect::<Vec<_>>(), 2)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn partial_reason_description(reason: crate::app::review::PartialReviewReason) -> &'static str {
+    use crate::app::review::PartialReviewReason;
+    match reason {
+        PartialReviewReason::UnavailableDiff => "the forge did not provide a usable diff",
+        PartialReviewReason::NotSelected => "not selected by the large-review budget",
+        PartialReviewReason::SoftDeadline | PartialReviewReason::DrainDeadline => {
+            "not reviewed (time limit)"
+        }
+        PartialReviewReason::CallLimit => "not reviewed (call budget)",
+        PartialReviewReason::Cancelled => "not reviewed (review cancelled)",
+        PartialReviewReason::Unanswered => "the lane did not answer for this path",
     }
 }
 
@@ -229,25 +332,31 @@ fn has_finding_signal(proposal: &Proposal) -> bool {
 }
 
 fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    let mut uncovered = std::collections::BTreeSet::new();
+    if let Some(coverage) = &summary.file_coverage {
+        uncovered.extend(coverage.unreviewed.iter().cloned());
+    }
+    uncovered.extend(proposal.unreviewed.iter().cloned());
     if let Some(coverage) = &summary.file_coverage {
         let _ = write!(
             out,
             "**Coverage:** Reviewed {} of {} files",
-            coverage.reviewed, coverage.total
+            coverage.total.saturating_sub(uncovered.len()),
+            coverage.total
         );
-        if !coverage.unreviewed.is_empty() {
+        if !uncovered.is_empty() {
             let _ = write!(
                 out,
-                "; not reviewed: {}",
-                bounded_paths(&coverage.unreviewed, 2)
+                "; {}",
+                render_unreviewed_labels(proposal, &uncovered.into_iter().collect::<Vec<_>>())
             );
         }
         out.push_str(".  \n");
-    } else if !proposal.unreviewed.is_empty() {
+    } else if !uncovered.is_empty() {
         let _ = writeln!(
             out,
-            "**Coverage:** File coverage is unavailable; not reviewed: {}.",
-            bounded_paths(&proposal.unreviewed, 2)
+            "**Coverage:** File coverage is unavailable; {}.",
+            render_unreviewed_labels(proposal, &uncovered.into_iter().collect::<Vec<_>>())
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");
@@ -618,7 +727,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         any = true;
         let _ = writeln!(
             out,
-            "- [ ] Review unavailable diffs: {}.",
+            "- [ ] Review uncovered paths: {}.",
             code_list(proposal.unreviewed.iter().map(String::as_str))
         );
     }
@@ -699,6 +808,15 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         }
     );
     let _ = writeln!(out, "- **Spend:** ${:.6}", proposal.cost_usd);
+    if proposal
+        .completion_accounting
+        .as_ref()
+        .is_some_and(|accounting| !accounting.complete)
+    {
+        out.push_str(
+            "- **Completion usage:** incomplete; some provider completion costs are unavailable.\n",
+        );
+    }
     let _ = writeln!(
         out,
         "- **Tokens:** {} input · {} output · {} cached · {} embedding",
@@ -1097,6 +1215,41 @@ mod tests {
     }
 
     #[test]
+    fn run_details_disclose_incomplete_provider_completion_usage() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::RunDetails];
+        let mut proposal = proposal(ReviewSummary::default(), &[]);
+        proposal.cost_usd = 0.875;
+        proposal.embed_tokens = 7;
+        proposal.completion_accounting = Some(crate::app::review::CompletionAccounting {
+            usage: crate::ports::model::Usage {
+                input_tokens: 11,
+                output_tokens: 4,
+                cost_usd: 0.125,
+                calls_attempted: 2,
+                calls_succeeded: 2,
+                ..Default::default()
+            },
+            usage_by_model: Default::default(),
+            committed_calls: 2,
+            terminal_count: 2,
+            complete: false,
+        });
+
+        let rendered = render(&config, &proposal);
+
+        assert!(rendered.contains("- **Spend:** $0.875000"), "{rendered}");
+        assert!(
+            rendered.contains("**Completion usage:** incomplete"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("some provider completion costs are unavailable"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn summary_citations_link_to_the_reviewed_head_and_keep_paths_in_code_spans() {
         let mut config = Config::default();
         config.summary.sections = vec![SummarySection::Features];
@@ -1439,6 +1592,82 @@ mod tests {
         );
         assert!(rendered.contains("`src/tested.rs`"), "{rendered}");
         assert!(!rendered.contains("tinysweeper/"), "{rendered}");
+    }
+
+    #[test]
+    fn partial_large_coverage_keeps_each_host_reason_and_escapes_paths() {
+        use crate::app::review::{PartialReview, PartialReviewPath, PartialReviewReason};
+        use crate::config::types::LaneId;
+        use crate::lanes::large_pr::{ReviewEstimate, ReviewMode};
+
+        let mut proposal = proposal(ReviewSummary::default(), &[]);
+        proposal.unreviewed = vec![
+            "src/a`quoted.rs".into(),
+            "src/b.rs".into(),
+            "src/c.rs".into(),
+        ];
+        proposal.partial_review = Some(PartialReview {
+            mode: ReviewMode::Large,
+            stop_reason: Some(PartialReviewReason::DrainDeadline),
+            estimate: ReviewEstimate {
+                files: 3,
+                changed_lines: 3,
+                groups: 4,
+            },
+            selected_groups: vec![],
+            omitted: vec![
+                PartialReviewPath {
+                    path: "src/a`quoted.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::NotSelected,
+                },
+                PartialReviewPath {
+                    path: "src/b.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::CallLimit,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Critique),
+                    reason: PartialReviewReason::NotSelected,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Security),
+                    reason: PartialReviewReason::DrainDeadline,
+                },
+                PartialReviewPath {
+                    path: "src/c.rs".into(),
+                    lane: Some(LaneId::Security),
+                    reason: PartialReviewReason::SoftDeadline,
+                },
+            ],
+        });
+
+        let rendered = render(&Config::default(), &proposal);
+        let visible = rendered.split("<details").next().expect("public summary");
+        assert!(visible.contains("not reviewed (large PR):"), "{visible}");
+        assert!(visible.contains("not reviewed (call budget):"), "{visible}");
+        assert!(visible.contains("not reviewed (time limit):"), "{visible}");
+        assert!(visible.contains(&code_span("src/a`quoted.rs")), "{visible}");
+        assert!(rendered.contains("src/c.rs"), "{rendered}");
+        assert!(
+            rendered.contains("not selected by the large-review budget")
+                && rendered.contains("not reviewed (time limit)"),
+            "{rendered}"
+        );
+
+        proposal
+            .partial_review
+            .as_mut()
+            .expect("partial metadata")
+            .omitted
+            .clear();
+        proposal.unreviewed.clear();
+        assert!(
+            proposal.complete(),
+            "Large metadata alone is not a coverage gap"
+        );
     }
 
     #[test]

@@ -115,6 +115,21 @@ fallbacks behind the alias, including long-context pricing. Input and cached
 input rates must be finite and nonnegative; the output rate must be finite and
 strictly positive. Validation names the alias and field without echoing rates.
 
+## `[review.large_pr]`
+
+Operator-owned size thresholds choose Large mode before paid review work.
+Defaults are `enabled = true`, `files = 30`, `changed_lines = 2000`, and
+`groups = 24`; reaching any threshold selects Large. Groups count eligible
+critique and security work separately. Large selects `max_groups = 12` across
+both lanes and limits the review to `max_calls = 48` physical dispatches.
+
+`soft_deadline_percent = 80` and `drain_seconds = 30` bound new work and draining
+in both modes. Disabling Large selection does not disable this soft stop.
+Numeric limits must be positive and the percentage must be 1–95. Remote
+repository overlays cannot change these settings. See
+[large pull request reviews](../lanes/large-pr.md) for ranking, Full behavior,
+partial coverage and adapter guarantees.
+
 ## `[embeddings]` is a partition key, not a call setting
 
 `provider`, `model` and `dimensions` are not three more fields like

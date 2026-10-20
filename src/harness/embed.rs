@@ -28,6 +28,9 @@ use crate::harness::{pricing, schema};
 use crate::ports::model::{
     Message as CrateMessage, Model, ModelRequest, ModelResponse, Role, Usage,
 };
+use crate::ports::model_execution::{
+    ModelExecutionTerminal, ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+};
 
 /// Records usage for each physical agentic dispatch while forwarding optional
 /// turn telemetry without capturing request or response content.
@@ -74,6 +77,9 @@ impl openhuman_embed::observe::TurnObserver for AgenticOutputObserver {
 #[derive(Clone)]
 pub struct GatewayModel {
     budget: Option<openhuman_embed::budget::Budget>,
+    // Shared across this review and every lane child derived from it.
+    review_budget: Option<openhuman_embed::budget::Budget>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
     budget_prices: std::collections::BTreeMap<String, crate::config::types::BudgetPriceBound>,
     output_history: crate::harness::budget::OutputHistory,
     agentic_reviewers: bool,
@@ -102,8 +108,16 @@ impl CompletionObserver for ModelCallObserver {
 struct AgenticCallObserver {
     downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+    requested_model: String,
+    counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
+}
+
+struct AgenticAttemptResources {
+    lookup_budget: Arc<crate::harness::agentic::LookupBudget>,
+    physical_counts: PhysicalDispatchCounts,
 }
 
 impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
@@ -121,14 +135,32 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
             ..
         } = event
         {
-            let model = answered_model
-                .as_deref()
-                .or(requested_model.as_deref())
-                .unwrap_or("unknown");
             let provider_responded =
                 matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
+            if let Some(control) = &self.execution_control {
+                control.on_terminal(ModelExecutionTerminal {
+                    requested_model: requested_model
+                        .clone()
+                        .unwrap_or_else(|| self.requested_model.clone()),
+                    answered_model: answered_model.clone(),
+                    outcome: execution_terminal_outcome(*status),
+                    refused: *refused,
+                    usage: usage.as_ref().map(|usage| {
+                        ModelExecutionTerminalUsage::from(RawPhysicalDispatchUsage::from(usage))
+                    }),
+                });
+            }
+            self.counts.record_raw(
+                provider_responded,
+                was_refused,
+                usage.as_ref().map(RawPhysicalDispatchUsage::from),
+            );
+            let model = answered_model
+                .as_deref()
+                .or(requested_model.as_deref())
+                .unwrap_or(&self.requested_model);
             let observed_usage = Usage {
                 input_tokens: usage.as_ref().map_or(0, |usage| usage.input_tokens),
                 output_tokens: usage.as_ref().map_or(0, |usage| usage.output_tokens),
@@ -199,6 +231,8 @@ struct PhysicalModelObserver {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+    counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
 }
@@ -209,9 +243,261 @@ struct PhysicalModelTerminal {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+    counts: PhysicalDispatchCounts,
     correlation: crate::ports::model::ModelCallContext,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
+}
+
+#[derive(Clone, Default)]
+struct PhysicalDispatchCounts(Arc<std::sync::Mutex<PhysicalDispatchCountSnapshot>>);
+
+#[derive(Clone, Copy)]
+struct PhysicalDispatchCountSnapshot {
+    calls_attempted: u64,
+    calls_succeeded: u64,
+    calls_refused: u64,
+    calls_errored: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cached_tokens: u64,
+    known_cost_usd: f64,
+    accounting_complete: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RawPhysicalDispatchUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cached_tokens: u64,
+    cost_usd: Option<f64>,
+}
+
+impl From<&openhuman_embed::complete::PhysicalDispatchUsage> for RawPhysicalDispatchUsage {
+    fn from(usage: &openhuman_embed::complete::PhysicalDispatchUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
+impl From<&openhuman_embed::observe::ObservedUsage> for RawPhysicalDispatchUsage {
+    fn from(usage: &openhuman_embed::observe::ObservedUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
+impl From<RawPhysicalDispatchUsage> for ModelExecutionTerminalUsage {
+    fn from(usage: RawPhysicalDispatchUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
+fn execution_terminal_outcome(
+    status: openhuman_embed::complete::PhysicalDispatchStatus,
+) -> ModelExecutionTerminalOutcome {
+    use openhuman_embed::complete::PhysicalDispatchStatus;
+
+    match status {
+        PhysicalDispatchStatus::Succeeded => ModelExecutionTerminalOutcome::Succeeded,
+        PhysicalDispatchStatus::Refused => ModelExecutionTerminalOutcome::Refused,
+        PhysicalDispatchStatus::Failed => ModelExecutionTerminalOutcome::Failed,
+        PhysicalDispatchStatus::Cancelled => ModelExecutionTerminalOutcome::Cancelled,
+    }
+}
+
+impl Default for PhysicalDispatchCountSnapshot {
+    fn default() -> Self {
+        Self {
+            calls_attempted: 0,
+            calls_succeeded: 0,
+            calls_refused: 0,
+            calls_errored: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cached_tokens: 0,
+            known_cost_usd: 0.0,
+            accounting_complete: true,
+        }
+    }
+}
+
+impl PhysicalDispatchCounts {
+    fn record(
+        &self,
+        succeeded: bool,
+        refused: bool,
+        usage: Option<&openhuman_embed::complete::PhysicalDispatchUsage>,
+    ) {
+        self.record_raw(
+            succeeded,
+            refused,
+            usage.map(RawPhysicalDispatchUsage::from),
+        );
+    }
+
+    fn record_raw(&self, succeeded: bool, refused: bool, usage: Option<RawPhysicalDispatchUsage>) {
+        let mut counts = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        counts.calls_attempted = counts.calls_attempted.saturating_add(1);
+        counts.calls_succeeded = counts.calls_succeeded.saturating_add(u64::from(succeeded));
+        counts.calls_refused = counts.calls_refused.saturating_add(u64::from(refused));
+        counts.calls_errored = counts.calls_errored.saturating_add(u64::from(!succeeded));
+        let Some(usage) = usage else {
+            counts.accounting_complete = false;
+            return;
+        };
+        counts.input_tokens = counts.input_tokens.saturating_add(usage.input_tokens);
+        counts.output_tokens = counts.output_tokens.saturating_add(usage.output_tokens);
+        counts.reasoning_tokens = counts
+            .reasoning_tokens
+            .saturating_add(usage.reasoning_tokens);
+        counts.cached_tokens = counts.cached_tokens.saturating_add(usage.cached_tokens);
+        if let Some(cost) = usage
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            counts.known_cost_usd = (counts.known_cost_usd + cost).min(f64::MAX);
+        } else {
+            counts.accounting_complete = false;
+        }
+    }
+
+    fn snapshot(&self) -> PhysicalDispatchCountSnapshot {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+struct GatewayExecutionAdmission {
+    control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+}
+
+struct GatewayExecutionPermit(Box<dyn crate::ports::model_execution::ModelExecutionPermit>);
+
+fn dispatch_refusal(
+    reason: crate::ports::model_execution::ModelExecutionRefusal,
+) -> openhuman_embed::budget::DispatchRefusal {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use openhuman_embed::budget::DispatchRefusalReason;
+
+    openhuman_embed::budget::DispatchRefusal::new(match reason {
+        ModelExecutionRefusal::CallLimit => DispatchRefusalReason::CallLimit,
+        ModelExecutionRefusal::SoftDeadline => DispatchRefusalReason::Deadline,
+        // The adapter has no distinct drain reason; this mapping is only for
+        // representing the host's stop in the adapter's neutral error type.
+        ModelExecutionRefusal::DrainDeadline => DispatchRefusalReason::Deadline,
+        ModelExecutionRefusal::Cancelled => DispatchRefusalReason::Cancelled,
+    })
+}
+
+fn model_execution_refusal(
+    refusal: openhuman_embed::budget::DispatchRefusal,
+) -> crate::ports::model_execution::ModelExecutionRefusal {
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use openhuman_embed::budget::DispatchRefusalReason;
+
+    match refusal.reason() {
+        DispatchRefusalReason::CallLimit => ModelExecutionRefusal::CallLimit,
+        DispatchRefusalReason::Deadline => ModelExecutionRefusal::SoftDeadline,
+        DispatchRefusalReason::Cancelled => ModelExecutionRefusal::Cancelled,
+    }
+}
+
+#[async_trait]
+impl openhuman_embed::budget::PhysicalDispatchAdmission for GatewayExecutionAdmission {
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<
+        Arc<dyn openhuman_embed::budget::PhysicalDispatchPermit>,
+        openhuman_embed::budget::DispatchRefusal,
+    > {
+        self.control
+            .acquire()
+            .await
+            .map(|permit| {
+                Arc::new(GatewayExecutionPermit(permit))
+                    as Arc<dyn openhuman_embed::budget::PhysicalDispatchPermit>
+            })
+            .map_err(dispatch_refusal)
+    }
+}
+
+impl openhuman_embed::budget::PhysicalDispatchPermit for GatewayExecutionPermit {
+    fn mark_dispatched(&self) -> std::result::Result<(), openhuman_embed::budget::DispatchRefusal> {
+        self.0.mark_dispatched().map_err(dispatch_refusal)
+    }
+}
+
+fn execution_refusal_error(
+    error: &openhuman_embed::routing::LadderError,
+    counts: PhysicalDispatchCountSnapshot,
+) -> Option<Error> {
+    let refusal = match &error.last_error {
+        openhuman_embed::CoreError::DispatchAdmission { source, .. } => {
+            model_execution_refusal(*source)
+        }
+        _ => return None,
+    };
+
+    Some(execution_refusal_with_counts(refusal, counts))
+}
+
+fn execution_refusal_with_counts(
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+    counts: PhysicalDispatchCountSnapshot,
+) -> Error {
+    let has_physical_calls = counts.calls_attempted > 0;
+    let usage = has_physical_calls.then(|| {
+        Box::new(Usage {
+            input_tokens: counts.input_tokens,
+            output_tokens: counts.output_tokens,
+            reasoning_tokens: counts.reasoning_tokens,
+            cached_tokens: counts.cached_tokens,
+            calls_attempted: counts.calls_attempted,
+            calls_succeeded: counts.calls_succeeded,
+            calls_refused: counts.calls_refused,
+            calls_errored: counts.calls_errored,
+            // Preserve reported charges as a lower bound; the adjacent
+            // completeness marker distinguishes it from a full total.
+            cost_usd: counts.known_cost_usd,
+            ..Usage::default()
+        })
+    });
+    // The default snapshot is complete; with no dispatch this means the
+    // refusal happened before any paid work. `Some(false)` stays reserved for
+    // a known usage lower bound whose dispatched-call accounting is partial.
+    let accounting_complete = counts.accounting_complete;
+
+    Error::ModelExecutionRefused {
+        refusal,
+        usage,
+        accounting_complete,
+    }
 }
 
 impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserver {
@@ -229,6 +515,8 @@ impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserv
             output_cap: self.output_cap,
             history: self.history.clone(),
             timing: self.timing.clone(),
+            execution_control: self.execution_control.clone(),
+            counts: self.counts.clone(),
             correlation: self
                 .timing
                 .as_ref()
@@ -254,6 +542,20 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         let provider_responded = matches!(outcome.status, PhysicalDispatchStatus::Succeeded);
+        if let Some(control) = &self.execution_control {
+            control.on_terminal(ModelExecutionTerminal {
+                requested_model: self.requested_model.clone(),
+                answered_model: outcome.answered_model.clone(),
+                outcome: execution_terminal_outcome(outcome.status),
+                refused: outcome.refused,
+                usage: usage.map(RawPhysicalDispatchUsage::from).map(Into::into),
+            });
+        }
+        self.counts.record(
+            provider_responded,
+            outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused),
+            usage,
+        );
         let accounting = Usage {
             input_tokens: usage.map_or(0, |usage| usage.input_tokens),
             output_tokens: usage.map_or(0, |usage| usage.output_tokens),
@@ -310,6 +612,7 @@ impl std::fmt::Debug for GatewayModel {
             .field("base_url", &self.base_url)
             .field("fallbacks", &self.fallbacks)
             .field("provider", &self.provider)
+            .field("has_execution_control", &self.execution_control.is_some())
             .field("api_key", &"<redacted>")
             .finish()
     }
@@ -472,6 +775,8 @@ impl GatewayModel {
         Self {
             api_key,
             budget: None,
+            review_budget: None,
+            execution_control: None,
             budget_prices: models.budget_prices.clone(),
             output_history: Default::default(),
             agentic_reviewers: models.agentic_reviewers,
@@ -555,6 +860,7 @@ impl GatewayModel {
         request: &ModelRequest,
         completion: &CompletionRequest,
         unpinned: bool,
+        counts: PhysicalDispatchCounts,
     ) -> Result<CompletionRung> {
         let base = self
             .routes
@@ -573,10 +879,17 @@ impl GatewayModel {
             output_cap: base,
             history: self.output_history.clone(),
             timing: crate::ports::model::current_model_call_observer(),
+            execution_control: self.execution_control.clone(),
+            counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
         });
         let mut completer = self.completer().physical_observer(physical);
+        if let Some(control) = &self.execution_control {
+            completer = completer.dispatch_admission(Arc::new(GatewayExecutionAdmission {
+                control: Arc::clone(control),
+            }));
+        }
         if let Some(ledger) = &self.budget {
             let mut bound = completion.clone();
             bound.model = model.to_owned();
@@ -601,15 +914,23 @@ impl GatewayModel {
 
     async fn complete_ladder(&self, request: &ModelRequest) -> Result<ModelResponse> {
         let completion = self.completion_request(request);
+        let physical_counts = PhysicalDispatchCounts::default();
         let mut ladder = CompletionLadder::new(self.completion_rung(
             &request.model,
             request,
             &completion,
             false,
+            physical_counts.clone(),
         )?)
         .truncation_retry(TruncationRetry::new(MAX_TRUNCATION_RETRIES as u8, u32::MAX));
         for model in &self.fallbacks {
-            ladder = ladder.fallback(self.completion_rung(model, request, &completion, false)?);
+            ladder = ladder.fallback(self.completion_rung(
+                model,
+                request,
+                &completion,
+                false,
+                physical_counts.clone(),
+            )?);
         }
         let primary = self.routing_for(&request.model);
         if primary.last_resort_unpinned && !primary.is_empty() {
@@ -618,6 +939,7 @@ impl GatewayModel {
                 request,
                 &completion,
                 true,
+                physical_counts.clone(),
             )?);
         }
         let result = ladder.complete(completion).await.map_err(|error| {
@@ -644,6 +966,9 @@ impl GatewayModel {
                     tracing::debug!(model, lane = %request.schema_name, cap = attempt.max_tokens,
                         settled_cost_usd = Option::<f64>::None, failed = true, "model attempt settlement");
                 }
+            }
+            if let Some(refusal) = execution_refusal_error(&error, physical_counts.snapshot()) {
+                return refusal;
             }
             // Keep the operator's actionable ceiling diagnostic when every
             // bounded attempt is cut off. Other refusal types retain their
@@ -819,7 +1144,7 @@ impl GatewayModel {
         tree: &dyn crate::ports::tree::TreeReader,
         policy: &crate::config::types::LookupPolicy,
         routing: &ProviderRouting,
-        lookup_budget: &Arc<crate::harness::agentic::LookupBudget>,
+        resources: AgenticAttemptResources,
     ) -> std::result::Result<ModelResponse, crate::harness::agentic::ReviewFailure> {
         let mut request = request.clone();
         request.model = model.to_owned();
@@ -866,6 +1191,9 @@ impl GatewayModel {
         let observer = Arc::new(AgenticCallObserver {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
+            execution_control: self.execution_control.clone(),
+            requested_model: model.to_owned(),
+            counts: resources.physical_counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
         });
@@ -884,7 +1212,13 @@ impl GatewayModel {
             provider_options(self.effort_for(&request), routing),
             crate::harness::agentic::ReviewResources {
                 model_budget: budget,
-                lookup_budget: lookup_budget.clone(),
+                lookup_budget: resources.lookup_budget,
+                dispatch_admission: self.execution_control.as_ref().map(|control| {
+                    Arc::new(GatewayExecutionAdmission {
+                        control: Arc::clone(control),
+                    })
+                        as Arc<dyn openhuman_embed::budget::PhysicalDispatchAdmission>
+                }),
             },
             Some(observer),
         )
@@ -946,16 +1280,42 @@ impl Model for GatewayModel {
         true
     }
 
+    fn reports_raw_completion_usage(&self) -> bool {
+        self.execution_control.is_some()
+    }
+
     fn review_reports_physical_calls(&self) -> bool {
-        // Agentic calls are physically observed by TinyAgents' budget model
-        // wrapper. The ordinary completion ladder installs its own observer.
-        self.budget.is_some() || !self.agentic_reviewers
+        // Controlled agentic turns report physical calls to the host observer;
+        // budgeted turns also retain TinyAgents' existing physical wrapper.
+        self.execution_control.is_some() || self.budget.is_some() || !self.agentic_reviewers
     }
 
     fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
         let mut model = self.clone();
-        model.budget = Some(crate::harness::budget::ledger(budget_usd));
-        // Clones share atomic reservation capacity; a fresh scope is isolated.
+        model.budget = Some(match &self.review_budget {
+            Some(root) => crate::harness::budget::child_ledger(root, budget_usd),
+            None => crate::harness::budget::ledger(budget_usd),
+        });
+        model.review_budget = self.review_budget.clone();
+        // Bound scopes debit both this lane cap and the review root. Unbound
+        // legacy scopes remain independent and preserve their prior behavior.
+        Some(Arc::new(model))
+    }
+
+    fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+        let root = crate::harness::budget::ledger(limit_usd).wait_for_capacity();
+        let mut model = self.clone();
+        model.budget = Some(root.clone());
+        model.review_budget = Some(root);
+        Some(Arc::new(model))
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        let mut model = self.clone();
+        model.execution_control = Some(control);
         Some(Arc::new(model))
     }
 
@@ -976,6 +1336,7 @@ impl Model for GatewayModel {
         // Paid turns share atomic reservation capacity through their child
         // ledgers; tool allowance remains scoped to this review and its routes.
         let lookup_budget = crate::harness::agentic::LookupBudget::new(policy);
+        let physical_counts = PhysicalDispatchCounts::default();
         let mut last = None;
         let mut prior = Usage::default();
         for model in std::iter::once(&request.model).chain(self.fallbacks.iter()) {
@@ -986,7 +1347,10 @@ impl Model for GatewayModel {
                     tree,
                     policy,
                     &self.routing_for(model),
-                    &lookup_budget,
+                    AgenticAttemptResources {
+                        lookup_budget: lookup_budget.clone(),
+                        physical_counts: physical_counts.clone(),
+                    },
                 )
                 .await
             {
@@ -995,6 +1359,12 @@ impl Model for GatewayModel {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    if let Error::ModelExecutionRefused { refusal, .. } = &failure.error {
+                        return Err(execution_refusal_with_counts(
+                            *refusal,
+                            physical_counts.snapshot(),
+                        ));
+                    }
                     if let Some(usage) = failure.usage {
                         crate::harness::agentic::accumulate_usage(&mut prior, *usage);
                     }
@@ -1011,7 +1381,10 @@ impl Model for GatewayModel {
                     tree,
                     policy,
                     &ProviderRouting::unpinned(),
-                    &lookup_budget,
+                    AgenticAttemptResources {
+                        lookup_budget: lookup_budget.clone(),
+                        physical_counts: physical_counts.clone(),
+                    },
                 )
                 .await
             {
@@ -1020,6 +1393,12 @@ impl Model for GatewayModel {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    if let Error::ModelExecutionRefused { refusal, .. } = &failure.error {
+                        return Err(execution_refusal_with_counts(
+                            *refusal,
+                            physical_counts.snapshot(),
+                        ));
+                    }
                     if let Some(usage) = failure.usage {
                         crate::harness::agentic::accumulate_usage(&mut prior, *usage);
                     }
@@ -1043,12 +1422,136 @@ impl Model for GatewayModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::model_execution::{
+        ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal, ModelExecutionTerminal,
+        ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+    };
+    use crate::ports::tree::TreeReader;
+
+    #[test]
+    fn physical_admission_reasons_keep_their_neutral_meaning() {
+        use crate::ports::model_execution::ModelExecutionRefusal;
+        use openhuman_embed::budget::DispatchRefusalReason;
+
+        for (neutral, embed) in [
+            (
+                ModelExecutionRefusal::CallLimit,
+                DispatchRefusalReason::CallLimit,
+            ),
+            (
+                ModelExecutionRefusal::SoftDeadline,
+                DispatchRefusalReason::Deadline,
+            ),
+            (
+                ModelExecutionRefusal::Cancelled,
+                DispatchRefusalReason::Cancelled,
+            ),
+        ] {
+            assert_eq!(
+                model_execution_refusal(openhuman_embed::budget::DispatchRefusal::new(embed)),
+                neutral
+            );
+            assert_eq!(dispatch_refusal(neutral).reason(), embed);
+        }
+    }
 
     #[derive(Clone)]
     struct LogBytes(Arc<std::sync::Mutex<Vec<u8>>>);
 
+    fn emit_thread_sensitive_model_event() {
+        tracing::info!(target: "tinysweeper::model", "thread-sensitive model event");
+    }
+
+    fn registered_no_subscriber_guard() -> tracing::Dispatch {
+        // tracing-core 0.1.36 has a single-dispatch callsite fast path that
+        // can cache `Never` when the first invocation sees `Dispatch::none()`.
+        // Keep a second registered dispatcher alive so parallel no-subscriber
+        // calls retain per-thread interest instead of poisoning that cache.
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default())
+    }
+
+    #[test]
+    fn a_callsite_first_seen_without_a_subscriber_is_enabled_by_a_later_dispatch() {
+        let _callsite_registry_guard = registered_no_subscriber_guard();
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_log = Arc::clone(&log);
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || LogBytes(Arc::clone(&writer_log)))
+            .finish();
+        let collector = tracing::Dispatch::new(subscriber);
+        let no_subscriber = tracing::Dispatch::none();
+        std::thread::spawn(move || {
+            tracing::dispatcher::with_default(&no_subscriber, emit_thread_sensitive_model_event);
+        })
+        .join()
+        .expect("the unobserved callsite thread completes");
+        tracing::dispatcher::with_default(&collector, emit_thread_sensitive_model_event);
+
+        let lines = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            lines.matches("thread-sensitive model event").count(),
+            1,
+            "{lines}"
+        );
+    }
+
     #[derive(Default)]
     struct RecordedModelCalls(std::sync::Mutex<Vec<(Usage, bool, bool, std::time::Duration)>>);
+
+    struct RecordingExecutionControl {
+        inner: Arc<crate::app::review_execution::ReviewExecution>,
+        terminals: std::sync::Mutex<Vec<crate::ports::model_execution::ModelExecutionTerminal>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelExecutionControl for RecordingExecutionControl {
+        async fn acquire(
+            &self,
+        ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+            self.inner.acquire().await
+        }
+
+        fn on_terminal(&self, terminal: crate::ports::model_execution::ModelExecutionTerminal) {
+            self.terminals.lock().unwrap().push(terminal.clone());
+            self.inner.on_terminal(terminal);
+        }
+    }
+
+    fn execution_scope(
+        max_calls: Option<usize>,
+    ) -> Arc<crate::app::review_execution::ReviewExecution> {
+        use crate::lanes::large_pr::ReviewMode;
+        use tokio::time::Instant;
+
+        let started_at = Instant::now();
+        Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls,
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ))
+    }
+
+    fn raw_terminal(
+        requested_model: &str,
+        answered_model: Option<&str>,
+        outcome: crate::ports::model_execution::ModelExecutionTerminalOutcome,
+        usage: Option<crate::ports::model_execution::ModelExecutionTerminalUsage>,
+    ) -> crate::ports::model_execution::ModelExecutionTerminal {
+        crate::ports::model_execution::ModelExecutionTerminal {
+            requested_model: requested_model.into(),
+            answered_model: answered_model.map(str::to_owned),
+            outcome,
+            refused: false,
+            usage,
+        }
+    }
 
     impl crate::ports::model::ModelCallObserver for RecordedModelCalls {
         fn completed(
@@ -1151,6 +1654,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let dispatch = tracing::Dispatch::new(subscriber);
         let response = crate::ports::model::with_model_call_observer(
             calls.clone(),
@@ -1192,6 +1696,187 @@ mod tests {
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=abc123"), "{lines}");
         assert!(lines.contains("mode=Incremental"), "{lines}");
+    }
+
+    #[tokio::test]
+    async fn agentic_review_execution_cap_stops_after_a_paid_repository_read() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::{Message, Model};
+        use crate::ports::model_execution::{
+            ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+        };
+        use crate::ports::tree::MockTree;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::time::Instant;
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let tool_reply = Reply {
+            status: 200,
+            body: json!({
+                "id":"agentic-admission",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"read-1","type":"function","function":{
+                        "name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()
+                    }
+                }]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let gateway = FakeGateway::start(vec![
+            tool_reply,
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        config.provider = ProviderRouting {
+            order: vec!["pinned-provider".into()],
+            allow_fallbacks: false,
+            last_resort_unpinned: true,
+            unpinned_vendors: vec![],
+        };
+        for model in ["b", "fallback"] {
+            config.budget_prices.insert(
+                model.into(),
+                crate::config::types::BudgetPriceBound {
+                    input: 0.0,
+                    cached: 0.0,
+                    output: 100.0,
+                },
+            );
+        }
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.budget = Some(crate::harness::budget::ledger(10.0));
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(1),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        struct CountingControl {
+            inner: Arc<crate::app::review_execution::ReviewExecution>,
+            acquires: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl ModelExecutionControl for CountingControl {
+            async fn acquire(
+                &self,
+            ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal>
+            {
+                self.acquires.fetch_add(1, Ordering::SeqCst);
+                self.inner.acquire().await
+            }
+
+            fn on_terminal(&self, terminal: ModelExecutionTerminal) {
+                self.inner.on_terminal(terminal);
+            }
+        }
+        let acquire_count = Arc::new(AtomicUsize::new(0));
+        let control: Arc<dyn ModelExecutionControl> = Arc::new(CountingControl {
+            inner: execution.clone(),
+            acquires: acquire_count.clone(),
+        });
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                Message::system("Review this evidence."),
+                Message::user("Check the implementation."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        struct CountingTree {
+            inner: MockTree,
+            lookups: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl TreeReader for CountingTree {
+            async fn lookup(
+                &self,
+                query: &crate::ports::tree::Lookup,
+            ) -> Result<crate::ports::tree::Found> {
+                self.lookups.fetch_add(1, Ordering::SeqCst);
+                self.inner.lookup(query).await
+            }
+
+            fn describe(&self) -> String {
+                "counting agentic admission fixture".into()
+            }
+        }
+        let tree = CountingTree {
+            inner: MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]),
+            lookups: AtomicUsize::new(0),
+        };
+        let calls = Arc::new(RecordedModelCalls::default());
+        let result = crate::ports::model::with_model_call_observer(
+            calls.clone(),
+            model.review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            ),
+        )
+        .await;
+
+        assert_eq!(tree.lookups.load(Ordering::SeqCst), 1);
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(
+            acquire_count.load(Ordering::SeqCst),
+            2,
+            "one admitted tool-call and one refused follow-up; no fallback reset"
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
+        let refusal = result.expect_err("the next agentic turn exceeds the physical call cap");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("the paid repository-read dispatch remains reportable");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.calls_attempted, 1);
+        assert_eq!(usage.calls_succeeded, 1);
+        assert_eq!(usage.cost_usd, 0.001);
+        assert_eq!(refusal.usage_accounting_complete(), Some(true));
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "the admitted provider event is observed once"
+        );
+        assert_eq!(calls[0].0.input_tokens, 12);
+        assert_eq!(calls[0].0.output_tokens, 3);
+        assert_eq!(calls[0].0.cost_usd, 0.001);
+        assert_eq!(calls[0].0.calls_attempted, 1);
+        assert_eq!(calls[0].0.calls_succeeded, 1);
+        assert!(calls[0].3 > std::time::Duration::ZERO);
     }
 
     #[tokio::test]
@@ -1260,6 +1945,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(std::io::sink)
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let running = crate::ports::model::with_model_call_observer(
             calls.clone(),
             model
@@ -1291,13 +1977,32 @@ mod tests {
         );
         drop(running);
 
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if calls.0.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both physical dispatch terminals are observed after cancellation");
+
         let calls = calls.0.lock().unwrap();
-        assert_eq!(calls.len(), 1, "the paid model event is recorded once");
+        assert_eq!(calls.len(), 2, "each physical dispatch is recorded once");
         assert_eq!(calls[0].0.input_tokens, 12);
         assert_eq!(calls[0].0.output_tokens, 3);
         assert_eq!(calls[0].0.calls_attempted, 1);
         assert_eq!(calls[0].0.calls_succeeded, 1);
         assert!(calls[0].3 > Duration::ZERO);
+        assert_eq!(calls[1].0.input_tokens, 0);
+        assert_eq!(calls[1].0.output_tokens, 0);
+        assert_eq!(calls[1].0.cost_usd, 0.0);
+        assert_eq!(calls[1].0.calls_attempted, 1);
+        assert_eq!(calls[1].0.calls_succeeded, 0);
+        assert_eq!(calls[1].0.calls_refused, 0);
+        assert_eq!(calls[1].0.calls_errored, 1);
+        assert!(calls[1].3 > Duration::ZERO);
     }
 
     fn models() -> Models {
@@ -1362,6 +2067,360 @@ mod tests {
             max_tokens: 100,
         };
         (model, gateway, request)
+    }
+
+    #[tokio::test]
+    async fn direct_gateway_reports_raw_terminals_without_a_timing_observer() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let primary_repair = || {
+            Reply::completion(
+                "b",
+                "{primary broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
+            )
+        };
+        let gateway = FakeGateway::start(vec![
+            primary_repair(),
+            primary_repair(),
+            primary_repair(),
+            Reply::completion(
+                "fallback",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.structured_output = StructuredOutput::JsonObject;
+        let execution = execution_scope(Some(4));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Review source."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
+
+        model
+            .complete(request)
+            .await
+            .expect("the response succeeds");
+
+        assert_eq!(gateway.requests().len(), 4);
+        let primary_terminal = raw_terminal(
+            "b",
+            Some("b"),
+            ModelExecutionTerminalOutcome::Succeeded,
+            Some(ModelExecutionTerminalUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.001),
+            }),
+        );
+        let expected = vec![
+            primary_terminal.clone(),
+            primary_terminal.clone(),
+            primary_terminal,
+            raw_terminal(
+                "fallback",
+                Some("fallback"),
+                ModelExecutionTerminalOutcome::Succeeded,
+                Some(ModelExecutionTerminalUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: Some(0.0021),
+                }),
+            ),
+        ];
+        assert_eq!(*control.terminals.lock().unwrap(), expected);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 4);
+        assert_eq!(snapshot.physical_terminals, expected);
+        assert_eq!(snapshot.physical_usage.input_tokens, 20);
+        assert_eq!(snapshot.physical_usage.output_tokens, 8);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.0051);
+        assert_eq!(snapshot.physical_usage_by_model["b"].input_tokens, 15);
+        assert_eq!(
+            snapshot.physical_usage_by_model["fallback"].cost_usd,
+            0.0021
+        );
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn gateway_keeps_known_cost_when_a_later_repair_omits_its_cost() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{first response malformed",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                "{second response malformed",
+                "stop",
+                json!({"prompt_tokens":6,"completion_tokens":3}),
+            ),
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":4}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.structured_output = StructuredOutput::JsonObject;
+        let execution = execution_scope(Some(3));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+        let response = model
+            .complete(ModelRequest {
+                model: "b".into(),
+                messages: vec![
+                    CrateMessage::system("Review."),
+                    CrateMessage::user("Review source."),
+                ],
+                schema: json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"summary":{"type":"string"}}, "required":["summary"]
+                }),
+                schema_name: "review".into(),
+                max_tokens: 100,
+            })
+            .await
+            .expect("the third response is valid");
+
+        assert_eq!(response.usage.input_tokens, 18);
+        assert_eq!(response.usage.output_tokens, 9);
+        assert_eq!(gateway.requests().len(), 3);
+        assert_eq!(control.terminals.lock().unwrap().len(), 3);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.125);
+        assert_eq!(snapshot.physical_usage_by_model["b"].cost_usd, 0.125);
+        assert_eq!(snapshot.physical_usage.input_tokens, 18);
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn raw_terminal_observation_does_not_duplicate_timing_accounting() {
+        let (model, gateway, request) = admission_fixture().await;
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway preserves execution control");
+        let timing = Arc::new(RecordedModelCalls::default());
+        let result =
+            crate::ports::model::with_model_call_observer(timing.clone(), model.complete(request))
+                .await;
+
+        result.expect("the provider response is valid");
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(control.terminals.lock().unwrap().len(), 1);
+        assert_eq!(timing.0.lock().unwrap().len(), 1);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminal_count, 1);
+        assert_eq!(snapshot.physical_usage.calls_attempted, 1);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn agentic_gateway_reports_raw_terminals_without_a_timing_observer() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::tree::MockTree;
+
+        let _guard = crate::harness::agentic::TEST_LOCK.lock().await;
+        let read = Reply {
+            status: 200,
+            body: json!({
+                "id":"raw-agentic-read",
+                "object":"chat.completion",
+                "model":"b",
+                "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                    "id":"read-1","type":"function","function":{"name":"repo_read","arguments":json!({"path":"src/lib.rs","start_line":1,"end_line":1}).to_string()}
+                }]},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"cost":0.001}
+            }),
+        };
+        let gateway = FakeGateway::start(vec![
+            read,
+            Reply::completion(
+                "b",
+                r#"{"summary":"would continue"}"#,
+                "stop",
+                json!({"prompt_tokens":16,"completion_tokens":4,"cost":0.002}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.agentic_reviewers = true;
+        config.base_url = gateway.base_url.clone();
+        config.fallback = vec!["fallback".into()];
+        config.provider = ProviderRouting {
+            order: vec!["pinned-provider".into()],
+            allow_fallbacks: false,
+            last_resort_unpinned: true,
+            unpinned_vendors: vec![],
+        };
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Read source."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 128,
+        };
+        let tree = MockTree::from_files([("src/lib.rs", "pub fn answer() {}")]);
+        let error = model
+            .review(
+                request,
+                &tree,
+                &crate::config::types::LookupPolicy::default(),
+            )
+            .await
+            .expect_err("the second model dispatch is refused at the shared cap");
+
+        assert!(matches!(
+            error,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        assert_eq!(gateway.requests().len(), 1);
+        let expected = raw_terminal(
+            "b",
+            Some("b"),
+            ModelExecutionTerminalOutcome::Succeeded,
+            Some(ModelExecutionTerminalUsage {
+                input_tokens: 12,
+                output_tokens: 3,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.001),
+            }),
+        );
+        assert_eq!(*control.terminals.lock().unwrap(), vec![expected.clone()]);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminals, vec![expected]);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn a_committed_gateway_call_without_a_terminal_keeps_usage_unknown() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let reply = Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+        );
+        let (gateway, release) = FakeGateway::start_paused(vec![reply]).await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        let model = GatewayModel::with_key(&config, "fixture".into());
+        let execution = execution_scope(Some(1));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = Arc::new(
+            model
+                .with_execution_control(control.clone())
+                .expect("the Gateway keeps the supplied execution control"),
+        );
+        let request = ModelRequest {
+            model: "b".into(),
+            messages: vec![
+                CrateMessage::system("Review."),
+                CrateMessage::user("Read source."),
+            ],
+            schema: json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"summary":{"type":"string"}}, "required":["summary"]
+            }),
+            schema_name: "review".into(),
+            max_tokens: 100,
+        };
+        let waiting = tokio::spawn(async move { model.complete(request).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the paid request reaches the fake Gateway");
+        assert_eq!(execution.snapshot().committed_calls, 1);
+
+        waiting.abort();
+        let _ = waiting.await;
+        release.add_permits(1);
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert!(!snapshot.physical_accounting_complete);
+        assert!(
+            snapshot.physical_terminals.is_empty()
+                || snapshot.physical_terminals.iter().all(|terminal| {
+                    terminal.usage.is_none()
+                        || terminal.usage.is_some_and(|usage| usage.cost_usd.is_none())
+                }),
+            "a cancelled call cannot claim an exact provider charge"
+        );
     }
 
     #[tokio::test]
@@ -1667,6 +2726,7 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || LogBytes(writer_log.clone()))
             .finish();
+        let _callsite_registry_guard = registered_no_subscriber_guard();
         let response = crate::ports::model::with_model_call_observer(calls.clone(), {
             model
                 .complete(request)
@@ -1701,6 +2761,262 @@ mod tests {
         assert!(lines.contains("pr=7"), "{lines}");
         assert!(lines.contains("head_sha=abc123"), "{lines}");
         assert!(lines.contains("mode=Incremental"), "{lines}");
+    }
+
+    #[tokio::test]
+    async fn a_physical_call_ceiling_stops_a_paid_structured_repair() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::Model;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use tokio::time::Instant;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3,"cost":0.25}),
+            ),
+        ])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        model.budget_prices.get_mut("b").unwrap().output = 5000.0;
+        model.budget = Some(crate::harness::budget::ledger(10.0));
+        model.structured_output = StructuredOutput::JsonObject;
+
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(1),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let model = model
+            .with_review_budget(10.0)
+            .expect("the gateway preserves the review budget root")
+            .scoped_budget(10.0)
+            .expect("the lane scope remains bound to review controls");
+        let calls = Arc::new(RecordedModelCalls::default());
+
+        let result =
+            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
+                .await;
+
+        assert_eq!(
+            gateway.requests().len(),
+            1,
+            "the malformed paid response cannot trigger a second provider request"
+        );
+        let refusal = result.expect_err("the one-call review ceiling refuses the repair dispatch");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("the refusal retains the first provider's paid usage");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 2);
+        assert_eq!(usage.calls_attempted, 1);
+        assert_eq!(usage.calls_succeeded, 1);
+        assert_eq!(usage.cost_usd, 0.125);
+        assert_eq!(refusal.usage_accounting_complete(), Some(true));
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the actual paid dispatch is observed once");
+        assert_eq!(calls[0].0.cost_usd, 0.125);
+        assert!(calls[0].1);
+        assert!(!calls[0].2);
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn refusal_keeps_known_cost_when_a_later_repair_omits_cost() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::Model;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use tokio::time::Instant;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                "{still broken",
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3}),
+            ),
+        ])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        model.budget_prices.get_mut("b").unwrap().output = 5000.0;
+        model.budget = Some(crate::harness::budget::ledger(10.0));
+        model.structured_output = StructuredOutput::JsonObject;
+
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(2),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let calls = Arc::new(RecordedModelCalls::default());
+
+        let result =
+            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
+                .await;
+
+        assert_eq!(gateway.requests().len(), 2);
+        let refusal = result.expect_err("the third repair is refused before dispatch");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("both paid responses remain represented");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.calls_attempted, 2);
+        assert_eq!(usage.calls_succeeded, 2);
+        assert_eq!(usage.cost_usd, 0.125, "known charges remain a lower bound");
+        assert_eq!(refusal.usage_accounting_complete(), Some(false));
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "only actual provider dispatches are observed"
+        );
+        assert_eq!(calls[0].0.cost_usd, 0.125);
+        assert_eq!(calls[1].0.input_tokens, 7);
+        assert!(calls.iter().all(|call| call.1));
+        assert!(calls.iter().all(|call| !call.2));
+        assert_eq!(execution.snapshot().committed_calls, 2);
+    }
+
+    #[tokio::test]
+    async fn refusal_marks_accounting_incomplete_when_a_later_rung_omits_usage() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::lanes::large_pr::ReviewMode;
+        use crate::ports::model::Model;
+        use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionRefusal};
+        use tokio::time::Instant;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let mut missing_usage = Reply::completion("c", "{fallback broken", "stop", json!({}));
+        missing_usage
+            .body
+            .as_object_mut()
+            .expect("completion body is an object")
+            .remove("usage");
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{primary broken",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                "{primary still broken",
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":3,"cost":0.25}),
+            ),
+            Reply::completion(
+                "b",
+                "{primary remains broken",
+                "stop",
+                json!({"prompt_tokens":11,"completion_tokens":4,"cost":0.5}),
+            ),
+            missing_usage,
+        ])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        model.fallbacks = vec!["c".into()];
+        // This fixture isolates execution admission and missing provider
+        // usage; the fallback model has no configured monetary price bound.
+        model.budget = None;
+        model.structured_output = StructuredOutput::JsonObject;
+
+        let started_at = Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(60),
+                mode: ReviewMode::Large,
+                max_calls: Some(4),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let control: Arc<dyn ModelExecutionControl> = execution.clone();
+        let model = model
+            .with_execution_control(control)
+            .expect("the gateway preserves review execution control");
+        let calls = Arc::new(RecordedModelCalls::default());
+
+        let result =
+            crate::ports::model::with_model_call_observer(calls.clone(), model.complete(request))
+                .await;
+
+        assert_eq!(gateway.requests().len(), 4);
+        let refusal = result.expect_err("the fallback repair is refused before dispatch");
+        assert!(matches!(
+            &refusal,
+            Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::CallLimit,
+                ..
+            }
+        ));
+        let usage = refusal
+            .usage()
+            .expect("known paid usage from earlier rungs remains available");
+        assert_eq!(usage.input_tokens, 23);
+        assert_eq!(usage.output_tokens, 9);
+        assert_eq!(usage.calls_attempted, 4);
+        assert_eq!(usage.calls_succeeded, 4);
+        assert_eq!(usage.cost_usd, 0.875);
+        assert_eq!(refusal.usage_accounting_complete(), Some(false));
+        let calls = calls.0.lock().unwrap();
+        assert_eq!(calls.len(), 4, "only actual provider calls are observed");
+        assert_eq!(calls[0].0.input_tokens, 5);
+        assert_eq!(calls[2].0.cost_usd, 0.5);
+        assert_eq!(execution.snapshot().committed_calls, 4);
     }
 
     #[tokio::test]
@@ -1909,6 +3225,350 @@ mod tests {
         assert_eq!(gateway.requests().len(), 1);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_root_reservation_blocks_scoped_and_direct_gateway_calls() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        let reply = || {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.0021}),
+            )
+        };
+        let (gateway, release) = FakeGateway::start_paused(vec![reply(), reply(), reply()]).await;
+        model.base_url = gateway.base_url.clone();
+        let root_budget = crate::harness::budget::ledger(1.0).wait_for_capacity();
+        model.budget = Some(root_budget.clone());
+        model.review_budget = Some(root_budget.clone());
+        let held = root_budget
+            .reserve(openhuman_embed::budget::Spend {
+                tokens: 0,
+                cost_micros: 1_000_000,
+            })
+            .expect("the review root reserves its full $1 allowance");
+        let root: Arc<dyn Model> = Arc::new(model);
+        let lane_models = models();
+        let first = crate::flows::caps::ModelCapability::new(root.clone(), lane_models.clone())
+            .with_budget(1.0)
+            .model()
+            .clone();
+        let second = crate::flows::caps::ModelCapability::new(root.clone(), lane_models)
+            .with_budget(1.0)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (first_poll_tx, mut first_poll_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (caller, request) in [
+            (first, request.clone()),
+            (second, request.clone()),
+            (root, request),
+        ] {
+            let barrier = Arc::clone(&barrier);
+            let first_poll_tx = first_poll_tx.clone();
+            calls.spawn(async move {
+                barrier.wait().await;
+                let mut completion = Box::pin(caller.complete(request));
+                let first_poll = std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(std::future::Future::poll(completion.as_mut(), cx))
+                })
+                .await;
+                let was_pending = matches!(&first_poll, std::task::Poll::Pending);
+                first_poll_tx.send(was_pending).expect("test receiver");
+                match first_poll {
+                    std::task::Poll::Pending => completion.await,
+                    std::task::Poll::Ready(result) => result,
+                }
+            });
+        }
+        drop(first_poll_tx);
+        barrier.wait().await;
+
+        let first_polls = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut states = Vec::with_capacity(3);
+            for _ in 0..3 {
+                states.push(first_poll_rx.recv().await.expect("model call first poll"));
+            }
+            states
+        })
+        .await;
+        let pending_first_polls = first_polls
+            .as_ref()
+            .map(|states| states.iter().filter(|pending| **pending).count())
+            .unwrap_or_default();
+
+        // A first Pending poll alone could still be stuck before the HTTP
+        // boundary. Observe the actual fake-provider request while the root
+        // reservation is held; under the old `scoped_budget` implementation,
+        // the two lane scopes receive independent ledgers and are the positive
+        // control for this leak detector.
+        let leaked_http_under_hold = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !gateway.requests().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let writes_while_root_is_reserved = gateway.requests().len();
+
+        // Always release the fixture before asserting so an expected failure
+        // cannot strand model tasks or paused HTTP responses.
+        held.settle(Default::default());
+        release.add_permits(3);
+        let results = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut results = Vec::new();
+            while let Some(result) = calls.join_next().await {
+                results.push(result.expect("model call task"));
+            }
+            results
+        })
+        .await
+        .expect("all held calls finish after fixture cleanup");
+
+        let successful_calls = results.iter().filter(|result| result.is_ok()).count();
+        assert_eq!(
+            (
+                pending_first_polls,
+                leaked_http_under_hold,
+                writes_while_root_is_reserved,
+                successful_calls,
+                gateway.requests().len(),
+            ),
+            (3, false, 0, 3, 3),
+            "all three callers must wait on the shared review root and dispatch after release"
+        );
+        for result in results {
+            let response = result.expect("completion succeeds after the root hold is released");
+            assert_eq!(response.value["summary"], "checked");
+        }
+    }
+
+    fn review_reservation_micros(model: &GatewayModel, request: &ModelRequest) -> u64 {
+        let base = request.max_tokens;
+        let mut completion = model.completion_request(request);
+        completion.max_tokens = (base != 0).then(|| *truncation_ladder(base).last().unwrap());
+        crate::harness::budget::call_with_history(
+            &crate::harness::budget::ledger(10.0),
+            &completion,
+            0,
+            &model.budget_prices,
+            &request.schema_name,
+            &model.output_history,
+        )
+        .expect("fixture has a deterministic route bound")
+        .call
+        .cost_micros
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_budget_is_shared_by_two_lane_scopes_and_direct_completion() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        model.budget_prices.get_mut("b").unwrap().output = 20.0;
+        let reservation = review_reservation_micros(&model, &request);
+        assert_eq!(reservation, 1_000, "fixture's retry ladder reserves R");
+        let root_limit = (2 * reservation - 1) as f64 / 1_000_000.0;
+        let lane_limit = (2 * reservation) as f64 / 1_000_000.0;
+        let (gateway, release) = FakeGateway::start_paused(vec![Reply::completion(
+            "b",
+            r#"{"summary":"checked"}"#,
+            "stop",
+            json!({
+                "prompt_tokens":5,
+                "completion_tokens":2,
+                "cost": reservation as f64 / 1_000_000.0
+            }),
+        )])
+        .await;
+        model.base_url = gateway.base_url.clone();
+        let root = model
+            .with_review_budget(root_limit)
+            .expect("Gateway binds one review-wide budget root");
+
+        let mut lane_models = models();
+        lane_models.budget_usd_per_pr = lane_limit;
+        let first = crate::flows::caps::ModelCapability::new(root.clone(), lane_models.clone())
+            .with_budget(lane_limit)
+            .model()
+            .clone();
+        let second = crate::flows::caps::ModelCapability::new(root.clone(), lane_models)
+            .with_budget(lane_limit)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (id, caller, mut request) in [
+            (0, first, request.clone()),
+            (1, second, request.clone()),
+            (2, root, request.clone()),
+        ] {
+            request.schema_name = format!("lane_{id}");
+            let barrier = Arc::clone(&barrier);
+            let started_tx = started_tx.clone();
+            calls.spawn(async move {
+                started_tx.send(()).expect("test receiver");
+                barrier.wait().await;
+                (id, caller.complete(request).await)
+            });
+        }
+        drop(started_tx);
+        for _ in 0..3 {
+            started_rx.recv().await.expect("model call task started");
+        }
+        barrier.wait().await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while gateway.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first shared reservation reaches the paused provider");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), calls.join_next())
+                .await
+                .is_err(),
+            "lane and direct calls wait on the shared live reservation"
+        );
+        assert_eq!(gateway.requests().len(), 1);
+
+        release.add_permits(1);
+        let results = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut successes = 0;
+            let mut refusals = 0;
+            while let Some(result) = calls.join_next().await {
+                let (_, response) = result.expect("model task");
+                match response {
+                    Ok(_) => successes += 1,
+                    Err(Error::Budget { .. }) => refusals += 1,
+                    Err(error) => panic!("unexpected completion failure: {error:?}"),
+                }
+            }
+            (successes, refusals)
+        })
+        .await
+        .expect("held response and monetary waiters finish after settlement");
+        assert_eq!(results, (1, 2));
+        assert_eq!(gateway.requests().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn review_budget_children_enforce_lane_caps_and_fresh_roots_are_isolated() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+        use crate::ports::model::Model;
+        use std::time::Duration;
+
+        let (mut model, _, request) = admission_fixture().await;
+        model.budget_prices.get_mut("b").unwrap().output = 20.0;
+        let reservation = review_reservation_micros(&model, &request);
+        assert_eq!(reservation, 1_000, "fixture's retry ladder reserves R");
+        let review_limit = reservation as f64 / 1_000_000.0;
+        let narrow_lane_limit = (reservation - 1) as f64 / 1_000_000.0;
+        let reply = || {
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({
+                    "prompt_tokens":5,
+                    "completion_tokens":2,
+                    "cost": reservation as f64 / 1_000_000.0
+                }),
+            )
+        };
+        let (gateway, release) = FakeGateway::start_paused(vec![reply(), reply()]).await;
+        model.base_url = gateway.base_url.clone();
+        let first_review = model
+            .with_review_budget(review_limit)
+            .expect("first review binds its own budget root");
+        let second_review = model
+            .with_review_budget(review_limit)
+            .expect("second review binds an independent budget root");
+
+        let mut narrow_models = models();
+        narrow_models.budget_usd_per_pr = narrow_lane_limit;
+        let narrow_lane =
+            crate::flows::caps::ModelCapability::new(first_review.clone(), narrow_models)
+                .with_budget(narrow_lane_limit)
+                .model()
+                .clone();
+        let mut wide_models = models();
+        wide_models.budget_usd_per_pr = review_limit;
+        let wide_lane = crate::flows::caps::ModelCapability::new(first_review, wide_models)
+            .with_budget(review_limit)
+            .model()
+            .clone();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for (id, caller, mut request) in [
+            (0, narrow_lane, request.clone()),
+            (1, wide_lane, request.clone()),
+            (2, second_review, request.clone()),
+        ] {
+            request.schema_name = format!("review_{id}");
+            let barrier = Arc::clone(&barrier);
+            let started_tx = started_tx.clone();
+            calls.spawn(async move {
+                started_tx.send(()).expect("test receiver");
+                barrier.wait().await;
+                (id, caller.complete(request).await)
+            });
+        }
+        drop(started_tx);
+        for _ in 0..3 {
+            started_rx.recv().await.expect("model call task started");
+        }
+        barrier.wait().await;
+
+        let narrow_result = tokio::time::timeout(Duration::from_secs(2), calls.join_next())
+            .await
+            .expect("tight lane cap refuses promptly")
+            .expect("model task")
+            .expect("model task result");
+        assert_eq!(narrow_result.0, 0);
+        assert!(matches!(narrow_result.1, Err(Error::Budget { .. })));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while gateway.requests().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wide lane and independent review each reach the provider");
+        assert_eq!(gateway.requests().len(), 2);
+
+        release.add_permits(2);
+        let mut succeeded = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut succeeded = Vec::new();
+            while let Some(result) = calls.join_next().await {
+                let (id, response) = result.expect("model task");
+                response.expect("wide child and fresh review each fit one R reservation");
+                succeeded.push(id);
+            }
+            succeeded
+        })
+        .await
+        .expect("released lane and review reservations finish promptly");
+        succeeded.sort_unstable();
+        assert_eq!(succeeded, [1, 2]);
+        assert_eq!(gateway.requests().len(), 2);
+    }
+
     fn pinned(order: &[&str], allow_fallbacks: bool) -> ProviderRouting {
         ProviderRouting {
             order: order.iter().map(|p| (*p).to_string()).collect(),
@@ -2084,6 +3744,8 @@ mod tests {
         }];
         let gateway = GatewayModel {
             budget: None,
+            review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2131,6 +3793,8 @@ mod tests {
         }];
         let mut gateway = GatewayModel {
             budget: None,
+            review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,
@@ -2245,6 +3909,8 @@ mod tests {
             agentic_reviewers: false,
             request_timeout_ms: 120_000,
             budget: None,
+            review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
         };
@@ -2299,6 +3965,8 @@ mod tests {
         // error, then builds the gateway directly for the positive case.
         let gateway = GatewayModel {
             budget: None,
+            review_budget: None,
+            execution_control: None,
             budget_prices: Default::default(),
             output_history: Default::default(),
             agentic_reviewers: false,

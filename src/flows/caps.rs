@@ -466,6 +466,7 @@ mod tests {
     async fn reviewer_role_survives_budget_rescoping() {
         let model = Arc::new(MockModel::always(json!({})));
         let mut config = models();
+        config.reasoning_effort = "high".into();
         config.reviewer_reasoning_effort = "low".into();
         let capability = ModelCapability::new(model.clone(), config)
             .with_reviewer_role()

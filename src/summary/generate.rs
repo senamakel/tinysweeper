@@ -1082,6 +1082,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blank_global_effort_disables_summary_requests() {
+        let mut role_failures = Vec::new();
+        for global in ["", "   "] {
+            let model = MockModel::new().then(json!({
+                "executive_summary": "Purpose retained.",
+                "changes": "Behavior changed.",
+                "features": [],
+                "tests": [],
+                "positive_observations": {}
+            }));
+            let handle = model.clone();
+            let mut config: Config = crate::config::DEFAULTS
+                .parse::<toml::Table>()
+                .unwrap()
+                .try_into()
+                .unwrap();
+            config.models.reasoning_effort = global.into();
+
+            generate(
+                &model,
+                &config,
+                &PullRequest {
+                    body: "Purpose retained".into(),
+                    ..PullRequest::default()
+                },
+                &[],
+                &[],
+                None,
+                &[],
+            )
+            .await;
+
+            let requests = handle.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].schema_name, "review_summary");
+            if requests[0].reasoning_effort.as_deref() != Some("off") {
+                role_failures.push(format!(
+                    "global {global:?}: got {:?}",
+                    requests[0].reasoning_effort
+                ));
+            }
+        }
+        assert!(role_failures.is_empty(), "{role_failures:#?}");
+    }
+
+    #[tokio::test]
     async fn synthetic_unknown_lane_key_is_repaired_once() {
         let model = MockModel::new()
             .then(synthetic_lane_key_contract_witness())

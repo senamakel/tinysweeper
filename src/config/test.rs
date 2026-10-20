@@ -370,6 +370,42 @@ fn model_roles_have_independent_effort_and_global_off_is_a_kill_switch() {
 }
 
 #[test]
+fn blank_global_effort_keeps_all_roles_disabled_and_preserves_the_small_token_floor() {
+    let mut role_failures = Vec::new();
+    for global in ["", "   "] {
+        let config = parse(&format!(
+            "version = 1\n[models]\nmax_tokens = 8000\nreasoning_effort = {global:?}\n"
+        ));
+        assert!(
+            validate::validate(&config).is_empty(),
+            "blank global effort keeps the 8000-token floor valid: {:?}",
+            validate::validate(&config)
+        );
+        for role in [
+            crate::config::types::ReasoningRole::Reviewer,
+            crate::config::types::ReasoningRole::Falsify,
+            crate::config::types::ReasoningRole::Summary,
+        ] {
+            let actual = config.models.role_reasoning_effort(role);
+            if actual != "off" {
+                role_failures.push(format!("global {global:?}, role {role:?}: got {actual:?}"));
+            }
+        }
+    }
+
+    let routed = parse(
+        "version = 1\n[models]\nmax_tokens = 16000\nreasoning_effort = \" \"\n\
+         [[models.routes]]\nmodel = \"deep\"\nmax_tokens = 8000\n",
+    );
+    assert!(
+        validate::validate(&routed).is_empty(),
+        "blank global effort keeps an 8000-token route valid: {:?}",
+        validate::validate(&routed)
+    );
+    assert!(role_failures.is_empty(), "{role_failures:#?}");
+}
+
+#[test]
 fn configured_role_efforts_are_not_replaced_by_role_defaults() {
     let mut config: Config = DEFAULTS.parse::<toml::Table>().unwrap().try_into().unwrap();
     config.models.reasoning_effort = "high".into();

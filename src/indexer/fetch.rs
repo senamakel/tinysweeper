@@ -177,7 +177,7 @@ impl Checkout {
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
         let path = std::fs::canonicalize(dir.path())
             .map_err(|err| Error::Forge(format!("could not resolve checkout directory: {err}")))?;
-        let mut registration = WorktreeRegistrationCleanup::for_path(mirror, &path)?;
+        let registration = WorktreeRegistrationCleanup::for_path(mirror, &path)?;
         let path = path
             .to_str()
             .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?;

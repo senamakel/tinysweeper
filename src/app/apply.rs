@@ -234,6 +234,25 @@ pub async fn apply(
             published.event == event && published.blocking_findings == *blocking
         })
     });
+    let same_standing_review = previous_known
+        && published_before.as_ref().is_some_and(|published| match event {
+            ReviewEvent::Approve | ReviewEvent::RequestChanges => previous_review
+                .as_ref()
+                .is_some_and(|review| {
+                    review.event == event
+                        && review.head_sha.as_deref() == Some(published.head_sha.as_str())
+                }),
+            ReviewEvent::Comment => match (&published.standing_review, &previous_review) {
+                (Some(expected), Some(actual)) => expected == actual,
+                // Before standing snapshots were persisted, only a live
+                // COMMENT on the exact published head is enough evidence.
+                (None, Some(actual)) => {
+                    actual.event == ReviewEvent::Comment
+                        && actual.head_sha.as_deref() == Some(published.head_sha.as_str())
+                }
+                _ => false,
+            },
+        });
     // Every lane is expected to leave an unpostable finding without a line,
     // but `apply` is the final boundary before GitHub sees it. One invalid
     // anchor makes GitHub reject the entire review, including otherwise valid
@@ -288,15 +307,10 @@ pub async fn apply(
     // decision still stands in forge history. Approvals require complete
     // current-head coverage; a later incomplete push must still withdraw them.
     let redundant_decision = same_published_decision
-        && previous_known
-        && previous_review.is_some()
-        && previous_review
-            .as_ref()
-            .and_then(|review| review.head_sha.as_deref())
-            == published_before.as_ref().map(|published| published.head_sha.as_str())
+        && same_standing_review
         && match event {
-            ReviewEvent::Approve => proposal.complete() && previous == Some(ReviewEvent::Approve),
-            ReviewEvent::RequestChanges => previous == Some(ReviewEvent::RequestChanges),
+            ReviewEvent::Approve => proposal.complete(),
+            ReviewEvent::RequestChanges => true,
             ReviewEvent::Comment => true,
         };
 
@@ -381,9 +395,24 @@ pub async fn apply(
     record_apply_state(
         store,
         proposal,
-        review_published
-            .then(|| blocking_findings.map(|blocking_findings| (event, blocking_findings)))
-            .flatten(),
+        if review_published {
+            blocking_findings.map(|blocking_findings| {
+                (
+                    event,
+                    blocking_findings,
+                    standing_review_after_success(
+                        event,
+                        proposal,
+                        previous_review.as_ref(),
+                        previous_known,
+                        unvouched,
+                        withdrawal_failed.is_some(),
+                    ),
+                )
+            })
+        } else {
+            None
+        },
     )
     .await;
 
@@ -652,7 +681,11 @@ fn blocking_finding_set(proposal: &Proposal) -> Option<Vec<String>> {
 async fn record_apply_state(
     store: Option<&dyn ReviewStateStore>,
     proposal: &Proposal,
-    publication: Option<(ReviewEvent, Vec<String>)>,
+    publication: Option<(
+        ReviewEvent,
+        Vec<String>,
+        Option<crate::forge::types::OwnReview>,
+    )>,
 ) {
     let Some(store) = store else { return };
     let key = crate::state::key(&proposal.repo, proposal.number);
@@ -675,16 +708,46 @@ async fn record_apply_state(
         embed_tokens: proposal.usage().embed_tokens,
         models: proposal.models.clone(),
     });
-    if let Some((event, blocking_findings)) = publication {
+    if let Some((event, blocking_findings, standing_review)) = publication {
         state.published_review = Some(crate::state::PublishedReview {
             event,
             head_sha: proposal.head_sha.clone(),
             blocking_findings,
+            standing_review,
         });
     }
     if let Err(err) = store.save_state(&key, &state).await {
         tracing::warn!(%err, "could not record the published review decision");
     }
+}
+
+/// Record the forge state that should still stand after the successful review.
+/// A later COMMENT does not retire a prior approval or changes request, and a
+/// failed approval withdrawal must remain visible in the next comparison.
+fn standing_review_after_success(
+    event: ReviewEvent,
+    proposal: &Proposal,
+    previous: Option<&crate::forge::types::OwnReview>,
+    previous_known: bool,
+    unvouched: bool,
+    withdrawal_failed: bool,
+) -> Option<crate::forge::types::OwnReview> {
+    if event == ReviewEvent::Comment {
+        if !previous_known {
+            return None;
+        }
+        if let Some(previous) = previous
+            && (previous.event == ReviewEvent::RequestChanges
+                || (previous.event == ReviewEvent::Approve
+                    && (!unvouched || withdrawal_failed)))
+        {
+            return Some(previous.clone());
+        }
+    }
+    Some(crate::forge::types::OwnReview {
+        event,
+        head_sha: Some(proposal.head_sha.clone()),
+    })
 }
 
 /// tinysweeper's own last review verdict on this pull request.

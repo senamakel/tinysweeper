@@ -78,6 +78,11 @@ pub struct PublishedReview {
     pub head_sha: String,
     /// Stable identities of the findings that contribute to a blocking verdict.
     pub blocking_findings: Vec<String>,
+    /// Standing forge review expected after this publication. A COMMENT may
+    /// leave an older approval or changes request in force, so its publication
+    /// head alone cannot authenticate the next dedupe decision.
+    #[serde(default)]
+    pub standing_review: Option<crate::forge::types::OwnReview>,
 }
 
 /// Provider accounting retained without putting the breakdown in review prose.

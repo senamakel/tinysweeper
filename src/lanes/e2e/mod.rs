@@ -374,6 +374,8 @@ mod lane_tests {
     use crate::harness::mock::MockModel;
     use crate::lanes::e2e::evidence::{Candidate, Evidence};
     use crate::lanes::e2e::inventory::classify_workflow;
+    use crate::ports::model::{Model, ModelRequest, ModelResponse};
+    use crate::ports::model_execution::ModelExecutionRefusal;
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -419,6 +421,19 @@ mod lane_tests {
             candidates: vec![],
             searched: vec!["e2e/home.spec.ts".into()],
             degraded: vec![],
+        }
+    }
+
+    struct RefusingModel(ModelExecutionRefusal);
+
+    #[async_trait]
+    impl Model for RefusingModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            Err(crate::error::Error::ModelExecutionRefused {
+                refusal: self.0,
+                usage: None,
+                accounting_complete: true,
+            })
         }
     }
 
@@ -583,6 +598,54 @@ mod lane_tests {
         assert_eq!(outcome.findings.len(), 1);
         assert_eq!(outcome.findings[0].rule, "e2e-failed");
         assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Failure);
+    }
+
+    #[tokio::test]
+    async fn a_budget_stopped_e2e_review_keeps_deterministic_failure_findings() {
+        for refusal in [
+            ModelExecutionRefusal::CallLimit,
+            ModelExecutionRefusal::SoftDeadline,
+        ] {
+            let lane = E2e::new(Arc::new(RefusingModel(refusal)));
+            let pr = pull_request();
+            let diff = route_diff();
+            let evidence = evidence(
+                "src/**",
+                vec![CheckStatus {
+                    name: "playwright".into(),
+                    conclusion: Some(CheckConclusion::Failure),
+                }],
+            );
+            let outcome = lane
+                .run(LaneInput {
+                    config: &config(),
+                    pull_request: &pr,
+                    diffs: &[diff],
+                    file_contents: &BTreeMap::new(),
+                    scan_findings: &[],
+                    commits: &[],
+                    repo_policy: None,
+                    extracted_rules: &[],
+                    reviewed_evidence: "",
+                    prior_findings: &[],
+                    retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                    retrieved_context: "",
+                    redaction_note: "",
+                    e2e: Some(&evidence),
+                    tree: None,
+                    graph: None,
+                })
+                .await
+                .expect("a budget refusal leaves deterministic job facts publishable");
+
+            assert!(outcome.skipped.is_none());
+            assert_eq!(outcome.findings.len(), 1);
+            assert_eq!(outcome.findings[0].rule, "e2e-failed");
+            assert_eq!(outcome.unanswered, vec![LaneId::E2e.check_name()]);
+            assert_eq!(outcome.coverage, None);
+            assert!(!outcome.completed);
+            assert_eq!(outcome.conclusion(Severity::High), CheckConclusion::Failure);
+        }
     }
 
     #[tokio::test]

@@ -1254,12 +1254,12 @@ mod tests {
     #[tokio::test]
     async fn logical_mock_usage_does_not_create_a_physical_terminal() {
         let started_at = Instant::now();
-        let execution = ReviewExecution::new(options(
+        let execution = Arc::new(ReviewExecution::new(options(
             ReviewMode::Normal,
             None,
             started_at,
             started_at + Duration::from_secs(100),
-        ));
+        )));
         let mock: Arc<dyn Model> = Arc::new(crate::harness::mock::MockModel::silent());
         let model = mock
             .with_execution_control(execution.clone())

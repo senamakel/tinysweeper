@@ -5043,8 +5043,21 @@ mod tests {
         let model = Arc::new(FailSecondWireframe(AtomicUsize::new(0)));
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let model = execution.bind_model(model, 100.0).model.clone();
 
-        review_with_tree_observed(
+        review_with_tree_observed_at_head_in_run(
             &forge,
             model.clone(),
             &config,
@@ -5054,11 +5067,14 @@ mod tests {
             None,
             None,
             None,
+            None,
+            execution.clone(),
             Some(timing.clone()),
         )
         .await
         .expect("the first proposal completes");
-        let failed = review_with_tree_observed(
+        assert_eq!(model.as_ref().as_ref().downcast_ref::<FailSecondWireframe>(), None);
+        let failed = review_with_tree_observed_at_head_in_run(
             &forge,
             model,
             &config,
@@ -5068,6 +5084,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            execution,
             Some(timing.clone()),
         )
         .await;

@@ -3975,8 +3975,8 @@ mod tests {
             json!({
                 "prompt_tokens": 11,
                 "completion_tokens": 4,
-                "reasoning_tokens": 2,
-                "cached_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 3},
+                "completion_tokens_details": {"reasoning_tokens": 2},
                 "cost": 0.125
             }),
         )])
@@ -4012,6 +4012,11 @@ mod tests {
         .expect("the fake provider answers the review");
 
         assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(proposal.cost_usd, 0.125);
+        let usage = proposal.usage();
+        assert_eq!(usage.calls_attempted, 1);
+        assert_eq!(usage.calls_succeeded, 1);
+        assert_eq!(usage.reasoning_tokens, 2);
         let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
         assert_eq!(
             serialized["completion_accounting"]["usage"]["input_tokens"],
@@ -4028,6 +4033,14 @@ mod tests {
         assert_eq!(
             serialized["completion_accounting"]["usage"]["calls_attempted"],
             1
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["cost_usd"],
+            0.125
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage_by_model"]["deep"]["input_tokens"],
+            11
         );
         assert_eq!(serialized["completion_accounting"]["complete"], true);
     }

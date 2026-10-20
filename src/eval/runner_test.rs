@@ -118,7 +118,10 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
         .budget_prices
         .get("deepseek/deepseek-v3.2")
         .expect("verified price bound");
-    assert_eq!((price.input, price.cached, price.output), (0.26, 0.26, 0.38));
+    assert_eq!(
+        (price.input, price.cached, price.output),
+        (0.26, 0.26, 0.38)
+    );
 }
 
 #[derive(Clone)]
@@ -190,10 +193,7 @@ impl crate::ports::model::Model for HiddenRetryModel {
         true
     }
 
-    fn with_review_budget(
-        &self,
-        _limit_usd: f64,
-    ) -> Option<Arc<dyn crate::ports::model::Model>> {
+    fn with_review_budget(&self, _limit_usd: f64) -> Option<Arc<dyn crate::ports::model::Model>> {
         Some(Arc::new(self.clone()))
     }
 

@@ -27,6 +27,14 @@ per-review budget, the case budget, and the run budget divided across all
 selected cases to the shared review budget root. An unreported-usage refusal
 stops later cases because its charge is unknown.
 
+The checked-in candidate is [`evals/recording.deepinfra.toml`](../../../evals/recording.deepinfra.toml).
+It uses DeepSeek V3.2 at the pinned DeepInfra endpoint, disables model and
+provider fallback and reasoning, sets `max_tokens = 4096`, and gives the
+gateway a conservative per-million-token price bound. Revalidate public
+endpoint availability, context/output limits, and rates immediately before
+recording; the config and price table do not prove the provider's live limits
+have not changed.
+
 For any paid recording, calculate the worst-case dispatch cost from the
 configured input ceiling and the largest output allowed by retries, then
 multiply by the maximum physical dispatch count. Include every selected case
@@ -41,7 +49,8 @@ Record the five cases individually so failures and spend are attributable:
 ```sh
 cargo run --locked --features harness --bin tinysweeper -- eval run \
   --record --case tm-0102-memory-pending-debug-state \
-  --config path/to/recording-only.toml --max-cost-usd 0.50
+  --config evals/recording.deepinfra.toml --max-cost-usd 0.50 \
+  --max-physical-calls-per-case 8
 ```
 
 Repeat with each of the four `oh-...` cases listed in `evals/README.md`, using
@@ -50,7 +59,11 @@ Never pass one checkout for a different repository or head. Capture each
 command's source identity, config digest, exit status, raw output hash, model
 and provider answered, reported usage, and known cost. Keep credential values
 and request/response payloads private. Stop immediately after any provider
-error that lacks usage information.
+error that lacks usage information. The recorder persists a call-budget audit
+at `evals/cassettes/<case-id>/recording-attempts.json`; it reserves capacity
+before dispatch and records actual committed physical calls after success or
+failure. A crash leaves the full reservation charged. Do not remove the audit
+or lock file to obtain a fresh allowance; investigate and preserve its history.
 
 After all five recordings exist, run the offline proof and scorecard with no
 model configured:

@@ -2809,7 +2809,7 @@ mod tests {
         assert_eq!(
             public,
             format!(
-                "{}\n\n# Tiny Sweeper review\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
+                "{}\n\n# Tiny Sweeper review\n\n**Reviewed head:** `abc123`\n\n**Verdict:** Ready for maintainer review · **Priority:** none\n**Coverage:** Reviewed 2 of 3 files; not reviewed: {}.  \nThe change adds a request guard.\n\n",
                 crate::summary::MARKER,
                 crate::markdown::code_span("README.md")
             )

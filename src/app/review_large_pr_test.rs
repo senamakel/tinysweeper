@@ -22,6 +22,102 @@ struct LargeReviewModel {
     advance_after: Option<&'static str>,
 }
 
+#[derive(Clone)]
+struct AdaptiveCoverageRefusalModel {
+    control: Option<Arc<dyn ModelExecutionControl>>,
+    lane_schema: &'static str,
+    attempts: Arc<Mutex<Vec<String>>>,
+    calls: Arc<Mutex<Vec<String>>>,
+    advance_after: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl Model for AdaptiveCoverageRefusalModel {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let schema = request.schema_name.clone();
+        self.attempts
+            .lock()
+            .expect("attempt list lock")
+            .push(schema.clone());
+        let control = self
+            .control
+            .as_ref()
+            .ok_or(Error::ReviewExecutionUnavailable)?;
+        let permit = control
+            .acquire()
+            .await
+            .map_err(|refusal| Error::ModelExecutionRefused {
+                refusal,
+                usage: None,
+                accounting_complete: true,
+            })?;
+        permit
+            .mark_dispatched()
+            .map_err(|refusal| Error::ModelExecutionRefused {
+                refusal,
+                usage: None,
+                accounting_complete: true,
+            })?;
+        self.calls
+            .lock()
+            .expect("successful call list lock")
+            .push(schema.clone());
+
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<String>();
+        let value = match schema.as_str() {
+            "tinysweeper_critique" | "tinysweeper_security"
+                if schema == self.lane_schema && prompt.contains("src/z_api.rs") =>
+            {
+                json!({
+                    "summary": "The public API result should be documented.",
+                    "findings": [{
+                        "path": "src/z_api.rs",
+                        "existing_code": "pub fn z_api() -> bool { true }",
+                        "rule": "api-documentation",
+                        "title": "Document the public API result",
+                        "body": "The public result contract is not described.",
+                        "severity": "medium",
+                        "confidence": 0.95
+                    }]
+                })
+            }
+            "tinysweeper_critique" | "tinysweeper_security" => json!({
+                "summary": "No additional issue was found.",
+                "findings": []
+            }),
+            "tinysweeper_falsify" => json!({ "incorrect": [] }),
+            schema => return Err(Error::Model(format!("unexpected schema {schema}"))),
+        };
+        drop(permit);
+        if self.advance_after == Some(schema.as_str()) {
+            tokio::time::advance(std::time::Duration::from_secs(80)).await;
+        }
+        Ok(ModelResponse {
+            value,
+            model: request.model,
+            usage: Usage {
+                input_tokens: 2,
+                output_tokens: 1,
+                cost_usd: 0.0001,
+                ..Usage::default()
+            },
+        })
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn ModelExecutionControl>,
+    ) -> Option<Arc<dyn Model>> {
+        let mut bound = self.clone();
+        bound.control = Some(control);
+        Some(Arc::new(bound))
+    }
+}
+
 #[async_trait::async_trait]
 impl Model for LargeReviewModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -386,6 +482,270 @@ fn f1_model(advance_after: Option<&'static str>) -> Arc<LargeReviewModel> {
         finding: true,
         advance_after,
     })
+}
+
+fn adaptive_normal_config(lane: &str, max_calls: usize) -> Config {
+    let mut config = all_default_lanes_config();
+    config.review.lanes = vec![lane.into()];
+    config.review.passes = 3;
+    config.review.large_pr.enabled = false;
+    config.review.large_pr.max_calls = max_calls;
+    config
+}
+
+fn one_large_api_forge() -> MockForge {
+    let mut state = MockState::default();
+    state.pull_requests.insert(
+        7,
+        PullRequest {
+            number: 7,
+            title: "feat: expose a documented API result".into(),
+            body: "Review the public API change and its behavior.".into(),
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        },
+    );
+    let mut lines = vec!["pub fn z_api() -> bool { true }".to_string()];
+    lines.extend((0..39).map(|index| format!("// changed line {index}")));
+    let patch = format!(
+        "@@ -0,0 +1,40 @@\n{}\n",
+        lines
+            .into_iter()
+            .map(|line| format!("+{line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    state.files.insert(
+        7,
+        vec![ChangedFile {
+            path: "src/z_api.rs".into(),
+            status: FileStatus::Modified,
+            additions: 40,
+            patch: Some(patch),
+            ..ChangedFile::default()
+        }],
+    );
+    MockForge::with_state(state)
+}
+
+async fn assert_adaptive_refusal_is_partial(
+    lane: &str,
+    max_calls: usize,
+    advance_after: Option<&'static str>,
+    reason: crate::lanes::fanout::OmissionReason,
+) {
+    let mut config = adaptive_normal_config(lane, max_calls);
+    config.review.strictness = 3;
+    let forge = one_large_api_forge();
+    let model = Arc::new(AdaptiveCoverageRefusalModel {
+        control: None,
+        lane_schema: match lane {
+            "critique" => "tinysweeper_critique",
+            "security" => "tinysweeper_security",
+            _ => unreachable!("fixture only supports critique and security"),
+        },
+        attempts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(Mutex::new(Vec::new())),
+        advance_after,
+    });
+    let started_at = tokio::time::Instant::now();
+    let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + std::time::Duration::from_secs(100),
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: Some(max_calls),
+            soft_deadline_percent: 80,
+            drain_seconds: 5,
+        },
+    ));
+    let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Normal");
+
+    let proposal = run_all_default_lanes(
+        &forge,
+        model.clone() as Arc<dyn Model>,
+        &config,
+        execution,
+        timing.clone(),
+    )
+    .await
+    .expect("a host refusal during adaptive coverage publishes a partial proposal");
+
+    {
+        let calls = model.calls.lock().expect("successful call list lock");
+        assert_eq!(calls.len(), 2, "round one and its falsifier are retained");
+        assert!(calls.contains(&model.lane_schema.to_string()));
+        assert!(calls.contains(&"tinysweeper_falsify".to_string()));
+    }
+    assert!(timing.snapshot().calls_refused >= 1);
+
+    assert!(!proposal.complete());
+    assert!(proposal.unreviewed.contains(&"src/z_api.rs".to_string()));
+    let lane_id = match lane {
+        "critique" => crate::config::types::LaneId::Critique,
+        "security" => crate::config::types::LaneId::Security,
+        _ => unreachable!(),
+    };
+    let lane_proposal = proposal
+        .lanes
+        .iter()
+        .find(|candidate| candidate.lane == lane_id)
+        .expect("enabled lane is published");
+    assert_eq!(
+        lane_proposal.conclusion,
+        crate::forge::types::CheckConclusion::Neutral
+    );
+    assert!(!lane_proposal.completed);
+    assert!(
+        lane_proposal
+            .unanswered
+            .contains(&"src/z_api.rs".to_string())
+    );
+    assert!(
+        lane_proposal
+            .omissions
+            .iter()
+            .any(|omission| { omission.reason == reason && omission.paths == ["src/z_api.rs"] })
+    );
+    assert!(lane_proposal.findings.iter().any(|finding| {
+        finding.title == "Document the public API result" && finding.path == "src/z_api.rs"
+    }));
+    assert_eq!(proposal.usage().input_tokens, 4);
+    assert_eq!(proposal.usage().output_tokens, 2);
+    assert!((proposal.usage().cost_usd - 0.0002).abs() < 1e-9);
+    assert_f1_never_approves(&forge);
+    assert_eq!(
+        crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("partial review is published"),
+        crate::app::apply::ApplyDisposition::Published
+    );
+    assert_f1_never_approves(&forge);
+}
+
+#[tokio::test]
+async fn critique_adaptive_call_limit_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "critique",
+        2,
+        None,
+        crate::lanes::fanout::OmissionReason::CallLimit,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn critique_adaptive_soft_deadline_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "critique",
+        48,
+        Some("tinysweeper_falsify"),
+        crate::lanes::fanout::OmissionReason::SoftDeadline,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn security_adaptive_call_limit_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "security",
+        2,
+        None,
+        crate::lanes::fanout::OmissionReason::CallLimit,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn security_adaptive_soft_deadline_preserves_findings_but_marks_coverage_unanswered() {
+    assert_adaptive_refusal_is_partial(
+        "security",
+        48,
+        Some("tinysweeper_falsify"),
+        crate::lanes::fanout::OmissionReason::SoftDeadline,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_subagent_settling_call_limit_publishes_an_unanswered_normal_review() {
+    let forge = one_large_api_forge();
+    let mut config = adaptive_normal_config("critique", 2);
+    config.council.subagents = true;
+    config.review.passes = 1;
+    let usage = Usage {
+        input_tokens: 3,
+        output_tokens: 1,
+        cost_usd: 0.01,
+        ..Usage::default()
+    };
+    let model = Arc::new(
+        MockModel::new()
+            .then(json!({
+                "summary": "The provisional response needs context.",
+                "findings": [],
+                "questions": [{
+                    "question": "Does the caller validate this?",
+                    "why": "Validation changes whether the concern is real."
+                }]
+            }))
+            .then(json!({
+                "answer": "The available evidence says the caller validates it.",
+                "confident": true
+            }))
+            .then(
+                json!({ "summary": "This settling response must not be reached.", "findings": [] }),
+            )
+            .with_usage(usage),
+    );
+    let observed = model.clone();
+    let started_at = tokio::time::Instant::now();
+    let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+        crate::app::review_execution::ReviewExecutionOptions {
+            started_at,
+            hard_deadline: started_at + std::time::Duration::from_secs(100),
+            mode: crate::lanes::large_pr::ReviewMode::Normal,
+            max_calls: Some(2),
+            soft_deadline_percent: 80,
+            drain_seconds: 5,
+        },
+    ));
+    let timing = crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Normal");
+
+    let proposal = run_all_default_lanes(&forge, model, &config, execution, timing.clone())
+        .await
+        .expect("a refusal during settlement publishes the partial proposal");
+
+    assert_eq!(observed.calls(), 2, "settlement is refused before dispatch");
+    assert!(timing.snapshot().calls_refused >= 1);
+    assert!(!proposal.complete());
+    assert!(proposal.unreviewed.contains(&"src/z_api.rs".to_string()));
+    let critique = proposal
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == crate::config::types::LaneId::Critique)
+        .expect("the critique result is published");
+    assert_eq!(
+        critique.conclusion,
+        crate::forge::types::CheckConclusion::Neutral
+    );
+    assert!(!critique.completed);
+    assert!(critique.unanswered.contains(&"src/z_api.rs".to_string()));
+    assert!(critique.omissions.iter().any(|omission| {
+        omission.paths == ["src/z_api.rs"]
+            && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
+    }));
+    assert_eq!(proposal.usage().input_tokens, 6);
+    assert_eq!(proposal.usage().output_tokens, 2);
+    assert!((proposal.usage().cost_usd - 0.02).abs() < f64::EPSILON);
+    assert_f1_never_approves(&forge);
+    assert_eq!(
+        crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+            .await
+            .expect("partial review is publishable"),
+        crate::app::apply::ApplyDisposition::Published
+    );
+    assert_f1_never_approves(&forge);
 }
 
 fn assert_host_stopped_lane(

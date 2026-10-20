@@ -10353,11 +10353,19 @@ mod tests {
             queued.unfinished[0].request.id,
             queued.unfinished[1].request.id
         );
-        assert!(queued.unfinished.iter().any(|job| {
-            job.request.mode == ReviewJobMode::Full && job.owner.is_none()
-        }));
+        assert!(
+            queued
+                .unfinished
+                .iter()
+                .any(|job| { job.request.mode == ReviewJobMode::Full && job.owner.is_none() })
+        );
         publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms + 3).await;
-        assert!(store.should_continue(&incremental, now_ms + 4).await.unwrap());
+        assert!(
+            store
+                .should_continue(&incremental, now_ms + 4)
+                .await
+                .unwrap()
+        );
         assert!(
             store
                 .claim_next_with_limit("at-global-limit", now_ms + 4, 1)
@@ -10384,8 +10392,7 @@ mod tests {
         );
         let inc_snapshot = store.snapshot_for_test();
         assert!(inc_snapshot.terminal.iter().any(|entry| {
-            entry.id == incremental.request.id
-                && entry.outcome == TerminalOutcome::Published
+            entry.id == incremental.request.id && entry.outcome == TerminalOutcome::Published
         }));
 
         let full = store
@@ -10401,13 +10408,16 @@ mod tests {
             PaidStart::Started
         );
         let incrementals = store.snapshot_for_test().incremental_heads;
-        assert!(incrementals.iter().any(|head| {
-            head.repo == incremental.request.repo
-                && head.number == incremental.request.number
-                && head.head_sha == "abc123"
-                && head.paid_attempts == 1
-                && head.terminal_outcome == Some(TerminalOutcome::Published)
-        }), "the Incremental terminal marker and paid count remain after Full starts");
+        assert!(
+            incrementals.iter().any(|head| {
+                head.repo == incremental.request.repo
+                    && head.number == incremental.request.number
+                    && head.head_sha == "abc123"
+                    && head.paid_attempts == 1
+                    && head.terminal_outcome == Some(TerminalOutcome::Published)
+            }),
+            "the Incremental terminal marker and paid count remain after Full starts"
+        );
 
         let mut base: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()
@@ -10478,8 +10488,7 @@ mod tests {
                     None,
                 )
                 .await?;
-                *proposal_slot.lock().expect("Full proposal capture lock") =
-                    Some(proposal.clone());
+                *proposal_slot.lock().expect("Full proposal capture lock") = Some(proposal.clone());
                 Ok(InnerReview::Complete(Some((
                     proposal.findings().count(),
                     crate::app::apply::requests_changes(&full_config, &proposal),
@@ -10490,16 +10499,26 @@ mod tests {
         .await
         .expect("Full mode bypasses the Incremental terminal-head suppression");
         assert!(matches!(proposal, InnerReview::Complete(Some(_))));
-        assert_eq!(mock_model.calls(), 1, "the Large execution shares its one-call cap");
+        assert_eq!(
+            mock_model.calls(),
+            1,
+            "the Large execution shares its one-call cap"
+        );
         let proposal = observed_proposal
             .lock()
             .expect("Full proposal capture lock")
             .take()
             .expect("the confirmed Full path invokes the actual App review");
-        let plan = proposal.partial_review.as_ref().expect("Large plan metadata");
+        let plan = proposal
+            .partial_review
+            .as_ref()
+            .expect("Large plan metadata");
         assert_eq!(plan.mode, crate::lanes::large_pr::ReviewMode::Large);
         assert_eq!(plan.selected_groups.len(), 1);
-        assert!(!proposal.unreviewed.is_empty(), "the one-group plan reports omitted files");
+        assert!(
+            !proposal.unreviewed.is_empty(),
+            "the one-group plan reports omitted files"
+        );
         assert_eq!(
             execution_for_assert.execution().soft_deadline(),
             started_at + Duration::from_secs(80),
@@ -10511,10 +10530,12 @@ mod tests {
             1,
             "a Full pass does not clear the Incremental ledger"
         );
-        assert!(store
-            .finish(&full, TerminalOutcome::Published, now_ms + 12, now_ms + 12)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .finish(&full, TerminalOutcome::Published, now_ms + 12, now_ms + 12)
+                .await
+                .unwrap()
+        );
     }
 
     #[test]

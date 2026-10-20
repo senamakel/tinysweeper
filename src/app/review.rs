@@ -5855,6 +5855,9 @@ mod tests {
         use crate::index::types::{EmbedSignature, Embedded};
         use crate::ports::embed::Embedder;
 
+        let _callsite_registry_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+
         struct ChargedEmbedder;
 
         #[async_trait::async_trait]
@@ -5928,8 +5931,8 @@ mod tests {
         assert_eq!(proposal.cost_usd, 0.875);
         assert_eq!(proposal.embed_tokens, 7);
         timing.finish("success");
-        let expected_lane_usage = serde_json::to_string(&proposal.lane_costs())
-            .expect("lane usage serializes");
+        let expected_lane_usage =
+            serde_json::to_string(&proposal.lane_costs()).expect("lane usage serializes");
         let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_bytes = bytes.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -5943,7 +5946,10 @@ mod tests {
         assert!(line.contains("cost_usd=0.875"), "{line}");
         assert!(line.contains("embed_tokens=7"), "{line}");
         let expected_models = serde_json::to_string(&proposal.models).expect("models serialize");
-        assert!(line.contains(&format!("models={expected_models}")), "{line}");
+        assert!(
+            line.contains(&format!("models={expected_models}")),
+            "{line}"
+        );
         assert!(
             line.contains(&format!("lane_usage={expected_lane_usage}")),
             "{line}"

@@ -238,9 +238,7 @@ impl ReviewTiming {
                 models: clean_models(models),
                 lane_usage: lane_usage
                     .iter()
-                    .map(|(lane, usage, models)| {
-                        (lane.clone(), *usage, clean_models(models))
-                    })
+                    .map(|(lane, usage, models)| (lane.clone(), *usage, clean_models(models)))
                     .collect(),
             });
         });

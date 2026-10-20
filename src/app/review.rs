@@ -905,6 +905,12 @@ pub struct LaneProposal {
     pub completed: bool,
     /// Findings that survived filtering.
     pub findings: Vec<Finding>,
+    /// Stable identities of this lane's findings that can request changes.
+    ///
+    /// Captured before cross-push dedupe and the comment budget remove visible
+    /// findings, so apply can compare the decision that was actually reached.
+    #[serde(default)]
+    pub blocking_findings: Vec<String>,
     /// Findings that missed the posting gate but were worth a line in the
     /// summary: at least `medium`, at least `review.note_confidence` sure.
     ///
@@ -1444,6 +1450,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                     summary: format!("Skipped: `{label}` is applied."),
                     completed: false,
                     findings: vec![],
+                    blocking_findings: vec![],
                     noted: Vec::new(),
                     context_degraded: false,
                     resolved: vec![],
@@ -3082,6 +3089,25 @@ fn lane_proposal(
     // this one value, so none of them can disagree about what a finding is.
     anchor::stamp(&mut findings, diffs);
 
+    let blocking_findings = if conclusion.blocks() {
+        config
+            .request_changes_at()
+            .map(|threshold| {
+                findings
+                    .iter()
+                    .filter(|finding| finding.severity >= threshold)
+                    .map(|finding| {
+                        finding.identity.clone().unwrap_or_else(|| {
+                            finding.fingerprint(&finding.title)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     // The dedupe itself, and the whole point of this workstream: a finding
     // already sitting on the pull request from an earlier push is not posted
     // again. It runs *after* the conclusion is decided, so a suppressed
@@ -3139,6 +3165,7 @@ fn lane_proposal(
         summary,
         completed: outcome.completed,
         findings,
+        blocking_findings,
         noted,
         context_degraded,
         resolved,

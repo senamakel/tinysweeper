@@ -4780,6 +4780,7 @@ mod tests {
         );
         let mut config = critique_config();
         config.models.agentic_reviewers = false;
+        config.models.budget_usd_per_pr = 10.0;
         config.wireframe.enabled = true;
         config.retrieval.enabled = true;
         let started_at = tokio::time::Instant::now();

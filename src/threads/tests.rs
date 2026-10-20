@@ -172,6 +172,49 @@ fn unchanged_code_is_the_only_case_that_reaches_the_model() {
     assert!(matches!(decide(&thread, &BTreeSet::new()), Decision::Ask));
 }
 
+#[tokio::test]
+async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
+    use crate::error::{Error, Result};
+    use crate::ports::model::{Model, ModelRequest, ModelResponse};
+    use crate::ports::model_execution::ModelExecutionRefusal;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DeadlineModel(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Model for DeadlineModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::SoftDeadline,
+                usage: None,
+                accounting_complete: true,
+            })
+        }
+    }
+
+    let mut first_ask = ours();
+    first_ask.id = "PRRT_ask_1".into();
+    first_ask.is_outdated = false;
+    let mut later_ask = first_ask.clone();
+    later_ask.id = "PRRT_ask_2".into();
+    let forge = forge_with(vec![ours(), first_ask, later_ask]);
+    let mut config = config();
+    config.threads.ask_model = true;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = DeadlineModel(calls.clone());
+
+    let (plan, spend) = plan(&forge, Some(&model), &config, &repo(), 7, &BTreeSet::new())
+        .await
+        .expect("an optional advisory deadline does not discard deterministic decisions");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(plan.resolve.len(), 1);
+    assert_eq!(plan.resolve[0].id, "PRRT_1");
+    assert_eq!(spend, Spend::default());
+    assert!(forge.writes().is_empty(), "planning remains read-only");
+}
+
 fn forge_with(threads: Vec<ReviewThread>) -> MockForge {
     let mut state = MockState::default();
     state.review_threads.insert(7, threads);

@@ -3617,6 +3617,72 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RefusalCountingEmbedder {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        signature: crate::index::types::EmbedSignature,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::embed::Embedder for RefusalCountingEmbedder {
+        fn signature(&self) -> crate::index::types::EmbedSignature {
+            self.signature.clone()
+        }
+
+        async fn embed(&self, texts: &[String]) -> Result<crate::index::types::Embedded> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(crate::index::types::Embedded {
+                vectors: vec![vec![0.5, 0.5]; texts.len()],
+                usage: Usage {
+                    embed_tokens: 5,
+                    cost_usd: 0.1,
+                    ..Usage::default()
+                },
+            })
+        }
+    }
+
+    async fn ready_large_review_retrieval_fixture(
+        signature: &crate::index::types::EmbedSignature,
+    ) -> (
+        crate::indexer::mock::MockManifest,
+        crate::index::MockChunkIndex,
+        RefusalCountingEmbedder,
+    ) {
+        use crate::indexer::mock::MockManifest;
+        use crate::indexer::types::{Claim, Settled};
+        use crate::ports::manifest::IndexManifest;
+
+        let manifest = MockManifest::new();
+        let Claim::Granted(lease) = manifest
+            .claim(&repo().to_string(), signature, "large-opaque-fixture")
+            .await
+            .expect("fixture manifest claim succeeds")
+        else {
+            panic!("fresh manifest grants its only claim");
+        };
+        manifest
+            .release(
+                &lease,
+                &Settled::Done {
+                    revision: Some("abc123".into()),
+                    chunks: 1,
+                    usage: Default::default(),
+                },
+            )
+            .await
+            .expect("fixture retrieval index is ready");
+        (
+            manifest,
+            crate::index::MockChunkIndex::new(),
+            RefusalCountingEmbedder {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                signature: signature.clone(),
+            },
+        )
+    }
+
     #[derive(Clone, Default)]
     struct ReviewBudgetProbe {
         remaining: Option<Arc<std::sync::atomic::AtomicUsize>>,

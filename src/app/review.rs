@@ -4541,6 +4541,7 @@ mod tests {
                 review_budget_enabled: self.review_budget_enabled.clone(),
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
+                security_requests: self.security_requests.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))

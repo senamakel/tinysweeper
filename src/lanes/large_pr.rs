@@ -56,6 +56,8 @@ pub struct ReviewPlan {
     pub selected: Vec<PlannedGroup>,
     /// Candidate paths left out, grouped by the lane whose coverage is partial.
     pub omitted: BTreeMap<LaneId, Vec<String>>,
+    /// Candidate groups omitted, retaining every member path and lane.
+    pub omitted_groups: BTreeMap<LaneId, Vec<crate::lanes::grouping::FileGroup>>,
 }
 
 /// Risk ordering for one changed file or the highest-risk member of a group.
@@ -156,6 +158,16 @@ pub fn plan(
                 .then_with(|| lane_order(left.lane).cmp(&lane_order(right.lane)))
         });
 
+        let omitted_groups = candidates.iter().skip(policy.max_groups).fold(
+            BTreeMap::<LaneId, Vec<crate::lanes::grouping::FileGroup>>::new(),
+            |mut omitted, candidate| {
+                omitted
+                    .entry(candidate.lane)
+                    .or_default()
+                    .push(candidate.group.clone());
+                omitted
+            },
+        );
         let omitted = candidates.iter().skip(policy.max_groups).fold(
             BTreeMap::<LaneId, Vec<String>>::new(),
             |mut omitted, candidate| {
@@ -173,6 +185,7 @@ pub fn plan(
             estimate,
             selected: candidates,
             omitted,
+            omitted_groups,
         };
     }
 
@@ -181,6 +194,7 @@ pub fn plan(
         estimate,
         selected: candidates,
         omitted: BTreeMap::new(),
+        omitted_groups: BTreeMap::new(),
     }
 }
 

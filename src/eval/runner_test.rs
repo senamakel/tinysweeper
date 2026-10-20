@@ -92,6 +92,120 @@ fn config() -> Config {
         .unwrap()
 }
 
+#[derive(Clone)]
+struct BudgetCaptureModel {
+    roots: Arc<std::sync::Mutex<Vec<f64>>>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    fail_without_usage: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::ports::model::Model for BudgetCaptureModel {
+    async fn complete(
+        &self,
+        _request: crate::ports::model::ModelRequest,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_without_usage {
+            return Err(crate::error::Error::Model("unreported test charge".into()));
+        }
+        Ok(crate::ports::model::ModelResponse {
+            value: json!({"summary": "No actionable findings.", "findings": []}),
+            model: "test/budget-capture".into(),
+            usage: crate::ports::model::Usage::default(),
+        })
+    }
+
+    fn with_review_budget(
+        &self,
+        limit_usd: f64,
+    ) -> Option<Arc<dyn crate::ports::model::Model>> {
+        self.roots.lock().expect("budget roots").push(limit_usd);
+        Some(Arc::new(self.clone()))
+    }
+}
+
+fn two_case_corpus(directory: &tempfile::TempDir) -> crate::eval::corpus::Corpus {
+    let mut corpus = load(directory.path()).expect("loads one-case corpus");
+    let mut second = corpus.cases[0].clone();
+    second.case.id = "ts-0002".into();
+    corpus.cases.push(second);
+    corpus
+}
+
+#[tokio::test]
+async fn recording_binds_each_case_to_its_share_of_the_global_cost_ceiling() {
+    let dir = corpus_dir(EXPECTATION);
+    let mut corpus = two_case_corpus(&dir);
+    for case in &mut corpus.cases {
+        case.case.budget.max_cost_usd = 0.5;
+    }
+    let roots = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = Arc::new(BudgetCaptureModel {
+        roots: roots.clone(),
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        fail_without_usage: false,
+    });
+    let mut config = config();
+    config.models.budget_usd_per_pr = 1.0;
+
+    run(
+        &corpus,
+        &config,
+        Some(model),
+        &RunOptions {
+            out: dir.path().join("runs/budget-bound"),
+            record: true,
+            max_cost_usd: 0.5,
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("records both bounded cases");
+
+    let roots = roots.lock().expect("budget roots");
+    assert_eq!(roots.len(), 2, "each case binds one monetary root");
+    assert!(roots.iter().all(|limit| (*limit - 0.25).abs() < 1e-12));
+}
+
+#[tokio::test]
+async fn an_unreported_case_charge_stops_later_recording_cases() {
+    let dir = corpus_dir(EXPECTATION);
+    let mut corpus = two_case_corpus(&dir);
+    for case in &mut corpus.cases {
+        case.case.budget.max_cost_usd = 0.5;
+    }
+    let roots = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(BudgetCaptureModel {
+        roots: roots.clone(),
+        calls: calls.clone(),
+        fail_without_usage: true,
+    });
+    let mut config = config();
+    config.models.budget_usd_per_pr = 1.0;
+
+    let result = run(
+        &corpus,
+        &config,
+        Some(model),
+        &RunOptions {
+            out: dir.path().join("runs/unknown-charge"),
+            record: true,
+            max_cost_usd: 0.5,
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("persists the failed first case and stops");
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(roots.lock().expect("budget roots").len(), 1);
+    assert_eq!(result.scores.len(), 1);
+    assert_eq!(result.skipped, vec!["ts-0002"]);
+}
+
 #[tokio::test]
 async fn recording_from_an_arbitrary_tree_does_not_claim_fixture_history() {
     use crate::ports::model::{ModelRequest, ModelResponse, Usage};

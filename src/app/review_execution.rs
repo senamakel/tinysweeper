@@ -1252,6 +1252,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saturated_terminal_token_totals_are_marked_incomplete() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(2),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        for _ in 0..2 {
+            execution
+                .acquire()
+                .await
+                .expect("reserve one dispatch")
+                .mark_dispatched()
+                .expect("commit one dispatch");
+        }
+        for input_tokens in [u64::MAX, 1] {
+            execution.on_terminal(ModelExecutionTerminal {
+                requested_model: "model-b".into(),
+                answered_model: Some("actual-b".into()),
+                outcome: ModelExecutionTerminalOutcome::Succeeded,
+                refused: false,
+                usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                    input_tokens,
+                    output_tokens: 0,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: Some(0.0),
+                }),
+            });
+        }
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.physical_usage.input_tokens, u64::MAX);
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
     async fn logical_mock_usage_does_not_create_a_physical_terminal() {
         let started_at = Instant::now();
         let execution = Arc::new(ReviewExecution::new(options(

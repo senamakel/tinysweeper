@@ -2112,8 +2112,6 @@ fn helper() {
 
     #[tokio::test]
     async fn a_small_candidate_rejected_by_falsification_still_gets_a_second_review() {
-        use tracing::instrument::WithSubscriber;
-
         let model = MockModel::new()
             .then(json!({
                 "summary": "Unchecked index.",
@@ -2130,17 +2128,32 @@ fn helper() {
             .then(json!({"incorrect": [{"index": 1, "reason": "The diff proves i is in bounds."}]}))
             .then(json!({"summary": "No further findings.", "findings": []}));
         let handle = model.clone();
-        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let writer_bytes = bytes.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_writer(move || MetricsLogWriter(writer_bytes.clone()))
-            .finish();
-
-        let outcome = run_with(model, &config_with_passes(2), &diffs())
-            .with_subscriber(subscriber)
-            .await;
+        let config = config_with_passes(2);
+        let pr = pull_request();
+        let diffs = diffs();
+        let timing = crate::review_timing::ReviewTiming::new("owner/repo", 7, "Normal");
+        let outcome = Critique::new(Arc::new(model))
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+                pass_yield_observer: Some(&timing),
+            })
+            .await
+            .expect("lane runs");
 
         assert!(outcome.findings.is_empty(), "falsification rejected the candidate");
         let requests = handle.requests();
@@ -2150,9 +2163,13 @@ fn helper() {
             ["tinysweeper_critique", "tinysweeper_falsify", "tinysweeper_critique"],
             "the final request is a second reviewer call, even though no finding survived"
         );
-        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert!(line.contains("candidate_findings_per_pass=[1, 0]"), "{line}");
-        assert!(line.contains("surviving_findings_per_pass=[0, 0]"), "{line}");
+        let yields = timing.snapshot().pass_yields;
+        assert_eq!(yields["critique:1"].groups, 1);
+        assert_eq!(yields["critique:1"].candidates, 1);
+        assert_eq!(yields["critique:1"].survivors, 0);
+        assert_eq!(yields["critique:2"].groups, 1);
+        assert_eq!(yields["critique:2"].candidates, 0);
+        assert_eq!(yields["critique:2"].survivors, 0);
     }
 
     #[tokio::test]
@@ -2217,7 +2234,7 @@ fn helper() {
         let mut config = config_with_passes(2);
         config.path_instructions = vec![
             PathInstruction {
-                glob: "src/large.rs".into(),
+                glob: "src/auth.rs".into(),
                 instructions: "Check every index against the collection length.".into(),
                 rules: None,
                 lanes: vec![LaneId::Critique],
@@ -2235,7 +2252,7 @@ fn helper() {
             "+    let x0 = 0;",
             "+    let x0 = \"<redacted, 12 chars>\";",
         );
-        let diffs = vec![parse_file_patch("src/large.rs", &patch)];
+        let diffs = vec![parse_file_patch("src/auth.rs", &patch)];
         let model = MockModel::new()
             .then(json!({"summary": "Nothing to report.", "findings": []}))
             .then(json!({"summary": "Nothing further.", "findings": []}));
@@ -2286,7 +2303,9 @@ fn helper() {
                 )]
             }));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
+        let mut diff = large_diffs();
+        diff[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diff).await;
 
         assert_eq!(outcome.findings.len(), 1);
         assert_eq!(outcome.findings[0].title, "Guard the first index");
@@ -2308,7 +2327,9 @@ fn helper() {
                 "incorrect": [{"index": 1, "reason": "x30 is never dereferenced"}]
             }));
 
-        let outcome = run_with(model, &config_with_passes(2), &large_diffs()).await;
+        let mut diff = large_diffs();
+        diff[0].path = "src/auth.rs".into();
+        let outcome = run_with(model, &config_with_passes(2), &diff).await;
 
         assert_eq!(
             outcome.findings.len(),

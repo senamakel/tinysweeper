@@ -213,7 +213,7 @@ async fn answer_questions(
     model: &str,
     questions: &[String],
     evidence: &str,
-) -> (Vec<Answered>, Usage) {
+) -> (Vec<Answered>, Usage, Option<Answer>) {
     let calls: Vec<Call> = questions
         .iter()
         .enumerate()
@@ -222,11 +222,15 @@ async fn answer_questions(
     let answers = one_round(llm, lane, &calls, &subagent::answer_schema()).await;
 
     let mut usage = Usage::default();
+    let mut execution_refusal = None;
     let answered = questions
         .iter()
         .zip(answers)
         .filter_map(|(question, answer)| {
             usage.add(answer.usage);
+            if answer.execution_refusal.is_some() {
+                execution_refusal.get_or_insert_with(|| answer.clone());
+            }
             let value = answer.value?;
             Some(Answered {
                 question: question.clone(),
@@ -242,7 +246,17 @@ async fn answer_questions(
             })
         })
         .collect();
-    (answered, usage)
+    (answered, usage, execution_refusal)
+}
+
+fn refusal_error(answer: &Answer) -> Option<crate::error::Error> {
+    answer.execution_refusal.map(|refusal| {
+        crate::error::Error::ModelExecutionRefused {
+            refusal,
+            usage: answer.execution_usage.clone(),
+            accounting_complete: answer.execution_accounting_complete.unwrap_or(true),
+        }
+    })
 }
 
 /// How a lane wants its reviewers asked, beyond the one call.
@@ -505,9 +519,21 @@ pub async fn ask_all_accounted(
         // looked up. A sub-agent handed only the diff was answering "from the
         // repository" in name alone.
         let evidence = &prompts[index].prompt;
-        let (answered, subagent_usage) =
+        let (answered, subagent_usage, execution_refusal) =
             answer_questions(&llm, lane, model, &questions, evidence).await;
         usage.add(subagent_usage);
+
+        if let Some(mut refused) = execution_refusal {
+            if refused.execution_refusal == Some(ModelExecutionRefusal::Cancelled) {
+                return Err(refusal_error(&refused)
+                    .expect("typed refusal retains its original error"));
+            }
+            // A provisional verdict that requested more evidence cannot stand
+            // when the host stopped one of those required sub-agent turns.
+            refused.looked_up = answers[index].looked_up.clone();
+            answers[index] = refused;
+            continue;
+        }
 
         // Nothing came back, so a second turn would be the same turn with the
         // same evidence — one more call that cannot say anything new.
@@ -527,8 +553,12 @@ pub async fn ask_all_accounted(
             usage.add(answer.usage);
         }
         if let Some(mut settled) = round_two.into_iter().next()
-            && settled.value.is_some()
+            && (settled.value.is_some() || settled.execution_refusal.is_some())
         {
+            if settled.execution_refusal == Some(ModelExecutionRefusal::Cancelled) {
+                return Err(refusal_error(&settled)
+                    .expect("typed refusal retains its original error"));
+            }
             // The evidence the reviewer read travels with its final answer.
             settled.looked_up = answers[index].looked_up.clone();
             answers[index] = settled;

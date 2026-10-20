@@ -1104,7 +1104,7 @@ mod tests {
             requested_model: "configured-primary".into(),
             answered_model: Some("actual-provider-a".into()),
             outcome: ModelExecutionTerminalOutcome::Succeeded,
-            refused: false,
+            refused: true,
             usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
                 input_tokens: 5,
                 output_tokens: 2,
@@ -1150,6 +1150,9 @@ mod tests {
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.physical_terminal_count, 4);
         assert_eq!(snapshot.physical_usage.calls_attempted, 4);
+        assert_eq!(snapshot.physical_usage.calls_succeeded, 4);
+        assert_eq!(snapshot.physical_usage.calls_refused, 1);
+        assert_eq!(snapshot.physical_usage.calls_errored, 0);
         assert_eq!(snapshot.physical_usage.input_tokens, 13);
         assert_eq!(snapshot.physical_usage.output_tokens, 6);
         assert_eq!(snapshot.physical_usage.cost_usd, 0.125);
@@ -1199,6 +1202,87 @@ mod tests {
         assert_eq!(snapshot.committed_calls, 2);
         assert_eq!(snapshot.physical_terminal_count, 1);
         assert_eq!(snapshot.physical_usage.cost_usd, 0.25);
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn terminal_statuses_keep_refusal_failure_and_cancellation_counts_distinct() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(3),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        for _ in 0..3 {
+            execution
+                .acquire()
+                .await
+                .expect("reserve one dispatch")
+                .mark_dispatched()
+                .expect("commit one dispatch");
+        }
+        for outcome in [
+            ModelExecutionTerminalOutcome::Refused,
+            ModelExecutionTerminalOutcome::Failed,
+            ModelExecutionTerminalOutcome::Cancelled,
+        ] {
+            execution.on_terminal(ModelExecutionTerminal {
+                requested_model: "model-b".into(),
+                answered_model: Some("actual-b".into()),
+                outcome,
+                refused: false,
+                usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: Some(0.0),
+                }),
+            });
+        }
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.physical_terminal_count, 3);
+        assert_eq!(snapshot.physical_usage.calls_attempted, 3);
+        assert_eq!(snapshot.physical_usage.calls_succeeded, 0);
+        assert_eq!(snapshot.physical_usage.calls_refused, 1);
+        assert_eq!(snapshot.physical_usage.calls_errored, 3);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn logical_mock_usage_does_not_create_a_physical_terminal() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let mock: Arc<dyn Model> = Arc::new(crate::harness::mock::MockModel::silent());
+        let model = mock
+            .with_execution_control(execution.clone())
+            .expect("MockModel accepts the offline execution control");
+        model
+            .complete(crate::ports::model::ModelRequest {
+                model: "mock".into(),
+                messages: vec![
+                    crate::ports::model::Message::system("Rules."),
+                    crate::ports::model::Message::user("Diff."),
+                ],
+                schema: serde_json::json!({"type":"object"}),
+                schema_name: "review".into(),
+                max_tokens: 16,
+            })
+            .await
+            .expect("the canned response succeeds");
+
+        assert!(!model.complete_reports_physical_calls());
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.physical_terminal_count, 0);
+        assert_eq!(snapshot.physical_usage.calls_attempted, 0);
         assert!(!snapshot.physical_accounting_complete);
     }
 

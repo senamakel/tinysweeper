@@ -2014,18 +2014,10 @@ mod tests {
                 json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.001}),
             )
         };
-        let primary_repair_without_reported_cost = || {
-            Reply::completion(
-                "b",
-                "{primary broken",
-                "stop",
-                json!({"prompt_tokens":5,"completion_tokens":2}),
-            )
-        };
         let gateway = FakeGateway::start(vec![
             primary_repair(),
             primary_repair(),
-            primary_repair_without_reported_cost(),
+            primary_repair(),
             Reply::completion(
                 "fallback",
                 r#"{"summary":"checked"}"#,
@@ -2082,18 +2074,7 @@ mod tests {
         let expected = vec![
             primary_terminal.clone(),
             primary_terminal.clone(),
-            raw_terminal(
-                "b",
-                Some("b"),
-                ModelExecutionTerminalOutcome::Succeeded,
-                Some(ModelExecutionTerminalUsage {
-                    input_tokens: 5,
-                    output_tokens: 2,
-                    reasoning_tokens: 0,
-                    cached_tokens: 0,
-                    cost_usd: None,
-                }),
-            ),
+            primary_terminal,
             raw_terminal(
                 "fallback",
                 Some("fallback"),
@@ -2113,9 +2094,74 @@ mod tests {
         assert_eq!(snapshot.physical_terminals, expected);
         assert_eq!(snapshot.physical_usage.input_tokens, 20);
         assert_eq!(snapshot.physical_usage.output_tokens, 8);
-        assert_eq!(snapshot.physical_usage.cost_usd, 0.0041);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.0051);
         assert_eq!(snapshot.physical_usage_by_model["b"].input_tokens, 15);
         assert_eq!(snapshot.physical_usage_by_model["fallback"].cost_usd, 0.0021);
+        assert!(snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn gateway_keeps_known_cost_when_a_later_repair_omits_its_cost() {
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let gateway = FakeGateway::start(vec![
+            Reply::completion(
+                "b",
+                "{first response malformed",
+                "stop",
+                json!({"prompt_tokens":5,"completion_tokens":2,"cost":0.125}),
+            ),
+            Reply::completion(
+                "b",
+                "{second response malformed",
+                "stop",
+                json!({"prompt_tokens":6,"completion_tokens":3}),
+            ),
+            Reply::completion(
+                "b",
+                r#"{"summary":"checked"}"#,
+                "stop",
+                json!({"prompt_tokens":7,"completion_tokens":4}),
+            ),
+        ])
+        .await;
+        let mut config = models();
+        config.base_url = gateway.base_url.clone();
+        let mut model = GatewayModel::with_key(&config, "fixture".into());
+        model.structured_output = StructuredOutput::JsonObject;
+        let execution = execution_scope(Some(3));
+        let control = Arc::new(RecordingExecutionControl {
+            inner: Arc::clone(&execution),
+            terminals: std::sync::Mutex::new(Vec::new()),
+        });
+        let model = model
+            .with_execution_control(control.clone())
+            .expect("the Gateway keeps the supplied execution control");
+        let response = model
+            .complete(ModelRequest {
+                model: "b".into(),
+                messages: vec![
+                    CrateMessage::system("Review."),
+                    CrateMessage::user("Review source."),
+                ],
+                schema: json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"summary":{"type":"string"}}, "required":["summary"]
+                }),
+                schema_name: "review".into(),
+                max_tokens: 100,
+            })
+            .await
+            .expect("the third response is valid");
+
+        assert_eq!(response.usage.input_tokens, 18);
+        assert_eq!(response.usage.output_tokens, 9);
+        assert_eq!(gateway.requests().len(), 3);
+        assert_eq!(control.terminals.lock().unwrap().len(), 3);
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.125);
+        assert_eq!(snapshot.physical_usage_by_model["b"].cost_usd, 0.125);
+        assert_eq!(snapshot.physical_usage.input_tokens, 18);
         assert!(!snapshot.physical_accounting_complete);
     }
 

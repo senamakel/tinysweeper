@@ -6168,6 +6168,10 @@ mod tests {
     #[tokio::test]
     async fn a_cross_process_supersession_drops_the_in_flight_review_future_and_frees_its_permit() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use crate::ports::model_execution::{
+            ModelExecutionControl, ModelExecutionRefusal, ModelExecutionTerminal,
+            ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+        };
 
         struct DropFlag(Arc<AtomicBool>);
         impl Drop for DropFlag {
@@ -6187,6 +6191,55 @@ mod tests {
         let owned = store.claim_next("old-worker", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned, "head-a", now + 1).await.unwrap());
 
+        let execution_started = tokio::time::Instant::now();
+        let worker_execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at: execution_started,
+                hard_deadline: execution_started + std::time::Duration::from_secs(60),
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: Some(2),
+                soft_deadline_percent: 80,
+                drain_seconds: 30,
+            },
+        ));
+        let committed_permit = worker_execution.acquire().await.unwrap();
+        committed_permit.mark_dispatched().unwrap();
+        worker_execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "primary".into(),
+            answered_model: Some("primary".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(ModelExecutionTerminalUsage {
+                input_tokens: 11,
+                output_tokens: 4,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.02),
+            }),
+        });
+        let held_reservation = worker_execution.acquire().await.unwrap();
+        let waiting_execution = worker_execution.clone();
+        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+        let mut pending_tx = Some(pending_tx);
+        let mut waiting = tokio::spawn(async move {
+            let acquire = waiting_execution.acquire();
+            tokio::pin!(acquire);
+            std::future::poll_fn(|cx| match acquire.as_mut().poll(cx) {
+                std::task::Poll::Pending => {
+                    if let Some(pending_tx) = pending_tx.take() {
+                        let _ = pending_tx.send(());
+                    }
+                    std::task::Poll::Pending
+                }
+                ready => ready,
+            })
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), pending_rx)
+            .await
+            .expect("the third acquisition waits behind the held reservation")
+            .expect("the waiter reports its first pending poll");
+
         let permits = Arc::new(Semaphore::new(
             crate::ports::review_job::MAX_RUNNING_REVIEWS,
         ));
@@ -6204,16 +6257,6 @@ mod tests {
             let _drop_flag = DropFlag(dropped_by_future);
             std::future::pending::<Result<()>>().await
         };
-        let worker_execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
-            crate::app::review_execution::ReviewExecutionOptions {
-                started_at: tokio::time::Instant::now(),
-                hard_deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
-                mode: crate::lanes::large_pr::ReviewMode::Normal,
-                max_calls: Some(2),
-                soft_deadline_percent: 80,
-                drain_seconds: 30,
-            },
-        ));
         let worker_execution_scope = worker_execution.clone();
         let worker = tokio::spawn(async move {
             let result = select_review_control(
@@ -6249,6 +6292,35 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             "the provider future is dropped"
         );
+        let waiter_result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            &mut waiting,
+        )
+        .await;
+        let cancelled = matches!(
+            waiter_result,
+            Ok(Ok(Err(ModelExecutionRefusal::Cancelled)))
+        );
+        drop(held_reservation);
+        if waiter_result.is_err() {
+            if let Ok(Ok(Ok(replacement))) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting).await
+            {
+                drop(replacement);
+            } else {
+                waiting.abort();
+                let _ = waiting.await;
+            }
+        } else if let Ok(Ok(Ok(replacement))) = waiter_result {
+            drop(replacement);
+        }
+        assert!(cancelled, "supersession wakes pending acquisitions as cancelled");
+        let snapshot = worker_execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 1);
+        assert_eq!(snapshot.reserved_calls, 0);
+        assert_eq!(snapshot.physical_usage.input_tokens, 11);
+        assert_eq!(snapshot.physical_usage.output_tokens, 4);
+        drop(committed_permit);
         assert!(
             permits.try_acquire().is_ok(),
             "the acknowledged worker releases its slot"

@@ -99,6 +99,86 @@ struct BudgetCaptureModel {
     fail_without_usage: bool,
 }
 
+#[derive(Clone)]
+struct HiddenRetryModel {
+    control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+    physical_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::ports::model::Model for HiddenRetryModel {
+    async fn complete(
+        &self,
+        _request: crate::ports::model::ModelRequest,
+    ) -> crate::error::Result<crate::ports::model::ModelResponse> {
+        use crate::ports::model_execution::{
+            ModelExecutionTerminal, ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+        };
+
+        let control = self.control.as_ref().expect("physical control bound");
+        for _ in 0..16 {
+            let permit = match control.acquire().await {
+                Ok(permit) => permit,
+                Err(refusal) => {
+                    return Err(crate::error::Error::ModelExecutionRefused {
+                        refusal,
+                        usage: None,
+                        accounting_complete: true,
+                    });
+                }
+            };
+            permit
+                .mark_dispatched()
+                .expect("reserved test dispatch is admitted");
+            self.physical_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            control.on_terminal(ModelExecutionTerminal {
+                requested_model: "deepseek/deepseek-v3.2".into(),
+                answered_model: Some("deepseek/deepseek-v3.2".into()),
+                outcome: ModelExecutionTerminalOutcome::Succeeded,
+                refused: false,
+                usage: Some(ModelExecutionTerminalUsage {
+                    input_tokens: 10,
+                    output_tokens: 10,
+                    reasoning_tokens: 0,
+                    cached_tokens: 0,
+                    cost_usd: Some(0.0001),
+                }),
+            });
+        }
+        Ok(crate::ports::model::ModelResponse {
+            value: json!({"summary": "No actionable findings.", "findings": []}),
+            model: "deepseek/deepseek-v3.2".into(),
+            usage: crate::ports::model::Usage::default(),
+        })
+    }
+
+    fn complete_reports_physical_calls(&self) -> bool {
+        true
+    }
+
+    fn reports_raw_completion_usage(&self) -> bool {
+        true
+    }
+
+    fn with_review_budget(
+        &self,
+        _limit_usd: f64,
+    ) -> Option<Arc<dyn crate::ports::model::Model>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn with_execution_control(
+        &self,
+        control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+    ) -> Option<Arc<dyn crate::ports::model::Model>> {
+        Some(Arc::new(Self {
+            control: Some(control),
+            physical_calls: self.physical_calls.clone(),
+        }))
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::ports::model::Model for BudgetCaptureModel {
     async fn complete(
@@ -128,6 +208,48 @@ fn two_case_corpus(directory: &tempfile::TempDir) -> crate::eval::corpus::Corpus
     second.case.id = "ts-0002".into();
     corpus.cases.push(second);
     corpus
+}
+
+#[tokio::test]
+async fn hidden_physical_retries_share_the_recording_cap_and_failed_attempt_audit() {
+    let dir = corpus_dir(EXPECTATION);
+    let corpus = load(dir.path()).expect("loads one-case corpus");
+    let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(HiddenRetryModel {
+        control: None,
+        physical_calls: physical_calls.clone(),
+    });
+    let mut config = config();
+    config.models.budget_usd_per_pr = 0.5;
+
+    let outcome = run(
+        &corpus,
+        &config,
+        Some(model),
+        &RunOptions {
+            out: dir.path().join("runs/hidden-retries"),
+            record: true,
+            max_cost_usd: 0.5,
+            max_physical_calls_per_case: Some(8),
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("persists bounded failed review");
+
+    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+    assert!(outcome.scores[0].error.is_some());
+    let audit: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            corpus.cases[0]
+                .cassette_dir(&corpus.root)
+                .join("recording-attempts.json"),
+        )
+        .expect("attempt audit exists"),
+    )
+    .expect("valid attempt audit");
+    assert_eq!(audit["reservations"][0]["reserved_calls"], 8);
+    assert_eq!(audit["reservations"][0]["actual_calls"], 8);
 }
 
 #[tokio::test]

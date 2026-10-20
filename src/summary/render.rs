@@ -77,7 +77,11 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     // reviewed head gives that preservation boundary an explicit identity;
     // partial reports must not be mistaken for completed work.
     if proposal.complete() {
-        let _ = writeln!(body, "**Reviewed head:** {}\n", code_span(&proposal.head_sha));
+        let _ = writeln!(
+            body,
+            "**Reviewed head:** {}\n",
+            code_span(&proposal.head_sha)
+        );
     }
     let show_findings = config.summary.sections.contains(&SummarySection::Findings);
     let has_findings = show_findings && has_finding_signal(proposal);

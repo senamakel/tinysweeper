@@ -496,13 +496,19 @@ impl WorktreeRegistrationCleanup {
     fn for_path(mirror: &Path, worktree: &Path) -> Result<Self> {
         let worktrees_path = mirror.join("worktrees");
         let existing_entries = match std::fs::symlink_metadata(&worktrees_path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => std::fs::read_dir(&worktrees_path)
-                .map_err(|err| {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                let entries = std::fs::read_dir(&worktrees_path).map_err(|err| {
                     Error::Forge(format!("could not inspect mirror worktree metadata: {err}"))
-                })?
-                .filter_map(std::result::Result::ok)
-                .map(|entry| entry.file_name())
-                .collect(),
+                })?;
+                let mut names = std::collections::HashSet::new();
+                for entry in entries {
+                    let entry = entry.map_err(|err| {
+                        Error::Forge(format!("could not inspect mirror worktree entry: {err}"))
+                    })?;
+                    names.insert(entry.file_name());
+                }
+                names
+            }
             Ok(_) => {
                 return Err(Error::config(
                     "mirror worktree administration path is not a directory",
@@ -1078,10 +1084,11 @@ mod tests {
         let checkout = tempfile::tempdir().unwrap();
         let basename = checkout.path().file_name().unwrap();
         let admin = mirror.path().join("worktrees").join(basename);
+        let cleanup = WorktreeRegistrationCleanup::for_path(mirror.path(), checkout.path()).unwrap();
         std::fs::create_dir_all(&admin).unwrap();
         std::fs::write(admin.join("locked"), "initializing").unwrap();
 
-        drop(WorktreeRegistrationCleanup::for_path(mirror.path(), checkout.path()).unwrap());
+        drop(cleanup);
 
         assert!(
             !admin.exists(),

@@ -377,17 +377,14 @@ pub async fn apply(
         }
     }
 
-    if (review_published || redundant_approval || redundant_decision)
-        && let Some(blocking_findings) = blocking_findings
-    {
-        record_published_review(
-            store,
-            proposal,
-            event,
-            blocking_findings,
-        )
-        .await;
-    }
+    record_apply_state(
+        store,
+        proposal,
+        review_published.then(|| {
+            blocking_findings.map(|blocking_findings| (event, blocking_findings))
+        }).flatten(),
+    )
+    .await;
 
     // The change map, as one comment edited in place forever. Deliberately
     // *not* folded into the review body: a review is submitted only when there
@@ -651,11 +648,10 @@ fn blocking_finding_set(proposal: &Proposal) -> Option<Vec<String>> {
 
 /// Record a successful publication without replacing the incremental replay
 /// state prepared by the read half.
-async fn record_published_review(
+async fn record_apply_state(
     store: Option<&dyn ReviewStateStore>,
     proposal: &Proposal,
-    event: ReviewEvent,
-    blocking_findings: Vec<String>,
+    publication: Option<(ReviewEvent, Vec<String>)>,
 ) {
     let Some(store) = store else { return };
     let key = crate::state::key(&proposal.repo, proposal.number);
@@ -668,11 +664,21 @@ async fn record_published_review(
             head_sha: proposal.head_sha.clone(),
             ..crate::state::ReviewedState::default()
         });
-    state.published_review = Some(crate::state::PublishedReview {
-        event,
-        head_sha: proposal.head_sha.clone(),
-        blocking_findings,
+    state.latest_usage = Some(crate::state::ReviewUsage {
+        cost_usd: proposal.usage().cost_usd.to_string(),
+        input_tokens: proposal.usage().input_tokens,
+        output_tokens: proposal.usage().output_tokens,
+        cached_tokens: proposal.usage().cached_tokens,
+        embed_tokens: proposal.usage().embed_tokens,
+        models: proposal.models.clone(),
     });
+    if let Some((event, blocking_findings)) = publication {
+        state.published_review = Some(crate::state::PublishedReview {
+            event,
+            head_sha: proposal.head_sha.clone(),
+            blocking_findings,
+        });
+    }
     if let Err(err) = store.save_state(&key, &state).await {
         tracing::warn!(%err, "could not record the published review decision");
     }
@@ -960,22 +966,9 @@ fn review_body(
         // Not approving a clean-looking review is a decision, and the reader
         // deserves the reason: silence here reads as an all-clear.
         ReviewEvent::Comment if blocking == 0 && !proposal.complete() => {
-            let unanswered = proposal.unanswered();
-            let shown: Vec<&str> = unanswered.iter().copied().take(8).collect();
-            let more = unanswered.len().saturating_sub(shown.len());
+            let unanswered = proposal.unanswered().len();
             format!(
-                "tinysweeper found nothing blocking, but could not review everything, so this \
-                 is not an approval: {}{}.",
-                shown
-                    .iter()
-                    .map(|name| crate::markdown::code_span(name))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if more > 0 {
-                    format!(" and {more} more")
-                } else {
-                    String::new()
-                }
+                "tinysweeper could not complete coverage ({unanswered} unanswered item(s)), so this is not an approval."
             )
         }
         ReviewEvent::Comment if blocking == 0 => "tinysweeper found nothing blocking.".to_string(),
@@ -1023,23 +1016,20 @@ fn review_body(
         body.push('\n');
     }
 
-    // The full token breakdown goes in the body deliberately. Cache hit rate is
-    // the difference between a cheap re-review and a ruinous one, and nobody
-    // tunes a number they cannot see.
-    //
-    // A fenced, column-aligned block rather than a `<sub>` sentence per lane:
-    // the point of the breakdown is comparing lanes, and six numbers that land
-    // in a different place on every row cannot be compared at a glance. The
-    // fence also stops the renderer reflowing away the alignment.
-    body.push_str("\n\n");
-    body.push_str(&crate::findings::render::cost_table(
-        &proposal.usage(),
-        &proposal.models,
-        &proposal.lane_costs(),
+    // Detailed usage remains in the machine-readable marker and timing log.
+    // A collapsed total is enough context for someone reading the review.
+    body.push_str(&format!(
+        "\n\n<details>\n<summary>Diagnostics</summary>\n\nTotal spend: ${:.4}\n\n</details>",
+        proposal.usage().cost_usd
     ));
     body.push_str(&format!(
-        "\n<!-- {MARKER_PREFIX}state v=1 sha={} -->",
-        proposal.head_sha
+        "\n<!-- {MARKER_PREFIX}state v=1 sha={} usage=cost:{:.4},input:{},output:{},cached:{},embed:{} -->",
+        proposal.head_sha,
+        proposal.usage().cost_usd,
+        proposal.usage().input_tokens,
+        proposal.usage().output_tokens,
+        proposal.usage().cached_tokens,
+        proposal.usage().embed_tokens,
     ));
     body
 }

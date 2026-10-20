@@ -64,6 +64,9 @@ pub struct ReviewedState {
     /// record is unknown, so it never suppresses a review.
     #[serde(default)]
     pub published_review: Option<PublishedReview>,
+    /// Exact usage from the most recent apply pass, including a deduped one.
+    #[serde(default)]
+    pub latest_usage: Option<ReviewUsage>,
 }
 
 /// A successfully published review decision, used to suppress identical repeats.
@@ -75,6 +78,23 @@ pub struct PublishedReview {
     pub head_sha: String,
     /// Stable identities of the findings that contribute to a blocking verdict.
     pub blocking_findings: Vec<String>,
+}
+
+/// Provider accounting retained without putting the breakdown in review prose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewUsage {
+    /// Lossless decimal form of the reported USD total.
+    pub cost_usd: String,
+    /// Prompt tokens, including cache-served tokens.
+    pub input_tokens: u64,
+    /// Generated tokens.
+    pub output_tokens: u64,
+    /// Prompt tokens served from provider cache.
+    pub cached_tokens: u64,
+    /// Embedding tokens.
+    pub embed_tokens: u64,
+    /// Model identifiers as reported, including blank values.
+    pub models: Vec<String>,
 }
 
 /// The key a pull request's state is stored under.
@@ -107,6 +127,7 @@ mod tests {
             summary: None,
             summary_transcript: vec![],
             published_review: None,
+            latest_usage: None,
         };
         let encoded = serde_json::to_string(&state).expect("serialises");
         let decoded: ReviewedState = serde_json::from_str(&encoded).expect("deserialises");
@@ -125,6 +146,7 @@ mod tests {
         let decoded: ReviewedState = serde_json::from_str(old).expect("deserialises");
         assert!(decoded.severities.is_empty());
         assert!(decoded.published_review.is_none());
+        assert!(decoded.latest_usage.is_none());
         assert_eq!(decoded.titles, vec!["Guard the index".to_string()]);
     }
 }

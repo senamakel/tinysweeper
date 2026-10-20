@@ -2169,6 +2169,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                 published_review: stored
                     .as_ref()
                     .and_then(|state| state.published_review.clone()),
+                latest_usage: stored
+                    .as_ref()
+                    .and_then(|state| state.latest_usage.clone()),
             };
             if let Err(err) = store.save_state(&state_key, &next).await {
                 tracing::warn!(%err, "could not record the review state; the next review will cost more");

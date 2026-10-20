@@ -28,6 +28,9 @@ use crate::harness::{pricing, schema};
 use crate::ports::model::{
     Message as CrateMessage, Model, ModelRequest, ModelResponse, Role, Usage,
 };
+use crate::ports::model_execution::{
+    ModelExecutionTerminal, ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
+};
 
 /// Records usage for each physical agentic dispatch while forwarding optional
 /// turn telemetry without capturing request or response content.
@@ -105,6 +108,7 @@ impl CompletionObserver for ModelCallObserver {
 struct AgenticCallObserver {
     downstream: Option<Arc<dyn openhuman_embed::observe::TurnObserver>>,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
     counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
@@ -134,6 +138,19 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 matches!(status, openhuman_embed::PhysicalDispatchStatus::Succeeded);
             let was_refused =
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
+            if let Some(control) = &self.execution_control {
+                control.on_terminal(ModelExecutionTerminal {
+                    requested_model: requested_model
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
+                    answered_model: answered_model.clone(),
+                    outcome: execution_terminal_outcome(*status),
+                    refused: *refused,
+                    usage: usage.as_ref().map(|usage| {
+                        ModelExecutionTerminalUsage::from(RawPhysicalDispatchUsage::from(usage))
+                    }),
+                });
+            }
             self.counts.record_raw(
                 provider_responded,
                 was_refused,
@@ -213,6 +230,7 @@ struct PhysicalModelObserver {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
     counts: PhysicalDispatchCounts,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
@@ -224,6 +242,7 @@ struct PhysicalModelTerminal {
     output_cap: u32,
     history: crate::harness::budget::OutputHistory,
     timing: Option<Arc<dyn crate::ports::model::ModelCallObserver>>,
+    execution_control: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
     counts: PhysicalDispatchCounts,
     correlation: crate::ports::model::ModelCallContext,
     dispatch: tracing::Dispatch,
@@ -277,6 +296,31 @@ impl From<&openhuman_embed::observe::ObservedUsage> for RawPhysicalDispatchUsage
             cached_tokens: usage.cached_tokens,
             cost_usd: usage.cost_usd,
         }
+    }
+}
+
+impl From<RawPhysicalDispatchUsage> for ModelExecutionTerminalUsage {
+    fn from(usage: RawPhysicalDispatchUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cached_tokens: usage.cached_tokens,
+            cost_usd: usage.cost_usd,
+        }
+    }
+}
+
+fn execution_terminal_outcome(
+    status: openhuman_embed::complete::PhysicalDispatchStatus,
+) -> ModelExecutionTerminalOutcome {
+    use openhuman_embed::complete::PhysicalDispatchStatus;
+
+    match status {
+        PhysicalDispatchStatus::Succeeded => ModelExecutionTerminalOutcome::Succeeded,
+        PhysicalDispatchStatus::Refused => ModelExecutionTerminalOutcome::Refused,
+        PhysicalDispatchStatus::Failed => ModelExecutionTerminalOutcome::Failed,
+        PhysicalDispatchStatus::Cancelled => ModelExecutionTerminalOutcome::Cancelled,
     }
 }
 
@@ -467,6 +511,7 @@ impl openhuman_embed::complete::PhysicalDispatchObserver for PhysicalModelObserv
             output_cap: self.output_cap,
             history: self.history.clone(),
             timing: self.timing.clone(),
+            execution_control: self.execution_control.clone(),
             counts: self.counts.clone(),
             correlation: self
                 .timing
@@ -493,6 +538,15 @@ impl openhuman_embed::complete::PhysicalDispatchTerminal for PhysicalModelTermin
                 .record(&self.lane, model, usage.output_tokens, self.output_cap);
         }
         let provider_responded = matches!(outcome.status, PhysicalDispatchStatus::Succeeded);
+        if let Some(control) = &self.execution_control {
+            control.on_terminal(ModelExecutionTerminal {
+                requested_model: self.requested_model.clone(),
+                answered_model: outcome.answered_model.clone(),
+                outcome: execution_terminal_outcome(outcome.status),
+                refused: outcome.refused,
+                usage: usage.map(RawPhysicalDispatchUsage::from).map(Into::into),
+            });
+        }
         self.counts.record(
             provider_responded,
             outcome.refused || matches!(outcome.status, PhysicalDispatchStatus::Refused),
@@ -821,6 +875,7 @@ impl GatewayModel {
             output_cap: base,
             history: self.output_history.clone(),
             timing: crate::ports::model::current_model_call_observer(),
+            execution_control: self.execution_control.clone(),
             counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
@@ -1132,6 +1187,7 @@ impl GatewayModel {
         let observer = Arc::new(AgenticCallObserver {
             downstream,
             timing: crate::ports::model::current_model_call_observer(),
+            execution_control: self.execution_control.clone(),
             counts: resources.physical_counts,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),

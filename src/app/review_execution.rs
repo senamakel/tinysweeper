@@ -2,6 +2,7 @@
 //!
 //! Review-wide execution limits and model bindings shared by one review job.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 #[cfg(test)]
@@ -12,13 +13,10 @@ use tokio::time::Instant;
 
 #[cfg(test)]
 use crate::lanes::large_pr::ReviewMode;
-use crate::ports::model::Model;
-#[cfg(test)]
-use crate::ports::model::Usage;
-#[cfg(test)]
-use crate::ports::model_execution::ModelExecutionTerminal;
+use crate::ports::model::{Model, Usage};
 use crate::ports::model_execution::{
     ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+    ModelExecutionTerminal, ModelExecutionTerminalOutcome,
 };
 
 /// Absolute review window and the operator limits applied to it.
@@ -50,6 +48,10 @@ pub(crate) struct ReviewExecutionSnapshot {
     pub reserved_calls: usize,
     /// Terminal physical usage received by this review scope.
     pub physical_usage: Usage,
+    /// Terminal usage grouped by the model that actually answered when known.
+    pub physical_usage_by_model: BTreeMap<String, Usage>,
+    /// Number of provider terminal callbacks received by this scope.
+    pub physical_terminal_count: u64,
     /// Raw physical terminal callbacks received by this execution scope.
     pub physical_terminals: Vec<ModelExecutionTerminal>,
     /// Whether every committed call has a terminal with complete reported usage.
@@ -124,12 +126,92 @@ impl ReviewRunContext {
 struct ExecutionState {
     committed_calls: usize,
     reserved_calls: usize,
-    #[cfg(test)]
-    physical_usage: Usage,
+    physical_accounting: PhysicalExecutionAccounting,
     #[cfg(test)]
     physical_terminals: Vec<ModelExecutionTerminal>,
     cancelled: bool,
     max_calls: Option<usize>,
+}
+
+#[derive(Debug)]
+struct PhysicalExecutionAccounting {
+    terminal_count: u64,
+    usage: Usage,
+    usage_by_model: BTreeMap<String, Usage>,
+    complete: bool,
+}
+
+impl Default for PhysicalExecutionAccounting {
+    fn default() -> Self {
+        Self {
+            terminal_count: 0,
+            usage: Usage::default(),
+            usage_by_model: BTreeMap::new(),
+            complete: true,
+        }
+    }
+}
+
+impl PhysicalExecutionAccounting {
+    fn record(&mut self, terminal: &ModelExecutionTerminal) {
+        let succeeded = matches!(terminal.outcome, ModelExecutionTerminalOutcome::Succeeded);
+        let refused = terminal.refused
+            || matches!(terminal.outcome, ModelExecutionTerminalOutcome::Refused);
+        let mut usage = Usage {
+            calls_attempted: 1,
+            calls_succeeded: u64::from(succeeded),
+            calls_refused: u64::from(refused),
+            calls_errored: u64::from(!succeeded),
+            ..Usage::default()
+        };
+        if let Some(reported) = terminal.usage {
+            usage.input_tokens = reported.input_tokens;
+            usage.output_tokens = reported.output_tokens;
+            usage.reasoning_tokens = reported.reasoning_tokens;
+            usage.cached_tokens = reported.cached_tokens;
+            match reported.cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.0) {
+                Some(cost) => usage.cost_usd = cost,
+                None => self.complete = false,
+            }
+        } else {
+            self.complete = false;
+        }
+
+        if !add_usage_saturating(&mut self.usage, usage) {
+            self.complete = false;
+        }
+        let model = terminal
+            .answered_model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&terminal.requested_model)
+            .to_owned();
+        if !add_usage_saturating(self.usage_by_model.entry(model).or_default(), usage) {
+            self.complete = false;
+        }
+        self.terminal_count = self.terminal_count.saturating_add(1);
+    }
+}
+
+fn add_usage_saturating(total: &mut Usage, addition: Usage) -> bool {
+    total.input_tokens = total.input_tokens.saturating_add(addition.input_tokens);
+    total.output_tokens = total.output_tokens.saturating_add(addition.output_tokens);
+    total.reasoning_tokens = total
+        .reasoning_tokens
+        .saturating_add(addition.reasoning_tokens);
+    total.cached_tokens = total.cached_tokens.saturating_add(addition.cached_tokens);
+    total.calls_attempted = total.calls_attempted.saturating_add(addition.calls_attempted);
+    total.calls_succeeded = total.calls_succeeded.saturating_add(addition.calls_succeeded);
+    total.calls_refused = total.calls_refused.saturating_add(addition.calls_refused);
+    total.calls_errored = total.calls_errored.saturating_add(addition.calls_errored);
+    let cost = total.cost_usd + addition.cost_usd;
+    if cost.is_finite() {
+        total.cost_usd = cost;
+        true
+    } else {
+        total.cost_usd = f64::MAX;
+        false
+    }
 }
 
 struct ExecutionInner {
@@ -185,8 +267,7 @@ impl ReviewExecution {
                 state: Mutex::new(ExecutionState {
                     committed_calls: 0,
                     reserved_calls: 0,
-                    #[cfg(test)]
-                    physical_usage: Usage::default(),
+                    physical_accounting: PhysicalExecutionAccounting::default(),
                     #[cfg(test)]
                     physical_terminals: Vec::new(),
                     cancelled: false,
@@ -258,28 +339,19 @@ impl ReviewExecution {
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
-    /// Record a terminal physical call event independently of timing spans.
-    #[cfg(test)]
-    pub(crate) fn record_physical_usage(&self, usage: Usage) {
-        lock(&self.inner.state).physical_usage.add(usage);
-    }
-
     /// Snapshot the counters used when the proposal is finalized.
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> ReviewExecutionSnapshot {
         let state = lock(&self.inner.state);
-        let physical_accounting_complete = state.committed_calls == state.physical_terminals.len()
-            && state.physical_terminals.iter().all(|terminal| {
-                terminal.usage.is_some_and(|usage| {
-                    usage
-                        .cost_usd
-                        .is_some_and(|cost| cost.is_finite() && cost >= 0.0)
-                })
-            });
+        let physical_accounting_complete = state.physical_accounting.complete
+            && u64::try_from(state.committed_calls).unwrap_or(u64::MAX)
+                == state.physical_accounting.terminal_count;
         ReviewExecutionSnapshot {
             committed_calls: state.committed_calls,
             reserved_calls: state.reserved_calls,
-            physical_usage: state.physical_usage,
+            physical_usage: state.physical_accounting.usage,
+            physical_usage_by_model: state.physical_accounting.usage_by_model.clone(),
+            physical_terminal_count: state.physical_accounting.terminal_count,
             physical_terminals: state.physical_terminals.clone(),
             physical_accounting_complete,
         }
@@ -345,9 +417,11 @@ impl ModelExecutionControl for ReviewExecution {
         }
     }
 
-    #[cfg(test)]
     fn on_terminal(&self, terminal: ModelExecutionTerminal) {
-        lock(&self.inner.state).physical_terminals.push(terminal);
+        let mut state = lock(&self.inner.state);
+        state.physical_accounting.record(&terminal);
+        #[cfg(test)]
+        state.physical_terminals.push(terminal);
     }
 }
 
@@ -978,17 +1052,27 @@ mod tests {
 
         assert_eq!(clone.snapshot().reserved_calls, 1);
         permit.mark_dispatched().expect("commit");
-        clone.record_physical_usage(Usage {
-            calls_attempted: 1,
-            calls_succeeded: 1,
-            input_tokens: 17,
-            ..Usage::default()
+        clone.on_terminal(ModelExecutionTerminal {
+            requested_model: "model-b".into(),
+            answered_model: Some("model-b".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                input_tokens: 17,
+                output_tokens: 0,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.0),
+            }),
         });
 
         let snapshot = execution.snapshot();
         assert_eq!(snapshot.committed_calls, 1);
         assert_eq!(snapshot.physical_usage.calls_attempted, 1);
         assert_eq!(snapshot.physical_usage.input_tokens, 17);
+        assert_eq!(snapshot.physical_usage_by_model["model-b"].input_tokens, 17);
+        assert_eq!(snapshot.physical_terminal_count, 1);
+        assert!(snapshot.physical_accounting_complete);
     }
 
     #[test]

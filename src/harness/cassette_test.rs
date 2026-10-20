@@ -887,10 +887,10 @@ struct ScopedPhysicalModel {
 impl Model for ScopedPhysicalModel {
     async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
         self.events.lock().expect("event log").push("complete");
-        if self.flags.0 {
-            if let Some(observer) = crate::ports::model::current_model_call_observer() {
-                observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
-            }
+        if self.flags.0
+            && let Some(observer) = crate::ports::model::current_model_call_observer()
+        {
+            observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
         }
         Ok(ModelResponse {
             value: answer(),
@@ -911,10 +911,10 @@ impl Model for ScopedPhysicalModel {
         _policy: &crate::config::types::LookupPolicy,
     ) -> Result<ModelResponse> {
         self.events.lock().expect("event log").push("review");
-        if self.flags.1 {
-            if let Some(observer) = crate::ports::model::current_model_call_observer() {
-                observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
-            }
+        if self.flags.1
+            && let Some(observer) = crate::ports::model::current_model_call_observer()
+        {
+            observer.completed(Usage::default(), true, false, std::time::Duration::ZERO);
         }
         Ok(ModelResponse {
             value: answer(),
@@ -1089,9 +1089,11 @@ async fn scoped_review_and_direct_calls_share_the_root_cassette_and_refusal_spen
         reviews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
     let recorder = Arc::new(Cassette::record(model.clone(), dir.path()));
-    let mut models = crate::config::types::Models::default();
-    models.agentic_reviewers = true;
-    models.budget_usd_per_pr = 100.0;
+    let models = crate::config::types::Models {
+        agentic_reviewers: true,
+        budget_usd_per_pr: 100.0,
+        ..Default::default()
+    };
     let capability = crate::flows::caps::ModelCapability::new(recorder.clone(), models);
     let policy = crate::config::types::LookupPolicy::default();
     let call = crate::flows::panel::Call {

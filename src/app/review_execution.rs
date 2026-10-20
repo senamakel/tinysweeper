@@ -1460,7 +1460,7 @@ mod tests {
         let started_at = Instant::now();
         let execution = ReviewExecution::new(options(
             ReviewMode::Large,
-            Some(4),
+            Some(1),
             started_at,
             started_at + Duration::from_secs(100),
         ));
@@ -1469,6 +1469,107 @@ mod tests {
         permit.mark_dispatched().expect("first commit");
         permit.mark_dispatched().expect("idempotent commit");
 
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn a_physical_retry_cannot_exceed_the_review_call_limit() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(1),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit = execution.acquire().await.expect("reservation");
+
+        permit.mark_dispatched().expect("commit first send");
+        permit
+            .mark_physical_attempt()
+            .expect("first physical send uses its committed slot");
+        assert_eq!(execution.snapshot().committed_calls, 1);
+
+        assert_eq!(
+            permit.mark_physical_attempt(),
+            Err(ModelExecutionRefusal::CallLimit),
+            "a second physical send on the same permit needs another slot"
+        );
+        assert_eq!(execution.snapshot().committed_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn physical_attempts_from_shared_permits_compete_for_one_extra_slot() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(3),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let first = execution.acquire().await.expect("first reservation");
+        let second = execution.acquire().await.expect("second reservation");
+        first.mark_dispatched().expect("commit first logical call");
+        second
+            .mark_dispatched()
+            .expect("commit second logical call");
+        first
+            .mark_physical_attempt()
+            .expect("first call's initial send is covered");
+        second
+            .mark_physical_attempt()
+            .expect("second call's initial send is covered");
+        assert_eq!(execution.snapshot().committed_calls, 2);
+
+        let first = Arc::from(first);
+        let second = Arc::from(second);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_barrier = Arc::clone(&barrier);
+        let first_retry = std::thread::spawn(move || {
+            first_barrier.wait();
+            first.mark_physical_attempt()
+        });
+        let second_barrier = Arc::clone(&barrier);
+        let second_retry = std::thread::spawn(move || {
+            second_barrier.wait();
+            second.mark_physical_attempt()
+        });
+        barrier.wait();
+
+        let results = [
+            first_retry.join().expect("first retry thread"),
+            second_retry.join().expect("second retry thread"),
+        ];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == Err(ModelExecutionRefusal::CallLimit))
+                .count(),
+            1
+        );
+        assert_eq!(execution.snapshot().committed_calls, 3);
+    }
+
+    #[tokio::test]
+    async fn a_physical_retry_rechecks_cancellation_after_the_first_send() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(2),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        let permit = execution.acquire().await.expect("reservation");
+        permit.mark_dispatched().expect("commit first send");
+        permit
+            .mark_physical_attempt()
+            .expect("first physical send is admitted");
+
+        execution.cancel();
+        assert_eq!(
+            permit.mark_physical_attempt(),
+            Err(ModelExecutionRefusal::Cancelled)
+        );
         assert_eq!(execution.snapshot().committed_calls, 1);
     }
 
@@ -1496,8 +1597,15 @@ mod tests {
         let permit = execution.acquire().await.expect("reservation");
 
         permit.mark_dispatched().expect("first physical send");
+        permit
+            .mark_physical_attempt()
+            .expect("first physical-attempt admission");
         crossed_deadline.store(true, Ordering::Release);
 
+        assert_eq!(
+            permit.mark_physical_attempt(),
+            Err(ModelExecutionRefusal::SoftDeadline)
+        );
         assert_eq!(
             permit.mark_dispatched(),
             Err(ModelExecutionRefusal::SoftDeadline)

@@ -105,4 +105,14 @@ pub trait ModelExecutionPermit: Send + Sync {
     /// money after acquiring. A refusal leaves this permit uncommitted and does
     /// not consume a committed-call slot.
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal>;
+
+    /// Admit one physical provider attempt made through this permit.
+    ///
+    /// The first attempt uses the slot committed by [`Self::mark_dispatched`];
+    /// each later attempt is a distinct physical call and may be refused by
+    /// the review-wide call limit. Compatibility controls that cannot observe
+    /// physical attempts may retain the default no-op implementation.
+    fn mark_physical_attempt(&self) -> std::result::Result<(), ModelExecutionRefusal> {
+        Ok(())
+    }
 }

@@ -6846,6 +6846,529 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_superseding_head_cancels_held_work_during_the_original_soft_drain() {
+        use crate::app::review_execution::ReviewExecutionOptions;
+        use crate::forge::types::{ChangedFile, FileStatus, PullRequest};
+        use crate::forge::{MockForge, MockState, RepoId, Write};
+        use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
+        use crate::ports::model_execution::ModelExecutionControl;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tokio::sync::{Semaphore, oneshot, watch};
+
+        struct HeldCallDrop(Arc<AtomicUsize>);
+        impl Drop for HeldCallDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        struct DrainModel {
+            control: Option<Arc<dyn ModelExecutionControl>>,
+            calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+            held_tx: watch::Sender<bool>,
+            falsified_tx: watch::Sender<bool>,
+            dropped_held: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl Model for DrainModel {
+            async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+                let prompt = request
+                    .messages
+                    .iter()
+                    .map(|message| message.content.as_str())
+                    .collect::<String>();
+                let path = ["src/a.rs", "src/b.rs"]
+                    .into_iter()
+                    .find(|path| prompt.contains(&format!("The file is `{path}`.")))
+                    .or_else(|| {
+                        ["src/a.rs", "src/b.rs"]
+                            .into_iter()
+                            .find(|path| prompt.contains(path))
+                    })
+                    .unwrap_or("<no-path>")
+                    .to_owned();
+                self.calls
+                    .lock()
+                    .expect("drain-model calls")
+                    .push((request.schema_name.clone(), path.clone()));
+                let control = self
+                    .control
+                    .as_ref()
+                    .ok_or(Error::ReviewExecutionUnavailable)?;
+                let permit =
+                    control
+                        .acquire()
+                        .await
+                        .map_err(|refusal| Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        })?;
+                permit
+                    .mark_dispatched()
+                    .map_err(|refusal| Error::ModelExecutionRefused {
+                        refusal,
+                        usage: None,
+                        accounting_complete: true,
+                    })?;
+
+                if request.schema_name == "tinysweeper_critique" && path == "src/b.rs" {
+                    let _drop = HeldCallDrop(Arc::clone(&self.dropped_held));
+                    self.held_tx.send_replace(true);
+                    std::future::pending::<()>().await;
+                }
+
+                let value = match request.schema_name.as_str() {
+                    "tinysweeper_critique" if path == "src/a.rs" => json!({
+                        "summary": "The changed function needs a contract comment.",
+                        "findings": [{
+                            "path": "src/a.rs",
+                            "existing_code": "fn a() {}",
+                            "rule": "document-function-contract",
+                            "title": "Document the function contract",
+                            "body": "The changed function has no contract comment.",
+                            "severity": "medium",
+                            "confidence": 0.95
+                        }]
+                    }),
+                    "tinysweeper_critique" => json!({
+                        "summary": "No issue found.", "findings": []
+                    }),
+                    "tinysweeper_falsify" => {
+                        self.falsified_tx.send_replace(true);
+                        json!({ "incorrect": [] })
+                    }
+                    schema => return Err(Error::Model(format!("unexpected schema {schema}"))),
+                };
+                drop(permit);
+                Ok(ModelResponse {
+                    value,
+                    model: request.model,
+                    usage: Usage {
+                        input_tokens: 2,
+                        output_tokens: 1,
+                        cost_usd: 0.01,
+                        ..Usage::default()
+                    },
+                })
+            }
+
+            fn with_execution_control(
+                &self,
+                control: Arc<dyn ModelExecutionControl>,
+            ) -> Option<Arc<dyn Model>> {
+                Some(Arc::new(Self {
+                    control: Some(control),
+                    calls: Arc::clone(&self.calls),
+                    held_tx: self.held_tx.clone(),
+                    falsified_tx: self.falsified_tx.clone(),
+                    dropped_held: Arc::clone(&self.dropped_held),
+                }))
+            }
+        }
+
+        let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
+        let now_ms = unix_time_ms();
+        let mut request_a = queued_test_review(7);
+        request_a.id = crate::ports::review_job::ReviewJobId("push-a-drain".into());
+        request_a.repo = "owner/repo".into();
+        request_a.number = 7;
+        request_a.head_sha = Some("head-a".into());
+        request_a.delivery = Some("push-a-drain".into());
+        request_a.accepted_at_ms = now_ms;
+        assert_eq!(
+            store.admit_batch(vec![request_a.clone()]).await.unwrap(),
+            Admission::Admitted
+        );
+
+        let mut state = MockState::default();
+        state.pull_requests.insert(
+            7,
+            PullRequest {
+                number: 7,
+                open: true,
+                title: "soft-drain supersession".into(),
+                head_sha: "head-a".into(),
+                ..PullRequest::default()
+            },
+        );
+        state.files.insert(
+            7,
+            ["src/a.rs", "src/b.rs"]
+                .into_iter()
+                .map(|path| ChangedFile {
+                    path: path.into(),
+                    status: FileStatus::Modified,
+                    additions: 1,
+                    patch: Some("@@ -1 +1,2 @@\n fn a() {}\n+fn next() {}\n".into()),
+                    ..ChangedFile::default()
+                })
+                .collect(),
+        );
+        let forge = MockForge::with_state(state);
+        let repo = RepoId::parse("owner/repo").unwrap();
+        seed_previously_published_queue_checks(store.as_ref(), now_ms).await;
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms).await;
+        let owned_a = store
+            .claim_next("drain-worker-a", now_ms + 1)
+            .await
+            .unwrap()
+            .unwrap();
+        confirm_test_head(store.as_ref(), &owned_a, now_ms + 2).await;
+
+        let started_at = tokio::time::Instant::now();
+        let hard_deadline = started_at + Duration::from_secs(100);
+        let context_a = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            ReviewExecutionOptions {
+                started_at,
+                hard_deadline,
+                mode: crate::lanes::large_pr::ReviewMode::Large,
+                max_calls: Some(8),
+                soft_deadline_percent: 80,
+                drain_seconds: 5,
+            },
+        ));
+        let (held_tx, mut held_rx) = watch::channel(false);
+        let (falsified_tx, mut falsified_rx) = watch::channel(false);
+        let dropped_held = Arc::new(AtomicUsize::new(0));
+        let drain_model = Arc::new(DrainModel {
+            control: None,
+            calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+            held_tx,
+            falsified_tx,
+            dropped_held: dropped_held.clone(),
+        });
+        let mut config: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        config.review.lanes = vec!["critique".into()];
+        config.review.strictness = 3;
+        config.review.passes = 1;
+        config.review.large_pr.files = 1;
+        config.review.large_pr.max_groups = 2;
+        config.review.large_pr.max_calls = 8;
+        config.grouping.enabled = false;
+        config.summary.enabled = false;
+        config.overview.enabled = false;
+        config.knowledge.extract = false;
+        config.retrieval.enabled = false;
+        config.threads.resolve_fixed = false;
+        config.threads.ask_model = false;
+        config.wireframe.enabled = false;
+        config.automerge.enabled = false;
+        let raw_model: Arc<dyn Model> = drain_model.clone();
+        let bound_a = context_a
+            .bind_model(raw_model, config.models.budget_usd_per_pr)
+            .model
+            .clone();
+        let jobs: Arc<dyn ReviewJobStore> = store.clone();
+        let model_a: Arc<dyn Model> = Arc::new(OwnedModel {
+            inner: bound_a,
+            execution: context_a.execution(),
+            jobs: jobs.clone(),
+            owned: owned_a.clone(),
+            owner_lost: None,
+            owner_until: None,
+        });
+        let apply_a = Arc::new(AtomicUsize::new(0));
+        let apply_a_in_worker = apply_a.clone();
+        let worker_slots = Arc::new(Semaphore::new(1));
+        let worker_permit = worker_slots.clone().acquire_owned().await.unwrap();
+        let (checkout_tx, checkout_rx) = oneshot::channel();
+        let worker = {
+            let store = store.clone();
+            let forge = forge.clone();
+            let config = config.clone();
+            let repo = repo.clone();
+            let owned = owned_a.clone();
+            let context = context_a.clone();
+            let model = model_a.clone();
+            tokio::spawn(async move {
+                let paid_review = review_with_paid_budget_and_status(
+                    store.as_ref(),
+                    Some(&owned),
+                    now_ms + 3,
+                    || async { Ok(()) },
+                    || async { Ok(true) },
+                    || async move {
+                        let timing =
+                            crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental");
+                        let findings = checkout_then_review_before_deadline(
+                            &timing,
+                            hard_deadline,
+                            &repo,
+                            7,
+                            || async move {
+                                let _ = checkout_tx.send(());
+                                tokio::time::sleep(Duration::from_secs(75)).await;
+                                Ok::<(), Error>(())
+                            },
+                            move |_| async move {
+                                assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(75));
+                                let proposal = run_if_confirmed_head_needs_review(
+                                    store.as_ref(),
+                                    Some(&owned),
+                                    Mode::Incremental,
+                                    || async {
+                                        crate::app::review::review_with_tree_observed_at_head_in_run(
+                                            &forge,
+                                            model,
+                                            &config,
+                                            &repo,
+                                            7,
+                                            None,
+                                            None,
+                                            None,
+                                            None,
+                                            Some("head-a"),
+                                            context,
+                                            None,
+                                        )
+                                        .await
+                                    },
+                                )
+                                .await?;
+                                apply_a_in_worker.fetch_add(1, Ordering::SeqCst);
+                                let applied = crate::app::apply::apply(
+                                    &forge, &forge, &config, &proposal, None,
+                                )
+                                .await?;
+                                Ok::<_, Error>(published_review_result(
+                                    applied,
+                                    proposal.findings().count(),
+                                    crate::app::apply::requests_changes(&config, &proposal),
+                                    status::aggregate_coverage(&proposal),
+                                ))
+                            },
+                        )
+                        .await?;
+                        Ok(InnerReview::Complete(findings))
+                    },
+                );
+                let result = select_review_control(
+                    paid_review,
+                    store.as_ref(),
+                    Some(&owned),
+                    None,
+                    None,
+                    context.execution(),
+                )
+                .await;
+                if matches!(result, Err(Error::ReviewSuperseded)) {
+                    assert!(matches!(
+                        record_owned_disposition(
+                            store.as_ref(),
+                            &owned,
+                            WorkerDisposition::Yielded,
+                            unix_time_ms(),
+                        )
+                        .await,
+                        Some(Ok(true))
+                    ));
+                }
+                drop(worker_permit);
+                result
+            })
+        };
+
+        checkout_rx
+            .await
+            .expect("A begins its original paid attempt");
+        tokio::time::advance(Duration::from_secs(75)).await;
+        for _ in 0..10_000 {
+            if *held_rx.borrow() && *falsified_rx.borrow() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            *falsified_rx.borrow(),
+            "A's finding reaches its actual falsifier"
+        );
+        assert!(
+            *held_rx.borrow(),
+            "another selected group is still in model work"
+        );
+        assert_eq!(context_a.execution().started_at(), started_at);
+        assert_eq!(
+            context_a.execution().soft_deadline(),
+            started_at + Duration::from_secs(80)
+        );
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started_at + Duration::from_secs(80)
+        );
+        assert!(
+            !worker.is_finished(),
+            "the held group remains inside the drain window"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let mut request_b = request_a;
+        request_b.id = crate::ports::review_job::ReviewJobId("push-b-drain".into());
+        request_b.delivery = Some("push-b-drain".into());
+        request_b.head_sha = Some("head-b".into());
+        request_b.accepted_at_ms = unix_time_ms();
+        assert_eq!(
+            store.admit_batch(vec![request_b]).await.unwrap(),
+            Admission::Admitted
+        );
+        assert!(
+            !store
+                .should_continue(&owned_a, unix_time_ms())
+                .await
+                .unwrap()
+        );
+        tokio::time::advance(Duration::from_millis(500)).await;
+        for _ in 0..100 {
+            if worker.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            worker.is_finished(),
+            "the durable supersession poll cancels A before t85"
+        );
+        assert!(matches!(
+            worker.await.unwrap(),
+            Err(Error::ReviewSuperseded)
+        ));
+        assert!(context_a.is_cancelled());
+        assert_eq!(dropped_held.load(Ordering::Acquire), 1);
+        assert_eq!(
+            apply_a.load(Ordering::SeqCst),
+            0,
+            "A never reaches real apply"
+        );
+        assert!(
+            worker_slots.try_acquire().is_ok(),
+            "A releases its worker slot on yield"
+        );
+
+        forge.replace_pull_request(PullRequest {
+            number: 7,
+            open: true,
+            title: "soft-drain supersession".into(),
+            head_sha: "head-b".into(),
+            ..PullRequest::default()
+        });
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), unix_time_ms())
+            .await;
+        let owned_b = store
+            .claim_next("drain-worker-b", unix_time_ms())
+            .await
+            .unwrap()
+            .expect("the yielded job is reclaimed for B's hinted head");
+        assert!(
+            store
+                .confirm_head(&owned_b, "head-b", unix_time_ms())
+                .await
+                .unwrap()
+        );
+        let context_b = test_execution_context(
+            tokio::time::Instant::now(),
+            tokio::time::Instant::now() + Duration::from_secs(100),
+        );
+        let mock_b = MockModel::silent();
+        let base_b: Arc<dyn Model> = Arc::new(mock_b.clone());
+        let bound_b = context_b
+            .bind_model(base_b, config.models.budget_usd_per_pr)
+            .model
+            .clone();
+        let model_b: Arc<dyn Model> = Arc::new(OwnedModel {
+            inner: bound_b,
+            execution: context_b.execution(),
+            jobs: jobs.clone(),
+            owned: owned_b.clone(),
+            owner_lost: None,
+            owner_until: None,
+        });
+        let result_b = run_if_confirmed_head_needs_review(
+            store.as_ref(),
+            Some(&owned_b),
+            Mode::Incremental,
+            || async {
+                review_with_paid_budget_and_status(
+                    store.as_ref(),
+                    Some(&owned_b),
+                    unix_time_ms(),
+                    || async { Ok(()) },
+                    || async { Ok(true) },
+                    || async {
+                        let proposal =
+                            crate::app::review::review_with_tree_observed_at_head_in_run(
+                                &forge,
+                                model_b,
+                                &config,
+                                &repo,
+                                7,
+                                None,
+                                None,
+                                None,
+                                None,
+                                Some("head-b"),
+                                context_b,
+                                None,
+                            )
+                            .await?;
+                        let applied =
+                            crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
+                                .await?;
+                        Ok(InnerReview::Complete(published_review_result(
+                            applied,
+                            proposal.findings().count(),
+                            crate::app::apply::requests_changes(&config, &proposal),
+                            status::aggregate_coverage(&proposal),
+                        )))
+                    },
+                )
+                .await
+            },
+        )
+        .await
+        .expect("the replacement worker completes on its fresh execution scope");
+        let InnerReview::Complete(findings) = result_b else {
+            panic!("the replacement review reaches actual publication");
+        };
+        let (conclusion, disposition) = completed_review_disposition(findings);
+        assert!(matches!(
+            disposition,
+            WorkerDisposition::Terminal(TerminalOutcome::Published)
+        ));
+        assert!(matches!(conclusion, Conclusion::Reviewed { .. }));
+        assert!(matches!(
+            record_owned_disposition(store.as_ref(), &owned_b, disposition, unix_time_ms()).await,
+            Some(Ok(true))
+        ));
+        assert!(mock_b.calls() > 0);
+        let writes = forge.writes();
+        assert!(
+            writes.iter().any(|write| matches!(
+                write,
+                Write::Check(check) if check.head_sha == "head-b" && check.conclusion.is_some()
+            )),
+            "only B reaches a completed App check on its confirmed head"
+        );
+        assert!(
+            !writes.iter().any(|write| matches!(
+                write,
+                Write::Check(check) if check.head_sha == "head-a" && check.conclusion.is_some()
+            )),
+            "A's interrupted App review is never published"
+        );
+        assert!(store.snapshot_for_test().terminal.iter().any(|entry| {
+            entry.id == crate::ports::review_job::ReviewJobId("push-b-drain".into())
+                && entry.outcome == TerminalOutcome::Published
+        }));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn checkout_keeps_the_original_window_and_publishes_drained_work_at_the_deadline() {
         use crate::app::review_execution::ReviewExecutionOptions;
         use crate::forge::types::{ChangedFile, FileStatus, PullRequest, ReviewEvent};

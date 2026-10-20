@@ -1766,7 +1766,25 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let large_critique = is_large.then(|| critique_prepared.take()).flatten();
     let large_security = is_large.then(|| security_prepared.take()).flatten();
     let large_execution = execution_scope.clone();
+    let large_lane_phases: Vec<_> = if is_large {
+        timing
+            .as_ref()
+            .map(|timing| {
+                config
+                    .enabled_lanes()
+                    .into_iter()
+                    .filter(|lane| matches!(lane, LaneId::Critique | LaneId::Security))
+                    .map(|lane| timing.lane_under(lane.as_str(), &lanes_span))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let large_groups = async move {
+        // These guards cover the shared ranked-group dispatcher and still
+        // record a lane phase if the review is cancelled while it is running.
+        let _lane_phases = large_lane_phases;
         if is_large {
             run_large_groups(
                 large_input,
@@ -4632,10 +4650,26 @@ mod tests {
         config.review.large_pr.files = 1;
         config.review.large_pr.max_groups = 1;
         config.review.large_pr.max_calls = 8;
+        let timing = crate::review_timing::ReviewTiming::new(
+            "tinyhumansai/tinysweeper",
+            7,
+            "Large",
+        );
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(500),
-            review(&forge, model_trait, &config, &repo(), 7),
+            review_with_tree_observed(
+                &forge,
+                model_trait,
+                &config,
+                &repo(),
+                7,
+                None,
+                None,
+                None,
+                None,
+                Some(timing.clone()),
+            ),
         )
         .await;
 
@@ -4645,6 +4679,7 @@ mod tests {
         );
         let proposal = result.unwrap().expect("Large-mode review succeeds");
         assert_eq!(proposal.lanes.len(), 2);
+        assert!(timing.snapshot().lanes_ms.contains_key("critique"));
     }
 
     #[tokio::test]
@@ -4694,7 +4729,7 @@ mod tests {
         config.wireframe.enabled = true;
         config.threads.resolve_fixed = true;
         config.threads.ask_model = true;
-        config.models.budget_usd_per_pr = 0.06;
+        config.models.budget_usd_per_pr = 0.061;
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),

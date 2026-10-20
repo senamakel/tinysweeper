@@ -36,6 +36,14 @@ Placement, merging and removal stay where they were — in the lane, in
 `council::merge`, and in `falsify` respectively. Those are the steps the golden
 tests pin.
 
+At the application boundary, enabled lanes run together, including in Large
+mode: its globally risk-ranked Critique/Security group queue is joined with the
+other enabled lanes rather than awaited first. Summary generation, thread
+advice and wireframe generation also run together after lane outcomes are
+available. The review shares one eight-dispatch ceiling across these stages
+and folds spend and lane proposals in canonical order, so completion timing
+cannot reorder published output or make parallel work each see a fresh budget.
+
 ## What is deliberately absent: a verification round
 
 An earlier version ran one — every finding put to independent judges, majority

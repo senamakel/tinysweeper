@@ -51,6 +51,8 @@ pub enum StopReason {
     Empty,
     /// The call failed or its structured response was malformed.
     Failed,
+    /// Host review policy refused another pass after work was already kept.
+    Refused,
     /// The lane could not place the pass's findings against the diff.
     PlacementFailure,
     /// Every proposed finding repeated one already confirmed.
@@ -65,6 +67,7 @@ impl StopReason {
             Self::Ceiling => "ceiling",
             Self::Empty => "empty",
             Self::Failed => "failed",
+            Self::Refused => "refused",
             Self::PlacementFailure => "placement_failure",
             Self::Duplicate => "duplicate",
             Self::NonSurviving => "non_surviving",

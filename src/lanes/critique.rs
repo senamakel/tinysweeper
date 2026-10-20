@@ -533,12 +533,32 @@ async fn review_group(
             {
                 Ok(coverage) => coverage,
                 Err(err) => {
-                    tracing::warn!(%err, "an adaptive review pass failed");
+                    let refusal = match &err {
+                        crate::error::Error::ModelExecutionRefused { refusal, .. } => {
+                            Some(*refusal)
+                        }
+                        _ => None,
+                    };
+                    if refusal
+                        == Some(crate::ports::model_execution::ModelExecutionRefusal::Cancelled)
+                    {
+                        return Err(err);
+                    }
+                    if let Some(refusal) = refusal {
+                        execution_refusal = Some(refusal);
+                        tracing::info!(?refusal, "adaptive review pass stopped by host policy");
+                    } else {
+                        tracing::warn!(%err, "an adaptive review pass failed");
+                    }
                     // No per-call usage is observable when the round itself
                     // fails to return an outcome; count the attempt without
                     // attributing concurrent groups' shared lane spend to it.
                     metrics.record(Usage::default(), Duration::ZERO, 0);
-                    metrics.stop(crate::lanes::coverage::StopReason::Failed);
+                    metrics.stop(if refusal.is_some() {
+                        crate::lanes::coverage::StopReason::Refused
+                    } else {
+                        crate::lanes::coverage::StopReason::Failed
+                    });
                     break;
                 }
             };

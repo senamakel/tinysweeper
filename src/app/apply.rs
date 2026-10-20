@@ -3213,7 +3213,7 @@ mod tests {
         record_apply_state(
             Some(&store),
             &proposal("head", vec![]),
-            Some((ReviewEvent::Approve, vec![], None)),
+            Some((ReviewEvent::Approve, vec![], None, true)),
         )
         .await;
         assert_eq!(saves.load(Ordering::SeqCst), 0);

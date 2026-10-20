@@ -74,7 +74,10 @@ Four bounds on approving, all deliberate. It reads the *gate*, not the blocking
 threshold, so `request_changes_at = "off"` stops tinysweeper objecting without
 starting it endorsing a red pull request. A known, successfully published
 decision is not restated when its verdict and stable blocking-finding identities
-are unchanged. Checks and the review hub still update on every push. Old state
+are unchanged. Comment publications also record whether coverage was complete:
+a newly required incomplete-coverage warning replaces an earlier complete
+comment, while repeated incomplete comments dedupe after that warning is
+published. Checks and the review hub still update on every push. Old state
 without a publication record cannot certify a duplicate. Approvals are only
 deduped for complete current-head reviews while forge history still shows the
 actual approval at the SHA of the successful publication. A partial review

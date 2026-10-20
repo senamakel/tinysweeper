@@ -72,9 +72,16 @@ ever blocked.
 
 Four bounds on approving, all deliberate. It reads the *gate*, not the blocking
 threshold, so `request_changes_at = "off"` stops tinysweeper objecting without
-starting it endorsing a red pull request. And an approval that already stands is
-not restated, or every push to a clean pull request would add a review that
-changes nothing.
+starting it endorsing a red pull request. A known, successfully published
+decision is not restated when its verdict and stable blocking-finding identities
+are unchanged. Checks and the review hub still update on every push. Old state
+without a publication record cannot certify a duplicate, and approvals are only
+deduped when the current review is complete and forge history still shows the
+approval standing. A partial review continues to withdraw any standing approval.
+
+Review comments keep one total-spend line inside collapsed diagnostics. Token,
+cache and embedding counts stay in the hidden state marker and review timing
+record; they remain available in durable review state for the latest pass.
 
 ## `local-review`
 

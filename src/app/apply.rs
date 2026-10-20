@@ -292,9 +292,7 @@ pub async fn apply(
         && previous_review.is_some()
         && comments.is_empty()
         && match event {
-            ReviewEvent::Approve => {
-                proposal.complete() && previous == Some(ReviewEvent::Approve)
-            }
+            ReviewEvent::Approve => proposal.complete() && previous == Some(ReviewEvent::Approve),
             ReviewEvent::RequestChanges => previous == Some(ReviewEvent::RequestChanges),
             ReviewEvent::Comment => true,
         };
@@ -380,9 +378,9 @@ pub async fn apply(
     record_apply_state(
         store,
         proposal,
-        review_published.then(|| {
-            blocking_findings.map(|blocking_findings| (event, blocking_findings))
-        }).flatten(),
+        review_published
+            .then(|| blocking_findings.map(|blocking_findings| (event, blocking_findings)))
+            .flatten(),
     )
     .await;
 
@@ -2788,9 +2786,94 @@ mod tests {
             .expect("applies");
         }
         let writes = forge.writes();
-        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Review { .. })).count(), 1);
-        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Comment { .. } | Write::CommentUpdate { .. })).count(), 2);
-        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Check(_) | Write::CheckUpdate { .. })).count(), 2);
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Review { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Comment { .. } | Write::CommentUpdate { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|w| matches!(w, Write::Check(_) | Write::CheckUpdate { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deduped_push_updates_hidden_usage_without_rewriting_the_review_receipt() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("initial");
+        let store = MemoryState::new();
+        for (head, cost, input) in [("head-one", 0.01, 100), ("head-two", 0.025, 250)] {
+            forge.push(
+                7,
+                head,
+                vec![ChangedFile {
+                    path: "src/main.rs".into(),
+                    patch: Some("@@ -1,1 +1,2 @@\n x\n+y\n".into()),
+                    ..ChangedFile::default()
+                }],
+            );
+            let mut proposal = proposal(head, vec![finding()]);
+            proposal.cost_usd = cost;
+            proposal.input_tokens = input;
+            proposal.output_tokens = 40;
+            proposal.cached_tokens = 25;
+            apply(&forge, &forge, &config(), &proposal, Some(&store))
+                .await
+                .expect("applies");
+        }
+
+        let reviews: Vec<_> = forge
+            .writes()
+            .into_iter()
+            .filter_map(|write| match write {
+                Write::Review { body, .. } => Some(body),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reviews.len(),
+            1,
+            "the second head repeats the same decision"
+        );
+        assert!(reviews[0].contains("sha=head-one"), "{}", reviews[0]);
+        assert!(reviews[0].contains("usage=cost:0.0100,input:100,output:40,cached:25,embed:0"));
+
+        let state = store
+            .load_state(&crate::state::key("tinyhumansai/tinysweeper", 7))
+            .await
+            .expect("loads")
+            .expect("state retained");
+        assert_eq!(
+            state
+                .latest_usage
+                .as_ref()
+                .map(|usage| usage.cost_usd.as_str()),
+            Some("0.025")
+        );
+        assert_eq!(
+            state.latest_usage.as_ref().map(|usage| usage.input_tokens),
+            Some(250)
+        );
+        assert_eq!(
+            state
+                .published_review
+                .as_ref()
+                .map(|review| review.head_sha.as_str()),
+            Some("head-one")
+        );
     }
 
     #[tokio::test]
@@ -2800,14 +2883,33 @@ mod tests {
         let forge = forge("abc123");
         let store = MemoryState::new();
         let mut config = config();
-        apply(&forge, &forge, &config, &proposal("abc123", vec![finding()]), Some(&store))
-            .await
-            .expect("first apply");
+        apply(
+            &forge,
+            &forge,
+            &config,
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("first apply");
         config.review.request_changes_at = "off".into();
-        apply(&forge, &forge, &config, &proposal("abc123", vec![finding()]), Some(&store))
-            .await
-            .expect("second apply");
-        assert_eq!(forge.writes().iter().filter(|w| matches!(w, Write::Review { .. })).count(), 2);
+        apply(
+            &forge,
+            &forge,
+            &config,
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await
+        .expect("second apply");
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|w| matches!(w, Write::Review { .. }))
+                .count(),
+            2
+        );
     }
     // --- the change map ----------------------------------------------------
 

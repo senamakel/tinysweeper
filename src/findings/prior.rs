@@ -890,7 +890,7 @@ mod tests {
                 IssueComment {
                     id: Some(2),
                     author: "tinysweeper".into(),
-                    body: "reviewed\n<!-- tinysweeper:state v=1 sha=abc1234 -->".into(),
+                    body: "reviewed\n<!-- tinysweeper:state v=1 sha=abc1234 usage=cost:0.01,input:100 -->".into(),
                 },
             ],
         );

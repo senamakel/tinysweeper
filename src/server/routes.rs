@@ -6702,8 +6702,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|comment| {
-                comment.author == "tinysweeper[bot]"
-                    && comment.body.contains("LAST GOOD TITLE")
+                comment.author == "tinysweeper[bot]" && comment.body.contains("LAST GOOD TITLE")
             })
             .expect("the last-good report was published to the review hub");
         let last_good_report = previous_hub.body;
@@ -6737,10 +6736,12 @@ mod tests {
         assert!(partial.partial_review.is_some());
         assert_eq!(partial.head_sha, "failed-apply-head");
         assert_eq!(partial.unreviewed.len(), 1);
-        assert!(partial
-            .summary
-            .as_ref()
-            .is_some_and(|summary| !summary.executive_summary.is_empty()));
+        assert!(
+            partial
+                .summary
+                .as_ref()
+                .is_some_and(|summary| !summary.executive_summary.is_empty())
+        );
         let failed_attempt_report = crate::summary::render(&config, &partial);
         assert!(failed_attempt_report.contains("PARTIAL ATTEMPT TITLE"));
         assert_ne!(failed_attempt_report, last_good_report);
@@ -6803,10 +6804,10 @@ mod tests {
         });
         let failed_hub = failed_hub.expect("the existing hub is updated in place");
         assert!(failed_hub.contains("Last completed report"), "{failed_hub}");
-        assert_eq!(failed_hub.matches(&last_good_report).count(), 1);
+        assert_eq!(failed_hub.matches(last_good_report.as_str()).count(), 1);
         assert!(failed_hub.contains(&last_good_report), "{failed_hub}");
         assert!(
-            !failed_hub.contains("PARTIAL-ATTEMPT-REPORT-ONLY"),
+            !failed_hub.contains("PARTIAL ATTEMPT TITLE"),
             "{failed_hub}"
         );
         assert_eq!(

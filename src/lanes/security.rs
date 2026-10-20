@@ -1075,8 +1075,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_low_risk_group_does_not_get_an_adaptive_pass() {
-        let model = MockModel::new().then(json!({"summary": "Nothing to report.", "findings": []}));
+    async fn a_small_group_with_a_candidate_gets_an_adaptive_pass() {
+        let mut candidate = finding_at_line("Review the changed behavior", 2);
+        candidate["path"] = json!("src/ordinary.rs");
+        let model = MockModel::new()
+            .then(json!({"summary":"Potential issue.", "findings":[candidate]}))
+            .then(json!({"incorrect":[], "security_scope":[{
+                "index":1, "verdict":"in_scope", "attacker_input":"request input",
+                "dangerous_operation":"ordinary operation", "security_impact":"unexpected access",
+                "reason":"The claim describes a changed trust boundary."}]}))
+            .then(json!({"summary":"Nothing further.", "findings":[]}));
         let handle = model.clone();
         let low_risk = vec![parse_file_patch(
             "src/ordinary.rs",
@@ -1085,7 +1093,7 @@ mod tests {
 
         run_with(model, &config_with_passes(2), &low_risk, &[]).await;
 
-        assert_eq!(handle.calls(), 1, "no coverage call should have been made");
+        assert_eq!(handle.calls(), 3, "review, falsification, and adaptive review");
     }
 
     #[tokio::test]

@@ -496,6 +496,75 @@ fn gateway_empty_lane_reply(model: &str) -> crate::harness::fake_gateway::Reply 
 }
 
 #[cfg(feature = "harness")]
+fn assert_gateway_large_coverage(proposal: &Proposal) -> usize {
+    use crate::app::review::PartialReviewReason;
+    use crate::config::types::LaneId;
+    use std::collections::BTreeSet;
+
+    let reviewed_pairs = proposal
+        .lanes
+        .iter()
+        .flat_map(|lane| {
+            lane.coverage
+                .iter()
+                .flat_map(move |coverage| coverage.reviewed.iter().map(move |path| (lane.lane, path)))
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reviewed_pairs.len(),
+        2,
+        "only the two successful continuation responses count as reviewed groups"
+    );
+    let call_limited_pairs = proposal
+        .partial_review
+        .as_ref()
+        .expect("the physical ceiling leaves partial-review metadata")
+        .omitted
+        .iter()
+        .filter(|omission| omission.reason == PartialReviewReason::CallLimit)
+        .filter_map(|omission| omission.lane.map(|lane| (lane, omission.path.as_str())))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        call_limited_pairs.len(),
+        4,
+        "four selected lane/path groups have a typed call-limit omission"
+    );
+    let paths_for = |lane| {
+        proposal
+            .lanes
+            .iter()
+            .find(|proposal| proposal.lane == lane)
+            .and_then(|proposal| proposal.coverage.as_ref())
+            .map(|coverage| coverage.reviewed.iter().collect::<BTreeSet<_>>())
+            .unwrap_or_default()
+    };
+    let critique = paths_for(LaneId::Critique);
+    let security = paths_for(LaneId::Security);
+    let fully_covered = critique
+        .intersection(&security)
+        .map(|path| (*path).clone())
+        .collect::<BTreeSet<_>>();
+    assert!(
+        fully_covered.len() <= 1,
+        "the six selected lane groups cover no more than one whole file"
+    );
+    let changed = large_fixture_files()
+        .into_iter()
+        .map(|file| file.path)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(changed.len(), 60);
+    assert_eq!(
+        proposal.unreviewed.iter().cloned().collect::<BTreeSet<_>>(),
+        changed
+            .difference(&fully_covered)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        "a file is covered only when both lane groups completed"
+    );
+    fully_covered.len()
+}
+
+#[cfg(feature = "harness")]
 #[tokio::test]
 async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
     use crate::harness::embed::GatewayModel;
@@ -562,6 +631,7 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
             .and_then(|partial| partial.stop_reason),
         Some(crate::app::review::PartialReviewReason::CallLimit)
     );
+    let fully_covered = assert_gateway_large_coverage(&proposal);
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
         .await
         .expect("the partial repair-limited proposal is published");
@@ -582,7 +652,10 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
         Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
         _ => None,
     });
-    assert!(hub.is_some_and(|body| body.contains("not reviewed (call budget)")));
+    assert!(hub.is_some_and(|body| {
+        body.contains("not reviewed (call budget)")
+            && body.contains(&format!("Reviewed {fully_covered} of 60 files"))
+    }));
     assert!(!writes.iter().any(|write| matches!(
         write,
         Write::Review {
@@ -662,6 +735,7 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
             .and_then(|partial| partial.stop_reason),
         Some(crate::app::review::PartialReviewReason::CallLimit)
     );
+    let fully_covered = assert_gateway_large_coverage(&proposal);
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
         .await
         .expect("the partial fallback-limited proposal is published");
@@ -682,7 +756,10 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
         Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
         _ => None,
     });
-    assert!(hub.is_some_and(|body| body.contains("not reviewed (call budget)")));
+    assert!(hub.is_some_and(|body| {
+        body.contains("not reviewed (call budget)")
+            && body.contains(&format!("Reviewed {fully_covered} of 60 files"))
+    }));
     assert!(!writes.iter().any(|write| matches!(
         write,
         Write::Review {

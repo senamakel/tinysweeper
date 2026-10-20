@@ -438,6 +438,10 @@ mod tests {
         assert_eq!(sent.model, "vendor/deep");
         assert_eq!(sent.schema_name, "tinysweeper_test");
         assert_eq!(
+            sent.reasoning_effort, None,
+            "a generic model capability must inherit the adapter's global effort"
+        );
+        assert_eq!(
             sent.messages,
             vec![Message::system("s"), Message::user("p")]
         );

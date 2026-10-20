@@ -7,7 +7,9 @@ use crate::forge::types::{
 };
 use crate::harness::mock::MockModel;
 use crate::ports::model::{Model, ModelRequest, ModelResponse, Usage};
-use crate::ports::model_execution::{ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal};
+use crate::ports::model_execution::{
+    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
+};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -194,6 +196,7 @@ fn large_config() -> Config {
     config.review.large_pr.files = 30;
     config.review.large_pr.max_groups = 6;
     config.review.large_pr.max_calls = 8;
+    config.grouping.enabled = false;
     config.review.approve_when_clean = true;
     config.auto_merge.enabled = true;
     config.threads.resolve_fixed = true;
@@ -325,27 +328,34 @@ async fn sixty_file_empty_large_review_uses_six_global_groups_and_the_shared_cal
     assert!(proposal.partial_review.is_some());
     assert!(!proposal.complete());
 
-    let mut expected_paths: Vec<_> = (0..60)
-        .map(|index| format!("src/plain_{index:02}.rs"))
+    let changed_paths: std::collections::BTreeSet<_> = large_fixture_files()
+        .into_iter()
+        .map(|file| file.path)
         .collect();
-    expected_paths.extend([
-        "src/x_api.rs".to_string(),
-        "src/y_api.rs".to_string(),
-        "src/z_api.rs".to_string(),
-        "app/src/Button.tsx".to_string(),
-    ]);
-    assert_eq!(expected_paths.len(), 60);
+    assert_eq!(changed_paths.len(), 60);
     let reviewed_paths: std::collections::BTreeSet<_> = proposal
         .lanes
         .iter()
         .flat_map(|lane| lane.coverage.iter())
         .flat_map(|coverage| coverage.reviewed.iter().cloned())
         .collect();
-    assert!(reviewed_paths.contains("src/x_api.rs"));
-    assert!(reviewed_paths.contains("src/y_api.rs"));
-    assert!(reviewed_paths.contains("src/z_api.rs"));
-    assert!(proposal.unreviewed.iter().any(|path| path == "app/src/Button.tsx"));
-    assert!(proposal.unreviewed.len() >= 54);
+    let expected_reviewed: std::collections::BTreeSet<_> = [
+        "src/x_api.rs".to_string(),
+        "src/y_api.rs".to_string(),
+        "src/z_api.rs".to_string(),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(reviewed_paths, expected_reviewed);
+    let expected_unreviewed = changed_paths
+        .difference(&expected_reviewed)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        proposal.unreviewed.iter().cloned().collect::<std::collections::BTreeSet<_>>(),
+        expected_unreviewed,
+        "coverage is per path across both lanes, so the six selected groups cover three files"
+    );
 
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
         .await

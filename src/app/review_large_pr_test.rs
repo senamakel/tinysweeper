@@ -14,7 +14,7 @@ fn config() -> Config {
         .try_into()
         .expect("default config converts");
     config.review.lanes = vec!["critique".into()];
-    config.summary.enabled = false;
+    config.summary.enabled = true;
     config.knowledge.extract = false;
     config.retrieval.enabled = false;
     config
@@ -53,7 +53,12 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
     let forge = MockForge::with_state(state);
     let model: Arc<dyn Model> = Arc::new(MockModel::always(json!({
         "summary": "No finding.",
-        "findings": []
+        "findings": [],
+        "executive_summary": "The pull request changes two source files.",
+        "changes": "",
+        "features": [],
+        "tests": [],
+        "positive_observations": {}
     })));
     let mut config = config();
     config.grouping.enabled = false;

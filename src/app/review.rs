@@ -1865,8 +1865,14 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         .flat_map(|lane| lane.resolved.iter().cloned())
         .collect();
     let threads = crate::review_timing::measure(timing.as_ref(), "threads", async {
-        match crate::threads::plan(forge, Some(model.as_ref()), config, repo, number, &resolved)
-            .await
+        // At the absolute soft cutoff, retain deterministic thread decisions
+        // but do not start a new advisory model call.
+        let thread_model = execution
+            .execution()
+            .refusal_for_new_work()
+            .is_none()
+            .then_some(model.as_ref());
+        match crate::threads::plan(forge, thread_model, config, repo, number, &resolved).await
         {
             Ok((plan, thread_spend)) => {
                 spend.merge(thread_spend);
@@ -1894,7 +1900,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // `docs/modules/wireframe/README.md`.
     let (wireframe, wireframe_spend) =
         crate::review_timing::measure(timing.as_ref(), "wireframe", async {
-            if config.wireframe.enabled {
+            if config.wireframe.enabled
+                && execution
+                    .execution()
+                    .refusal_for_new_work()
+                    .is_none()
+            {
                 let outcome = crate::wireframe::build(
                     &crate::wireframe::WireframeInputs {
                         diffs: &diffs,
@@ -1909,6 +1920,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                 .await?;
                 Ok::<_, Error>((Some(outcome.set), outcome.spend))
             } else {
+                // `None` leaves a previously published gallery alone. A
+                // partial review after the cutoff must not replace it with
+                // content generated from an incomplete run.
                 Ok::<_, Error>((None, Spend::default()))
             }
         })

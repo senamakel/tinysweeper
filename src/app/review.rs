@@ -300,6 +300,15 @@ struct LogicalUsageModel {
 }
 
 impl LogicalUsageModel {
+    fn stopped_before_call(&self) -> Option<Error> {
+        let refusal = self.execution.execution().refusal_for_new_work()?;
+        Some(Error::ModelExecutionRefused {
+            refusal,
+            usage: None,
+            accounting_complete: true,
+        })
+    }
+
     fn retain(&self, request_model: &str, result: &Result<crate::ports::model::ModelResponse>) {
         if self.inner.reports_raw_completion_usage() {
             return;
@@ -343,6 +352,9 @@ impl Model for LogicalUsageModel {
         &self,
         request: crate::ports::model::ModelRequest,
     ) -> Result<crate::ports::model::ModelResponse> {
+        if let Some(error) = self.stopped_before_call() {
+            return Err(error);
+        }
         let request_model = request.model.clone();
         let result = self.inner.complete(request).await;
         self.retain(&request_model, &result);
@@ -355,6 +367,9 @@ impl Model for LogicalUsageModel {
         tree: &dyn TreeReader,
         policy: &crate::config::types::LookupPolicy,
     ) -> Result<crate::ports::model::ModelResponse> {
+        if let Some(error) = self.stopped_before_call() {
+            return Err(error);
+        }
         let request_model = request.model.clone();
         let result = self.inner.review(request, tree, policy).await;
         self.retain(&request_model, &result);
@@ -1675,7 +1690,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             let full_pr_paths: Vec<String> =
                 context.files.iter().map(|file| file.path.clone()).collect();
             if config.summary.enabled {
-                if summary_generation_needed(config, &diffs) {
+                if summary_generation_needed(config, &diffs)
+                    && execution
+                        .execution()
+                        .refusal_for_new_work()
+                        .is_none()
+                {
                     let (summary, spend, transcript) = crate::summary::generate_with_input(
                         model.as_ref(),
                         config,

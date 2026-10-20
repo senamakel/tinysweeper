@@ -4621,7 +4621,14 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_lanes_overlap_in_the_review_path() {
-        let forge = forge_with(vec![rust_file()], vec![]);
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/Button.tsx".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+export const Button = () => <button />;\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
@@ -5064,7 +5071,7 @@ mod tests {
             Some(timing.clone()),
         )
         .await;
-        assert!(matches!(failed, Err(Error::Model(_))));
+        assert!(matches!(failed, Err(Error::Model(_))), "{failed:?}");
         timing.finish("failure");
 
         let expected_observed_cost = timing.snapshot().usage.cost_usd;

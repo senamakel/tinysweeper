@@ -3962,6 +3962,76 @@ mod tests {
         config
     }
 
+    #[cfg(feature = "harness")]
+    #[tokio::test]
+    async fn proposal_publishes_raw_completion_accounting_from_the_shared_execution() {
+        use crate::harness::embed::GatewayModel;
+        use crate::harness::fake_gateway::{FakeGateway, Reply};
+
+        let gateway = FakeGateway::start(vec![Reply::completion(
+            "deep",
+            r#"{"summary":"Nothing to report.","findings":[]}"#,
+            "stop",
+            json!({
+                "prompt_tokens": 11,
+                "completion_tokens": 4,
+                "reasoning_tokens": 2,
+                "cached_tokens": 3,
+                "cost": 0.125
+            }),
+        )])
+        .await;
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
+        let mut config = critique_config();
+        config.models.base_url = gateway.base_url.clone();
+        config.models.fallback.clear();
+        config.models.agentic_reviewers = false;
+        config.models.structured_output = crate::config::types::StructuredOutput::JsonObject;
+        let model = Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+
+        let proposal = review_with_tree_observed(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the fake provider answers the review");
+
+        assert_eq!(gateway.requests().len(), 1);
+        let serialized = serde_json::to_value(&proposal).expect("proposal serializes");
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["input_tokens"],
+            11
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["output_tokens"],
+            4
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["reasoning_tokens"],
+            2
+        );
+        assert_eq!(
+            serialized["completion_accounting"]["usage"]["calls_attempted"],
+            1
+        );
+        assert_eq!(serialized["completion_accounting"]["complete"], true);
+    }
+
     #[test]
     fn grouping_alone_needs_no_walk_when_no_enabled_lane_consumes_it() {
         // A tests-only review — neither `critique` nor `security` on — never

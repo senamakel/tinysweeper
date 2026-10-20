@@ -6167,11 +6167,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_cross_process_supersession_drops_the_in_flight_review_future_and_frees_its_permit() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use crate::ports::model_execution::{
             ModelExecutionControl, ModelExecutionRefusal, ModelExecutionTerminal,
             ModelExecutionTerminalOutcome, ModelExecutionTerminalUsage,
         };
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         struct DropFlag(Arc<AtomicBool>);
         impl Drop for DropFlag {
@@ -6292,15 +6292,9 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             "the provider future is dropped"
         );
-        let waiter_result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            &mut waiting,
-        )
-        .await;
-        let cancelled = matches!(
-            waiter_result,
-            Ok(Ok(Err(ModelExecutionRefusal::Cancelled)))
-        );
+        let waiter_result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut waiting).await;
+        let cancelled = matches!(waiter_result, Ok(Ok(Err(ModelExecutionRefusal::Cancelled))));
         drop(held_reservation);
         if waiter_result.is_err() {
             if let Ok(Ok(Ok(replacement))) =
@@ -6314,7 +6308,10 @@ mod tests {
         } else if let Ok(Ok(Ok(replacement))) = waiter_result {
             drop(replacement);
         }
-        assert!(cancelled, "supersession wakes pending acquisitions as cancelled");
+        assert!(
+            cancelled,
+            "supersession wakes pending acquisitions as cancelled"
+        );
         let snapshot = worker_execution.snapshot();
         assert_eq!(snapshot.committed_calls, 1);
         assert_eq!(snapshot.reserved_calls, 0);

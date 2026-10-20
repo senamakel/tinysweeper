@@ -160,6 +160,19 @@ impl Checkout {
         revision: &str,
         dir: tempfile::TempDir,
     ) -> Result<Self> {
+        Self::from_mirror_at_with_checkpoint(mirror, revision, dir, || async {}).await
+    }
+
+    async fn from_mirror_at_with_checkpoint<F, Fut>(
+        mirror: &Path,
+        revision: &str,
+        dir: tempfile::TempDir,
+        checkpoint: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         validate_revision(revision)?;
         let mut registration = WorktreeRegistrationCleanup::for_path(mirror, dir.path())?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
@@ -173,6 +186,7 @@ impl Checkout {
             &["worktree", "add", "--quiet", "--detach", path, revision],
         )
         .await?;
+        checkpoint().await;
         registration.disarm();
         Ok(Self {
             dir,

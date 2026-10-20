@@ -159,25 +159,13 @@ impl Checkout {
     /// Populate an owned temporary directory as an exact-head worktree.
     /// Taking the directory explicitly also lets tests exercise cancellation
     /// when Git chooses a suffixed admin name for a colliding basename.
+    #[cfg(test)]
     pub(super) async fn from_mirror_at(
         mirror: &Path,
         revision: &str,
         dir: tempfile::TempDir,
     ) -> Result<Self> {
-        Self::from_mirror_at_with_checkpoint(mirror, revision, dir, || async {}).await
-    }
-
-    async fn from_mirror_at_with_checkpoint<F, Fut>(
-        mirror: &Path,
-        revision: &str,
-        dir: tempfile::TempDir,
-        checkpoint: F,
-    ) -> Result<Self>
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        Self::from_mirror_at_owned(mirror, revision, dir, None, checkpoint).await
+        Self::from_mirror_at_owned(mirror, revision, dir, None, || async {}).await
     }
 
     async fn from_mirror_at_owned<F, Fut>(
@@ -196,12 +184,9 @@ impl Checkout {
         let path = std::fs::canonicalize(dir.path())
             .map_err(|err| Error::Forge(format!("could not resolve checkout directory: {err}")))?;
         let registration = WorktreeRegistrationCleanup::for_path(mirror, &path)?;
-        let path = path
-            .to_str()
-            .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?;
         let dir = git_worktree_add(
             mirror,
-            path,
+            &path,
             revision,
             dir,
             cache_lock,

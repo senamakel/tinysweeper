@@ -383,6 +383,11 @@ impl ReviewExecution {
                 .send_modify(|generation| *generation = generation.wrapping_add(1));
         }
     }
+
+    /// Whether an ownership fence has stopped this review's remaining work.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        lock(&self.inner.state).cancelled
+    }
 }
 
 #[async_trait::async_trait]

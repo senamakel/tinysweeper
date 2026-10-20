@@ -1241,6 +1241,36 @@ where
     Ok(None)
 }
 
+/// Treat a sibling's typed cancellation as an ownership fence before a
+/// concurrent lane's unrelated failure can conclude the old head as failed.
+async fn cancelled_execution_disposition<Valid>(
+    execution: &crate::app::review_execution::ReviewExecution,
+    jobs: &dyn ReviewJobStore,
+    owned: Option<&OwnedReview>,
+    local_owner_valid: Valid,
+) -> Result<Option<WorkerDisposition>>
+where
+    Valid: Fn() -> bool,
+{
+    if !execution.is_cancelled() {
+        return Ok(None);
+    }
+    if !local_owner_valid() {
+        return Ok(Some(WorkerDisposition::OwnershipLost));
+    }
+    let Some(owned) = owned else {
+        return Ok(Some(WorkerDisposition::OwnershipLost));
+    };
+    let fence = match check_owned_work(jobs, owned, &local_owner_valid).await {
+        Err(err @ (Error::ReviewOwnershipLost | Error::ReviewSuperseded)) => err,
+        Err(_) | Ok(()) => return Ok(Some(WorkerDisposition::OwnershipLost)),
+    };
+    match classify_retry_boundary_error(&fence, jobs, Some(owned), local_owner_valid).await {
+        Ok(Some(disposition)) => Ok(Some(disposition)),
+        Ok(None) | Err(_) => Ok(Some(WorkerDisposition::OwnershipLost)),
+    }
+}
+
 async fn finish_or_yield<F, Fut>(
     store: &dyn ReviewJobStore,
     owned: &OwnedReview,
@@ -3301,6 +3331,40 @@ async fn handle_review(
                 return disposition;
             }
             Err(err) => {
+                if let Some(disposition) = cancelled_execution_disposition(
+                    &run.execution.execution(),
+                    state.review_jobs.as_ref(),
+                    run.owned.as_ref(),
+                    || run.local_owner_valid(),
+                )
+                .await
+                .unwrap_or(Some(WorkerDisposition::OwnershipLost))
+                {
+                    match disposition {
+                        WorkerDisposition::Yielded => {
+                            close_status(&state, &slot, Conclusion::NotReviewed).await;
+                            drop(permit);
+                            return finish_control_timing(&timing, WorkerDisposition::Yielded);
+                        }
+                        WorkerDisposition::Terminal(TerminalOutcome::Superseded) => {
+                            close_status(&state, &slot, Conclusion::NotReviewed).await;
+                            drop(permit);
+                            timing.finish("superseded");
+                            return finish_control_timing(
+                                &timing,
+                                WorkerDisposition::Terminal(TerminalOutcome::Superseded),
+                            );
+                        }
+                        WorkerDisposition::OwnershipLost => {
+                            drop(permit);
+                            return WorkerDisposition::OwnershipLost;
+                        }
+                        other => {
+                            drop(permit);
+                            return other;
+                        }
+                    }
+                }
                 run.cancel_for_ownership_fence(&err);
                 if matches!(err, Error::ReviewOwnershipLost) {
                     drop(permit);

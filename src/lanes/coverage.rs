@@ -350,7 +350,7 @@ pub(crate) mod test_support {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::app::review_execution::{ReviewExecution, ReviewExecutionOptions};
+    use crate::app::review_execution::{ReviewExecutionOptions, ReviewRunContext};
     use crate::harness::mock::MockModel;
     use crate::lanes::large_pr::ReviewMode;
     use crate::ports::model::{Model, Usage};
@@ -379,7 +379,7 @@ pub(crate) mod test_support {
             .then(first)
             .then(second);
         let started_at = Instant::now();
-        let execution = ReviewExecution::new(ReviewExecutionOptions {
+        let context = ReviewRunContext::new(ReviewExecutionOptions {
             started_at,
             hard_deadline: started_at + Duration::from_secs(100),
             mode: ReviewMode::Normal,
@@ -387,7 +387,7 @@ pub(crate) mod test_support {
             soft_deadline_percent: 80,
             drain_seconds: 5,
         });
-        let bound = execution
+        let bound = context
             .bind_model(Arc::new(mock.clone()), 10.0)
             .model
             .clone();

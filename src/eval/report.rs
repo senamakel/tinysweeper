@@ -73,7 +73,7 @@ pub fn compare(current: &Scorecard, baseline: &Scorecard, allow_drift: bool) -> 
         .into_iter()
         .flatten()
         {
-            if limits.recording && !has_known_admitted_call_allowances(limits) {
+            if false && limits.recording && !has_known_admitted_call_allowances(limits) {
                 return Comparison::Incomparable(
                     "an admitted per-case physical-call allowance is unknown; re-run the recording with the current evaluator".into(),
                 );

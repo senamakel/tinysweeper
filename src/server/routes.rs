@@ -7210,6 +7210,17 @@ mod tests {
             *held_rx.borrow(),
             "another selected group is still in model work"
         );
+        for _ in 0..10_000 {
+            if context_a.logical_usage().calls_attempted >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            context_a.logical_usage().calls_attempted,
+            2,
+            "A's critique and falsifier responses are both returned before drain"
+        );
         assert_eq!(context_a.execution().started_at(), started_at);
         assert_eq!(
             context_a.execution().soft_deadline(),
@@ -7375,16 +7386,36 @@ mod tests {
         assert!(
             writes.iter().any(|write| matches!(
                 write,
-                Write::Check(check) if check.head_sha == "head-b" && check.conclusion.is_some()
+                Write::Check(check)
+                    if check.head_sha == "head-b"
+                        && check.name == "tinysweeper/critique"
+                        && check.conclusion.is_some()
+            ) || matches!(
+                write,
+                Write::CheckUpdate { check, .. }
+                    if check.head_sha == "head-b"
+                        && check.name == "tinysweeper/critique"
+                        && check.conclusion.is_some()
             )),
-            "only B reaches a completed App check on its confirmed head"
+            "B reaches a completed critique lane check on its confirmed head"
         );
         assert!(
-            !writes.iter().any(|write| matches!(
-                write,
-                Write::Check(check) if check.head_sha == "head-a" && check.conclusion.is_some()
-            )),
-            "A's interrupted App review is never published"
+            !writes.iter().any(|write| {
+                matches!(
+                    write,
+                    Write::Check(check)
+                        if check.head_sha == "head-a"
+                            && check.name == "tinysweeper/critique"
+                            && check.conclusion.is_some()
+                ) || matches!(
+                    write,
+                    Write::CheckUpdate { check, .. }
+                        if check.head_sha == "head-a"
+                            && check.name == "tinysweeper/critique"
+                            && check.conclusion.is_some()
+                )
+            }),
+            "A's interrupted critique lane is never published as complete"
         );
         assert!(store.snapshot_for_test().terminal.iter().any(|entry| {
             entry.id == crate::ports::review_job::ReviewJobId("push-b-drain".into())

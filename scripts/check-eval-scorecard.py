@@ -35,6 +35,46 @@ def validate(
     return matched, missed, sorted(errors)
 
 
+def render_summary(
+    name: str,
+    cases: list[dict],
+    matched: int,
+    missed: int,
+    errors: list[str],
+    limits: dict,
+    diagnostic: bool,
+) -> str:
+    observed = [case.get("id") for case in cases]
+    lines = [
+        f"## Offline replay: {name}",
+        "",
+        f"- Cases: {len(cases)} ({', '.join(sorted(observed))})",
+    ]
+    if diagnostic:
+        lines.extend(
+            [
+                "- Status: diagnostic-only; this legacy group does not gate strict replay health",
+                "- Strict/review errors: "
+                + (", ".join(errors) if errors else "0")
+                + "; loose replays: 0",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Status: strict replay completed with no case errors",
+                "- Strict errors: 0; loose replays: 0",
+            ]
+        )
+    lines.extend(
+        [
+            f"- Expected labels matched/missed: {matched}/{missed}",
+            f"- Execution limits: `{json.dumps(limits, sort_keys=True)}`",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("scorecard", type=Path)
@@ -58,21 +98,17 @@ def main() -> int:
     except ValueError as error:
         parser.error(str(error))
     cases = card["cases"]
-    observed = [case.get("id") for case in cases]
-    print(f"## Offline replay: {args.scorecard.parent.name}\n")
-    print(f"- Cases: {len(cases)} ({', '.join(sorted(observed))})")
-    if args.diagnostic:
-        print("- Status: diagnostic-only; this legacy group does not gate strict replay health")
-        print(
-            "- Strict/review errors: "
-            + (", ".join(errors) if errors else "0")
-            + "; loose replays: 0"
+    print(
+        render_summary(
+            args.scorecard.parent.name,
+            cases,
+            matched,
+            missed,
+            errors,
+            limits,
+            args.diagnostic,
         )
-    else:
-        print("- Status: strict replay completed with no case errors")
-        print("- Strict errors: 0; loose replays: 0")
-    print(f"- Expected labels matched/missed: {matched}/{missed}")
-    print(f"- Execution limits: `{json.dumps(limits, sort_keys=True)}`")
+    )
     return 0
 
 

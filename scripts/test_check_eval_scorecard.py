@@ -60,6 +60,13 @@ class ScorecardGateTests(unittest.TestCase):
             card, {"case-a"}, allow_review_errors=True
         )
         self.assertEqual((matched, missed, errors), (0, 1, ["case-a"]))
+        summary = CHECKER.render_summary(
+            "legacy-default", card["cases"], matched, missed, errors,
+            card["execution_limits"], diagnostic=True
+        )
+        self.assertIn("diagnostic-only", summary)
+        self.assertIn("Strict/review errors: case-a", summary)
+        self.assertNotIn("strict replay completed with no case errors", summary)
 
 
 if __name__ == "__main__":

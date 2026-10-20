@@ -4337,7 +4337,7 @@ async fn select_review_control<F, T>(
     owned: Option<&OwnedReview>,
     owner_lost: Option<watch::Receiver<bool>>,
     owner_until: Option<watch::Receiver<tokio::time::Instant>>,
-    _execution: Arc<crate::app::review_execution::ReviewExecution>,
+    execution: Arc<crate::app::review_execution::ReviewExecution>,
 ) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -4722,6 +4722,15 @@ mod tests {
                 drain_seconds: large_pr.drain_seconds,
             },
         ))
+    }
+
+    fn test_execution_scope() -> Arc<crate::app::review_execution::ReviewExecution> {
+        let started_at = tokio::time::Instant::now();
+        test_execution_context(
+            started_at,
+            started_at + std::time::Duration::from_secs(60),
+        )
+        .execution()
     }
 
     #[derive(Clone, Default)]

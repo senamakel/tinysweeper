@@ -285,6 +285,7 @@ fn all_default_lanes_config() -> Config {
     config.review.large_pr.files = 1;
     config.review.large_pr.max_groups = 2;
     config.review.large_pr.max_calls = 3;
+    config.review.strictness = 3;
     config.grouping.enabled = false;
     config.knowledge.extract = false;
     config.retrieval.enabled = false;
@@ -466,7 +467,10 @@ async fn default_tests_lane_refusal_publishes_the_completed_partial_review() {
     assert!(schemas.contains(&"tinysweeper_security"));
     assert!(schemas.contains(&"tinysweeper_critique"));
     assert!(schemas.contains(&"tinysweeper_falsify"));
-    assert!(schemas.contains(&"tinysweeper_tests"));
+    assert!(
+        !schemas.contains(&"tinysweeper_tests"),
+        "the logical host gate refuses Tests before invoking the backend"
+    );
     assert_eq!(
         successful.len(),
         3,

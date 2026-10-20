@@ -75,9 +75,13 @@ threshold, so `request_changes_at = "off"` stops tinysweeper objecting without
 starting it endorsing a red pull request. A known, successfully published
 decision is not restated when its verdict and stable blocking-finding identities
 are unchanged. Checks and the review hub still update on every push. Old state
-without a publication record cannot certify a duplicate, and approvals are only
-deduped when the current review is complete and forge history still shows the
-approval standing. A partial review continues to withdraw any standing approval.
+without a publication record cannot certify a duplicate. Approvals are only
+deduped for complete current-head reviews while forge history still shows the
+actual approval at the SHA of the successful publication. A partial review
+continues to withdraw any standing approval. Advisory comments record the
+standing forge review separately, because GitHub may keep an earlier approval
+or changes request in force after a comment; legacy receipts without that
+snapshot dedupe only when a live comment still names the published head.
 
 Review comments keep one total-spend line inside collapsed diagnostics. Token,
 cache and embedding counts stay in the hidden state marker and review timing

@@ -4569,7 +4569,7 @@ mod tests {
                 ],
             }],
         );
-        let mut model = ReviewSchedulingModel::new();
+        let model = ReviewSchedulingModel::new();
         let optional_seen = model.optional_seen.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();

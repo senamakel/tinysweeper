@@ -1184,6 +1184,7 @@ mod tests {
             embed_tokens: 0,
             models: vec!["moonshotai/kimi-k3".into()],
             completion_accounting: None,
+            logical_usage: None,
             threads: Default::default(),
         }
     }

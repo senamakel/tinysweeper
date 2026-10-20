@@ -1873,6 +1873,7 @@ mod tests {
             embed_tokens: 0,
             models: vec![],
             completion_accounting: None,
+            logical_usage: None,
             threads: Default::default(),
         }
     }

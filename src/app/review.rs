@@ -1043,6 +1043,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // Kill switches are checked before anything expensive, so a label really
     // does stop the bot rather than merely hiding its output.
     if let Some(label) = kill_switch(config, &context) {
+        let accounting = proposal_accounting(&execution, reports_raw_completion_usage, None, &[]);
         return Ok(Proposal {
             version: PROPOSAL_VERSION,
             repo: repo.to_string(),
@@ -1090,13 +1091,14 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             wireframe: None,
             summary: None,
             prior_findings: Vec::new(),
-            cost_usd: 0.0,
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: 0,
-            embed_tokens: 0,
-            models: vec![],
-            completion_accounting: None,
+            cost_usd: accounting.usage.cost_usd,
+            input_tokens: accounting.usage.input_tokens,
+            output_tokens: accounting.usage.output_tokens,
+            cached_tokens: accounting.usage.cached_tokens,
+            embed_tokens: accounting.usage.embed_tokens,
+            models: accounting.models,
+            completion_accounting: accounting.completion,
+            logical_usage: accounting.logical,
             // A pull request the bot was switched off for gets no housekeeping
             // either: closing its conversations would be acting on it.
             threads: Default::default(),
@@ -1293,6 +1295,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         })
         .await;
     let retrieval_usage = retrieval_spend.usage;
+    execution.record_retrieval_usage(retrieval_usage);
     spend.merge(retrieval_spend);
     // Retrieval is separate from the diff pipeline, but its rendered chunks
     // become model input too. Apply the same path-independent stream scrub
@@ -1690,36 +1693,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     if let Some(timing) = &timing {
         record_file_coverage(timing, &context, &uninspected, &lanes);
     }
-    let completion_accounting = reports_raw_completion_usage.then(|| {
-        let snapshot = execution.execution().snapshot();
-        CompletionAccounting {
-            usage: snapshot.physical_usage,
-            usage_by_model: snapshot.physical_usage_by_model,
-            complete: snapshot.physical_accounting_complete,
-        }
-    });
-    let (proposal_usage, proposal_models) = if let Some(accounting) = &completion_accounting {
-        let mut usage = accounting.usage;
-        // Retrieval is the separate embedding invoice. Completion usage comes
-        // only from raw terminal callbacks, so host estimates and logical
-        // response totals cannot be mistaken for provider-reported charges.
-        usage.embed_tokens = retrieval_usage.embed_tokens;
-        let total_cost = accounting.usage.cost_usd + retrieval_usage.cost_usd;
-        usage.cost_usd = if total_cost.is_finite() {
-            total_cost
-        } else {
-            f64::MAX
-        };
-        let mut models = spend.models;
-        for model in accounting.usage_by_model.keys() {
-            if !models.iter().any(|known| known == model) {
-                models.push(model.clone());
-            }
-        }
-        (usage, models)
-    } else {
-        (spend.usage, spend.models)
-    };
+    let accounting = proposal_accounting(
+        &execution,
+        reports_raw_completion_usage,
+        Some(spend.usage),
+        &spend.models,
+    );
     Ok(Proposal {
         version: PROPOSAL_VERSION,
         repo: repo.to_string(),
@@ -1733,13 +1712,14 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         unreviewed: uninspected,
         skipped: None,
         threads,
-        cost_usd: proposal_usage.cost_usd,
-        input_tokens: proposal_usage.input_tokens,
-        output_tokens: proposal_usage.output_tokens,
-        cached_tokens: proposal_usage.cached_tokens,
-        embed_tokens: proposal_usage.embed_tokens,
-        models: proposal_models,
-        completion_accounting,
+        cost_usd: accounting.usage.cost_usd,
+        input_tokens: accounting.usage.input_tokens,
+        output_tokens: accounting.usage.output_tokens,
+        cached_tokens: accounting.usage.cached_tokens,
+        embed_tokens: accounting.usage.embed_tokens,
+        models: accounting.models,
+        completion_accounting: accounting.completion,
+        logical_usage: accounting.logical,
     })
 }
 

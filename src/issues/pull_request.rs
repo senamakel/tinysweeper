@@ -196,6 +196,7 @@ mod tests {
             embed_tokens: 0,
             models: vec![],
             completion_accounting: None,
+            logical_usage: None,
             unreviewed: vec![],
             skipped: None,
         }

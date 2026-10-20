@@ -1075,6 +1075,127 @@ mod tests {
         assert!(snapshot.physical_accounting_complete);
     }
 
+    #[tokio::test]
+    async fn terminal_accounting_keeps_known_costs_when_other_reports_are_incomplete() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(4),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        for _ in 0..4 {
+            execution
+                .acquire()
+                .await
+                .expect("reserve one terminal event")
+                .mark_dispatched()
+                .expect("commit one terminal event");
+        }
+
+        execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "configured-primary".into(),
+            answered_model: Some("actual-provider-a".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                input_tokens: 5,
+                output_tokens: 2,
+                reasoning_tokens: 1,
+                cached_tokens: 1,
+                cost_usd: Some(0.125),
+            }),
+        });
+        execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "configured-secondary".into(),
+            answered_model: Some("actual-provider-b".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: None,
+        });
+        execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "configured-third".into(),
+            answered_model: None,
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: None,
+            }),
+        });
+        execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "configured-fourth".into(),
+            answered_model: Some("actual-provider-d".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(f64::NAN),
+            }),
+        });
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.physical_terminal_count, 4);
+        assert_eq!(snapshot.physical_usage.calls_attempted, 4);
+        assert_eq!(snapshot.physical_usage.input_tokens, 13);
+        assert_eq!(snapshot.physical_usage.output_tokens, 6);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.125);
+        assert_eq!(
+            snapshot.physical_usage_by_model["actual-provider-a"].cost_usd,
+            0.125
+        );
+        assert_eq!(
+            snapshot.physical_usage_by_model["configured-third"].input_tokens,
+            7,
+            "when the provider omits its answering id, use the requested model"
+        );
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
+    #[tokio::test]
+    async fn committed_dispatch_without_terminal_makes_known_sibling_incomplete() {
+        let started_at = Instant::now();
+        let execution = ReviewExecution::new(options(
+            ReviewMode::Large,
+            Some(2),
+            started_at,
+            started_at + Duration::from_secs(100),
+        ));
+        for _ in 0..2 {
+            execution
+                .acquire()
+                .await
+                .expect("reserve a dispatch")
+                .mark_dispatched()
+                .expect("commit a dispatch");
+        }
+        execution.on_terminal(ModelExecutionTerminal {
+            requested_model: "primary".into(),
+            answered_model: Some("actual-primary".into()),
+            outcome: ModelExecutionTerminalOutcome::Succeeded,
+            refused: false,
+            usage: Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                input_tokens: 8,
+                output_tokens: 3,
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                cost_usd: Some(0.25),
+            }),
+        });
+
+        let snapshot = execution.snapshot();
+        assert_eq!(snapshot.committed_calls, 2);
+        assert_eq!(snapshot.physical_terminal_count, 1);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.25);
+        assert!(!snapshot.physical_accounting_complete);
+    }
+
     #[test]
     fn execution_options_keep_the_mode_call_cap_and_drain_policy_together() {
         let started_at = Instant::now();

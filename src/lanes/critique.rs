@@ -2280,7 +2280,7 @@ fn helper() {
 
     #[tokio::test]
     async fn an_adaptive_lookup_refusal_keeps_its_paid_usage_and_elapsed_time() {
-        let (handle, model) = crate::lanes::coverage::test_support::limited_model(
+        let (handle, model, execution) = crate::lanes::coverage::test_support::limited_model(
             json!({"summary": "Nothing to report.", "findings": []}),
             json!({
                 "summary": "I need to inspect the called helper.",
@@ -2303,25 +2303,27 @@ fn helper() {
         let file_contents = BTreeMap::new();
 
         let (outcome, trace) = crate::lanes::coverage::test_support::capture_trace(async {
-            Critique::new(model)
-                .run(LaneInput {
-                    config: &config,
-                    pull_request: &pr,
-                    diffs: &diffs,
-                    file_contents: &file_contents,
-                    scan_findings: &[],
-                    commits: &[],
-                    repo_policy: None,
-                    extracted_rules: &[],
-                    reviewed_evidence: "",
-                    prior_findings: &[],
-                    retrieval_status: crate::retrieve::RetrievalStatus::Off,
-                    retrieved_context: "",
-                    redaction_note: "",
-                    e2e: None,
-                    tree: Some(&tree),
-                    graph: None,
-                })
+            let lane = Critique::new(model);
+            let input = LaneInput {
+                config: &config,
+                pull_request: &pr,
+                diffs: &diffs,
+                file_contents: &file_contents,
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: Some(&tree),
+                graph: None,
+            };
+            let prepared = prepare(input.preparation());
+            lane.run_prepared_with_execution(input, prepared, Some(execution))
                 .await
                 .expect("a typed adaptive refusal is a partial lane result")
         })

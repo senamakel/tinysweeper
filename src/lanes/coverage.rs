@@ -350,7 +350,7 @@ pub(crate) mod test_support {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::app::review_execution::{ReviewExecutionOptions, ReviewRunContext};
+    use crate::app::review_execution::{ReviewExecution, ReviewExecutionOptions, ReviewRunContext};
     use crate::harness::mock::MockModel;
     use crate::lanes::large_pr::ReviewMode;
     use crate::ports::model::{Model, Usage};
@@ -373,7 +373,7 @@ pub(crate) mod test_support {
     pub fn limited_model(
         first: serde_json::Value,
         second: serde_json::Value,
-    ) -> (MockModel, Arc<dyn Model>) {
+    ) -> (MockModel, Arc<dyn Model>, Arc<ReviewExecution>) {
         let mock = MockModel::new()
             .with_usage(PAID_USAGE)
             .then(first)
@@ -391,7 +391,7 @@ pub(crate) mod test_support {
             .bind_model(Arc::new(mock.clone()), 10.0)
             .model
             .clone();
-        (mock, bound)
+        (mock, bound, context.execution())
     }
 
     #[derive(Debug)]

@@ -703,11 +703,12 @@ pub enum ReasoningRole {
 impl Models {
     /// The effective override for one reasoning role.
     ///
-    /// A global `off` is a kill switch and disables reasoning for every role;
+    /// A blank global setting or `off` disables reasoning for every role;
     /// otherwise the role-specific setting is used. Requests with no override
     /// continue to inherit the gateway's global setting.
     pub fn role_reasoning_effort(&self, role: ReasoningRole) -> &str {
-        if self.reasoning_effort.trim() == "off" {
+        let global = self.reasoning_effort.trim();
+        if global.is_empty() || global == "off" {
             return "off";
         }
         match role {

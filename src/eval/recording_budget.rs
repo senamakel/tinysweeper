@@ -191,6 +191,9 @@ mod tests {
         let inherited_handle = reservation._lock.try_clone().expect("clone lock handle");
 
         drop(reservation);
+        let exhausted = Reservation::begin(directory.path(), 1, 8)
+            .expect_err("unfinished reservation remains fully charged");
+        assert!(exhausted.to_string().contains("exhausted"));
 
         let next = Reservation::begin(directory.path(), 8, 16)
             .expect("drop releases the lock despite an inherited handle");

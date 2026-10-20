@@ -4809,6 +4809,7 @@ mod tests {
         let probe = ReviewBudgetProbe::default();
         let guarded = OwnedModel {
             inner: Arc::new(probe.clone()),
+            execution: test_execution_scope(),
             jobs: store.clone(),
             owned,
             owner_lost: None,
@@ -5452,6 +5453,7 @@ mod tests {
             inner: model
                 .with_execution_control(control)
                 .expect("the model receives this run's execution scope"),
+            execution: execution.clone(),
             jobs: store.clone(),
             owned: owned.clone(),
             owner_lost: None,
@@ -5514,6 +5516,7 @@ mod tests {
         let (_, owner_until) = watch::channel(local_deadline);
         let guarded = OwnedModel {
             inner: Arc::new(model.clone()),
+            execution: test_execution_scope(),
             jobs: store,
             owned,
             owner_lost: None,
@@ -5696,8 +5699,10 @@ mod tests {
             a_started: Notify::new(),
             a_dropped: a_dropped.clone(),
         });
+        let execution = test_execution_scope();
         let guarded_a = OwnedModel {
             inner: tracker.clone(),
+            execution: execution.clone(),
             jobs: store.clone(),
             owned: owned_a.clone(),
             owner_lost: None,
@@ -6357,6 +6362,7 @@ mod tests {
         assert_eq!(snapshot.reserved_calls, 0);
         assert_eq!(snapshot.physical_usage.input_tokens, 11);
         assert_eq!(snapshot.physical_usage.output_tokens, 4);
+        assert_eq!(snapshot.physical_usage.cost_usd, 0.02);
         drop(committed_permit);
         assert!(
             permits.try_acquire().is_ok(),

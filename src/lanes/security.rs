@@ -866,6 +866,54 @@ mod tests {
         config
     }
 
+    #[tokio::test]
+    async fn one_pass_empty_security_group_records_first_pass_yield() {
+        let mut config = config();
+        config.review.lanes = vec!["security".into()];
+        let model = MockModel::new().then(json!({
+            "summary": "No security findings.",
+            "findings": []
+        }));
+        let timing = crate::review_timing::ReviewTiming::new(
+            "tinyhumansai/tinysweeper",
+            7,
+            "Incremental",
+        );
+        let pull_request = pull_request();
+        Security::new(Arc::new(model))
+            .run(LaneInput {
+                config: &config,
+                pull_request: &pull_request,
+                diffs: &diffs(),
+                file_contents: &BTreeMap::new(),
+                scan_findings: &[],
+                commits: &[],
+                repo_policy: None,
+                extracted_rules: &[],
+                reviewed_evidence: "",
+                prior_findings: &[],
+                retrieval_status: crate::retrieve::RetrievalStatus::Off,
+                retrieved_context: "",
+                redaction_note: "",
+                e2e: None,
+                tree: None,
+                graph: None,
+                pass_yield_observer: Some(&timing),
+            })
+            .await
+            .expect("security lane runs");
+
+        let yield_one = timing
+            .snapshot()
+            .pass_yields
+            .get("security:1")
+            .copied()
+            .expect("one-pass security yield is recorded");
+        assert_eq!(yield_one.groups, 1);
+        assert_eq!(yield_one.candidates, 0);
+        assert_eq!(yield_one.survivors, 0);
+    }
+
     const PATCH: &str = "@@ -1,3 +1,5 @@\n fn handler(req: Request) {\n+    let cmd = req.query(\"cmd\");\n+    Command::new(\"sh\").arg(\"-c\").arg(cmd).spawn();\n }\n";
 
     fn diffs() -> Vec<FileDiff> {

@@ -6450,7 +6450,6 @@ mod tests {
         config.grouping.enabled = false;
         config.summary.enabled = false;
         config.overview.enabled = false;
-        config.threads.enabled = false;
         config.automerge.enabled = false;
         let model = Arc::new(MockModel::always(json!({
             "summary": "Reviewed.", "findings": [], "resolved": []

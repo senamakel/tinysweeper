@@ -6708,7 +6708,10 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|comment| {
-                comment.author == "tinysweeper[bot]" && comment.body.contains("LAST GOOD TITLE")
+                comment.body.contains(crate::summary::MARKER)
+                    && comment
+                        .body
+                        .contains("The change updates the reviewed source files.")
             })
             .expect("the last-good report was published to the review hub");
         let last_good_report = previous_hub.body;

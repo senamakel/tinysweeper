@@ -602,10 +602,15 @@ fn proposal_accounting(
         };
         let retrieval = execution.retrieval_usage();
         let mut usage = completion.usage;
-        usage.embed_tokens = retrieval.embed_tokens;
+        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
         let cost = usage.cost_usd + retrieval.cost_usd;
         usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
         let mut models = current_models.to_vec();
+        for model in execution.retrieval_models() {
+            if !models.iter().any(|known| known == &model) {
+                models.push(model);
+            }
+        }
         for model in completion.usage_by_model.keys() {
             if !models.iter().any(|known| known == model) {
                 models.push(model.clone());
@@ -621,14 +626,20 @@ fn proposal_accounting(
         let logical = execution.logical_usage();
         let retrieval = execution.retrieval_usage();
         let mut usage = logical;
-        usage.embed_tokens = retrieval.embed_tokens;
+        usage.embed_tokens = usage.embed_tokens.saturating_add(retrieval.embed_tokens);
         let cost = usage.cost_usd + retrieval.cost_usd;
         usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+        let mut models = execution.logical_models();
+        for model in execution.retrieval_models() {
+            if !models.contains(&model) {
+                models.push(model);
+            }
+        }
         ProposalAccounting {
             usage,
             completion: None,
             logical: (logical != Usage::default()).then_some(logical),
-            models: execution.logical_models(),
+            models,
         }
     }
 }
@@ -1415,7 +1426,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         })
         .await;
     let retrieval_usage = retrieval_spend.usage;
-    execution.record_retrieval_usage(retrieval_usage);
+    execution.record_retrieval_usage(retrieval_usage, &retrieval_spend.models);
     spend.merge(retrieval_spend);
     // Retrieval is separate from the diff pipeline, but its rendered chunks
     // become model input too. Apply the same path-independent stream scrub
@@ -4518,6 +4529,7 @@ mod tests {
         config.retrieval.enabled = true;
         let model: Arc<dyn Model> =
             Arc::new(GatewayModel::with_key(&config.models, "fixture".into()));
+        let embed_model = ChargedEmbedder.signature().price_key();
         let started_at = tokio::time::Instant::now();
         let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
             crate::app::review_execution::ReviewExecutionOptions {
@@ -5080,6 +5092,7 @@ mod tests {
         assert_eq!(skipped.embed_tokens, 7);
         assert_eq!(skipped.cost_usd, 0.375);
         assert_eq!(skipped.usage().calls_attempted, 1);
+        assert!(skipped.models.contains(&embed_model));
     }
 
     #[cfg(feature = "harness")]

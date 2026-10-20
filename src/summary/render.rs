@@ -1097,6 +1097,36 @@ mod tests {
     }
 
     #[test]
+    fn run_details_disclose_incomplete_provider_completion_usage() {
+        let mut config = Config::default();
+        config.summary.sections = vec![SummarySection::RunDetails];
+        let mut proposal = proposal(ReviewSummary::default(), &[]);
+        proposal.cost_usd = 0.875;
+        proposal.embed_tokens = 7;
+        proposal.completion_accounting = Some(crate::app::review::CompletionAccounting {
+            usage: crate::ports::model::Usage {
+                input_tokens: 11,
+                output_tokens: 4,
+                cost_usd: 0.125,
+                calls_attempted: 2,
+                calls_succeeded: 2,
+                ..Default::default()
+            },
+            usage_by_model: Default::default(),
+            complete: false,
+        });
+
+        let rendered = render(&config, &proposal);
+
+        assert!(rendered.contains("- **Spend:** $0.875000"), "{rendered}");
+        assert!(
+            rendered.contains("Completion usage is incomplete"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("known lower bound"), "{rendered}");
+    }
+
+    #[test]
     fn summary_citations_link_to_the_reviewed_head_and_keep_paths_in_code_spans() {
         let mut config = Config::default();
         config.summary.sections = vec![SummarySection::Features];

@@ -4593,6 +4593,8 @@ mod tests {
         )
         .await
         .expect_err("the first wireframe operation is transiently unavailable");
+        assert!(matches!(&first, Error::Model(_)));
+        #[cfg(feature = "serve")]
         assert!(crate::server::failure::is_transient(&first));
 
         let proposal = review_with_tree_observed_at_head_in_run(

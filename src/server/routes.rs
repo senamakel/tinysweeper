@@ -5756,6 +5756,7 @@ mod tests {
             schema_name: "review".into(),
             max_tokens: 16,
         };
+        let control_execution = execution.clone();
         let worker = tokio::spawn(async move {
             let result = select_review_control(
                 guarded_a.complete(request_for_call()),
@@ -5763,17 +5764,7 @@ mod tests {
                 Some(&owned_a),
                 None,
                 None,
-                Arc::new(crate::app::review_execution::ReviewExecution::new(
-                    crate::app::review_execution::ReviewExecutionOptions {
-                        started_at: tokio::time::Instant::now(),
-                        hard_deadline: tokio::time::Instant::now()
-                            + std::time::Duration::from_secs(60),
-                        mode: crate::lanes::large_pr::ReviewMode::Normal,
-                        max_calls: None,
-                        soft_deadline_percent: 80,
-                        drain_seconds: 30,
-                    },
-                )),
+                control_execution,
             )
             .await;
             if matches!(result, Err(Error::ReviewSuperseded)) {

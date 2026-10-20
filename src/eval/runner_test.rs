@@ -380,7 +380,7 @@ async fn a_recording_ceiling_cannot_be_replenished_by_rerunning() {
         });
         let mut config = config();
         config.models.budget_usd_per_pr = 0.5;
-        let requested_ceiling = (ceiling != 8).then_some(ceiling);
+        let requested_ceiling = Some(ceiling);
 
         run(
             &corpus,

@@ -175,7 +175,7 @@ pub async fn run(
         };
         let reservation = if options.record {
             Some(crate::eval::recording_budget::Reservation::begin(
-                &case.cassette_dir(&corpus.root),
+                &corpus.root.join("recording-attempts").join(&case.case.id),
                 options
                     .max_physical_calls_per_case
                     .expect("recording cap validated"),

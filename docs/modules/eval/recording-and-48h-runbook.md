@@ -60,7 +60,7 @@ command's source identity, config digest, exit status, raw output hash, model
 and provider answered, reported usage, and known cost. Keep credential values
 and request/response payloads private. Stop immediately after any provider
 error that lacks usage information. The recorder persists a call-budget audit
-at `evals/cassettes/<case-id>/recording-attempts.json`; it reserves capacity
+at `evals/recording-attempts/<case-id>/recording-attempts.json`; it reserves capacity
 before dispatch and records actual committed physical calls after success or
 failure. A crash leaves the full reservation charged. Do not remove the audit
 or lock file to obtain a fresh allowance; investigate and preserve its history.

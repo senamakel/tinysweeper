@@ -278,9 +278,9 @@ async fn hidden_physical_retries_share_the_recording_cap_and_failed_attempt_audi
     );
     let audit: serde_json::Value = serde_json::from_slice(
         &std::fs::read(
-            corpus.cases[0]
-                .cassette_dir(&corpus.root)
-                .join("recording-attempts.json"),
+            corpus
+                .root
+                .join("recording-attempts/ts-0001/recording-attempts.json"),
         )
         .expect("attempt audit exists"),
     )

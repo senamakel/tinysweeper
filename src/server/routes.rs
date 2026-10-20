@@ -1241,8 +1241,8 @@ where
     Ok(None)
 }
 
-/// Treat a sibling's typed cancellation as an ownership fence before a
-/// concurrent lane's unrelated failure can conclude the old head as failed.
+/// Reconcile a lane failure with durable ownership before it can be retried or
+/// published as a failure for a head that has already been superseded.
 async fn cancelled_execution_disposition<Valid>(
     execution: &crate::app::review_execution::ReviewExecution,
     jobs: &dyn ReviewJobStore,
@@ -1252,19 +1252,20 @@ async fn cancelled_execution_disposition<Valid>(
 where
     Valid: Fn() -> bool,
 {
-    if !execution.is_cancelled() {
-        return Ok(None);
-    }
-    if !local_owner_valid() {
-        return Ok(Some(WorkerDisposition::OwnershipLost));
-    }
     let Some(owned) = owned else {
-        return Ok(Some(WorkerDisposition::OwnershipLost));
+        return Ok(execution
+            .is_cancelled()
+            .then_some(WorkerDisposition::OwnershipLost));
     };
     let fence = match check_owned_work(jobs, owned, &local_owner_valid).await {
         Err(err @ (Error::ReviewOwnershipLost | Error::ReviewSuperseded)) => err,
-        Err(_) | Ok(()) => return Ok(Some(WorkerDisposition::OwnershipLost)),
+        Err(_) | Ok(()) => {
+            return Ok(execution
+                .is_cancelled()
+                .then_some(WorkerDisposition::OwnershipLost));
+        }
     };
+    execution.cancel();
     match classify_retry_boundary_error(&fence, jobs, Some(owned), local_owner_valid).await {
         Ok(Some(disposition)) => Ok(Some(disposition)),
         Ok(None) | Err(_) => Ok(Some(WorkerDisposition::OwnershipLost)),

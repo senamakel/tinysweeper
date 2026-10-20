@@ -720,6 +720,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn cancelling_worktree_setup_removes_only_its_initializing_registration() {
+        let mirror = tempfile::tempdir().unwrap();
+        let cancelled = tempfile::tempdir().unwrap();
+        let active = tempfile::tempdir().unwrap();
+        let own_admin = mirror
+            .path()
+            .join("worktrees")
+            .join(cancelled.path().file_name().unwrap());
+        let sibling_admin = mirror
+            .path()
+            .join("worktrees")
+            .join(active.path().file_name().unwrap());
+        std::fs::create_dir_all(&sibling_admin).unwrap();
+        std::fs::write(sibling_admin.join("locked"), "different active checkout").unwrap();
+
+        let (registered, wait) = tokio::sync::oneshot::channel();
+        let mirror_path = mirror.path().to_path_buf();
+        let checkout_path = cancelled.path().to_path_buf();
+        let task_admin = own_admin.clone();
+        let setup = tokio::spawn(async move {
+            let _cleanup = WorktreeRegistrationCleanup::for_path(&mirror_path, &checkout_path)
+                .unwrap();
+            std::fs::create_dir_all(&task_admin).unwrap();
+            std::fs::write(task_admin.join("locked"), "initializing").unwrap();
+            let _ = registered.send(());
+            std::future::pending::<()>().await;
+        });
+        wait.await.unwrap();
+        setup.abort();
+        assert!(setup.await.unwrap_err().is_cancelled());
+
+        assert!(!own_admin.exists(), "cancelled registration is removed");
+        assert!(sibling_admin.join("locked").is_file(), "live sibling is preserved");
+    }
+
     async fn fixture_repo(root: &Path, modules: &str, links: &[(&str, &str)]) -> String {
         std::fs::create_dir_all(root).unwrap();
         git(root, "", &["init", "--quiet"]).await.unwrap();

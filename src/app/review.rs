@@ -4954,7 +4954,7 @@ mod tests {
         assert_eq!(mock.calls(), 3);
         assert_eq!(proposal.input_tokens, 33);
         assert_eq!(proposal.embed_tokens, 14);
-        assert_eq!(proposal.cost_usd, 1.7);
+        assert!((proposal.cost_usd - 1.7).abs() < 1e-9);
         assert_eq!(proposal.usage().calls_attempted, 3);
     }
 

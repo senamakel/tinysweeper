@@ -2935,6 +2935,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_review_write_does_not_claim_a_publication_receipt() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("abc123");
+        forge.fail_next_review_publishes(1);
+        let store = MemoryState::new();
+        let result = apply(
+            &forge,
+            &forge,
+            &config(),
+            &proposal("abc123", vec![finding()]),
+            Some(&store),
+        )
+        .await;
+        assert!(result.is_err(), "the failed review must remain an apply error");
+        assert!(
+            store
+                .load_state(&crate::state::key("tinyhumansai/tinysweeper", 7))
+                .await
+                .expect("state store works")
+                .is_none(),
+            "a failed write is not a durable publication"
+        );
+        assert!(!forge.writes().iter().any(|write| matches!(write, Write::Review { .. })));
+    }
+
+    #[tokio::test]
     async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
         use crate::state::{memory::MemoryState, PublishedReview, ReviewedState};
 

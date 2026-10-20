@@ -4244,6 +4244,7 @@ mod tests {
         review_budget_enabled: Arc<std::sync::atomic::AtomicBool>,
         review_budget_remaining: Arc<std::sync::atomic::AtomicUsize>,
         scheduled_calls: Arc<std::sync::atomic::AtomicUsize>,
+        security_requests: Arc<std::sync::atomic::AtomicUsize>,
         active: Arc<std::sync::atomic::AtomicUsize>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -4272,6 +4273,7 @@ mod tests {
                 review_budget_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 review_budget_remaining: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 scheduled_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                security_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
@@ -4293,6 +4295,10 @@ mod tests {
                 }
                 _ => return Ok((false, None)),
             };
+            if request.schema_name == "tinysweeper_security" {
+                self.security_requests
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let permit =
                 if let Some(control) = &self.execution {
                     let permit = control.acquire().await.map_err(|refusal| {
@@ -4499,6 +4505,7 @@ mod tests {
                 review_budget_enabled: self.review_budget_enabled.clone(),
                 review_budget_remaining: self.review_budget_remaining.clone(),
                 scheduled_calls: self.scheduled_calls.clone(),
+                security_requests: self.security_requests.clone(),
                 active: self.active.clone(),
                 peak: self.peak.clone(),
             }))
@@ -4557,6 +4564,7 @@ mod tests {
         let forge = forge_with(vec![rust_file()], vec![]);
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
+        let security_requests = model.security_requests.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let config = scheduling_config();
 
@@ -4720,6 +4728,10 @@ mod tests {
         );
         let proposal = result.unwrap().expect("Large-mode review succeeds");
         assert_eq!(proposal.lanes.len(), 3);
+        assert!(
+            security_requests.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the selected high-risk Large group must execute a security request"
+        );
         let record = timing.snapshot();
         assert!(record.lanes_ms.contains_key("critique"));
         let security_yield = record

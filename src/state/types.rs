@@ -176,6 +176,10 @@ mod tests {
             .as_object_mut()
             .expect("receipt object")
             .remove("standing_review");
+        encoded
+            .as_object_mut()
+            .expect("receipt object")
+            .remove("coverage_complete");
         let decoded: PublishedReview = serde_json::from_value(encoded).expect("legacy receipt");
         assert!(decoded.standing_review.is_none());
         assert!(decoded.coverage_complete.is_none());

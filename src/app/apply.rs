@@ -3004,6 +3004,7 @@ mod tests {
                         head_sha: "old-head".into(),
                         blocking_findings: vec![],
                         standing_review: None,
+                        coverage_complete: Some(true),
                     }),
                     ..ReviewedState::default()
                 },

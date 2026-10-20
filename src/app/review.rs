@@ -418,6 +418,11 @@ pub struct CompletionAccounting {
     pub usage: Usage,
     /// The same known usage attributed to the model that actually answered.
     pub usage_by_model: BTreeMap<String, Usage>,
+    /// Provider calls committed before invocation, including calls whose
+    /// provider response has not reached the terminal observer yet.
+    pub committed_calls: usize,
+    /// Provider terminal observations included in `usage`.
+    pub terminal_count: u64,
     /// Whether every committed completion had complete valid reported usage.
     pub complete: bool,
 }
@@ -530,16 +535,15 @@ impl Proposal {
     /// Kept flat on disk because the schema predates [`Usage`] being
     /// serializable and old proposals still have to load.
     pub fn usage(&self) -> Usage {
-        let details = self
-            .completion_accounting
-            .as_ref()
-            .map(|accounting| accounting.usage)
-            .or(self.logical_usage);
+        let completion = self.completion_accounting.as_ref();
+        let details = completion.map(|accounting| accounting.usage).or(self.logical_usage);
         Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             reasoning_tokens: details.map_or(0, |usage| usage.reasoning_tokens),
-            calls_attempted: details.map_or(0, |usage| usage.calls_attempted),
+            calls_attempted: details
+                .map_or(0, |usage| usage.calls_attempted)
+                .max(completion.map_or(0, |accounting| accounting.committed_calls as u64)),
             calls_succeeded: details.map_or(0, |usage| usage.calls_succeeded),
             calls_refused: details.map_or(0, |usage| usage.calls_refused),
             calls_errored: details.map_or(0, |usage| usage.calls_errored),
@@ -582,7 +586,6 @@ struct ProposalAccounting {
 fn proposal_accounting(
     execution: &crate::app::review_execution::ReviewRunContext,
     reports_raw_completion_usage: bool,
-    current_logical_usage: Option<Usage>,
     current_models: &[String],
 ) -> ProposalAccounting {
     if reports_raw_completion_usage {
@@ -590,6 +593,8 @@ fn proposal_accounting(
         let completion = CompletionAccounting {
             usage: snapshot.physical_usage,
             usage_by_model: snapshot.physical_usage_by_model,
+            committed_calls: snapshot.committed_calls,
+            terminal_count: snapshot.physical_terminal_count,
             complete: snapshot.physical_accounting_complete,
         };
         let retrieval = execution.retrieval_usage();
@@ -610,14 +615,16 @@ fn proposal_accounting(
             models,
         }
     } else {
-        let usage = current_logical_usage.map_or_else(
-            || execution.logical_usage(),
-            |usage| execution.record_logical_usage(usage, current_models),
-        );
+        let logical = execution.logical_usage();
+        let retrieval = execution.retrieval_usage();
+        let mut usage = logical;
+        usage.embed_tokens = retrieval.embed_tokens;
+        let cost = usage.cost_usd + retrieval.cost_usd;
+        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
         ProposalAccounting {
             usage,
             completion: None,
-            logical: (usage != Usage::default()).then_some(usage),
+            logical: (logical != Usage::default()).then_some(logical),
             models: execution.logical_models(),
         }
     }
@@ -1044,6 +1051,10 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         model
     };
     let reports_raw_completion_usage = model.reports_raw_completion_usage();
+    let model: Arc<dyn Model> = Arc::new(LogicalUsageModel {
+        inner: model,
+        execution: execution.clone(),
+    });
     let mut context = crate::review_timing::measure(
         timing.as_ref(),
         "context",
@@ -1149,7 +1160,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // Kill switches are checked before anything expensive, so a label really
     // does stop the bot rather than merely hiding its output.
     if let Some(label) = kill_switch(config, &context) {
-        let accounting = proposal_accounting(&execution, reports_raw_completion_usage, None, &[]);
+        let accounting = proposal_accounting(&execution, reports_raw_completion_usage, &[]);
         return Ok(Proposal {
             version: PROPOSAL_VERSION,
             repo: repo.to_string(),
@@ -1802,7 +1813,6 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let accounting = proposal_accounting(
         &execution,
         reports_raw_completion_usage,
-        Some(spend.usage),
         &spend.models,
     );
     Ok(Proposal {

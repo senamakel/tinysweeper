@@ -328,8 +328,8 @@ enum EvalCommand {
         #[arg(long, default_value_t = 5.0)]
         max_cost_usd: f64,
 
-        /// Maximum physical model dispatches reserved per case while recording.
-        /// Reservations persist in the evals/recording-attempts audit across reruns.
+        /// Maximum cumulative physical dispatches per case across recording reruns.
+        /// Defaults to 8 and cannot exceed 56; persisted attempts consume this limit.
         #[arg(long, default_value_t = 8)]
         max_physical_calls_per_case: usize,
 

@@ -290,6 +290,50 @@ async fn hidden_physical_retries_share_the_recording_cap_and_failed_attempt_audi
 }
 
 #[tokio::test]
+async fn recording_rerun_uses_only_the_remaining_cumulative_attempt_allowance() {
+    let dir = corpus_dir(EXPECTATION);
+    let corpus = load(dir.path()).expect("loads one-case corpus");
+    let audit_dir = corpus.root.join("recording-attempts/ts-0001");
+    let first = crate::eval::recording_budget::Reservation::begin(&audit_dir, 8, 56)
+        .expect("first invocation reserves its initial allowance");
+    first
+        .finish(8)
+        .expect("first invocation audit is completed");
+
+    let physical_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(HiddenRetryModel {
+        control: None,
+        physical_calls: physical_calls.clone(),
+    });
+    let mut config = config();
+    config.models.budget_usd_per_pr = 0.5;
+
+    run(
+        &corpus,
+        &config,
+        Some(model),
+        &RunOptions {
+            out: dir.path().join("runs/cumulative-retry"),
+            record: true,
+            max_cost_usd: 0.5,
+            max_physical_calls_per_case: Some(56),
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("rerun is admitted against the persisted remainder");
+
+    assert_eq!(physical_calls.load(std::sync::atomic::Ordering::SeqCst), 16);
+    let audit: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(audit_dir.join("recording-attempts.json")).expect("attempt audit exists"),
+    )
+    .expect("valid attempt audit");
+    assert_eq!(audit["reservations"][0]["actual_calls"], 8);
+    assert_eq!(audit["reservations"][1]["reserved_calls"], 48);
+    assert_eq!(audit["reservations"][1]["actual_calls"], 16);
+}
+
+#[tokio::test]
 async fn recording_binds_each_case_to_its_share_of_the_global_cost_ceiling() {
     let dir = corpus_dir(EXPECTATION);
     let mut corpus = two_case_corpus(&dir);

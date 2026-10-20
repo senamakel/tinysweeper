@@ -434,7 +434,6 @@ mod tests {
         }
         .into_outcome();
 
-        assert_eq!(outcome.resolved, ["Completed sibling finding"]);
         let resolved = std::collections::BTreeSet::from_iter(outcome.resolved.iter().cloned());
         let outdated_thread = crate::forge::types::ReviewThread {
             id: "PRRT_old-finding".to_string(),
@@ -458,6 +457,7 @@ mod tests {
             crate::threads::decide(&outdated_thread, &resolved),
             crate::threads::Decision::Leave(_)
         ));
+        assert_eq!(outcome.resolved, ["Completed sibling finding"]);
         assert!(outcome.completed, "the completed sibling remains completed");
         assert_eq!(outcome.unanswered, paths);
         assert_eq!(outcome.spend.usage.input_tokens, 7);

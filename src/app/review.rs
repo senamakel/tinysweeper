@@ -5055,7 +5055,10 @@ mod tests {
                 drain_seconds: config.review.large_pr.drain_seconds,
             },
         ));
-        let model: Arc<dyn Model> = execution.bind_model(fail_model.clone(), 100.0).model.clone();
+        let model: Arc<dyn Model> = execution
+            .bind_model(fail_model.clone(), 100.0)
+            .model
+            .clone();
 
         review_with_tree_observed_at_head_in_run(
             &forge,
@@ -5074,6 +5077,7 @@ mod tests {
         .await
         .expect("the first proposal completes");
         assert_eq!(fail_model.0.load(Ordering::SeqCst), 1);
+        let first_observed_cost = timing.snapshot().usage.cost_usd;
         let failed = review_with_tree_observed_at_head_in_run(
             &forge,
             model,
@@ -5094,6 +5098,10 @@ mod tests {
         timing.finish("failure");
 
         let expected_observed_cost = timing.snapshot().usage.cost_usd;
+        assert!(
+            expected_observed_cost > first_observed_cost,
+            "the failed second attempt still incurred paid model work"
+        );
         let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer_bytes = bytes.clone();
         let subscriber = tracing_subscriber::fmt()

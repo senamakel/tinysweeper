@@ -1862,7 +1862,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                         }
                         LaneId::Tests => Tests::new(model.clone()).run(lane_input).await,
                         LaneId::Commits => Commits::new().run(lane_input).await,
-                        LaneId::Description => Description::new(model.clone()).run(lane_input).await,
+                        LaneId::Description => {
+                            Description::new(model.clone()).run(lane_input).await
+                        }
                         LaneId::E2e => {
                             crate::lanes::e2e::E2e::new(model.clone())
                                 .run(lane_input)
@@ -1879,10 +1881,8 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // Large-mode ranked groups and independent lanes share the same poll set.
     // `join_all` retains canonical lane order for normal lanes, and the map
     // below restores the complete configured order before spend is folded.
-    let (large_outcomes, lane_results) = tokio::join!(
-        large_groups,
-        futures::future::join_all(lane_runs),
-    );
+    let (large_outcomes, lane_results) =
+        tokio::join!(large_groups, futures::future::join_all(lane_runs),);
     let mut outcomes = large_outcomes?;
     for lane_result in lane_results {
         let (lane_id, outcome) = lane_result?;
@@ -1981,59 +1981,48 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // One dedicated structured call after every lane has concluded. It may
     // explain the evidence, but it cannot decide readiness, findings, or merge
     // work: those are rendered directly from the proposal below.
-    let summary_future =
-        crate::review_timing::measure(timing.as_ref(), "summary", async {
-            let full_pr_paths: Vec<String> =
-                context.files.iter().map(|file| file.path.clone()).collect();
-            if config.summary.enabled {
-                if summary_generation_needed(config, &diffs)
-                    && execution.execution().refusal_for_new_work().is_none()
-                {
-                    let (summary, spend, transcript) = crate::summary::generate_with_input(
-                        model.as_ref(),
-                        config,
-                        &context.pull_request,
-                        crate::summary::SummaryGenerationInput {
-                            diffs: &diffs,
-                            full_pr_paths: &full_pr_paths,
-                            full_pr_diffstat: crate::summary::SummaryDiffstat {
-                                files: context.files.len(),
-                                additions: context.files.iter().map(|file| file.additions).sum(),
-                                deletions: context.files.iter().map(|file| file.deletions).sum(),
-                            },
-                            previous_reviewed_head: remembered
-                                .as_ref()
-                                .map(|state| state.head_sha.as_str()),
-                            lanes: &lanes,
-                            prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
-                            prior_transcript: stored
-                                .as_ref()
-                                .map(|state| state.summary_transcript.as_slice())
-                                .unwrap_or_default(),
+    let summary_future = crate::review_timing::measure(timing.as_ref(), "summary", async {
+        let full_pr_paths: Vec<String> =
+            context.files.iter().map(|file| file.path.clone()).collect();
+        if config.summary.enabled {
+            if summary_generation_needed(config, &diffs)
+                && execution.execution().refusal_for_new_work().is_none()
+            {
+                let (summary, spend, transcript) = crate::summary::generate_with_input(
+                    model.as_ref(),
+                    config,
+                    &context.pull_request,
+                    crate::summary::SummaryGenerationInput {
+                        diffs: &diffs,
+                        full_pr_paths: &full_pr_paths,
+                        full_pr_diffstat: crate::summary::SummaryDiffstat {
+                            files: context.files.len(),
+                            additions: context.files.iter().map(|file| file.additions).sum(),
+                            deletions: context.files.iter().map(|file| file.deletions).sum(),
                         },
-                    )
-                    .await;
-                    (Some(summary), spend, transcript)
-                } else {
-                    (
-                        Some(crate::summary::deterministic_with_paths(
-                            config,
-                            &context.pull_request,
-                            &diffs,
-                            &full_pr_paths,
-                            &lanes,
-                            stored.as_ref().and_then(|state| state.summary.as_ref()),
-                        )),
-                        Spend::default(),
-                        stored
+                        previous_reviewed_head: remembered
                             .as_ref()
-                            .map(|state| state.summary_transcript.clone())
+                            .map(|state| state.head_sha.as_str()),
+                        lanes: &lanes,
+                        prior: stored.as_ref().and_then(|state| state.summary.as_ref()),
+                        prior_transcript: stored
+                            .as_ref()
+                            .map(|state| state.summary_transcript.as_slice())
                             .unwrap_or_default(),
-                    )
-                }
+                    },
+                )
+                .await;
+                (Some(summary), spend, transcript)
             } else {
                 (
-                    None,
+                    Some(crate::summary::deterministic_with_paths(
+                        config,
+                        &context.pull_request,
+                        &diffs,
+                        &full_pr_paths,
+                        &lanes,
+                        stored.as_ref().and_then(|state| state.summary.as_ref()),
+                    )),
                     Spend::default(),
                     stored
                         .as_ref()
@@ -2041,7 +2030,17 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                         .unwrap_or_default(),
                 )
             }
-        });
+        } else {
+            (
+                None,
+                Spend::default(),
+                stored
+                    .as_ref()
+                    .map(|state| state.summary_transcript.clone())
+                    .unwrap_or_default(),
+            )
+        }
+    });
 
     // These three artifacts have independent inputs after the lane outcomes
     // are folded. Run their model calls together; each call still enters the
@@ -4255,9 +4254,7 @@ mod tests {
                 ),
                 barrier: None,
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
-                optional_seen: Arc::new(tokio::sync::Mutex::new(
-                    std::collections::BTreeSet::new(),
-                )),
+                optional_seen: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
                 optional_changed: Arc::new(tokio::sync::Notify::new()),
                 critique_delay: std::time::Duration::ZERO,
                 security_delay: std::time::Duration::ZERO,
@@ -4274,7 +4271,10 @@ mod tests {
         async fn schedule(
             &self,
             request: &crate::ports::model::ModelRequest,
-        ) -> Result<(bool, Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>)> {
+        ) -> Result<(
+            bool,
+            Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>,
+        )> {
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
@@ -4284,21 +4284,26 @@ mod tests {
                 }
                 _ => return Ok((false, None)),
             };
-            let permit = if let Some(control) = &self.execution {
-                let permit = control.acquire().await.map_err(|refusal| Error::ModelExecutionRefused {
-                    refusal,
-                    usage: None,
-                    accounting_complete: true,
-                })?;
-                permit.mark_dispatched().map_err(|refusal| Error::ModelExecutionRefused {
-                    refusal,
-                    usage: None,
-                    accounting_complete: true,
-                })?;
-                Some(permit)
-            } else {
-                None
-            };
+            let permit =
+                if let Some(control) = &self.execution {
+                    let permit = control.acquire().await.map_err(|refusal| {
+                        Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        }
+                    })?;
+                    permit
+                        .mark_dispatched()
+                        .map_err(|refusal| Error::ModelExecutionRefused {
+                            refusal,
+                            usage: None,
+                            accounting_complete: true,
+                        })?;
+                    Some(permit)
+                } else {
+                    None
+                };
             if self
                 .review_budget_enabled
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -4319,8 +4324,12 @@ mod tests {
             }
             self.scheduled_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let active = self.active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            self.peak.fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+            let active = self
+                .active
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.peak
+                .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
             let optional_schema = matches!(
                 request.schema_name.as_str(),
                 "review_summary" | "tinysweeper_thread_resolution" | "tinysweeper_wireframe"
@@ -4370,7 +4379,8 @@ mod tests {
             let (lane_request, permit) = self.schedule(&request).await?;
             let result = self.inner.complete(request).await;
             if lane_request {
-                self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                self.active
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 if let (Some(_), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
@@ -4423,7 +4433,8 @@ mod tests {
             let (lane_request, permit) = self.schedule(&request).await?;
             let result = self.inner.review(request, tree, policy).await;
             if lane_request {
-                self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                self.active
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 if let (Some(_), Some(control)) = (&permit, &self.execution) {
                     let (outcome, answered_model, usage) = match &result {
                         Ok(response) => (
@@ -4467,7 +4478,8 @@ mod tests {
                 inner: self.inner.clone(),
                 barrier: self.barrier.clone(),
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(
-                    self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
+                    self.barrier_arrivals
+                        .load(std::sync::atomic::Ordering::SeqCst),
                 ),
                 optional_seen: self.optional_seen.clone(),
                 optional_changed: self.optional_changed.clone(),
@@ -4483,8 +4495,12 @@ mod tests {
             }))
         }
 
-        fn complete_reports_physical_calls(&self) -> bool { true }
-        fn review_reports_physical_calls(&self) -> bool { true }
+        fn complete_reports_physical_calls(&self) -> bool {
+            true
+        }
+        fn review_reports_physical_calls(&self) -> bool {
+            true
+        }
 
         fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
             self.review_budget_enabled
@@ -4497,7 +4513,8 @@ mod tests {
                 inner: self.inner.clone(),
                 barrier: self.barrier.clone(),
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(
-                    self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
+                    self.barrier_arrivals
+                        .load(std::sync::atomic::Ordering::SeqCst),
                 ),
                 optional_seen: self.optional_seen.clone(),
                 optional_changed: self.optional_changed.clone(),
@@ -4635,10 +4652,12 @@ mod tests {
     #[tokio::test]
     async fn large_mode_overlaps_ranked_groups_with_independent_lanes() {
         let files = (0..30)
-            .map(|index| changed_file(
-                &format!("src/large_{index:02}.rs"),
-                &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
-            ))
+            .map(|index| {
+                changed_file(
+                    &format!("src/large_{index:02}.rs"),
+                    &format!("@@ -0,0 +1,1 @@\n+fn large_{index}() {{}}\n"),
+                )
+            })
             .collect();
         let forge = forge_with(files, vec![]);
         let mut model = ReviewSchedulingModel::new();
@@ -4650,11 +4669,8 @@ mod tests {
         config.review.large_pr.files = 1;
         config.review.large_pr.max_groups = 1;
         config.review.large_pr.max_calls = 8;
-        let timing = crate::review_timing::ReviewTiming::new(
-            "tinyhumansai/tinysweeper",
-            7,
-            "Large",
-        );
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(500),
@@ -4755,8 +4771,14 @@ mod tests {
             .collect()
         );
         let calls = scheduled_calls.load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(calls, 6, "the lanes and optional stages share one six-call budget");
-        assert_eq!(budget_remaining.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            calls, 6,
+            "the lanes and optional stages share one six-call budget"
+        );
+        assert_eq!(
+            budget_remaining.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
         assert_eq!(result.usage().calls_attempted, calls as u64);
         assert!((result.usage().cost_usd - 0.06).abs() < 1e-9);
         assert!(result.summary.is_some());

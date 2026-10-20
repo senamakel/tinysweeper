@@ -108,9 +108,7 @@ impl BoundedLogicalModel {
     fn new(inner: Arc<dyn Model>, execution: Arc<ReviewExecution>) -> Self {
         Self {
             inner,
-            permits: Arc::new(tokio::sync::Semaphore::new(
-                MAX_CONCURRENT_MODEL_DISPATCHES,
-            )),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES)),
             execution,
         }
     }
@@ -268,9 +266,7 @@ impl ReviewRunContext {
             let rooted = rooted.unwrap_or(base);
             let execution: Arc<dyn ModelExecutionControl> = Arc::new(BoundedExecutionControl {
                 inner: self.execution.clone(),
-                permits: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_CONCURRENT_MODEL_DISPATCHES,
-                )),
+                permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_MODEL_DISPATCHES)),
             });
             let controlled = rooted.with_execution_control(execution);
             let execution_control_bound = controlled.is_some();

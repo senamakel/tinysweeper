@@ -5600,7 +5600,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result, Some(WorkerDisposition::Yielded));
+        assert!(matches!(result, Some(WorkerDisposition::Yielded)));
         assert!(execution.is_cancelled());
         assert!(store.owns(&owned, now + 4).await.unwrap());
         assert!(!store.should_continue(&owned, now + 4).await.unwrap());
@@ -6032,7 +6032,6 @@ mod tests {
         use crate::harness::MockModel;
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest};
-        use crate::ports::model_execution::ModelExecutionControl;
         use serde_json::json;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();

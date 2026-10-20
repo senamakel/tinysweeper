@@ -10315,7 +10315,7 @@ mod tests {
                         path: path.into(),
                         status: FileStatus::Modified,
                         additions: 1,
-                        patch: Some(format!("@@ -1 +1,2 @@\n fn item() {{}}\n+fn next() {{}}\n")),
+                        patch: Some("@@ -1 +1,2 @@\n fn item() {}\n+fn next() {}\n".into()),
                         ..ChangedFile::default()
                     })
                     .collect(),
@@ -10356,6 +10356,7 @@ mod tests {
         assert!(queued.unfinished.iter().any(|job| {
             job.request.mode == ReviewJobMode::Full && job.owner.is_none()
         }));
+        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms + 3).await;
         assert!(store.should_continue(&incremental, now_ms + 4).await.unwrap());
         assert!(
             store
@@ -10387,7 +10388,6 @@ mod tests {
                 && entry.outcome == TerminalOutcome::Published
         }));
 
-        publish_test_queued_statuses_through_forge(store.as_ref(), forge.clone(), now_ms + 7).await;
         let full = store
             .claim_next("full-mode-worker", now_ms + 8)
             .await
@@ -10400,13 +10400,14 @@ mod tests {
             store.begin_paid(&full, now_ms + 10).await.unwrap(),
             PaidStart::Started
         );
-        assert!(
-            store
-                .head_is_terminal(&incremental, now_ms + 11)
-                .await
-                .unwrap(),
-            "the Incremental completion remains recorded while Full starts"
-        );
+        let incrementals = store.snapshot_for_test().incremental_heads;
+        assert!(incrementals.iter().any(|head| {
+            head.repo == incremental.request.repo
+                && head.number == incremental.request.number
+                && head.head_sha == "abc123"
+                && head.paid_attempts == 1
+                && head.terminal_outcome == Some(TerminalOutcome::Published)
+        }), "the Incremental terminal marker and paid count remain after Full starts");
 
         let mut base: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()

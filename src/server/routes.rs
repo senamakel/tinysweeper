@@ -7088,6 +7088,14 @@ mod tests {
             let context = context_a.clone();
             let model = model_a.clone();
             tokio::spawn(async move {
+                let checkout_repo = repo.clone();
+                let review_repo = repo.clone();
+                let review_store = store.clone();
+                let review_owned = owned.clone();
+                let review_forge = forge.clone();
+                let review_config = config.clone();
+                let review_context = context.clone();
+                let control_execution = context.execution();
                 let paid_review = review_with_paid_budget_and_status(
                     store.as_ref(),
                     Some(&owned),
@@ -7100,7 +7108,7 @@ mod tests {
                         let findings = checkout_then_review_before_deadline(
                             &timing,
                             hard_deadline,
-                            &repo,
+                            &checkout_repo,
                             7,
                             || async move {
                                 let _ = checkout_tx.send(());
@@ -7110,22 +7118,22 @@ mod tests {
                             move |_| async move {
                                 assert_eq!(tokio::time::Instant::now(), started_at + Duration::from_secs(75));
                                 let proposal = run_if_confirmed_head_needs_review(
-                                    store.as_ref(),
-                                    Some(&owned),
+                                    review_store.as_ref(),
+                                    Some(&review_owned),
                                     Mode::Incremental,
                                     || async {
                                         crate::app::review::review_with_tree_observed_at_head_in_run(
-                                            &forge,
+                                            &review_forge,
                                             model,
-                                            &config,
-                                            &repo,
+                                            &review_config,
+                                            &review_repo,
                                             7,
                                             None,
                                             None,
                                             None,
                                             None,
                                             Some("head-a"),
-                                            context,
+                                            review_context,
                                             None,
                                         )
                                         .await
@@ -7155,7 +7163,7 @@ mod tests {
                     Some(&owned),
                     None,
                     None,
-                    context.execution(),
+                    control_execution,
                 )
                 .await;
                 if matches!(result, Err(Error::ReviewSuperseded)) {
@@ -7271,10 +7279,17 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let context_b = test_execution_context(
-            tokio::time::Instant::now(),
-            tokio::time::Instant::now() + Duration::from_secs(100),
-        );
+        let started_b = tokio::time::Instant::now();
+        let context_b = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            ReviewExecutionOptions {
+                started_at: started_b,
+                hard_deadline: started_b + Duration::from_secs(100),
+                mode: crate::lanes::large_pr::ReviewMode::Large,
+                max_calls: Some(8),
+                soft_deadline_percent: 80,
+                drain_seconds: 5,
+            },
+        ));
         let mock_b = MockModel::silent();
         let base_b: Arc<dyn Model> = Arc::new(mock_b.clone());
         let bound_b = context_b

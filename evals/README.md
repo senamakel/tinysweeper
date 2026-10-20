@@ -144,9 +144,9 @@ Follow the [recording and 48-hour observation runbook](../docs/modules/eval/reco
 for bounded recording, offline replay proof, recall reporting, and deployment
 metrics. The initial V3.2 partial capture and completed GPT-OSS 120B/Novita
 miss are separate artifacts; preserve both model/config identities. Do not
-report the measured 0/5 recall result for this recording profile without
-presenting it as production performance; do not report 48-hour rollout numbers
-before the full window has elapsed.
+Do not present the measured 0/5 recall result for this recording profile as
+production performance; do not report 48-hour rollout numbers before the full
+window has elapsed.
 
 The external PR descriptions and comments are omitted from these five fixture
 snapshots because the preserved versions include post-review fix explanations

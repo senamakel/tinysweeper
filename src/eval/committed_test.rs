@@ -186,9 +186,15 @@ async fn the_five_historical_recordings_replay_with_the_measured_outcomes() {
                 .map(|file| file.path.as_str())
                 .collect::<std::collections::BTreeSet<_>>();
             assert_eq!(fixture_files.len(), 11);
-            assert_eq!(excluded, ["crates/tinymcp/src/registry/oauth/types.rs"].into());
+            assert_eq!(
+                excluded,
+                ["crates/tinymcp/src/registry/oauth/types.rs"].into()
+            );
             let deletion_only = fixture_files["crates/tinymcp/src/registry/oauth/types.rs"];
-            assert_eq!(deletion_only.status, "modified");
+            assert_eq!(
+                deletion_only.status,
+                crate::forge::types::FileStatus::Modified
+            );
             assert_eq!(deletion_only.additions, 0);
             assert_eq!(deletion_only.deletions, 22);
         }

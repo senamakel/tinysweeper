@@ -78,6 +78,7 @@ pub(crate) struct ReviewRunContext {
     execution: Arc<ReviewExecution>,
     model: OnceLock<ReviewModelBinding>,
     retrieval_usage: Mutex<Usage>,
+    retrieval_models: Mutex<Vec<String>>,
     logical_usage: Mutex<Usage>,
     logical_models: Mutex<Vec<String>>,
 }
@@ -89,6 +90,7 @@ impl ReviewRunContext {
             execution: Arc::new(ReviewExecution::new(options)),
             model: OnceLock::new(),
             retrieval_usage: Mutex::new(Usage::default()),
+            retrieval_models: Mutex::new(Vec::new()),
             logical_usage: Mutex::new(Usage::default()),
             logical_models: Mutex::new(Vec::new()),
         }
@@ -128,16 +130,28 @@ impl ReviewRunContext {
     }
 
     /// Accumulate embedding work over every attempt in this review job.
-    pub(crate) fn record_retrieval_usage(&self, usage: Usage) {
+    pub(crate) fn record_retrieval_usage(&self, usage: Usage, models: &[String]) {
         let mut total = lock(&self.retrieval_usage);
         total.embed_tokens = total.embed_tokens.saturating_add(usage.embed_tokens);
         let cost = total.cost_usd + usage.cost_usd;
         total.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+        drop(total);
+        let mut known_models = lock(&self.retrieval_models);
+        for model in models {
+            if !known_models.contains(model) {
+                known_models.push(model.clone());
+            }
+        }
     }
 
     /// The embedding invoice accumulated across every attempt in this job.
     pub(crate) fn retrieval_usage(&self) -> Usage {
         *lock(&self.retrieval_usage)
+    }
+
+    /// Models that billed retrieval work over every attempt in this job.
+    pub(crate) fn retrieval_models(&self) -> Vec<String> {
+        lock(&self.retrieval_models).clone()
     }
 
     /// Retain successful nonphysical model usage for the job-level proposal.
@@ -747,6 +761,7 @@ mod tests {
             execution: Arc::clone(&execution),
             model: OnceLock::new(),
             retrieval_usage: Mutex::new(Usage::default()),
+            retrieval_models: Mutex::new(Vec::new()),
             logical_usage: Mutex::new(Usage::default()),
             logical_models: Mutex::new(Vec::new()),
         });
@@ -807,6 +822,7 @@ mod tests {
             execution: Arc::clone(&replacement_execution),
             model: OnceLock::new(),
             retrieval_usage: Mutex::new(Usage::default()),
+            retrieval_models: Mutex::new(Vec::new()),
             logical_usage: Mutex::new(Usage::default()),
             logical_models: Mutex::new(Vec::new()),
         });

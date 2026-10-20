@@ -1872,6 +1872,7 @@ mod tests {
             cached_tokens: 0,
             embed_tokens: 0,
             models: vec![],
+            completion_accounting: None,
             threads: Default::default(),
         }
     }

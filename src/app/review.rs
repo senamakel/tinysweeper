@@ -3993,7 +3993,7 @@ mod tests {
     async fn proposal_publishes_raw_completion_accounting_from_the_shared_execution() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};
-        use crate::index::types::{Embedded, EmbedSignature};
+        use crate::index::types::{EmbedSignature, Embedded};
         use crate::ports::embed::Embedder;
 
         struct ChargedEmbedder;

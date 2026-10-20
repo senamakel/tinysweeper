@@ -1183,6 +1183,7 @@ mod tests {
             cached_tokens: 800,
             embed_tokens: 0,
             models: vec!["moonshotai/kimi-k3".into()],
+            completion_accounting: None,
             threads: Default::default(),
         }
     }

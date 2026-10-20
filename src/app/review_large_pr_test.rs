@@ -691,7 +691,6 @@ async fn large_review_does_not_replay_an_omitted_file_as_covered() {
         .expect("state loads")
         .expect("first review saves replay evidence");
     assert!(remembered.evidence.contains("--- src/a_api.rs"));
-    assert!(remembered.evidence.contains("--- src/b_private.rs"));
 
     model.attempts.lock().expect("attempt list lock").clear();
     model

@@ -187,12 +187,12 @@ mod tests {
     #[test]
     fn dropping_a_reservation_unlocks_even_when_a_child_inherited_its_handle() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let reservation = Reservation::begin(directory.path(), 8, 8).expect("first reserve");
+        let reservation = Reservation::begin(directory.path(), 8, 16).expect("first reserve");
         let inherited_handle = reservation._lock.try_clone().expect("clone lock handle");
 
         drop(reservation);
 
-        let next = Reservation::begin(directory.path(), 8, 8)
+        let next = Reservation::begin(directory.path(), 8, 16)
             .expect("drop releases the lock despite an inherited handle");
         assert_eq!(next.reserved_calls(), 8);
         drop(next);

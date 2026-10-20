@@ -101,15 +101,17 @@ struct BoundedExecutionPermit {
 struct BoundedLogicalModel {
     inner: Arc<dyn Model>,
     permits: Arc<tokio::sync::Semaphore>,
+    execution: Arc<ReviewExecution>,
 }
 
 impl BoundedLogicalModel {
-    fn new(inner: Arc<dyn Model>) -> Self {
+    fn new(inner: Arc<dyn Model>, execution: Arc<ReviewExecution>) -> Self {
         Self {
             inner,
             permits: Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_MODEL_DISPATCHES,
             )),
+            execution,
         }
     }
 
@@ -117,14 +119,23 @@ impl BoundedLogicalModel {
         Arc::new(Self {
             inner,
             permits: self.permits.clone(),
+            execution: self.execution.clone(),
         })
     }
 
-    async fn acquire(&self) -> tokio::sync::OwnedSemaphorePermit {
-        Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .expect("the review logical-call semaphore is never closed")
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, ModelExecutionRefusal> {
+        tokio::select! {
+            biased;
+            _ = self.execution.cancelled() => Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.execution.soft_deadline()) => {
+                Err(ModelExecutionRefusal::SoftDeadline)
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                Ok(permit.expect("the review logical-call semaphore is never closed"))
+            }
+        }
     }
 }
 
@@ -134,7 +145,7 @@ impl Model for BoundedLogicalModel {
         &self,
         request: crate::ports::model::ModelRequest,
     ) -> crate::error::Result<crate::ports::model::ModelResponse> {
-        let _permit = self.acquire().await;
+        let _permit = self.acquire().await.map_err(refusal_error)?;
         self.inner.complete(request).await
     }
 
@@ -148,7 +159,7 @@ impl Model for BoundedLogicalModel {
         tree: &dyn crate::ports::tree::TreeReader,
         policy: &crate::config::types::LookupPolicy,
     ) -> crate::error::Result<crate::ports::model::ModelResponse> {
-        let _permit = self.acquire().await;
+        let _permit = self.acquire().await.map_err(refusal_error)?;
         self.inner.review(request, tree, policy).await
     }
 
@@ -189,10 +200,16 @@ impl ModelExecutionControl for BoundedExecutionControl {
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
         // Wait for shared dispatch capacity before reserving the review's
         // finite call budget, so queued work does not occupy admission slots.
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .expect("the review dispatch semaphore is never closed");
+        let permit = tokio::select! {
+            biased;
+            _ = self.inner.cancelled() => return Err(ModelExecutionRefusal::Cancelled),
+            _ = tokio::time::sleep_until(self.inner.soft_deadline()) => {
+                return Err(ModelExecutionRefusal::SoftDeadline);
+            }
+            permit = Arc::clone(&self.permits).acquire_owned() => {
+                permit.expect("the review dispatch semaphore is never closed")
+            }
+        };
         match self.inner.acquire().await {
             Ok(inner) => Ok(Box::new(BoundedExecutionPermit {
                 inner,
@@ -210,6 +227,14 @@ impl ModelExecutionControl for BoundedExecutionControl {
 impl ModelExecutionPermit for BoundedExecutionPermit {
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
         self.inner.mark_dispatched()
+    }
+}
+
+fn refusal_error(refusal: ModelExecutionRefusal) -> crate::error::Error {
+    crate::error::Error::ModelExecutionRefused {
+        refusal,
+        usage: None,
+        accounting_complete: true,
     }
 }
 
@@ -246,7 +271,9 @@ impl ReviewRunContext {
             let controlled = rooted.with_execution_control(execution);
             let execution_control_bound = controlled.is_some();
             ReviewModelBinding {
-                model: controlled.unwrap_or_else(|| Arc::new(BoundedLogicalModel::new(rooted))),
+                model: controlled.unwrap_or_else(|| {
+                    Arc::new(BoundedLogicalModel::new(rooted, self.execution.clone()))
+                }),
                 #[cfg(test)]
                 review_budget_bound,
                 execution_control_bound,

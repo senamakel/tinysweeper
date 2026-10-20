@@ -1,4 +1,4 @@
-use crate::app::review::review;
+use crate::app::review::{review, Proposal};
 use crate::config::types::Config;
 use crate::forge::mock::{MockForge, MockState, Write};
 use crate::forge::types::{ChangedFile, FileStatus, PullRequest, RepoId};
@@ -72,11 +72,26 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
         encoded["partial_review"]["mode"], "large",
         "the published proposal records host-side partial-review metadata"
     );
+    assert_eq!(encoded["partial_review"]["estimate"]["files"], 2);
+    assert_eq!(
+        encoded["partial_review"]["selected_groups"][0]["paths"],
+        json!(["src/a.rs"])
+    );
+    assert!(encoded["partial_review"]["omitted"].as_array().unwrap().iter().any(
+        |omission| omission["path"] == "src/b.rs" && omission["reason"] == "not_selected"
+    ));
     assert!(proposal.unreviewed.iter().any(|path| path == "src/b.rs"));
     assert!(
         !proposal.complete(),
         "an omitted changed path blocks approval"
     );
+    let mut legacy = encoded.clone();
+    legacy
+        .as_object_mut()
+        .expect("proposal is an object")
+        .remove("partial_review");
+    let decoded: Proposal = serde_json::from_value(legacy).expect("legacy proposal decodes");
+    assert!(decoded.partial_review.is_none());
 
     crate::app::apply::apply(&forge, &forge, &config, &proposal, None)
         .await
@@ -96,4 +111,12 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
         writes.iter().any(|write| matches!(write, Write::Check(_))),
         "the partial check remains publishable"
     );
+    let hub = writes.iter().find_map(|write| match write {
+        Write::Comment { body, .. } | Write::CommentUpdate { body, .. } => Some(body),
+        _ => None,
+    });
+    let hub = hub.expect("partial review hub is published");
+    assert!(hub.contains("not reviewed (large PR)"), "{hub}");
+    assert!(hub.contains("src/b.rs"), "{hub}");
+    assert!(hub.contains("not selected by the large-review budget"), "{hub}");
 }

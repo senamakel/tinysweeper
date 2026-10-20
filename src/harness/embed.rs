@@ -3197,7 +3197,7 @@ mod tests {
     async fn an_explicit_request_effort_reaches_the_actual_gateway_request() {
         use crate::ports::model::Model;
 
-        let (mut model, gateway, mut request) = admission_fixture().await;
+        let (model, gateway, mut request) = admission_fixture().await;
         // The fixture's configured global effort is high. A low request-level
         // override makes this fail if the adapter silently falls back to that
         // global setting.

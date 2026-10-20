@@ -313,7 +313,12 @@ pub async fn apply(
         && match event {
             ReviewEvent::Approve => proposal.complete(),
             ReviewEvent::RequestChanges => true,
-            ReviewEvent::Comment => true,
+            ReviewEvent::Comment => {
+                published_before
+                    .as_ref()
+                    .and_then(|published| published.coverage_complete)
+                    == Some(proposal.complete())
+            }
         };
 
     // A push this review could not vouch for — a model that never answered,
@@ -410,6 +415,7 @@ pub async fn apply(
                         unvouched,
                         withdrawal_failed.is_some(),
                     ),
+                    proposal.complete(),
                 )
             })
         } else {
@@ -687,6 +693,7 @@ async fn record_apply_state(
         ReviewEvent,
         Vec<String>,
         Option<crate::forge::types::OwnReview>,
+        bool,
     )>,
 ) {
     let Some(store) = store else { return };
@@ -710,12 +717,13 @@ async fn record_apply_state(
         embed_tokens: proposal.usage().embed_tokens,
         models: proposal.models.clone(),
     });
-    if let Some((event, blocking_findings, standing_review)) = publication {
+    if let Some((event, blocking_findings, standing_review, coverage_complete)) = publication {
         state.published_review = Some(crate::state::PublishedReview {
             event,
             head_sha: proposal.head_sha.clone(),
             blocking_findings,
             standing_review,
+            coverage_complete: Some(coverage_complete),
         });
     }
     if let Err(err) = store.save_state(&key, &state).await {

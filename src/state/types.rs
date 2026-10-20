@@ -83,6 +83,10 @@ pub struct PublishedReview {
     /// head alone cannot authenticate the next dedupe decision.
     #[serde(default)]
     pub standing_review: Option<crate::forge::types::OwnReview>,
+    /// Whether the successfully published proposal had complete coverage.
+    /// Missing metadata is unknown and cannot certify a current coverage warning.
+    #[serde(default)]
+    pub coverage_complete: Option<bool>,
 }
 
 /// Provider accounting retained without putting the breakdown in review prose.
@@ -165,6 +169,7 @@ mod tests {
                 event: crate::forge::types::ReviewEvent::RequestChanges,
                 head_sha: Some("blocked-head".into()),
             }),
+            coverage_complete: Some(true),
         };
         let mut encoded = serde_json::to_value(&receipt).expect("serializes");
         encoded
@@ -173,5 +178,6 @@ mod tests {
             .remove("standing_review");
         let decoded: PublishedReview = serde_json::from_value(encoded).expect("legacy receipt");
         assert!(decoded.standing_review.is_none());
+        assert!(decoded.coverage_complete.is_none());
     }
 }

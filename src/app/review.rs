@@ -400,6 +400,14 @@ pub struct Proposal {
     /// in the proposal total but do not affect this marker.
     #[serde(default)]
     pub completion_accounting: Option<CompletionAccounting>,
+    /// Logical usage reported by models without raw physical accounting.
+    ///
+    /// Kept separate from [`Proposal::completion_accounting`] so replayed and
+    /// offline model responses remain visible without claiming live provider
+    /// telemetry. Older proposals omit this field and read with zero extra
+    /// counters.
+    #[serde(default)]
+    pub logical_usage: Option<Usage>,
     /// The review threads this run decided can be closed.
     ///
     /// Decided here, on the read side, and executed by `apply`, which holds the
@@ -416,15 +424,19 @@ impl Proposal {
     /// Kept flat on disk because the schema predates [`Usage`] being
     /// serializable and old proposals still have to load.
     pub fn usage(&self) -> Usage {
-        let completion = self.completion_accounting.as_ref();
+        let details = self
+            .completion_accounting
+            .as_ref()
+            .map(|accounting| accounting.usage)
+            .or(self.logical_usage);
         Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
-            reasoning_tokens: completion.map_or(0, |accounting| accounting.usage.reasoning_tokens),
-            calls_attempted: completion.map_or(0, |accounting| accounting.usage.calls_attempted),
-            calls_succeeded: completion.map_or(0, |accounting| accounting.usage.calls_succeeded),
-            calls_refused: completion.map_or(0, |accounting| accounting.usage.calls_refused),
-            calls_errored: completion.map_or(0, |accounting| accounting.usage.calls_errored),
+            reasoning_tokens: details.map_or(0, |usage| usage.reasoning_tokens),
+            calls_attempted: details.map_or(0, |usage| usage.calls_attempted),
+            calls_succeeded: details.map_or(0, |usage| usage.calls_succeeded),
+            calls_refused: details.map_or(0, |usage| usage.calls_refused),
+            calls_errored: details.map_or(0, |usage| usage.calls_errored),
             cached_tokens: self.cached_tokens,
             embed_tokens: self.embed_tokens,
             cost_usd: self.cost_usd,
@@ -451,6 +463,57 @@ impl Proposal {
     /// than a misleading 0%.
     pub fn cache_hit_rate(&self) -> Option<f64> {
         (self.input_tokens > 0).then(|| self.cached_tokens as f64 / self.input_tokens as f64)
+    }
+}
+
+struct ProposalAccounting {
+    usage: Usage,
+    completion: Option<CompletionAccounting>,
+    logical: Option<Usage>,
+    models: Vec<String>,
+}
+
+fn proposal_accounting(
+    execution: &crate::app::review_execution::ReviewRunContext,
+    reports_raw_completion_usage: bool,
+    current_logical_usage: Option<Usage>,
+    current_models: &[String],
+) -> ProposalAccounting {
+    if reports_raw_completion_usage {
+        let snapshot = execution.execution().snapshot();
+        let completion = CompletionAccounting {
+            usage: snapshot.physical_usage,
+            usage_by_model: snapshot.physical_usage_by_model,
+            complete: snapshot.physical_accounting_complete,
+        };
+        let retrieval = execution.retrieval_usage();
+        let mut usage = completion.usage;
+        usage.embed_tokens = retrieval.embed_tokens;
+        let cost = usage.cost_usd + retrieval.cost_usd;
+        usage.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+        let mut models = current_models.to_vec();
+        for model in completion.usage_by_model.keys() {
+            if !models.iter().any(|known| known == model) {
+                models.push(model.clone());
+            }
+        }
+        ProposalAccounting {
+            usage,
+            completion: Some(completion),
+            logical: None,
+            models,
+        }
+    } else {
+        let usage = current_logical_usage.map_or_else(
+            || execution.logical_usage(),
+            |usage| execution.record_logical_usage(usage, current_models),
+        );
+        ProposalAccounting {
+            usage,
+            completion: None,
+            logical: (usage != Usage::default()).then_some(usage),
+            models: execution.logical_models(),
+        }
     }
 }
 

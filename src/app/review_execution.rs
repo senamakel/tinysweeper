@@ -77,6 +77,9 @@ pub(crate) struct ReviewModelBinding {
 pub(crate) struct ReviewRunContext {
     execution: Arc<ReviewExecution>,
     model: OnceLock<ReviewModelBinding>,
+    retrieval_usage: Mutex<Usage>,
+    logical_usage: Mutex<Usage>,
+    logical_models: Mutex<Vec<String>>,
 }
 
 impl ReviewRunContext {
@@ -85,6 +88,9 @@ impl ReviewRunContext {
         Self {
             execution: Arc::new(ReviewExecution::new(options)),
             model: OnceLock::new(),
+            retrieval_usage: Mutex::new(Usage::default()),
+            logical_usage: Mutex::new(Usage::default()),
+            logical_models: Mutex::new(Vec::new()),
         }
     }
 
@@ -119,6 +125,42 @@ impl ReviewRunContext {
     /// Shared physical execution control for this review job.
     pub(crate) fn execution(&self) -> Arc<ReviewExecution> {
         Arc::clone(&self.execution)
+    }
+
+    /// Accumulate embedding work over every attempt in this review job.
+    pub(crate) fn record_retrieval_usage(&self, usage: Usage) {
+        let mut total = lock(&self.retrieval_usage);
+        total.embed_tokens = total.embed_tokens.saturating_add(usage.embed_tokens);
+        let cost = total.cost_usd + usage.cost_usd;
+        total.cost_usd = if cost.is_finite() { cost } else { f64::MAX };
+    }
+
+    /// The embedding invoice accumulated across every attempt in this job.
+    pub(crate) fn retrieval_usage(&self) -> Usage {
+        *lock(&self.retrieval_usage)
+    }
+
+    /// Retain successful nonphysical model usage for the job-level proposal.
+    pub(crate) fn record_logical_usage(&self, usage: Usage, models: &[String]) -> Usage {
+        let mut total = lock(&self.logical_usage);
+        total.add(usage);
+        let mut known_models = lock(&self.logical_models);
+        for model in models {
+            if !known_models.contains(model) {
+                known_models.push(model.clone());
+            }
+        }
+        *total
+    }
+
+    /// Models that supplied the retained nonphysical usage.
+    pub(crate) fn logical_models(&self) -> Vec<String> {
+        lock(&self.logical_models).clone()
+    }
+
+    /// The retained nonphysical usage for a job skipped after earlier work.
+    pub(crate) fn logical_usage(&self) -> Usage {
+        *lock(&self.logical_usage)
     }
 }
 

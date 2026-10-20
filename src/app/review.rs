@@ -4797,7 +4797,7 @@ mod tests {
         let provider_model = config.models.deep.clone();
         let reply = || {
             Reply::completion(
-                provider_model.clone(),
+                &provider_model,
                 r#"{"ok":true}"#,
                 "stop",
                 json!({"prompt_tokens": 11,"completion_tokens": 4,"cost": 0.125}),

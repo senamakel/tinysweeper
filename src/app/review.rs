@@ -722,6 +722,13 @@ impl Proposal {
     }
 }
 
+fn finalize_timing_usage(timing: Option<&crate::review_timing::ReviewTiming>, proposal: &Proposal) {
+    if let Some(timing) = timing {
+        let lane_usage = proposal.lane_costs();
+        timing.finalize_usage(proposal.usage(), &proposal.models, &lane_usage);
+    }
+}
+
 struct ProposalAccounting {
     usage: Usage,
     completion: Option<CompletionAccounting>,
@@ -1432,7 +1439,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     // does stop the bot rather than merely hiding its output.
     if let Some(label) = kill_switch(config, &context) {
         let accounting = proposal_accounting(&execution, reports_raw_completion_usage, &[]);
-        return Ok(Proposal {
+        let proposal = Proposal {
             version: PROPOSAL_VERSION,
             repo: repo.to_string(),
             number,
@@ -1493,7 +1500,9 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             // A pull request the bot was switched off for gets no housekeeping
             // either: closing its conversations would be acting on it.
             threads: Default::default(),
-        });
+        };
+        finalize_timing_usage(timing.as_ref(), &proposal);
+        return Ok(proposal);
     }
 
     let scan_findings = run_scanners(config, &diffs, &context);
@@ -2237,10 +2246,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         completion_accounting: accounting.completion,
         logical_usage: accounting.logical,
     };
-    if let Some(timing) = &timing {
-        let lane_usage = proposal.lane_costs();
-        timing.finalize_usage(proposal.usage(), &proposal.models, &lane_usage);
-    }
+    finalize_timing_usage(timing.as_ref(), &proposal);
     Ok(proposal)
 }
 

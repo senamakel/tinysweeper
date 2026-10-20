@@ -20,6 +20,9 @@ pub enum ModelExecutionRefusal {
     /// The absolute review soft deadline has passed, either at acquisition or
     /// when a reserved permit is committed for dispatch.
     SoftDeadline,
+    /// The original review drain window ended while an admitted model future
+    /// was still in flight. This is a host-side timeout, not a provider event.
+    DrainDeadline,
     /// The review's logical owner cancelled its execution scope.
     Cancelled,
 }

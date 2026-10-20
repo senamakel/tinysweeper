@@ -377,6 +377,43 @@ impl LogicalUsageModel {
             execution: self.execution.clone(),
         })
     }
+
+    async fn finish_within_drain<F>(
+        &self,
+        future: F,
+    ) -> Result<crate::ports::model::ModelResponse>
+    where
+        F: std::future::Future<Output = Result<crate::ports::model::ModelResponse>>,
+    {
+        use crate::ports::model_execution::ModelExecutionRefusal;
+
+        let execution = self.execution.execution();
+        if let Some(error) = self.stopped_before_call() {
+            return Err(error);
+        }
+        let now = tokio::time::Instant::now();
+        let drain_deadline = large_drain_deadline(
+            execution.soft_deadline(),
+            execution.hard_deadline(),
+            execution.drain_seconds(),
+            now,
+        );
+
+        tokio::select! {
+            biased;
+            _ = execution.cancelled() => Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::Cancelled,
+                usage: None,
+                accounting_complete: false,
+            }),
+            result = future => result,
+            _ = tokio::time::sleep_until(drain_deadline) => Err(Error::ModelExecutionRefused {
+                refusal: ModelExecutionRefusal::DrainDeadline,
+                usage: None,
+                accounting_complete: false,
+            }),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -385,11 +422,8 @@ impl Model for LogicalUsageModel {
         &self,
         request: crate::ports::model::ModelRequest,
     ) -> Result<crate::ports::model::ModelResponse> {
-        if let Some(error) = self.stopped_before_call() {
-            return Err(error);
-        }
         let request_model = request.model.clone();
-        let result = self.inner.complete(request).await;
+        let result = self.finish_within_drain(self.inner.complete(request)).await;
         self.retain(&request_model, &result);
         result
     }
@@ -400,11 +434,10 @@ impl Model for LogicalUsageModel {
         tree: &dyn TreeReader,
         policy: &crate::config::types::LookupPolicy,
     ) -> Result<crate::ports::model::ModelResponse> {
-        if let Some(error) = self.stopped_before_call() {
-            return Err(error);
-        }
         let request_model = request.model.clone();
-        let result = self.inner.review(request, tree, policy).await;
+        let result = self
+            .finish_within_drain(self.inner.review(request, tree, policy))
+            .await;
         self.retain(&request_model, &result);
         result
     }

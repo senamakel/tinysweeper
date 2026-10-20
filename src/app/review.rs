@@ -4621,14 +4621,7 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_lanes_overlap_in_the_review_path() {
-        let forge = forge_with(
-            vec![ChangedFile {
-                path: "src/Button.tsx".into(),
-                patch: Some("@@ -1,0 +1,1 @@\n+export const Button = () => <button />;\n".into()),
-                ..ChangedFile::default()
-            }],
-            vec![],
-        );
+        let forge = forge_with(vec![rust_file()], vec![]);
         let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
@@ -5034,7 +5027,14 @@ mod tests {
 
         let _callsite_registry_guard =
             tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
-        let forge = forge_with(vec![rust_file()], vec![]);
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/Button.tsx".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+export const Button = () => <button />;\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
         let mut config = critique_config();
         config.models.agentic_reviewers = false;
         config.overview.enabled = false;

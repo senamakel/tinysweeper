@@ -2,10 +2,9 @@
 #
 # This is the *replay* half: it runs the real engine over the committed
 # cassettes — no key, no network, free — scores the proposals under the
-# current matching rules. The legacy group uses compiled-in defaults; the
-# five historical miss cases use their pinned recording profile. `cargo test` in
-# `ci.yml` already asserts the two guarded regressions still hold; this job
-# is where the whole scorecard is readable per pull request.
+# current matching rules. The legacy group uses compiled-in defaults and is
+# diagnostic-only; five historical cases use their pinned recording profile
+# and require strict completion. Both scorecards appear in the step summary.
 #
 # The *live* half — `eval run --record` — is an operator command, not a job
 # here. Every model call goes through the box's LLM ladder
@@ -13,9 +12,8 @@
 # and is not reachable from a hosted runner; before that it wanted an
 # `OPENROUTER_API_KEY` this repository never had, so the recording step here
 # 401'd on every call and passed anyway. A run that records nothing and goes
-# green is worse than no run. Re-record on a box with the ladder
-# (`evals/README.md`), commit the cassettes and the refreshed baseline, and
-# this job replays them.
+# green is worse than no run. Re-record only on an authorized operator machine
+# (`evals/README.md`); this workflow never contacts a provider.
 #
 # Deliberately **not** a required check. Run-to-run variance has not been
 # measured yet: the gateway routes where it likes, no `seed` is honoured, and
@@ -28,8 +26,8 @@ on:
   pull_request:
     # Only what can move a score. A change to the server or the automerge gate
     # cannot change what a lane finds, so it should not pay for a replay.
-    # The replay runs under `src/config/defaults.toml`, so that file can move
-    # a score and `.tinysweeper.toml`, which it deliberately ignores, cannot.
+    # Both the default-profile group and the historical recording profile are
+    # explicit score inputs. `.tinysweeper.toml` is deliberately ignored.
     paths:
       - "src/lanes/**"
       - "src/harness/prompt.rs"

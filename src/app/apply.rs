@@ -219,6 +219,21 @@ pub async fn apply(
     let (previous_review, previous_known) = own_review_state(read, &repo, proposal.number).await;
     let previous = previous_review.as_ref().map(|review| review.event);
     let event = review_event(config, proposal, previous, live.draft);
+    let blocking_findings = blocking_finding_set(proposal);
+    let published_before = match store {
+        Some(store) => store
+            .load_state(&crate::state::key(&proposal.repo, proposal.number))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|state| state.published_review),
+        None => None,
+    };
+    let same_published_decision = published_before.as_ref().is_some_and(|published| {
+        blocking_findings.as_ref().is_some_and(|blocking| {
+            published.event == event && published.blocking_findings == *blocking
+        })
+    });
     // Every lane is expected to leave an unpostable finding without a line,
     // but `apply` is the final boundary before GitHub sees it. One invalid
     // anchor makes GitHub reject the entire review, including otherwise valid
@@ -269,6 +284,21 @@ pub async fn apply(
             == Some(proposal.head_sha.as_str())
         && comments.is_empty();
 
+    // A known publication can be repeated on a new head only while that exact
+    // decision still stands in forge history. Approvals require complete
+    // current-head coverage; a later incomplete push must still withdraw them.
+    let redundant_decision = same_published_decision
+        && previous_known
+        && previous_review.is_some()
+        && comments.is_empty()
+        && match event {
+            ReviewEvent::Approve => {
+                proposal.complete() && previous == Some(ReviewEvent::Approve)
+            }
+            ReviewEvent::RequestChanges => previous == Some(ReviewEvent::RequestChanges),
+            ReviewEvent::Comment => true,
+        };
+
     // A push this review could not vouch for — a model that never answered,
     // a file the forge withheld — cannot leave an earlier approval standing
     // over it: a comment does not withdraw one, and a repository that does
@@ -313,7 +343,9 @@ pub async fn apply(
     // above is what a standing approval needed. A kill-switched one is
     // nothing at all: nobody asked.
     let must_say = !proposal.answered() || proposal.version != PROPOSAL_VERSION;
+    let mut review_published = false;
     if !redundant_approval
+        && !redundant_decision
         && (!comments.is_empty()
             || event == ReviewEvent::Approve
             || event == ReviewEvent::RequestChanges
@@ -328,6 +360,7 @@ pub async fn apply(
                 event,
             )
             .await?;
+        review_published = true;
 
         // After successful publish, extend the stored state with newly posted
         // fingerprints so the next review dedupes them correctly.
@@ -342,6 +375,18 @@ pub async fn apply(
                 }
             }
         }
+    }
+
+    if (review_published || redundant_approval || redundant_decision)
+        && let Some(blocking_findings) = blocking_findings
+    {
+        record_published_review(
+            store,
+            proposal,
+            event,
+            blocking_findings,
+        )
+        .await;
     }
 
     // The change map, as one comment edited in place forever. Deliberately
@@ -592,6 +637,45 @@ fn review_event(
     }
 
     ReviewEvent::Comment
+}
+
+/// Every lane must carry the pre-dedupe identities for this comparison to be
+/// trusted. Older proposal files deserialize them as `None` and remain noisy.
+fn blocking_finding_set(proposal: &Proposal) -> Option<Vec<String>> {
+    let mut identities = std::collections::BTreeSet::new();
+    for lane in &proposal.lanes {
+        identities.extend(lane.blocking_findings.as_ref()?.iter().cloned());
+    }
+    Some(identities.into_iter().collect())
+}
+
+/// Record a successful publication without replacing the incremental replay
+/// state prepared by the read half.
+async fn record_published_review(
+    store: Option<&dyn ReviewStateStore>,
+    proposal: &Proposal,
+    event: ReviewEvent,
+    blocking_findings: Vec<String>,
+) {
+    let Some(store) = store else { return };
+    let key = crate::state::key(&proposal.repo, proposal.number);
+    let mut state = store
+        .load_state(&key)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| crate::state::ReviewedState {
+            head_sha: proposal.head_sha.clone(),
+            ..crate::state::ReviewedState::default()
+        });
+    state.published_review = Some(crate::state::PublishedReview {
+        event,
+        head_sha: proposal.head_sha.clone(),
+        blocking_findings,
+    });
+    if let Err(err) = store.save_state(&key, &state).await {
+        tracing::warn!(%err, "could not record the published review decision");
+    }
 }
 
 /// tinysweeper's own last review verdict on this pull request.

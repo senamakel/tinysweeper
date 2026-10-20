@@ -6960,6 +6960,62 @@ mod tests {
     }
 
     #[test]
+    fn request_changes_identity_keeps_high_findings_from_nonblocking_lanes() {
+        let mut config = config();
+        config.review.request_changes_at = "high".into();
+        config.lanes.insert(
+            "Security".into(),
+            crate::config::Lane {
+                fail_on: Some("critical".into()),
+                ..crate::config::Lane::default()
+            },
+        );
+        let high = Finding {
+            lane: LaneId::Security,
+            severity: Severity::High,
+            confidence: 0.95,
+            path: "src/lib.rs".into(),
+            line: Some(1),
+            end_line: None,
+            rule: "security/high".into(),
+            title: "A high security finding".into(),
+            body: "Details".into(),
+            suggestion: None,
+            applicable: None,
+            late: false,
+            identity: Some("security/high:src/lib.rs:1".into()),
+            aliases: vec![],
+            grouped: false,
+            review_pass: 1,
+            corroboration: 1,
+        };
+        let prior = PriorReview::default();
+        let suppressed = BTreeSet::new();
+        let severities = BTreeMap::new();
+        let titles = Vec::new();
+        let lane = lane_proposal(
+            &config,
+            LaneId::Security,
+            LaneOutcome {
+                findings: vec![high],
+                ..LaneOutcome::default()
+            },
+            &[],
+            &Continuity {
+                prior: &prior,
+                suppressed: &suppressed,
+                severities: &severities,
+                titles: &titles,
+            },
+        );
+        assert_eq!(lane.conclusion, CheckConclusion::Success);
+        assert_eq!(
+            lane.blocking_findings,
+            Some(vec!["security/high:src/lib.rs:1".into()])
+        );
+    }
+
+    #[test]
     fn max_comments_caps_findings_across_lanes_not_per_lane() {
         fn finding(title: &str, severity: Severity) -> Finding {
             Finding {

@@ -2969,6 +2969,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn recording_a_decision_does_not_replace_state_after_a_load_error() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+        struct UnavailableState(Arc<AtomicUsize>);
+
+        #[async_trait::async_trait]
+        impl crate::ports::ReviewStateStore for UnavailableState {
+            async fn load_state(
+                &self,
+                _key: &str,
+            ) -> crate::error::Result<Option<crate::state::ReviewedState>> {
+                Err(crate::error::Error::Forge("state store unavailable".into()))
+            }
+
+            async fn save_state(
+                &self,
+                _key: &str,
+                _state: &crate::state::ReviewedState,
+            ) -> crate::error::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn clear_e2e_watch(
+                &self,
+                _key: &str,
+                _watch: &crate::lanes::e2e::runs::Watch,
+            ) -> crate::error::Result<bool> {
+                Ok(false)
+            }
+        }
+
+        let saves = Arc::new(AtomicUsize::new(0));
+        let store = UnavailableState(saves.clone());
+        record_apply_state(
+            Some(&store),
+            &proposal("head", vec![]),
+            Some((ReviewEvent::Approve, vec![])),
+        )
+        .await;
+        assert_eq!(saves.load(Ordering::SeqCst), 0);
+    }
+
     // --- the change map ----------------------------------------------------
 
     /// A proposal carrying enough changed behaviours to warrant a flow map.

@@ -691,6 +691,14 @@ mod tests {
             ),
             now,
         ));
+        assert_eq!(
+            execution.hard_deadline(),
+            started_at + Duration::from_secs(100)
+        );
+        assert_eq!(
+            execution.soft_deadline(),
+            started_at + Duration::from_secs(80)
+        );
         let original_context = Arc::new(ReviewRunContext {
             execution: Arc::clone(&execution),
             model: OnceLock::new(),
@@ -710,6 +718,11 @@ mod tests {
         let retry_context = Arc::clone(&original_context);
         assert!(Arc::ptr_eq(&original_context, &retry_context));
         assert_eq!(retry_context.execution().started_at(), started_at);
+        let retry_model = retry_context
+            .bind_model(Arc::new(crate::harness::mock::MockModel::silent()), 99.0)
+            .model
+            .clone();
+        assert!(Arc::ptr_eq(&model, &retry_model));
 
         let request = || ModelRequest {
             model: "mock".into(),
@@ -726,7 +739,7 @@ mod tests {
         // reopen the paid window after the first dispatch has committed.
         after_soft_deadline.store(true, Ordering::Release);
         assert!(matches!(
-            model.complete(request()).await,
+            retry_model.complete(request()).await,
             Err(crate::error::Error::ModelExecutionRefused {
                 refusal: ModelExecutionRefusal::SoftDeadline,
                 ..

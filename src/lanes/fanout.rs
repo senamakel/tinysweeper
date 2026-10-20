@@ -211,8 +211,7 @@ impl FanOut {
         for (_, review) in self.partial {
             spend.merge(review.spend);
             findings.extend(review.findings);
-            // A partial group stopped before its required review stages
-            // completed, so its resolutions are not safe continuity evidence.
+            resolved.extend(review.resolved);
         }
 
         // One conversation is the common case for a small pull request or a
@@ -448,6 +447,13 @@ mod tests {
             }],
             ..crate::forge::types::ReviewThread::default()
         };
+        let explicitly_resolved = std::collections::BTreeSet::from([
+            "Old finding title".to_string(),
+        ]);
+        assert!(matches!(
+            crate::threads::decide(&outdated_thread, &explicitly_resolved),
+            crate::threads::Decision::Resolve(_)
+        ));
         assert!(matches!(
             crate::threads::decide(&outdated_thread, &resolved),
             crate::threads::Decision::Leave(_)

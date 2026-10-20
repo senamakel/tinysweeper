@@ -292,6 +292,26 @@ async fn the_config_digest_moves_when_the_prompt_inputs_move() {
     summary_effort.models.summary_reasoning_effort = "high".into();
     assert_ne!(digest_of(&base), digest_of(&summary_effort));
 
+    let baseline = crate::eval::types::Scorecard {
+        corpus_digest: "same-corpus".into(),
+        config_digest: digest_of(&base),
+        loose_replays: 0,
+        cases: vec![],
+    };
+    for changed in [&reviewer_effort, &falsify_effort, &summary_effort] {
+        let current = crate::eval::types::Scorecard {
+            corpus_digest: baseline.corpus_digest.clone(),
+            config_digest: digest_of(changed),
+            loose_replays: 0,
+            cases: vec![],
+        };
+        assert!(matches!(
+            crate::eval::report::compare(&current, &baseline, false),
+            crate::eval::report::Comparison::Incomparable(reason)
+                if reason.contains("configuration changed")
+        ));
+    }
+
     // The per-PR ceiling decides whether a case fails with `Error::Budget`, so
     // two runs that spend the same model but allow different money are not the
     // same run either.

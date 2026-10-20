@@ -145,11 +145,22 @@ impl Checkout {
 
     /// Create a disposable exact-head worktree from a server-owned mirror.
     pub(super) async fn from_mirror(mirror: &Path, revision: &str) -> Result<Self> {
-        validate_revision(revision)?;
         let dir = tempfile::Builder::new()
             .prefix("tinysweeper-review-")
             .tempdir()
             .map_err(|err| Error::Forge(format!("could not make a checkout directory: {err}")))?;
+        Self::from_mirror_at(mirror, revision, dir).await
+    }
+
+    /// Populate an owned temporary directory as an exact-head worktree.
+    /// Taking the directory explicitly also lets tests exercise cancellation
+    /// when Git chooses a suffixed admin name for a colliding basename.
+    pub(super) async fn from_mirror_at(
+        mirror: &Path,
+        revision: &str,
+        dir: tempfile::TempDir,
+    ) -> Result<Self> {
+        validate_revision(revision)?;
         let mut registration = WorktreeRegistrationCleanup::for_path(mirror, dir.path())?;
         git(mirror, "", &["worktree", "prune", "--expire", "now"]).await?;
         let path = dir

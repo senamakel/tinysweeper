@@ -214,12 +214,14 @@ it was also the reason a correct `medium/0.61` boundary bug reached nobody.
 
 ## Coverage pass
 
-`review.passes = 3` ships as the maximum adaptive depth. Small groups still
-take exactly one pass. For qualifying groups, `critique` and `security`
-each ask their group's first council reviewer — index `0`, never the whole
-council again — up to two more times after round one's own findings are placed
-and model proposals falsified (including explicit security-scope rejection), told plainly what it already found and
-asked to look for what a first pass misses. `lanes::coverage` builds that
+`review.passes = 2` is the default maximum adaptive depth; an explicit larger
+value allows additional passes. A group takes another pass when the previous
+pass proposed a candidate, even if falsification later rejects it, or when its
+diff has a deterministic high-risk signal. Otherwise it takes exactly one
+pass. For qualifying groups, `critique` and `security` ask their group's first
+council reviewer — index `0`, never the whole council again — up to the
+configured ceiling after round one's findings are placed and model proposals
+falsified. `lanes::coverage` builds that
 call; see its module doc for why anchoring the answer is left to the caller
 rather than done once in that module.
 
@@ -231,10 +233,10 @@ each extra call.
 
 Two things keep it from being a second council for every unit:
 
-- **A line gate.** `COVERAGE_PASS_MIN_LINES` (40, one constant per lane) has
-  to be cleared by the *group's* own changed lines before the second prompt
-  is even built. A rename or a one-line fix never pays for a call it cannot
-  use.
+- **Adaptive eligibility.** A raw candidate or deterministic high-risk file
+  within the *group* triggers the next prompt; unrelated large changes do not
+  affect it. Candidate eligibility is decided before falsification so a
+  rejected candidate still receives the promised second look.
 - **Dedupe before falsify.** A new finding that `council::agree::corroborates`
   a round-one finding, or shares its `Finding::fingerprint`, is dropped before
   anything else runs against it — both lanes' falsify calls included, which
@@ -245,7 +247,10 @@ first found in addition to round one's own list. An empty, failed, malformed,
 entirely duplicate, unplaceable, or fully filtered pass stops the loop rather
 than paying for the next one.
 
-Each qualifying group emits one structured telemetry event after it stops.
+Each group emits one structured telemetry event after it stops. The review
+timing record also aggregates completed pass yields by lane and pass, counting
+candidate findings before falsification and survivors after it. The yield is
+recorded as soon as a pass finishes, so later cancellation does not erase it.
 `passes_attempted` and `new_findings_per_pass` both begin with round one, then
 list every adaptive attempt; `stop_reason` distinguishes reaching the ceiling
 from an empty, failed, unplaceable, duplicate, or filtered response.

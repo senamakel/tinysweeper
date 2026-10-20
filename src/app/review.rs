@@ -1545,12 +1545,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
             lane_id.as_str(),
             Some(&lanes_span),
             async {
-                if let Some(outcomes) = &mut large_outcomes {
-                    if matches!(lane_id, LaneId::Critique | LaneId::Security) {
-                        return Ok(outcomes
-                            .remove(&lane_id)
-                            .expect("prepared large lane has a scheduled outcome"));
-                    }
+                if let Some(outcomes) = &mut large_outcomes
+                    && matches!(lane_id, LaneId::Critique | LaneId::Security)
+                {
+                    return Ok(outcomes
+                        .remove(&lane_id)
+                        .expect("prepared large lane has a scheduled outcome"));
                 }
                 match lane_id {
                     LaneId::Critique => {

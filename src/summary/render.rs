@@ -192,17 +192,70 @@ fn bounded_paths(paths: &[String], shown: usize) -> String {
 }
 
 fn coverage_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
-    let paths = summary
-        .file_coverage
-        .as_ref()
-        .map(|coverage| coverage.unreviewed.as_slice())
-        .filter(|paths| !paths.is_empty())
-        .or_else(|| (!proposal.unreviewed.is_empty()).then_some(proposal.unreviewed.as_slice()));
-    if let Some(paths) = paths {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(coverage) = &summary.file_coverage {
+        paths.extend(coverage.unreviewed.iter().cloned());
+    }
+    paths.extend(proposal.unreviewed.iter().cloned());
+    if !paths.is_empty() {
         out.push_str("\n**Unreviewed paths**\n\n");
-        for path in paths {
+        for path in &paths {
             let _ = writeln!(out, "- {}", code_span(path));
         }
+    }
+    if let Some(partial) = &proposal.partial_review
+        && !partial.omitted.is_empty()
+    {
+        out.push_str("\n**Partial review reasons**\n\n");
+        for omission in &partial.omitted {
+            let lane = omission
+                .lane
+                .map(|lane| format!("{}: ", lane))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "- {}{} — {}",
+                lane,
+                code_span(&omission.path),
+                partial_reason_description(omission.reason)
+            );
+        }
+    }
+}
+
+fn partial_reason_label(proposal: &Proposal) -> &'static str {
+    match proposal.partial_review.as_ref().and_then(|partial| partial.stop_reason) {
+        Some(crate::app::review::PartialReviewReason::NotSelected) => {
+            "not reviewed (large PR)"
+        }
+        Some(
+            crate::app::review::PartialReviewReason::SoftDeadline
+            | crate::app::review::PartialReviewReason::DrainDeadline,
+        ) => "not reviewed (time limit)",
+        Some(crate::app::review::PartialReviewReason::CallLimit) => {
+            "not reviewed (call budget)"
+        }
+        Some(crate::app::review::PartialReviewReason::Cancelled) => {
+            "not reviewed (review cancelled)"
+        }
+        Some(crate::app::review::PartialReviewReason::UnavailableDiff) => {
+            "not reviewed (unavailable diff)"
+        }
+        Some(crate::app::review::PartialReviewReason::Unanswered) | None => "not reviewed",
+    }
+}
+
+fn partial_reason_description(reason: crate::app::review::PartialReviewReason) -> &'static str {
+    use crate::app::review::PartialReviewReason;
+    match reason {
+        PartialReviewReason::UnavailableDiff => "the forge did not provide a usable diff",
+        PartialReviewReason::NotSelected => "not reviewed (large PR)",
+        PartialReviewReason::SoftDeadline | PartialReviewReason::DrainDeadline => {
+            "not reviewed (time limit)"
+        }
+        PartialReviewReason::CallLimit => "not reviewed (call budget)",
+        PartialReviewReason::Cancelled => "not reviewed (review cancelled)",
+        PartialReviewReason::Unanswered => "the lane did not answer for this path",
     }
 }
 
@@ -229,25 +282,33 @@ fn has_finding_signal(proposal: &Proposal) -> bool {
 }
 
 fn coverage_line(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
+    let mut uncovered = std::collections::BTreeSet::new();
+    if let Some(coverage) = &summary.file_coverage {
+        uncovered.extend(coverage.unreviewed.iter().cloned());
+    }
+    uncovered.extend(proposal.unreviewed.iter().cloned());
     if let Some(coverage) = &summary.file_coverage {
         let _ = write!(
             out,
             "**Coverage:** Reviewed {} of {} files",
-            coverage.reviewed, coverage.total
+            coverage.total.saturating_sub(uncovered.len()),
+            coverage.total
         );
-        if !coverage.unreviewed.is_empty() {
+        if !uncovered.is_empty() {
             let _ = write!(
                 out,
-                "; not reviewed: {}",
-                bounded_paths(&coverage.unreviewed, 2)
+                "; {}: {}",
+                partial_reason_label(proposal),
+                bounded_paths(&uncovered.into_iter().collect::<Vec<_>>(), 2)
             );
         }
         out.push_str(".  \n");
-    } else if !proposal.unreviewed.is_empty() {
+    } else if !uncovered.is_empty() {
         let _ = writeln!(
             out,
-            "**Coverage:** File coverage is unavailable; not reviewed: {}.",
-            bounded_paths(&proposal.unreviewed, 2)
+            "**Coverage:** File coverage is unavailable; {}: {}.",
+            partial_reason_label(proposal),
+            bounded_paths(&uncovered.into_iter().collect::<Vec<_>>(), 2)
         );
     } else {
         out.push_str("**Coverage:** File coverage is unavailable.  \n");
@@ -618,7 +679,7 @@ fn before_merge(out: &mut String, proposal: &Proposal) {
         any = true;
         let _ = writeln!(
             out,
-            "- [ ] Review unavailable diffs: {}.",
+            "- [ ] Review uncovered paths: {}.",
             code_list(proposal.unreviewed.iter().map(String::as_str))
         );
     }

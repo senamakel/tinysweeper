@@ -3018,6 +3018,7 @@ fn lane_proposal(
             finding.severity = *posted;
         }
     }
+    anchor::stamp(&mut outcome.findings, diffs);
 
     // `RawFinding::into_finding` scrubs a finding's own title and body, but
     // the lane summary is free text the model wrote, and a model asked to
@@ -3058,6 +3059,24 @@ fn lane_proposal(
         .iter()
         .map(|finding| finding.severity)
         .max();
+    let blocking_findings = if conclusion.blocks() {
+        config
+            .request_changes_at()
+            .map(|threshold| {
+                confidence_qualified
+                    .iter()
+                    .filter(|finding| finding.severity >= threshold)
+                    .map(|finding| {
+                        finding.identity.clone().unwrap_or_else(|| {
+                            finding.fingerprint(&finding.title)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     // Below the gate but not below notice: named in the summary, never posted.
     // Capped so a chatty reviewer cannot turn the summary into the comment
@@ -3088,31 +3107,6 @@ fn lane_proposal(
         .into_iter()
         .filter(|f| !context_degraded && f.meets(gate, minimum))
         .collect();
-
-    // Identity is stamped here, once, over the code each finding anchors to.
-    // Everything downstream — the marker `apply` writes, the dedupe the next
-    // push does, the triage a developer's acknowledgement is keyed on — reads
-    // this one value, so none of them can disagree about what a finding is.
-    anchor::stamp(&mut findings, diffs);
-
-    let blocking_findings = if conclusion.blocks() {
-        config
-            .request_changes_at()
-            .map(|threshold| {
-                findings
-                    .iter()
-                    .filter(|finding| finding.severity >= threshold)
-                    .map(|finding| {
-                        finding.identity.clone().unwrap_or_else(|| {
-                            finding.fingerprint(&finding.title)
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
 
     // The dedupe itself, and the whole point of this workstream: a finding
     // already sitting on the pull request from an earlier push is not posted

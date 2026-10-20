@@ -138,7 +138,7 @@ async fn a_short_recording_archives_the_previous_cassette_tail() {
     assert_eq!(new_recorder.flush().expect("new take flushed"), 1);
     reservation.finish(1).expect("attempt count finalized");
 
-    let mut replay = crate::harness::cassette::Cassette::replay(
+    let replay = crate::harness::cassette::Cassette::replay(
         &cassette_dir,
         crate::harness::cassette::Mode::Strict,
     )

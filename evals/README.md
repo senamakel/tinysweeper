@@ -15,6 +15,7 @@ harness works. This file is the labelling contract.
 cases/<id>.toml        one labelled pull request
 fixtures/<id>.json     its frozen forge state, written by `eval add`
 cassettes/<id>/        the model's recorded answers, written by `eval run --record`
+recording-attempts/    append-only per-case call reservations and prior-take archives
 baselines/current.json the scorecard a change is compared against
 runs/                  scratch output (gitignored)
 ```

@@ -114,11 +114,20 @@ re-run CI rather than to read it.
 
 Two runs are only comparable when corpus, config, selected cases, and execution
 limits match. The scorecard persists selected case IDs, the run ceiling, the
-per-case physical-call ceiling, replay mode, and each derived per-case model
-budget. A legacy scorecard without these limits is unknown and fails closed;
+requested per-case physical-call ceiling, each case's actually admitted call
+allowance, replay mode, and each derived per-case model budget. A continuation
+can admit fewer calls than requested because earlier attempts already consumed
+the cumulative ceiling; that actual allowance is part of comparison identity.
+A legacy scorecard without these limits is unknown and fails closed;
 `--allow-config-drift` is the explicit override, and the report says so.
 `eval score` carries these limits forward and re-scores only the original
 selection, so it cannot silently expand a selected run to the full corpus.
+
+When an admitted recording attempt starts, any existing top-level cassette take
+files for that case move into `recording-attempts/<case>/prior-takes/<attempt>/`.
+The append-only reservation audit remains in place, while strict replay reads
+only the latest attempt's takes instead of combining a new short recording with
+an older tail.
 
 The CI replay keeps its three default-profile cassettes separate from the five
 historical GPT-OSS/Novita cases. Each exact group writes a separate scorecard;

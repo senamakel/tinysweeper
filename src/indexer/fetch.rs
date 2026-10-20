@@ -172,19 +172,17 @@ impl Checkout {
     pub(super) async fn fetch_into_mirror(
         mirror: &Path,
         url: &str,
-        revision: &str,
+        revisions: &[&str],
         token: &str,
         fetch_count: Option<&std::sync::atomic::AtomicUsize>,
     ) -> Result<()> {
-        validate_revision(revision)?;
+        for revision in revisions {
+            validate_revision(revision)?;
+        }
         git(mirror, "", &["init", "--bare", "--quiet"]).await?;
-        git_fetch(
-            mirror,
-            token,
-            &["fetch", "--quiet", "--depth", "1", "--no-tags", url, revision],
-            fetch_count,
-        )
-        .await
+        let mut args = vec!["fetch", "--quiet", "--depth", "1", "--no-tags", url];
+        args.extend_from_slice(revisions);
+        git_fetch(mirror, token, &args, fetch_count).await
     }
 
     /// Return whether an immutable commit is already present in the mirror.
@@ -313,7 +311,7 @@ impl Checkout {
 
     async fn fetch_submodules_for_diff_with<F, Fut>(
         &self,
-        _base_revision: &str,
+        base_revision: &str,
         host: &str,
         token: &str,
         allowed: &[String],
@@ -323,9 +321,8 @@ impl Checkout {
         F: FnMut(std::path::PathBuf, String, String) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
-        // Kept eager until the diff-gitlink check is implemented. The test
-        // below makes the otherwise redundant submodule request observable.
-        self.fetch_submodules_with(host, token, allowed, fetch)
+        let changed = changed_gitlinks(self.path(), base_revision, &self.revision).await?;
+        self.fetch_submodules_with(host, token, allowed, Some(&changed), fetch)
             .await
     }
 
@@ -335,6 +332,7 @@ impl Checkout {
         host: &str,
         token: &str,
         allowed: &[String],
+        changed_paths: Option<&std::collections::BTreeSet<String>>,
         mut fetch: F,
     ) -> Result<Unfetched>
     where
@@ -372,6 +370,11 @@ impl Checkout {
                 } else {
                     format!("{prefix}/{}", sub.path)
                 };
+                if prefix.is_empty()
+                    && changed_paths.is_some_and(|paths| !paths.contains(&sub.path))
+                {
+                    continue;
+                }
                 let Some(repo) = &sub.repo else {
                     unfetched.denied.push(full_path);
                     continue;

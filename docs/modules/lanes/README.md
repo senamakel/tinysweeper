@@ -88,6 +88,13 @@ does not take it back out.
   all, and both are always rendered in the summary regardless of whether that
   line changed. See `docs/modules/lanes/e2e.md`.
 
+## Bounded review planning
+
+Large pull requests use a shared risk-ranked selection, one pass and a review-wide
+physical call ceiling. Normal and Large reviews stop new work at the soft
+deadline and retain answered work. See [large pull request reviews](large-pr.md)
+for defaults, coverage and custom-model limitations.
+
 ## Per-file fan-out
 
 `security` and `critique` run one conversation per changed file

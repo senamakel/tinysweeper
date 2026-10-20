@@ -4430,7 +4430,7 @@ mod tests {
     #[tokio::test]
     async fn enabled_lanes_overlap_in_the_review_path() {
         let forge = forge_with(vec![rust_file()], vec![]);
-        let model = ReviewSchedulingModel::new();
+        let mut model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let config = scheduling_config();
@@ -4709,7 +4709,7 @@ mod tests {
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
         let model_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let future = Box::pin(review_with_tree_observed(
+        let mut future = Box::pin(review_with_tree_observed(
             &forge,
             Arc::new(SlowModel(model_started.clone())),
             &config,

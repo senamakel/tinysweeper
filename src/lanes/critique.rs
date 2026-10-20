@@ -2560,9 +2560,9 @@ fn helper() {
         assert_eq!(outcome.spend.usage.input_tokens, 8);
         assert_eq!(outcome.spend.usage.output_tokens, 4);
         assert!((outcome.spend.usage.cost_usd - 0.25).abs() < f64::EPSILON);
-        assert!(outcome.unanswered.contains(&"src/large.rs".to_string()));
+        assert!(outcome.unanswered.contains(&"src/auth.rs".to_string()));
         assert!(outcome.omissions.iter().any(|omission| {
-            omission.paths.contains(&"src/large.rs".to_string())
+            omission.paths.contains(&"src/auth.rs".to_string())
                 && omission.reason == crate::lanes::fanout::OmissionReason::CallLimit
         }));
         let event = trace

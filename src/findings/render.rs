@@ -294,6 +294,7 @@ pub fn cost_line(usage: &Usage, models: &[String]) -> String {
         line.push_str(&format!(" · {} embedded", thousands(usage.embed_tokens)));
     }
 
+    let models = display_models(models);
     if !models.is_empty() {
         line.push_str(&format!(" · {}", models.join(", ")));
     }
@@ -394,7 +395,7 @@ fn row(label: &str, usage: &Usage, models: &[String]) -> [String; 6] {
         String::new()
     };
 
-    let mut models = models.join(", ");
+    let mut models = display_models(models).join(", ");
     if usage.embed_tokens > 0 {
         // Embedding spend rides in the model column rather than one of its own,
         // which would be empty on every row of a review that never indexed.
@@ -414,6 +415,17 @@ fn row(label: &str, usage: &Usage, models: &[String]) -> [String; 6] {
         cached,
         models,
     ]
+}
+
+/// Keep absent provider names out of display strings while leaving the usage
+/// totals untouched.
+fn display_models(models: &[String]) -> Vec<&str> {
+    models
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .collect()
 }
 
 /// `12345` reads as `12,345`.
@@ -589,6 +601,17 @@ mod tests {
         // 0% would read as "the cache missed" rather than "nothing was sent".
         let line = cost_line(&Usage::default(), &[]);
         assert!(!line.contains('%'), "{line}");
+    }
+
+    #[test]
+    fn blank_model_names_are_not_rendered() {
+        let line = cost_line(
+            &usage(0.01, 10, 2, 1),
+            &["provider/model".into(), "".into(), "  ".into()],
+        );
+        assert!(line.contains("provider/model"), "{line}");
+        assert!(!line.contains(", ,"), "{line}");
+        assert!(!line.ends_with(", "), "{line}");
     }
 
     #[test]

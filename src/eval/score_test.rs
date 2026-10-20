@@ -88,6 +88,7 @@ fn proposal(findings: Vec<Finding>) -> Proposal {
             summary: "reviewed".into(),
             completed: true,
             findings,
+            blocking_findings: Some(vec![]),
             noted: Vec::new(),
             context_degraded: false,
             resolved: vec![],

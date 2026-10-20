@@ -255,6 +255,7 @@ pub struct MockForge {
     fail_after_check_publishes: Arc<Mutex<usize>>,
     fail_after_terminal_check_publishes: Arc<Mutex<usize>>,
     fail_check_updates: Arc<Mutex<usize>>,
+    fail_review_publishes: Arc<Mutex<usize>>,
     /// When true, every write is dropped rather than recorded as applied.
     ///
     /// Reads still work. This is what `--dry-run` sets.
@@ -304,6 +305,14 @@ impl MockForge {
             .fail_check_updates
             .lock()
             .expect("mock update failure lock") = count;
+    }
+
+    /// Fail the next `count` review submissions before applying their verdict.
+    pub fn fail_next_review_publishes(&self, count: usize) {
+        *self
+            .fail_review_publishes
+            .lock()
+            .expect("mock review failure lock") = count;
     }
 
     /// A forge serving `state`.
@@ -934,6 +943,18 @@ impl ForgeWrite for MockForge {
         comments: Vec<ReviewComment>,
         event: ReviewEvent,
     ) -> Result<()> {
+        let mut failures = self
+            .fail_review_publishes
+            .lock()
+            .expect("mock review failure lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(crate::error::Error::Forge(
+                "simulated review publication failure".into(),
+            ));
+        }
+        drop(failures);
+
         // Applied to state as well as recorded: fingerprint dedupe reads back
         // the review comments already on a pull request, so a mock that only
         // recorded them would make every dedupe test vacuously pass.

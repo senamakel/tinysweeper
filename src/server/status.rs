@@ -321,6 +321,7 @@ mod tests {
             summary: String::new(),
             completed: !reviewed.is_empty(),
             findings: vec![],
+            blocking_findings: Some(vec![]),
             noted: vec![],
             context_degraded: false,
             resolved: vec![],

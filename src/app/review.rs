@@ -5114,7 +5114,7 @@ mod tests {
             .finish();
         tracing::subscriber::with_default(subscriber, || drop(timing));
         let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert!(line.contains("usage_source=observed"), "{line}");
+        assert!(line.contains("usage_source=\"observed\""), "{line}");
         assert!(
             line.contains(&format!("cost_usd={expected_observed_cost}")),
             "{line}"
@@ -6785,6 +6785,9 @@ mod tests {
         use crate::index::types::{EmbedSignature, Embedded};
         use crate::ports::embed::Embedder;
 
+        let _callsite_registry_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+
         struct ChargedEmbedder;
 
         #[async_trait::async_trait]
@@ -6853,6 +6856,8 @@ mod tests {
         let embedder = ChargedEmbedder;
         let index = crate::index::MockChunkIndex::new();
         let retriever = crate::retrieve::Retriever::new(&embedder, &index);
+        let timing =
+            crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
 
         review_with_tree_observed_at_head_in_run(
             &forge,
@@ -6866,7 +6871,7 @@ mod tests {
             None,
             None,
             execution.clone(),
-            None,
+            Some(timing.clone()),
         )
         .await
         .expect("first paid attempt completes");
@@ -6882,7 +6887,7 @@ mod tests {
             None,
             None,
             execution,
-            None,
+            Some(timing.clone()),
         )
         .await
         .expect("kill switch returns a neutral proposal");
@@ -6897,6 +6902,26 @@ mod tests {
         assert_eq!(skipped.cost_usd, 0.375);
         assert_eq!(skipped.usage().calls_attempted, 1);
         assert!(skipped.models.contains(&embed_model));
+        timing.finish("success");
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_bytes = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || TimingLogWriter(writer_bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(timing));
+        let line = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(line.matches("review timing").count(), 1, "{line}");
+        assert!(line.contains("usage_source=\"proposal\""), "{line}");
+        assert!(line.contains("cost_usd=0.375"), "{line}");
+        assert!(line.contains("embed_tokens=7"), "{line}");
+        let expected_models = serde_json::to_string(&skipped.models).expect("models serialize");
+        assert!(
+            line.contains(&format!("models={expected_models}")),
+            "{line}"
+        );
+        assert!(skipped.models.iter().all(|model| !model.trim().is_empty()));
     }
 
     #[cfg(feature = "harness")]

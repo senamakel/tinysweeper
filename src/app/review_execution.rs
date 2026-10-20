@@ -1506,27 +1506,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_committed_permit_rechecks_cancellation_before_a_later_send() {
-        let started_at = Instant::now();
-        let execution = ReviewExecution::new(options(
-            ReviewMode::Large,
-            Some(1),
-            started_at,
-            started_at + Duration::from_secs(100),
-        ));
-        let permit = execution.acquire().await.expect("reservation");
-
-        permit.mark_dispatched().expect("first physical send");
-        execution.cancel();
-
-        assert_eq!(
-            permit.mark_dispatched(),
-            Err(ModelExecutionRefusal::Cancelled)
-        );
-        assert_eq!(execution.snapshot().committed_calls, 1);
-    }
-
-    #[tokio::test]
     async fn cancellation_refuses_an_uncommitted_permit_and_drop_refunds_it() {
         let started_at = Instant::now();
         let execution = ReviewExecution::new(options(
@@ -1625,9 +1604,11 @@ mod tests {
             .expect("commit before cancellation");
 
         execution.cancel();
-        permit
-            .mark_dispatched()
-            .expect("an already committed dispatch stays idempotent after cancellation");
+        assert_eq!(
+            permit.mark_dispatched(),
+            Err(ModelExecutionRefusal::Cancelled),
+            "a subsequent physical send must observe cancellation"
+        );
         drop(permit);
 
         assert_eq!(

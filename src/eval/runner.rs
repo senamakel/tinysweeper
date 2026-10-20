@@ -93,8 +93,8 @@ pub struct RunOutcome {
     pub scores: Vec<CaseScore>,
     /// Answers served by call order rather than by key, across the run.
     pub loose_replays: usize,
-    /// A hash of the effective configuration, so two runs are comparable only
-    /// when they were configured the same way.
+    /// A hash of score-affecting configuration inputs. Run and case bounds are
+    /// persisted separately in `execution_limits`.
     pub config_digest: String,
     /// The selected cases and their effective run/admission limits.
     pub execution_limits: ExecutionLimits,

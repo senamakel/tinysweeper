@@ -108,7 +108,7 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
     assert!(!config.models.provider.allow_fallbacks);
     assert!(!config.models.provider.last_resort_unpinned);
     assert!(!config.models.agentic_reviewers);
-    assert_eq!(config.models.max_tokens, 12000);
+    assert_eq!(config.models.max_tokens, 4096);
     assert_eq!(config.models.reasoning_effort, "off");
     assert_eq!(config.models.reviewer_reasoning_effort, "off");
     assert_eq!(config.models.falsify_reasoning_effort, "off");
@@ -142,7 +142,7 @@ fn continuation_candidate_pins_gpt_oss_novita_and_its_recording_limits() {
     assert!(!config.models.provider.last_resort_unpinned);
     assert!(config.models.provider.unpinned_vendors.is_empty());
     assert!(!config.models.agentic_reviewers);
-    assert_eq!(config.models.max_tokens, 4096);
+    assert_eq!(config.models.max_tokens, 12000);
     assert_eq!(config.models.reasoning_effort, "low");
     assert_eq!(config.models.reviewer_reasoning_effort, "low");
     assert_eq!(config.models.falsify_reasoning_effort, "low");

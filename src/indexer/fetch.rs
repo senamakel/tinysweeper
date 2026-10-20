@@ -184,7 +184,7 @@ impl Checkout {
         let path = std::fs::canonicalize(dir.path())
             .map_err(|err| Error::Forge(format!("could not resolve checkout directory: {err}")))?;
         let registration = WorktreeRegistrationCleanup::for_path(mirror, &path)?;
-        let dir = git_worktree_add(
+        let dir = populate_worktree(
             mirror,
             &path,
             revision,
@@ -678,12 +678,11 @@ async fn git_fetch(
     git_stdout(root, token, args).await.map(|_| ())
 }
 
-/// Add a worktree with a task that owns both the child and its registration.
-/// If the caller is cancelled, the task kills and reaps Git before its guard
-/// removes the partial admin directory.
-async fn git_worktree_add<F, Fut>(
+/// Populate a disposable worktree under a task that owns its directory,
+/// repository lock and registration until every Git child has exited.
+async fn populate_worktree<F, Fut>(
     mirror: &Path,
-    path: &str,
+    path: &Path,
     revision: &str,
     dir: tempfile::TempDir,
     cache_lock: Option<tokio::sync::OwnedMutexGuard<()>>,
@@ -694,46 +693,68 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let args = ["worktree", "add", "--quiet", "--detach", path, revision];
-    let mut command = git_command(mirror, "", &args);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|err| Error::Forge(format!("could not run git worktree add: {err}")))?;
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| Error::config("review worktree path is not valid UTF-8"))?
+        .to_string();
+    let mirror = mirror.to_path_buf();
+    let worktree = path.to_path_buf();
+    let revision = revision.to_string();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let mut cancellation = CancelGitTask(Some(cancel_tx));
     let worker = tokio::spawn(async move {
         let dir = dir;
         let cache_lock = cache_lock;
         let mut registration = registration;
-        let status = tokio::select! {
-            result = child.wait() => result.map_err(|err| {
-                Error::Forge(format!("could not wait for git worktree add: {err}"))
-            })?,
-            _ = &mut cancel_rx => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+        let add_args = [
+            "worktree",
+            "add",
+            "--no-checkout",
+            "--quiet",
+            "--detach",
+            &path_text,
+            &revision,
+        ];
+        let mut add = quiet_git_command(&mirror, &add_args)
+            .spawn()
+            .map_err(|err| Error::Forge(format!("could not run git worktree add: {err}")))?;
+        let status = match wait_for_git_child(&mut add, &mut cancel_rx, "worktree add").await {
+            Ok(status) => status,
+            Err(err) => {
                 drop(registration);
                 drop(cache_lock);
                 drop(dir);
-                return Err(Error::Forge("git worktree add was cancelled".to_string()));
-            }
-            _ = tokio::time::sleep(GIT_TIMEOUT) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                drop(registration);
-                drop(cache_lock);
-                drop(dir);
-                return Err(Error::Forge("git worktree add timed out".to_string()));
+                return Err(err);
             }
         };
         if !status.success() {
             return Err(Error::Forge(format!(
                 "git worktree add failed with status {status}"
+            )));
+        }
+        let reset_args = [
+            "-c",
+            "checkout.workers=1",
+            "reset",
+            "--hard",
+            "--no-recurse-submodules",
+            &revision,
+        ];
+        let mut reset = quiet_git_command(&worktree, &reset_args)
+            .spawn()
+            .map_err(|err| Error::Forge(format!("could not run git checkout reset: {err}")))?;
+        let status = match wait_for_git_child(&mut reset, &mut cancel_rx, "checkout reset").await {
+            Ok(status) => status,
+            Err(err) => {
+                drop(registration);
+                drop(cache_lock);
+                drop(dir);
+                return Err(err);
+            }
+        };
+        if !status.success() {
+            return Err(Error::Forge(format!(
+                "git checkout reset failed with status {status}"
             )));
         }
         tokio::select! {
@@ -755,6 +776,43 @@ where
         .map_err(|err| Error::Forge(format!("git worktree supervisor failed: {err}")))?;
     cancellation.disarm();
     result
+}
+
+fn quiet_git_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = git_command(root, "", args);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+
+async fn wait_for_git_child(
+    child: &mut tokio::process::Child,
+    cancel: &mut tokio::sync::oneshot::Receiver<()>,
+    operation: &str,
+) -> Result<std::process::ExitStatus> {
+    tokio::select! {
+        result = child.wait() => match result {
+            Ok(status) => Ok(status),
+            Err(err) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(Error::Forge(format!("could not wait for git {operation}: {err}")))
+            }
+        },
+        _ = cancel => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(Error::Forge(format!("git {operation} was cancelled")))
+        }
+        _ = tokio::time::sleep(GIT_TIMEOUT) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(Error::Forge(format!("git {operation} timed out")))
+        }
+    }
 }
 
 struct CancelGitTask(Option<tokio::sync::oneshot::Sender<()>>);
@@ -1061,6 +1119,45 @@ mod tests {
             canonical_path.join(".git").to_string_lossy()
         );
         assert!(checkout.path().join(".git").is_file());
+    }
+
+    #[tokio::test]
+    async fn cancelled_git_supervisor_kills_and_reaps_a_live_child() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let revision = fixture_repo(fixture.path(), "", &[]).await;
+        let mut command = git_command(fixture.path(), "", &["cat-file", "--batch"]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut output = tokio::io::BufReader::new(stdout);
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+        let wait = tokio::spawn(async move {
+            let waited = wait_for_git_child(&mut child, &mut cancel_rx, "cat-file batch").await;
+            let reaped = child.try_wait().unwrap();
+            (waited, reaped)
+        });
+
+        stdin
+            .write_all(format!("{revision}\n").as_bytes())
+            .await
+            .unwrap();
+        stdin.flush().await.unwrap();
+        let mut response = String::new();
+        output.read_line(&mut response).await.unwrap();
+        assert!(response.starts_with(&format!("{revision} commit ")));
+        let _stdin = stdin;
+
+        cancel_tx.send(()).unwrap();
+        let (waited, reaped) = wait.await.unwrap();
+        assert!(waited.is_err_and(|err| err.to_string().contains("cancelled")));
+        assert!(reaped.is_some(), "the helper returns only after Git is reaped");
     }
 
     #[test]

@@ -4667,6 +4667,183 @@ mod tests {
 
     #[cfg(feature = "harness")]
     #[tokio::test]
+    async fn nonphysical_mock_usage_survives_a_later_stage_failure_and_retry() {
+        use crate::harness::mock::MockModel;
+        use crate::index::types::{EmbedSignature, Embedded};
+        use crate::ports::embed::Embedder;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Clone)]
+        struct FailFirstWireframe {
+            inner: Arc<dyn Model>,
+            failed: Arc<AtomicBool>,
+        }
+
+        impl FailFirstWireframe {
+            fn new(inner: Arc<dyn Model>) -> Self {
+                Self {
+                    inner,
+                    failed: Arc::new(AtomicBool::new(false)),
+                }
+            }
+
+            fn with_inner(&self, inner: Arc<dyn Model>) -> Arc<dyn Model> {
+                Arc::new(Self {
+                    inner,
+                    failed: self.failed.clone(),
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl Model for FailFirstWireframe {
+            async fn complete(
+                &self,
+                request: crate::ports::model::ModelRequest,
+            ) -> Result<crate::ports::model::ModelResponse> {
+                if request.schema_name == "tinysweeper_wireframe"
+                    && !self.failed.swap(true, Ordering::SeqCst)
+                {
+                    return Err(Error::Model("temporary wireframe failure".into()));
+                }
+                self.inner.complete(request).await
+            }
+
+            fn complete_reports_physical_calls(&self) -> bool {
+                self.inner.complete_reports_physical_calls()
+            }
+
+            fn review_reports_physical_calls(&self) -> bool {
+                self.inner.review_reports_physical_calls()
+            }
+
+            fn scoped_budget(&self, budget_usd: f64) -> Option<Arc<dyn Model>> {
+                self.inner
+                    .scoped_budget(budget_usd)
+                    .map(|inner| self.with_inner(inner))
+            }
+
+            fn with_review_budget(&self, limit_usd: f64) -> Option<Arc<dyn Model>> {
+                self.inner
+                    .with_review_budget(limit_usd)
+                    .map(|inner| self.with_inner(inner))
+            }
+
+            fn with_execution_control(
+                &self,
+                control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+            ) -> Option<Arc<dyn Model>> {
+                self.inner
+                    .with_execution_control(control)
+                    .map(|inner| self.with_inner(inner))
+            }
+        }
+
+        struct ChargedEmbedder;
+
+        #[async_trait::async_trait]
+        impl Embedder for ChargedEmbedder {
+            fn signature(&self) -> EmbedSignature {
+                EmbedSignature::new("fixture", "nonphysical-retry", 2)
+            }
+
+            async fn embed(&self, texts: &[String]) -> Result<Embedded> {
+                Ok(Embedded {
+                    vectors: vec![vec![0.5, 0.5]; texts.len()],
+                    usage: Usage {
+                        embed_tokens: 7,
+                        cost_usd: 0.25,
+                        ..Usage::default()
+                    },
+                })
+            }
+        }
+
+        let mock = MockModel::new()
+            .then(json!({"summary":"Nothing to report.","findings":[]}))
+            .then(json!({"summary":"Nothing to report.","findings":[]}))
+            .then(json!({"screens":[]}))
+            .with_usage(Usage {
+                input_tokens: 11,
+                output_tokens: 4,
+                cost_usd: 0.4,
+                ..Usage::default()
+            });
+        let model: Arc<dyn Model> = Arc::new(FailFirstWireframe::new(Arc::new(mock.clone())));
+        let forge = forge_with(
+            vec![ChangedFile {
+                path: "src/Button.tsx".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+export const Button = () => <button />;\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec![],
+        );
+        let mut config = critique_config();
+        config.models.agentic_reviewers = false;
+        config.wireframe.enabled = true;
+        config.retrieval.enabled = true;
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewRunContext::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(900),
+                #[cfg(test)]
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: config.review.large_pr.soft_deadline_percent,
+                #[cfg(test)]
+                drain_seconds: config.review.large_pr.drain_seconds,
+            },
+        ));
+        let model = execution.bind_model(model, 10.0).model.clone();
+        let embedder = ChargedEmbedder;
+        let index = crate::index::MockChunkIndex::new();
+        let retriever = crate::retrieve::Retriever::new(&embedder, &index);
+
+        let first = review_with_tree_observed_at_head_in_run(
+            &forge,
+            model.clone(),
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution.clone(),
+            None,
+        )
+        .await
+        .expect_err("the first wireframe operation is transiently unavailable");
+        assert!(matches!(&first, Error::Model(_)));
+
+        let proposal = review_with_tree_observed_at_head_in_run(
+            &forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            Some(&retriever),
+            None,
+            None,
+            execution,
+            None,
+        )
+        .await
+        .expect("the retry completes in the same run");
+
+        assert_eq!(mock.calls(), 3);
+        assert_eq!(proposal.input_tokens, 33);
+        assert_eq!(proposal.embed_tokens, 14);
+        assert_eq!(proposal.cost_usd, 1.7);
+        assert_eq!(proposal.usage().calls_attempted, 3);
+    }
+
+    #[cfg(feature = "harness")]
+    #[tokio::test]
     async fn kill_switch_after_a_paid_attempt_keeps_the_shared_run_accounting() {
         use crate::harness::embed::GatewayModel;
         use crate::harness::fake_gateway::{FakeGateway, Reply};

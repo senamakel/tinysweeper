@@ -186,6 +186,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                omissions: vec![],
                 coverage: None,
                 overflow: vec![],
             }],

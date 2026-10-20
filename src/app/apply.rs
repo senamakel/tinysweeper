@@ -1174,6 +1174,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: vec![],
+                omissions: vec![],
                 coverage: None,
                 overflow: vec![],
             }],
@@ -2946,6 +2947,7 @@ mod tests {
                 usage: Default::default(),
                 models: vec![],
                 unanswered: outcome.unanswered,
+                omissions: outcome.omissions,
                 coverage: outcome.coverage,
                 overflow: vec![],
             }

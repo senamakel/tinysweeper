@@ -331,6 +331,7 @@ mod tests {
             usage: Default::default(),
             models: vec![],
             unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),
+            omissions: vec![],
             coverage: Some(crate::lanes::FileCoverage {
                 reviewed: reviewed.iter().map(|path| (*path).to_string()).collect(),
                 unanswered: unanswered.iter().map(|path| (*path).to_string()).collect(),

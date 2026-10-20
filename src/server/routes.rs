@@ -6717,6 +6717,7 @@ mod tests {
             .expect("the last-good report was published to the review hub");
         let last_good_report = previous_hub.body;
         let hub_comment_id = previous_hub.id.expect("published hub has an id");
+        assert!(last_good_report.contains("**Reviewed head:** `previous-good-head`"));
 
         // A second real app review is partial by large-review selection. Its
         // failed apply must not replace the previously completed report.
@@ -6754,6 +6755,7 @@ mod tests {
         );
         let failed_attempt_report = crate::summary::render(&config, &partial);
         assert!(failed_attempt_report.contains("The change updates two reviewed source files."));
+        assert!(!failed_attempt_report.contains("**Reviewed head:**"));
         assert_ne!(failed_attempt_report, last_good_report);
 
         let check_id = forge

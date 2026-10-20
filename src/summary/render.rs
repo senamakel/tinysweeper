@@ -73,6 +73,12 @@ pub fn render(config: &Config, proposal: &Proposal) -> String {
     let summary = proposal.summary.as_ref().cloned().unwrap_or_default();
     let mut body = String::with_capacity(8_192);
     let _ = write!(body, "{MARKER}\n\n# Tiny Sweeper review\n\n");
+    // Failure reports trust only a previously completed report. Recording the
+    // reviewed head gives that preservation boundary an explicit identity;
+    // partial reports must not be mistaken for completed work.
+    if proposal.complete() {
+        let _ = writeln!(body, "**Reviewed head:** {}\n", code_span(&proposal.head_sha));
+    }
     let show_findings = config.summary.sections.contains(&SummarySection::Findings);
     let has_findings = show_findings && has_finding_signal(proposal);
     if has_findings {

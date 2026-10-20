@@ -4430,7 +4430,7 @@ mod tests {
     #[tokio::test]
     async fn enabled_lanes_overlap_in_the_review_path() {
         let forge = forge_with(vec![rust_file()], vec![]);
-        let mut model = ReviewSchedulingModel::new();
+        let model = ReviewSchedulingModel::new();
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let config = scheduling_config();
@@ -4691,13 +4691,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_deadline_keeps_the_partial_timing_record_and_outcome() {
-        struct SlowModel;
+        struct SlowModel(Arc<std::sync::atomic::AtomicBool>);
         #[async_trait::async_trait]
         impl Model for SlowModel {
             async fn complete(
                 &self,
                 _request: crate::ports::model::ModelRequest,
             ) -> Result<crate::ports::model::ModelResponse> {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 unreachable!("deadline cancels the slow model")
             }
@@ -4707,9 +4708,10 @@ mod tests {
         let repo = repo();
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Incremental");
-        let future = review_with_tree_observed(
+        let model_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let future = Box::pin(review_with_tree_observed(
             &forge,
-            Arc::new(SlowModel),
+            Arc::new(SlowModel(model_started.clone())),
             &config,
             &repo,
             7,
@@ -4718,7 +4720,12 @@ mod tests {
             None,
             None,
             Some(timing.clone()),
-        );
+        ));
+        assert!(matches!(
+            futures::poll!(future.as_mut()),
+            std::task::Poll::Pending
+        ));
+        assert!(model_started.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(20), future)
                 .await

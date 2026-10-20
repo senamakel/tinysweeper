@@ -521,10 +521,8 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
     config.models.base_url = gateway.base_url.clone();
     let forge = large_forge();
     let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
-    let model: Arc<dyn Model> = Arc::new(GatewayModel::with_key(
-        &config.models,
-        "fixture-key".into(),
-    ));
+    let model: Arc<dyn Model> =
+        Arc::new(GatewayModel::with_key(&config.models, "fixture-key".into()));
     let run_config = config.clone();
     let task = tokio::spawn(async move {
         let result = review(&forge, model, &run_config, &repo, 7).await;
@@ -533,7 +531,11 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
 
     wait_for_gateway_requests(&gateway, 6).await;
     let initial = gateway.requests();
-    assert!(initial[..6].iter().all(|request| request["model"] == primary));
+    assert!(
+        initial[..6]
+            .iter()
+            .all(|request| request["model"] == primary)
+    );
     release.add_permits(6);
     wait_for_gateway_requests(&gateway, 8).await;
     release.add_permits(2);
@@ -545,7 +547,11 @@ async fn sixty_file_gateway_repairs_share_the_physical_call_ceiling() {
         .expect("partial review is returned");
     let (proposal, forge) = proposal;
     let requests = gateway.requests();
-    assert_eq!(requests.len(), 8, "repairs consume the shared physical limit");
+    assert_eq!(
+        requests.len(),
+        8,
+        "repairs consume the shared physical limit"
+    );
     assert!(requests.iter().all(|request| request["model"] == primary));
     assert_eq!(proposal.usage().calls_attempted, 8);
     assert!(!proposal.complete());
@@ -606,10 +612,8 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
     config.models.base_url = gateway.base_url.clone();
     let forge = large_forge();
     let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
-    let model: Arc<dyn Model> = Arc::new(GatewayModel::with_key(
-        &config.models,
-        "fixture-key".into(),
-    ));
+    let model: Arc<dyn Model> =
+        Arc::new(GatewayModel::with_key(&config.models, "fixture-key".into()));
     let run_config = config.clone();
     let task = tokio::spawn(async move {
         let result = review(&forge, model, &run_config, &repo, 7).await;
@@ -618,7 +622,11 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
 
     wait_for_gateway_requests(&gateway, 6).await;
     let initial = gateway.requests();
-    assert!(initial[..6].iter().all(|request| request["model"] == primary));
+    assert!(
+        initial[..6]
+            .iter()
+            .all(|request| request["model"] == primary)
+    );
     release.add_permits(6);
     wait_for_gateway_requests(&gateway, 8).await;
     release.add_permits(2);
@@ -630,9 +638,21 @@ async fn sixty_file_gateway_fallbacks_share_the_physical_call_ceiling() {
         .expect("partial review is returned");
     let (proposal, forge) = proposal;
     let requests = gateway.requests();
-    assert_eq!(requests.len(), 8, "fallbacks consume the shared physical limit");
-    assert!(requests[..6].iter().all(|request| request["model"] == primary));
-    assert!(requests[6..].iter().all(|request| request["model"] == fallback));
+    assert_eq!(
+        requests.len(),
+        8,
+        "fallbacks consume the shared physical limit"
+    );
+    assert!(
+        requests[..6]
+            .iter()
+            .all(|request| request["model"] == primary)
+    );
+    assert!(
+        requests[6..]
+            .iter()
+            .all(|request| request["model"] == fallback)
+    );
     assert_eq!(proposal.usage().calls_attempted, 8);
     assert!(!proposal.complete());
     assert_eq!(

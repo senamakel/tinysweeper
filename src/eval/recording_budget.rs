@@ -152,6 +152,8 @@ fn write_audit(path: &Path, audit: &Audit, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
 
     #[test]
     fn reservations_count_actual_calls_and_crashes_keep_the_full_reservation() {
@@ -198,5 +200,50 @@ mod tests {
                 .sum::<usize>(),
             56
         );
+    }
+
+    #[test]
+    fn terminated_process_releases_lock_but_keeps_its_full_reservation() {
+        const CHILD_DIRECTORY: &str = "TINYSWEEPER_RECORDING_BUDGET_CHILD_DIRECTORY";
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "eval::recording_budget::tests::reservation_lock_holder_child",
+                "--nocapture",
+            ])
+            .env(CHILD_DIRECTORY, directory.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start lock holder");
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("child stdout"))
+            .read_line(&mut ready)
+            .expect("read lock-holder marker");
+        assert_eq!(ready.trim(), "RESERVATION_HELD");
+
+        child.kill().expect("terminate lock holder");
+        child.wait().expect("wait for terminated child");
+
+        let remaining = Reservation::begin(directory.path(), 8, 12)
+            .expect("OS releases the process lock after termination");
+        assert_eq!(remaining.reserved_calls(), 4);
+        remaining.finish(4).expect("record remaining usage");
+        assert!(Reservation::begin(directory.path(), 1, 12).is_err());
+    }
+
+    #[test]
+    fn reservation_lock_holder_child() {
+        let Ok(directory) = std::env::var("TINYSWEEPER_RECORDING_BUDGET_CHILD_DIRECTORY") else {
+            return;
+        };
+        let _reservation = Reservation::begin(Path::new(&directory), 8, 12)
+            .expect("child reservation");
+        println!("RESERVATION_HELD");
+        std::io::stdout().flush().expect("flush child marker");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
 }

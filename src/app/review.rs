@@ -4640,7 +4640,7 @@ mod tests {
         let budget_remaining = model.review_budget_remaining.clone();
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
-        config.review.lanes = vec!["commits".into()];
+        config.review.lanes = vec!["critique".into()];
         config.summary.enabled = true;
         config.wireframe.enabled = true;
         config.threads.resolve_fixed = true;

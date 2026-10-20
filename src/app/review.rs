@@ -4832,7 +4832,7 @@ mod tests {
             max_tokens: 32,
         };
 
-        async fn wait_for_request_count<T: std::fmt::Debug>(
+        async fn wait_for_request_count<T: std::fmt::Debug + 'static>(
             gateway: &FakeGateway,
             expected: usize,
             calls: &mut tokio::task::JoinSet<T>,

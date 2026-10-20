@@ -5732,6 +5732,7 @@ mod tests {
         use crate::forge::{MockForge, RepoId};
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest, ModelResponse, Usage};
+        use crate::ports::model_execution::ModelExecutionControl;
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::sync::Notify;
@@ -5988,6 +5989,7 @@ mod tests {
         use crate::harness::MockModel;
         use crate::ports::forge::ForgeWrite;
         use crate::ports::model::{Message, Model, ModelRequest};
+        use crate::ports::model_execution::ModelExecutionControl;
         use serde_json::json;
 
         let store = crate::ports::review_job_mock::MockReviewJobStore::default();
@@ -6242,10 +6244,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let replacement_started = tokio::time::Instant::now();
-        let replacement_execution = test_execution_context(
-            replacement_started,
-            replacement_started + REVIEW_DEADLINE,
-        );
+        let replacement_execution =
+            test_execution_context(replacement_started, replacement_started + REVIEW_DEADLINE);
         assert!(!Arc::ptr_eq(&run.execution, &replacement_execution));
         assert!(replacement_execution.execution().acquire().await.is_ok());
         assert!(

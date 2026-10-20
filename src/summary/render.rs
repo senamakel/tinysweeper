@@ -699,6 +699,15 @@ fn run_details(out: &mut String, proposal: &Proposal, summary: &ReviewSummary) {
         }
     );
     let _ = writeln!(out, "- **Spend:** ${:.6}", proposal.cost_usd);
+    if proposal
+        .completion_accounting
+        .as_ref()
+        .is_some_and(|accounting| !accounting.complete)
+    {
+        out.push_str(
+            "- **Completion usage:** incomplete; reported provider completion spend is a known lower bound.\n",
+        );
+    }
     let _ = writeln!(
         out,
         "- **Tokens:** {} input · {} output · {} cached · {} embedding",

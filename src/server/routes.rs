@@ -37,6 +37,7 @@ use crate::server::admin::{self, AdminAuth};
 use crate::server::auth::AppAuth;
 use crate::server::failure;
 use crate::server::indexing::{IndexBackend, index_in_background};
+use crate::indexer::repository_cache::RepositoryCache;
 use crate::server::manual::{self, FullReviews, MergeReport, Merges, Triages};
 use crate::server::mcp;
 use crate::server::model::{GatewayModelFactory, ResolvedModels};
@@ -187,6 +188,8 @@ struct AppState {
     /// provider. `None` runs every review diff-only, which is what tinysweeper
     /// did before an index existed.
     index: Option<Arc<IndexBackend>>,
+    /// Shared server-owned Git mirrors for indexing and exact-head reviews.
+    repository_cache: RepositoryCache,
     /// Bounds concurrent indexing separately from concurrent reviewing: a
     /// delivery burst must not turn into a burst of full indexes.
     index_permits: Arc<Semaphore>,
@@ -289,7 +292,8 @@ pub async fn serve_with_model_factory(
     // reports a different width than `[embeddings]` declares is a startup
     // failure rather than a partial index discovered later. An operator who
     // configured no provider gets `None` and a log line saying so.
-    let index = match IndexBackend::open(&config.config).await? {
+    let repository_cache = RepositoryCache::from_env()?;
+    let index = match IndexBackend::open(&config.config, repository_cache.clone()).await? {
         Some(backend) => {
             tracing::info!(
                 signature = %backend.signature,
@@ -324,6 +328,7 @@ pub async fn serve_with_model_factory(
         accepting_reviews: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         review_queue,
         index: index.clone(),
+        repository_cache,
         index_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_INDEXES)),
         triage_permits: Arc::new(Semaphore::new(triage_concurrency)),
         preview_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -3992,6 +3997,7 @@ impl ReviewRun<'_> {
                         number,
                         forge,
                         read_token,
+                        &pull_request,
                         &run,
                     ))
                     .catch_unwind()
@@ -4168,6 +4174,7 @@ async fn run_lanes(
     number: u64,
     forge: &crate::forge::github::GitHubRead,
     read_token: &str,
+    pull_request: &PullRequest,
     run: &Run,
 ) -> Result<(Config, crate::app::Proposal)> {
     let binding = run
@@ -4230,11 +4237,11 @@ async fn run_lanes(
         number,
         || async {
             if config_ref.lookup.enabled && config_ref.lookup.checkout {
-                let head = forge.pull_request(repo, number).await?.head_sha;
-                match crate::indexer::fetch::Checkout::fetch(
+                let head = &pull_request.head_sha;
+                match state.repository_cache.checkout(
                     &super::indexing::git_host(),
                     &repo.to_string(),
-                    &head,
+                    head,
                     read_token,
                 )
                 .await
@@ -4242,7 +4249,8 @@ async fn run_lanes(
                     Ok(checkout) => {
                         if !config_ref.retrieval.submodules.is_empty()
                             && let Err(err) = checkout
-                                .fetch_submodules(
+                                .fetch_submodules_for_diff(
+                                    &pull_request.base_sha,
                                     &super::indexing::git_host(),
                                     read_token,
                                     &config_ref.retrieval.submodules,

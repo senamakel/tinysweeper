@@ -4155,6 +4155,13 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
         .any(|label| !label.is_empty() && pull_request.labels.contains(label))
 }
 
+/// Repository and pull request identity used by the review lanes.
+#[derive(Clone, Copy)]
+struct LaneTarget<'a> {
+    repo: &'a RepoId,
+    number: u64,
+}
+
 /// Run the checkout and the lanes under the deadline, and hand back what they
 /// produced for `review_inner` to publish uncancelled.
 ///
@@ -4168,13 +4175,10 @@ fn review_is_kill_switched(config: &Config, pull_request: &PullRequest) -> bool 
 ///
 /// Holds no write credential: nothing in here runs after a model call has
 /// returned, so nothing in here may mint one.
-#[tracing::instrument(skip_all, fields(repo = %repo, pr = number, phase = "checkout_and_review"))]
-#[derive(Clone, Copy)]
-struct LaneTarget<'a> {
-    repo: &'a RepoId,
-    number: u64,
-}
-
+#[tracing::instrument(
+    skip_all,
+    fields(repo = %target.repo, pr = target.number, phase = "checkout_and_review")
+)]
 async fn run_lanes(
     state: &AppState,
     config: &Config,

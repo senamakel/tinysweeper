@@ -4861,13 +4861,41 @@ mod tests {
         pending.spawn(async move { model_for_pending.complete(request()).await });
         wait_for_request_count(&gateway, 3).await;
 
-        let accounting = proposal_accounting(&execution, true, None, &[]);
-        assert_eq!(accounting.usage.calls_attempted, 3);
-        assert_eq!(accounting.usage.calls_succeeded, 2);
-        assert_eq!(accounting.usage.calls_errored, 0);
-        assert_eq!(accounting.usage.input_tokens, 22);
-        assert_eq!(accounting.usage.cost_usd, 0.25);
-        assert!(!accounting.completion.expect("raw accounting").complete);
+        let skipped_forge = forge_with(
+            vec![ChangedFile {
+                path: "src/lib.rs".into(),
+                patch: Some("@@ -1,0 +1,1 @@\n+pub fn answer() {}\n".into()),
+                ..ChangedFile::default()
+            }],
+            vec!["tinysweeper:human-review".into()],
+        );
+        let proposal = review_with_tree_observed_at_head_in_run(
+            &skipped_forge,
+            model,
+            &config,
+            &repo(),
+            7,
+            None,
+            None,
+            None,
+            None,
+            None,
+            execution,
+            None,
+        )
+        .await
+        .expect("kill switch projects the shared run while a call is pending");
+        let usage = proposal.usage();
+        assert_eq!(usage.calls_attempted, 3);
+        assert_eq!(usage.calls_succeeded, 2);
+        assert_eq!(usage.calls_errored, 0);
+        assert_eq!(usage.input_tokens, 22);
+        assert_eq!(usage.cost_usd, 0.25);
+        assert!(!proposal
+            .completion_accounting
+            .as_ref()
+            .expect("raw accounting")
+            .complete);
 
         response_gate.add_permits(1);
         pending

@@ -1614,17 +1614,19 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
                 match lane_id {
                     LaneId::Critique => {
                         Critique::new(model.clone())
-                            .run_prepared(
+                            .run_prepared_with_execution(
                                 lane_input,
                                 critique_prepared.take().expect("critique was prepared"),
+                                Some(execution.execution()),
                             )
                             .await
                     }
                     LaneId::Security => {
                         Security::new(model.clone())
-                            .run_prepared(
+                            .run_prepared_with_execution(
                                 lane_input,
                                 security_prepared.take().expect("security was prepared"),
+                                Some(execution.execution()),
                             )
                             .await
                     }

@@ -244,6 +244,17 @@ impl Critique {
         input: LaneInput<'_>,
         prepared: CritiquePreparation,
     ) -> Result<LaneOutcome> {
+        self.run_prepared_with_execution(input, prepared, None)
+            .await
+    }
+
+    /// Run the prepared lane under its original review-wide stop window.
+    pub(crate) async fn run_prepared_with_execution(
+        &self,
+        input: LaneInput<'_>,
+        prepared: CritiquePreparation,
+        execution: Option<Arc<crate::app::review_execution::ReviewExecution>>,
+    ) -> Result<LaneOutcome> {
         if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }
@@ -267,34 +278,46 @@ impl Critique {
         // falsifier gets only its own diff and mechanically related excerpts.
         let cross_file_evidence = replay::CrossFileEvidenceIndex::new(input.diffs);
 
-        let outcome = per_unit(
-            &groups,
-            |group| group.label.clone(),
-            |group| group.paths.clone(),
-            |group| {
-                let llm = llm.clone();
-                let input = &input;
-                let changed_paths = &changed_paths;
-                let cross_file_evidence = &cross_file_evidence;
-                async move {
-                    let group_diffs: Vec<FileDiff> = group
-                        .paths
-                        .iter()
-                        .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
-                        .collect();
-                    review_group(
-                        llm,
-                        input,
-                        changed_paths,
-                        &group.paths,
-                        &group_diffs,
-                        cross_file_evidence,
-                    )
-                    .await
-                }
-            },
-        )
-        .await;
+        let review = |group| {
+            let llm = llm.clone();
+            let input = &input;
+            let changed_paths = &changed_paths;
+            let cross_file_evidence = &cross_file_evidence;
+            async move {
+                let group_diffs: Vec<FileDiff> = group
+                    .paths
+                    .iter()
+                    .filter_map(|path| input.diffs.iter().find(|d| &d.path == path).cloned())
+                    .collect();
+                review_group(
+                    llm,
+                    input,
+                    changed_paths,
+                    &group.paths,
+                    &group_diffs,
+                    cross_file_evidence,
+                )
+                .await
+            }
+        };
+        let outcome = if let Some(execution) = execution {
+            crate::lanes::fanout::per_unit_bounded(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+                execution,
+            )
+            .await
+        } else {
+            per_unit(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+            )
+            .await
+        };
 
         // The graph's own calls are tallied inside the capability, which is the
         // only object every one of them passes through. Folded in once here

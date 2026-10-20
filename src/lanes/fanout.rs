@@ -142,6 +142,151 @@ where
     out
 }
 
+/// Review units in input order with the run's absolute stop window.
+///
+/// Work is started lazily, with the same concurrency bound as [`per_unit`].
+/// Completed results are folded in input order so scheduling completion order
+/// cannot change finding deduplication or summaries. The legacy [`per_unit`]
+/// API remains unbounded in time for callers without a review execution.
+pub(crate) async fn per_unit_bounded<T, F, Fut>(
+    units: &[T],
+    label: impl Fn(&T) -> String,
+    member_paths: impl Fn(&T) -> Vec<String>,
+    review: F,
+    execution: Arc<crate::app::review_execution::ReviewExecution>,
+) -> FanOut
+where
+    T: Clone,
+    F: Fn(T) -> Fut,
+    Fut: Future<Output = crate::error::Result<FileReview>> + Send,
+{
+    use futures::stream::{FuturesUnordered, StreamExt};
+    use std::collections::BTreeMap;
+
+    let soft_deadline = execution.soft_deadline();
+    let hard_deadline = execution.hard_deadline();
+    let now = tokio::time::Instant::now();
+    let requested_drain = soft_deadline + std::time::Duration::from_secs(execution.drain_seconds());
+    let hard_safety = hard_deadline
+        .checked_duration_since(now)
+        .filter(|remaining| *remaining > std::time::Duration::from_secs(5))
+        .map(|_| hard_deadline - std::time::Duration::from_secs(5))
+        .unwrap_or(now);
+    let drain_deadline = requested_drain.min(hard_safety);
+
+    let mut results = (0..units.len())
+        .map(|_| None)
+        .collect::<Vec<Option<crate::error::Result<FileReview>>>>();
+    let mut omitted = vec![None; units.len()];
+    let mut active_paths = BTreeMap::<usize, Vec<String>>::new();
+    let mut active: FuturesUnordered<
+        futures::future::BoxFuture<'_, (usize, crate::error::Result<FileReview>)>,
+    > = FuturesUnordered::new();
+    let mut next = 0usize;
+    let mut draining = false;
+
+    loop {
+        if execution.is_cancelled() {
+            for reason in omitted.iter_mut().skip(next) {
+                *reason = Some(OmissionReason::Cancelled);
+            }
+            for index in active_paths.keys() {
+                omitted[*index] = Some(OmissionReason::Cancelled);
+            }
+            break;
+        }
+
+        let now = tokio::time::Instant::now();
+        if !draining && now >= soft_deadline {
+            draining = true;
+            for reason in omitted.iter_mut().skip(next) {
+                *reason = Some(OmissionReason::SoftDeadline);
+            }
+        }
+        if draining && now >= drain_deadline {
+            for index in active_paths.keys() {
+                omitted[*index] = Some(OmissionReason::DrainDeadline);
+            }
+            break;
+        }
+
+        while !draining && active.len() < MAX_CONCURRENT_FILES && next < units.len() {
+            let index = next;
+            next += 1;
+            active_paths.insert(index, member_paths(&units[index]));
+            let future = review(units[index].clone());
+            active.push(Box::pin(async move { (index, future.await) }));
+        }
+
+        if active.is_empty() {
+            if next >= units.len() || draining {
+                break;
+            }
+            continue;
+        }
+
+        let deadline = if draining {
+            drain_deadline
+        } else {
+            soft_deadline
+        };
+        tokio::select! {
+            completed = active.next() => {
+                if let Some((index, result)) = completed {
+                    active_paths.remove(&index);
+                    results[index] = Some(result);
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {}
+            _ = execution.cancelled() => {}
+        }
+    }
+    drop(active);
+
+    let mut out = FanOut::default();
+    for (index, unit) in units.iter().enumerate() {
+        let paths = member_paths(unit);
+        match results[index].take() {
+            Some(Ok(review)) if let Some(refusal) = review.execution_refusal => {
+                out.partial.push((paths.clone(), review));
+                out.omitted.push(OmittedGroup {
+                    paths,
+                    reason: omission_reason(refusal),
+                });
+            }
+            Some(Ok(review)) => out.reviews.push((paths, review)),
+            Some(Err(crate::error::Error::ModelExecutionRefused { refusal, .. })) => {
+                out.omitted.push(OmittedGroup {
+                    paths,
+                    reason: omission_reason(refusal),
+                });
+            }
+            Some(Err(error)) => out.failures.push((label(unit), paths, error)),
+            None => out.omitted.push(OmittedGroup {
+                paths,
+                reason: omitted[index].unwrap_or(OmissionReason::Cancelled),
+            }),
+        }
+    }
+    out
+}
+
+fn omission_reason(
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+) -> OmissionReason {
+    match refusal {
+        crate::ports::model_execution::ModelExecutionRefusal::CallLimit => {
+            OmissionReason::CallLimit
+        }
+        crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline => {
+            OmissionReason::SoftDeadline
+        }
+        crate::ports::model_execution::ModelExecutionRefusal::Cancelled => {
+            OmissionReason::Cancelled
+        }
+    }
+}
+
 /// [`per_unit`] over plain paths, where the label and the sole member path
 /// are both the path itself.
 ///

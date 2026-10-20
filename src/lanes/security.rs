@@ -317,6 +317,17 @@ impl Security {
         input: LaneInput<'a>,
         prepared: SecurityPreparation<'a>,
     ) -> Result<LaneOutcome> {
+        self.run_prepared_with_execution(input, prepared, None)
+            .await
+    }
+
+    /// Run the prepared lane under its original review-wide stop window.
+    pub(crate) async fn run_prepared_with_execution<'a>(
+        &self,
+        input: LaneInput<'a>,
+        prepared: SecurityPreparation<'a>,
+        execution: Option<Arc<crate::app::review_execution::ReviewExecution>>,
+    ) -> Result<LaneOutcome> {
         if let Some(skipped) = prepared.skipped {
             return Ok(skipped);
         }
@@ -339,48 +350,60 @@ impl Security {
 
         let changed_paths = input.changed_paths();
 
-        let outcome = per_unit(
-            &groups,
-            |group| group.label.clone(),
-            |group| group.paths.clone(),
-            |group| {
-                let llm = llm.clone();
-                let config = input.config;
-                let repo_policy = input.repo_policy;
-                let extracted_rules = input.extracted_rules;
-                let prior_findings = input.prior_findings;
-                let retrieved_context = input.retrieved_context;
-                let redaction_note = input.redaction_note;
-                let input = &input;
-                let diffs = input.diffs;
-                let scanner = &scanner;
-                let changed_paths = &changed_paths;
-                async move {
-                    let group_diffs: Vec<FileDiff> = group
-                        .paths
-                        .iter()
-                        .filter_map(|path| diffs.iter().find(|d| &d.path == path).cloned())
-                        .collect();
-                    let asking = input.asking_about_group(&group_diffs);
-                    review_group(
-                        llm,
-                        config,
-                        repo_policy,
-                        extracted_rules,
-                        prior_findings,
-                        retrieved_context,
-                        redaction_note,
-                        asking,
-                        changed_paths,
-                        &group.paths,
-                        &group_diffs,
-                        scanner,
-                    )
-                    .await
-                }
-            },
-        )
-        .await;
+        let review = |group| {
+            let llm = llm.clone();
+            let config = input.config;
+            let repo_policy = input.repo_policy;
+            let extracted_rules = input.extracted_rules;
+            let prior_findings = input.prior_findings;
+            let retrieved_context = input.retrieved_context;
+            let redaction_note = input.redaction_note;
+            let input = &input;
+            let diffs = input.diffs;
+            let scanner = &scanner;
+            let changed_paths = &changed_paths;
+            async move {
+                let group_diffs: Vec<FileDiff> = group
+                    .paths
+                    .iter()
+                    .filter_map(|path| diffs.iter().find(|d| &d.path == path).cloned())
+                    .collect();
+                let asking = input.asking_about_group(&group_diffs);
+                review_group(
+                    llm,
+                    config,
+                    repo_policy,
+                    extracted_rules,
+                    prior_findings,
+                    retrieved_context,
+                    redaction_note,
+                    asking,
+                    changed_paths,
+                    &group.paths,
+                    &group_diffs,
+                    scanner,
+                )
+                .await
+            }
+        };
+        let outcome = if let Some(execution) = execution {
+            crate::lanes::fanout::per_unit_bounded(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+                execution,
+            )
+            .await
+        } else {
+            per_unit(
+                &groups,
+                |group| group.label.clone(),
+                |group| group.paths.clone(),
+                review,
+            )
+            .await
+        };
 
         let mut outcome = outcome.into_outcome();
         covered_without_model.extend(mechanical_verified);

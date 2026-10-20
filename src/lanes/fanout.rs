@@ -216,11 +216,12 @@ impl FanOut {
 
         // Every path behind a failed unit, not one synthetic entry per
         // conversation: a failed two-file group must count and name both.
-        let mut unanswered: Vec<String> = self
+        let failed_paths: Vec<String> = self
             .failures
             .iter()
             .flat_map(|(_, paths, _)| paths.iter().cloned())
             .collect();
+        let mut unanswered = failed_paths.clone();
         unanswered.extend(
             self.omitted
                 .iter()
@@ -238,9 +239,9 @@ impl FanOut {
         if !self.failures.is_empty() {
             summary.push_str(&format!(
                 " {} file{} could not be reviewed: {}.",
-                unanswered.len(),
-                plural(unanswered.len()),
-                unanswered.join(", ")
+                failed_paths.len(),
+                plural(failed_paths.len()),
+                failed_paths.join(", ")
             ));
         }
 

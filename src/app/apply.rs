@@ -2709,8 +2709,8 @@ mod tests {
         }
         let writes = forge.writes();
         assert_eq!(writes.iter().filter(|w| matches!(w, Write::Review { .. })).count(), 1);
-        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Comment { .. })).count(), 2);
-        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Check { .. })).count(), 2);
+        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Comment { .. } | Write::CommentUpdate { .. })).count(), 2);
+        assert_eq!(writes.iter().filter(|w| matches!(w, Write::Check(_) | Write::CheckUpdate { .. })).count(), 2);
     }
 
     #[tokio::test]

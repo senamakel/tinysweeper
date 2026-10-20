@@ -3107,7 +3107,10 @@ fn completed_review_disposition(
     } else {
         TerminalOutcome::Declined
     };
-    (review_conclusion(findings), WorkerDisposition::Terminal(outcome))
+    (
+        review_conclusion(findings),
+        WorkerDisposition::Terminal(outcome),
+    )
 }
 
 /// Review one pull request, off the request path.
@@ -6421,7 +6424,12 @@ mod tests {
             .await
             .unwrap()
             .expect("the admitted head is claimed by the worker");
-        assert!(store.confirm_head(&owned, "published-head", now_ms + 2).await.unwrap());
+        assert!(
+            store
+                .confirm_head(&owned, "published-head", now_ms + 2)
+                .await
+                .unwrap()
+        );
 
         let mut config: Config = crate::config::DEFAULTS
             .parse::<toml::Table>()
@@ -6462,14 +6470,8 @@ mod tests {
                     None,
                 )
                 .await?;
-                let applied = crate::app::apply::apply(
-                    &forge,
-                    &forge,
-                    &config,
-                    &proposal,
-                    None,
-                )
-                .await?;
+                let applied =
+                    crate::app::apply::apply(&forge, &forge, &config, &proposal, None).await?;
                 let findings = published_review_result(
                     applied,
                     proposal.findings().count(),
@@ -6482,13 +6484,21 @@ mod tests {
         .await
         .expect("the real review and apply complete within paid work");
         assert!(matches!(completed, InnerReview::Complete(Some(_))));
-        assert!(forge.writes().iter().any(|write| matches!(
-            write,
-            crate::forge::Write::Review { event, .. }
-                if *event == crate::forge::types::ReviewEvent::Approve
-                    || *event == crate::forge::types::ReviewEvent::Comment
-        )), "the real apply path writes its review: {:#?}", forge.writes());
-        assert_eq!(model.requests().len(), 1, "one critique call reviewed the head");
+        assert!(
+            forge.writes().iter().any(|write| matches!(
+                write,
+                crate::forge::Write::Review { event, .. }
+                    if *event == crate::forge::types::ReviewEvent::Approve
+                        || *event == crate::forge::types::ReviewEvent::Comment
+            )),
+            "the real apply path writes its review: {:#?}",
+            forge.writes()
+        );
+        assert_eq!(
+            model.requests().len(),
+            1,
+            "one critique call reviewed the head"
+        );
 
         let InnerReview::Complete(findings) = completed else {
             panic!("the app completion result was already checked above");
@@ -6499,10 +6509,12 @@ mod tests {
             disposition,
             WorkerDisposition::Terminal(TerminalOutcome::Published)
         ));
-        assert!(record_owned_disposition(&store, &owned, disposition, now_ms + 4)
-            .await
-            .expect("owned worker terminal update")
-            .expect("publication is recorded durably"));
+        assert!(
+            record_owned_disposition(&store, &owned, disposition, now_ms + 4)
+                .await
+                .expect("owned worker terminal update")
+                .expect("publication is recorded durably")
+        );
         let state = store.snapshot_for_test();
         assert_eq!(state.unfinished.len(), 0);
         assert_eq!(
@@ -6521,42 +6533,59 @@ mod tests {
             .await
             .unwrap()
             .expect("the delayed delivery is independently claimable");
-        assert!(store.confirm_head(&redelivery, "published-head", now_ms + 7).await.unwrap());
+        assert!(
+            store
+                .confirm_head(&redelivery, "published-head", now_ms + 7)
+                .await
+                .unwrap()
+        );
         let before_redelivery_writes = forge.writes().len();
         let skipped = run_if_confirmed_head_needs_review(
             &store,
             Some(&redelivery),
             Mode::Incremental,
             || async {
-                model.complete(ModelRequest {
-                    model: "test".into(),
-                    messages: vec![crate::ports::model::Message::user("duplicate review")],
-                    schema: json!({"type": "object"}),
-                    schema_name: "duplicate-review".into(),
-                    max_tokens: 16,
-                }).await?;
+                model
+                    .complete(ModelRequest {
+                        model: "test".into(),
+                        messages: vec![crate::ports::model::Message::user("duplicate review")],
+                        schema: json!({"type": "object"}),
+                        schema_name: "duplicate-review".into(),
+                        max_tokens: 16,
+                    })
+                    .await?;
                 Ok(InnerReview::Complete(None))
             },
         )
         .await
         .expect("terminal head is a normal duplicate");
         assert!(matches!(skipped, InnerReview::Complete(None)));
-        assert_eq!(model.requests().len(), 1, "redelivery makes no second paid model call");
-        assert_eq!(forge.writes().len(), before_redelivery_writes, "redelivery makes no apply writes");
+        assert_eq!(
+            model.requests().len(),
+            1,
+            "redelivery makes no second paid model call"
+        );
+        assert_eq!(
+            forge.writes().len(),
+            before_redelivery_writes,
+            "redelivery makes no apply writes"
+        );
         assert_eq!(
             store.snapshot_for_test().incremental_heads[0].paid_attempts,
             1,
             "redelivery does not start another paid attempt"
         );
-        assert!(record_owned_disposition(
-            &store,
-            &redelivery,
-            WorkerDisposition::Terminal(TerminalOutcome::Declined),
-            now_ms + 8,
-        )
-        .await
-        .expect("duplicate terminal disposition")
-        .expect("duplicate completion is durably released"));
+        assert!(
+            record_owned_disposition(
+                &store,
+                &redelivery,
+                WorkerDisposition::Terminal(TerminalOutcome::Declined),
+                now_ms + 8,
+            )
+            .await
+            .expect("duplicate terminal disposition")
+            .expect("duplicate completion is durably released")
+        );
         assert_eq!(
             store.snapshot_for_test().incremental_heads[0].terminal_outcome,
             Some(TerminalOutcome::Published),

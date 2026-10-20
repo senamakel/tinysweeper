@@ -125,11 +125,11 @@ fn live_recording_candidate_pins_provider_price_and_output_bounds() {
 }
 
 #[test]
-fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
+fn continuation_candidate_pins_gpt_oss_novita_and_its_recording_limits() {
     let loaded = crate::config::load_validated(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         Some(std::path::Path::new(
-            "evals/recording.gptoss-deepinfra.toml",
+            "evals/recording.gptoss-novita.toml",
         )),
     )
     .expect("continuation candidate validates");
@@ -139,7 +139,7 @@ fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
     assert_eq!(config.models.flash, config.models.scan);
     assert!(config.models.fallback.is_empty());
     assert!(config.models.routes.is_empty());
-    assert_eq!(config.models.provider.order, ["deepinfra"]);
+    assert_eq!(config.models.provider.order, ["novita"]);
     assert!(!config.models.provider.allow_fallbacks);
     assert!(!config.models.provider.last_resort_unpinned);
     assert!(config.models.provider.unpinned_vendors.is_empty());
@@ -157,7 +157,7 @@ fn continuation_candidate_pins_gpt_oss_and_its_recording_limits() {
         .expect("verified reservation rate");
     assert_eq!(
         (price.input, price.cached, price.output),
-        (0.037, 0.037, 0.17)
+        (0.05, 0.05, 0.25)
     );
 }
 

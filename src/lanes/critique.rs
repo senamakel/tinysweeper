@@ -492,15 +492,15 @@ async fn review_group(
         round_one_candidates,
         round_one_survivors,
     );
-    if execution_refusal.is_none() {
-        if let Some(observer) = input.pass_yield_observer {
-            observer.record_pass_yield(
-                LaneId::Critique,
-                1,
-                round_one_candidates,
-                round_one_survivors,
-            );
-        }
+    if execution_refusal.is_none()
+        && let Some(observer) = input.pass_yield_observer
+    {
+        observer.record_pass_yield(
+            LaneId::Critique,
+            1,
+            round_one_candidates,
+            round_one_survivors,
+        );
     }
 
     // Candidate yield and deterministic high-risk files trigger an extra look;
@@ -643,7 +643,7 @@ async fn review_group(
             // find more either, so stop rather than pay for one.
             if new_findings.is_empty() {
                 if let Some(observer) = input.pass_yield_observer {
-                    observer.record_pass_yield(LaneId::Critique, (pass_index + 1) as u8, 0, 0);
+                    observer.record_pass_yield(LaneId::Critique, pass_index + 1, 0, 0);
                 }
                 metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if had_proposals {
@@ -683,7 +683,7 @@ async fn review_group(
             if let Some(observer) = input.pass_yield_observer {
                 observer.record_pass_yield(
                     LaneId::Critique,
-                    (pass_index + 1) as u8,
+                    pass_index + 1,
                     new_candidates,
                     survivors,
                 );

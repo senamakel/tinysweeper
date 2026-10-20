@@ -540,15 +540,15 @@ async fn review_group(
         round_one_candidates,
         round_one_survivors,
     );
-    if execution_refusal.is_none() {
-        if let Some(observer) = pass_yield_observer {
-            observer.record_pass_yield(
-                LaneId::Security,
-                1,
-                round_one_candidates,
-                round_one_survivors,
-            );
-        }
+    if execution_refusal.is_none()
+        && let Some(observer) = pass_yield_observer
+    {
+        observer.record_pass_yield(
+            LaneId::Security,
+            1,
+            round_one_candidates,
+            round_one_survivors,
+        );
     }
 
     // Adaptive coverage uses the same strict anchoring and falsification as
@@ -666,7 +666,7 @@ async fn review_group(
 
             if new_findings.is_empty() {
                 if let Some(observer) = pass_yield_observer {
-                    observer.record_pass_yield(LaneId::Security, (pass_index + 1) as u8, 0, 0);
+                    observer.record_pass_yield(LaneId::Security, pass_index + 1, 0, 0);
                 }
                 metrics.record(coverage_usage, coverage_elapsed, 0, 0);
                 metrics.stop(if !had_proposals && had_raw_proposals {
@@ -697,7 +697,7 @@ async fn review_group(
             if let Some(observer) = pass_yield_observer {
                 observer.record_pass_yield(
                     LaneId::Security,
-                    (pass_index + 1) as u8,
+                    pass_index + 1,
                     candidate_count,
                     new_findings.len(),
                 );

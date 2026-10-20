@@ -180,7 +180,11 @@ pub async fn run(
                 options
                     .max_physical_calls_per_case
                     .expect("recording cap validated"),
-                MAX_RECORDING_PHYSICAL_CALLS_PER_CASE,
+                // The selected CLI ceiling is cumulative across reruns; the
+                // hard maximum only bounds which ceiling the operator may set.
+                options
+                    .max_physical_calls_per_case
+                    .expect("recording cap validated"),
             )?)
         } else {
             None

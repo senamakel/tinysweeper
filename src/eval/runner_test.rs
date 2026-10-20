@@ -504,6 +504,8 @@ async fn a_recording_ceiling_cannot_be_replenished_by_rerunning() {
         let denied_tail = corpus.cases[0]
             .cassette_dir(&corpus.root)
             .join("denied-attempt-must-not-archive.json");
+        std::fs::create_dir_all(denied_tail.parent().expect("cassette parent"))
+            .expect("create active cassette directory");
         std::fs::write(&denied_tail, "still active until reservation succeeds")
             .expect("seed active take before denied rerun");
 

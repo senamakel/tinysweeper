@@ -140,9 +140,7 @@ impl openhuman_embed::observe::TurnObserver for AgenticCallObserver {
                 *refused || matches!(status, openhuman_embed::PhysicalDispatchStatus::Refused);
             if let Some(control) = &self.execution_control {
                 control.on_terminal(ModelExecutionTerminal {
-                    requested_model: requested_model
-                        .clone()
-                        .unwrap_or_else(|| "unknown".into()),
+                    requested_model: requested_model.clone().unwrap_or_else(|| "unknown".into()),
                     answered_model: answered_model.clone(),
                     outcome: execution_terminal_outcome(*status),
                     refused: *refused,

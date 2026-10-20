@@ -15,8 +15,8 @@ use tokio::time::Instant;
 use crate::lanes::large_pr::ReviewMode;
 use crate::ports::model::{Model, Usage};
 use crate::ports::model_execution::{
-    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal,
-    ModelExecutionTerminal, ModelExecutionTerminalOutcome,
+    ModelExecutionControl, ModelExecutionPermit, ModelExecutionRefusal, ModelExecutionTerminal,
+    ModelExecutionTerminalOutcome,
 };
 
 /// Absolute review window and the operator limits applied to it.
@@ -155,8 +155,8 @@ impl Default for PhysicalExecutionAccounting {
 impl PhysicalExecutionAccounting {
     fn record(&mut self, terminal: &ModelExecutionTerminal) {
         let succeeded = matches!(terminal.outcome, ModelExecutionTerminalOutcome::Succeeded);
-        let refused = terminal.refused
-            || matches!(terminal.outcome, ModelExecutionTerminalOutcome::Refused);
+        let refused =
+            terminal.refused || matches!(terminal.outcome, ModelExecutionTerminalOutcome::Refused);
         let mut usage = Usage {
             calls_attempted: 1,
             calls_succeeded: u64::from(succeeded),
@@ -169,7 +169,10 @@ impl PhysicalExecutionAccounting {
             usage.output_tokens = reported.output_tokens;
             usage.reasoning_tokens = reported.reasoning_tokens;
             usage.cached_tokens = reported.cached_tokens;
-            match reported.cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.0) {
+            match reported
+                .cost_usd
+                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+            {
                 Some(cost) => usage.cost_usd = cost,
                 None => self.complete = false,
             }
@@ -200,8 +203,12 @@ fn add_usage_saturating(total: &mut Usage, addition: Usage) -> bool {
         .reasoning_tokens
         .saturating_add(addition.reasoning_tokens);
     total.cached_tokens = total.cached_tokens.saturating_add(addition.cached_tokens);
-    total.calls_attempted = total.calls_attempted.saturating_add(addition.calls_attempted);
-    total.calls_succeeded = total.calls_succeeded.saturating_add(addition.calls_succeeded);
+    total.calls_attempted = total
+        .calls_attempted
+        .saturating_add(addition.calls_attempted);
+    total.calls_succeeded = total
+        .calls_succeeded
+        .saturating_add(addition.calls_succeeded);
     total.calls_refused = total.calls_refused.saturating_add(addition.calls_refused);
     total.calls_errored = total.calls_errored.saturating_add(addition.calls_errored);
     let cost = total.cost_usd + addition.cost_usd;
@@ -1151,8 +1158,7 @@ mod tests {
             0.125
         );
         assert_eq!(
-            snapshot.physical_usage_by_model["configured-third"].input_tokens,
-            7,
+            snapshot.physical_usage_by_model["configured-third"].input_tokens, 7,
             "when the provider omits its answering id, use the requested model"
         );
         assert!(!snapshot.physical_accounting_complete);

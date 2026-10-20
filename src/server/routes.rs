@@ -5592,14 +5592,9 @@ mod tests {
         // the old worker's ownership watcher has canceled its shared scope.
         let execution = test_execution_scope();
         assert!(!execution.is_cancelled());
-        let result = ownership_fence_disposition(
-            &execution,
-            store.as_ref(),
-            Some(&owned),
-            || true,
-        )
-        .await
-        .unwrap();
+        let result = ownership_fence_disposition(&execution, store.as_ref(), Some(&owned), || true)
+            .await
+            .unwrap();
 
         assert!(matches!(result, Some(WorkerDisposition::Yielded)));
         assert!(execution.is_cancelled());

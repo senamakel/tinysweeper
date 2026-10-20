@@ -5503,6 +5503,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_transient_review_error_does_not_cancel_the_run_execution_scope() {
+        use crate::ports::model_execution::ModelExecutionControl;
+
+        let store = crate::ports::review_job_mock::MockReviewJobStore::default();
+        let execution = test_execution_scope();
+        let result = select_review_control(
+            async { Err(Error::Forge("temporary read failure".into())) },
+            &store,
+            None,
+            None,
+            None,
+            execution.clone(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Forge(_))));
+        assert!(
+            execution.acquire().await.is_ok(),
+            "retryable errors keep the shared scope available for the next attempt"
+        );
+    }
+
+    #[tokio::test]
     async fn a_model_dispatch_rechecks_local_expiry_after_a_slow_store_reply() {
         use crate::harness::MockModel;
         use crate::ports::model::{Message, Model, ModelRequest};

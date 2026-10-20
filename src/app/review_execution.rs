@@ -189,16 +189,10 @@ impl ModelExecutionControl for BoundedExecutionControl {
     ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
         // Wait for shared dispatch capacity before reserving the review's
         // finite call budget, so queued work does not occupy admission slots.
-        let permit = tokio::select! {
-            biased;
-            _ = self.inner.cancelled() => return Err(ModelExecutionRefusal::Cancelled),
-            _ = tokio::time::sleep_until(self.inner.soft_deadline()) => {
-                return Err(ModelExecutionRefusal::SoftDeadline);
-            }
-            permit = Arc::clone(&self.permits).acquire_owned() => {
-                permit.expect("the review dispatch semaphore is never closed")
-            }
-        };
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("the review dispatch semaphore is never closed");
         match self.inner.acquire().await {
             Ok(inner) => Ok(Box::new(BoundedExecutionPermit {
                 inner,
@@ -819,6 +813,54 @@ mod tests {
             soft_deadline_percent: 80,
             drain_seconds: 30,
         }
+    }
+
+    #[tokio::test]
+    async fn queued_dispatch_admission_observes_cancel_and_original_soft_deadline() {
+        let started = Instant::now();
+        let execution = Arc::new(ReviewExecution::new(options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_secs(2),
+        )));
+        let control = Arc::new(BoundedExecutionControl {
+            inner: execution.clone(),
+            permits: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let waiting_control = control.clone();
+        let waiting = tokio::spawn(async move { waiting_control.acquire().await });
+        tokio::task::yield_now().await;
+        execution.cancel();
+        let cancelled = tokio::time::timeout(Duration::from_millis(100), waiting)
+            .await
+            .expect("owner cancellation wakes a dispatch waiting for capacity")
+            .expect("waiter task completes");
+        assert!(matches!(cancelled, Err(ModelExecutionRefusal::Cancelled)));
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
+
+        let started = Instant::now();
+        let mut soft_options = options(
+            ReviewMode::Normal,
+            None,
+            started,
+            started + Duration::from_millis(100),
+        );
+        soft_options.soft_deadline_percent = 10;
+        let execution = Arc::new(ReviewExecution::new(soft_options));
+        let control = Arc::new(BoundedExecutionControl {
+            inner: execution.clone(),
+            permits: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let waiting = tokio::spawn(async move { control.acquire().await });
+        let expired = tokio::time::timeout(Duration::from_millis(200), waiting)
+            .await
+            .expect("the original soft deadline wakes a dispatch waiting for capacity")
+            .expect("waiter task completes");
+        assert!(matches!(expired, Err(ModelExecutionRefusal::SoftDeadline)));
+        assert_eq!(execution.snapshot().reserved_calls, 0);
+        assert_eq!(execution.snapshot().committed_calls, 0);
     }
 
     #[tokio::test]

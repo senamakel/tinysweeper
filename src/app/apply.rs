@@ -235,24 +235,26 @@ pub async fn apply(
         })
     });
     let same_standing_review = previous_known
-        && published_before.as_ref().is_some_and(|published| match event {
-            ReviewEvent::Approve | ReviewEvent::RequestChanges => previous_review
-                .as_ref()
-                .is_some_and(|review| {
-                    review.event == event
-                        && review.head_sha.as_deref() == Some(published.head_sha.as_str())
-                }),
-            ReviewEvent::Comment => match (&published.standing_review, &previous_review) {
-                (Some(expected), Some(actual)) => expected == actual,
-                // Before standing snapshots were persisted, only a live
-                // COMMENT on the exact published head is enough evidence.
-                (None, Some(actual)) => {
-                    actual.event == ReviewEvent::Comment
-                        && actual.head_sha.as_deref() == Some(published.head_sha.as_str())
+        && published_before
+            .as_ref()
+            .is_some_and(|published| match event {
+                ReviewEvent::Approve | ReviewEvent::RequestChanges => {
+                    previous_review.as_ref().is_some_and(|review| {
+                        review.event == event
+                            && review.head_sha.as_deref() == Some(published.head_sha.as_str())
+                    })
                 }
-                _ => false,
-            },
-        });
+                ReviewEvent::Comment => match (&published.standing_review, &previous_review) {
+                    (Some(expected), Some(actual)) => expected == actual,
+                    // Before standing snapshots were persisted, only a live
+                    // COMMENT on the exact published head is enough evidence.
+                    (None, Some(actual)) => {
+                        actual.event == ReviewEvent::Comment
+                            && actual.head_sha.as_deref() == Some(published.head_sha.as_str())
+                    }
+                    _ => false,
+                },
+            });
     // Every lane is expected to leave an unpostable finding without a line,
     // but `apply` is the final boundary before GitHub sees it. One invalid
     // anchor makes GitHub reject the entire review, including otherwise valid
@@ -738,8 +740,7 @@ fn standing_review_after_success(
         }
         if let Some(previous) = previous
             && (previous.event == ReviewEvent::RequestChanges
-                || (previous.event == ReviewEvent::Approve
-                    && (!unvouched || withdrawal_failed)))
+                || (previous.event == ReviewEvent::Approve && (!unvouched || withdrawal_failed)))
         {
             return Some(previous.clone());
         }
@@ -2851,15 +2852,9 @@ mod tests {
                 informational.title = "A nonblocking note appeared".into();
                 proposal.lanes[0].findings.push(informational);
             }
-            apply(
-                &forge,
-                &forge,
-                &config(),
-                &proposal,
-                Some(&store),
-            )
-            .await
-            .expect("applies");
+            apply(&forge, &forge, &config(), &proposal, Some(&store))
+                .await
+                .expect("applies");
         }
         let writes = forge.writes();
         assert_eq!(
@@ -2949,7 +2944,10 @@ mod tests {
             Some(&store),
         )
         .await;
-        assert!(result.is_err(), "the failed review must remain an apply error");
+        assert!(
+            result.is_err(),
+            "the failed review must remain an apply error"
+        );
         assert!(
             store
                 .load_state(&crate::state::key("tinyhumansai/tinysweeper", 7))
@@ -2958,12 +2956,17 @@ mod tests {
                 .is_none(),
             "a failed write is not a durable publication"
         );
-        assert!(!forge.writes().iter().any(|write| matches!(write, Write::Review { .. })));
+        assert!(
+            !forge
+                .writes()
+                .iter()
+                .any(|write| matches!(write, Write::Review { .. }))
+        );
     }
 
     #[tokio::test]
     async fn an_unknown_live_approval_head_cannot_be_certified_by_a_receipt() {
-        use crate::state::{memory::MemoryState, PublishedReview, ReviewedState};
+        use crate::state::{PublishedReview, ReviewedState, memory::MemoryState};
 
         let mut mock_state = MockState::default();
         mock_state.pull_requests.insert(
@@ -3126,8 +3129,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_changed_blocking_identity_posts_a_new_request_changes_review() {
+        use crate::state::memory::MemoryState;
+
+        let forge = forge("head-one");
+        let store = MemoryState::new();
+        let first = proposal("head-one", vec![finding()]);
+        apply(&forge, &forge, &config(), &first, Some(&store))
+            .await
+            .expect("publishes first blocker");
+
+        forge.push(7, "head-two", vec![]);
+        let mut second = proposal("head-two", vec![finding()]);
+        second.lanes[0].blocking_findings = Some(vec!["different-blocker".into()]);
+        apply(&forge, &forge, &config(), &second, Some(&store))
+            .await
+            .expect("publishes changed blocker");
+
+        assert_eq!(
+            forge
+                .writes()
+                .iter()
+                .filter(|write| matches!(
+                    write,
+                    Write::Review {
+                        event: ReviewEvent::RequestChanges,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "the blocker identity is part of the decision signature"
+        );
+    }
+
+    #[tokio::test]
     async fn recording_a_decision_does_not_replace_state_after_a_load_error() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
 
         struct UnavailableState(Arc<AtomicUsize>);
 

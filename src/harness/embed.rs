@@ -1491,6 +1491,7 @@ mod tests {
             requested_model: requested_model.into(),
             answered_model: answered_model.map(str::to_owned),
             outcome,
+            refused: false,
             usage,
         }
     }

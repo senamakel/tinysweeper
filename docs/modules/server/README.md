@@ -67,6 +67,9 @@ operator must redeliver that overflowed event. Manual batches are admitted
 atomically, or refused as a whole. Other webhook actions keep their existing
 dispatch path.
 
+For corpus recall recording and the post-rollout observation checklist, see
+[the evaluation runbook](../eval/recording-and-48h-runbook.md).
+
 The manual endpoint checks durable capacity before resolving installations or
 pull requests. Its final whole-batch admission is still authoritative, so a
 concurrent admission can fill the scheduler after the preflight and cause the

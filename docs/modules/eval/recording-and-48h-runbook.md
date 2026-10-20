@@ -62,8 +62,9 @@ and request/response payloads private. Stop immediately after any provider
 error that lacks usage information. The recorder persists a call-budget audit
 at `evals/recording-attempts/<case-id>/recording-attempts.json`; it reserves capacity
 before dispatch and records actual committed physical calls after success or
-failure. A crash leaves the full reservation charged. Do not remove the audit
-or lock file to obtain a fresh allowance; investigate and preserve its history.
+failure. A process crash leaves the full reservation charged; atomic replacement
+does not promise durability across power loss. Do not remove the audit or lock
+file to obtain a fresh allowance; investigate and preserve its history.
 
 After all five recordings exist, run the offline proof and scorecard with no
 model configured:

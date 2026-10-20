@@ -4673,10 +4673,14 @@ mod tests {
         model.barrier = Some(Arc::new(tokio::sync::Barrier::new(2)));
         let model_trait: Arc<dyn Model> = Arc::new(model);
         let mut config = scheduling_config();
-        config.review.lanes = vec!["critique".into(), "tests".into()];
+        config.review.lanes = vec![
+            "critique".into(),
+            "security".into(),
+            "tests".into(),
+        ];
         config.review.large_pr.enabled = true;
         config.review.large_pr.files = 1;
-        config.review.large_pr.max_groups = 1;
+        config.review.large_pr.max_groups = 2;
         config.review.large_pr.max_calls = 8;
         let timing =
             crate::review_timing::ReviewTiming::new("tinyhumansai/tinysweeper", 7, "Large");
@@ -4703,7 +4707,7 @@ mod tests {
             "the selected Large-mode critique group and tests lane must overlap"
         );
         let proposal = result.unwrap().expect("Large-mode review succeeds");
-        assert_eq!(proposal.lanes.len(), 2);
+        assert_eq!(proposal.lanes.len(), 3);
         let record = timing.snapshot();
         assert!(record.lanes_ms.contains_key("critique"));
         let yield_one = record
@@ -4712,6 +4716,12 @@ mod tests {
             .expect("effective one-pass Large mode records its completed group");
         assert_eq!(yield_one.groups, 1);
         assert!(!record.pass_yields.contains_key("critique:2"));
+        let security_yield = record
+            .pass_yields
+            .get("security:1")
+            .expect("effective one-pass Large security group is recorded");
+        assert_eq!(security_yield.groups, 1);
+        assert!(!record.pass_yields.contains_key("security:2"));
     }
 
     #[tokio::test]

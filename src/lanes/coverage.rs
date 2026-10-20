@@ -216,6 +216,7 @@ pub async fn coverage_pass(
         std::slice::from_ref(&answer),
     ) {
         Ok(mut responses) => responses.pop().map(|r| r.response),
+        Err(err @ crate::error::Error::ModelExecutionRefused { .. }) => return Err(err),
         Err(err) => {
             tracing::warn!(agent = reviewer.id, %err, "the coverage pass reviewer's answer did not parse");
             None

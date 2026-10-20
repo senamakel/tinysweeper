@@ -2211,7 +2211,7 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
     let accounting = proposal_accounting(&execution, reports_raw_completion_usage, &spend.models);
     let (partial_review, unreviewed) =
         partial_review_metadata(&plan, &lanes, &context.files, &uninspected);
-    Ok(Proposal {
+    let proposal = Proposal {
         version: PROPOSAL_VERSION,
         repo: repo.to_string(),
         number,
@@ -2233,7 +2233,12 @@ pub(crate) async fn review_with_tree_observed_at_head_in_run(
         models: accounting.models,
         completion_accounting: accounting.completion,
         logical_usage: accounting.logical,
-    })
+    };
+    if let Some(timing) = &timing {
+        let lane_usage = proposal.lane_costs();
+        timing.finalize_usage(proposal.usage(), &proposal.models, &lane_usage);
+    }
+    Ok(proposal)
 }
 
 fn summary_generation_needed(config: &Config, diffs: &[FileDiff]) -> bool {
@@ -5937,11 +5942,13 @@ mod tests {
         assert_eq!(line.matches("review timing").count(), 1, "{line}");
         assert!(line.contains("cost_usd=0.875"), "{line}");
         assert!(line.contains("embed_tokens=7"), "{line}");
-        assert!(line.contains("models=\"[\\\"deep\\\"]\""), "{line}");
+        let expected_models = serde_json::to_string(&proposal.models).expect("models serialize");
+        assert!(line.contains(&format!("models={expected_models}")), "{line}");
         assert!(
-            line.contains(&format!("lane_usage=\"{expected_lane_usage}\"")),
+            line.contains(&format!("lane_usage={expected_lane_usage}")),
             "{line}"
         );
+        assert!(proposal.models.iter().all(|model| !model.trim().is_empty()));
         let usage = proposal.usage();
         assert_eq!(usage.calls_attempted, 1);
         assert_eq!(usage.calls_succeeded, 1);

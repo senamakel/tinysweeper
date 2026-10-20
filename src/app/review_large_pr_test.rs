@@ -571,12 +571,13 @@ async fn assert_adaptive_refusal_is_partial(
     .await
     .expect("a host refusal during adaptive coverage publishes a partial proposal");
 
-    let calls = model.calls.lock().expect("successful call list lock");
-    assert_eq!(calls.len(), 2, "round one and its falsifier are retained");
-    assert!(calls.contains(&model.lane_schema.to_string()));
-    assert!(calls.contains(&"tinysweeper_falsify".to_string()));
+    {
+        let calls = model.calls.lock().expect("successful call list lock");
+        assert_eq!(calls.len(), 2, "round one and its falsifier are retained");
+        assert!(calls.contains(&model.lane_schema.to_string()));
+        assert!(calls.contains(&"tinysweeper_falsify".to_string()));
+    }
     assert!(timing.snapshot().calls_refused >= 1);
-    drop(calls);
 
     assert!(!proposal.complete());
     assert!(proposal.unreviewed.contains(&"src/z_api.rs".to_string()));

@@ -58,6 +58,23 @@ pub struct ReviewedState {
     /// Exact serialized assistant turns retained as a byte-stable cache prefix.
     #[serde(default)]
     pub summary_transcript: Vec<crate::summary::SummaryTranscriptTurn>,
+    /// The last verdict and blocking-finding set successfully published by apply.
+    ///
+    /// Missing on state written before review-level deduplication. An absent
+    /// record is unknown, so it never suppresses a review.
+    #[serde(default)]
+    pub published_review: Option<PublishedReview>,
+}
+
+/// A successfully published review decision, used to suppress identical repeats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedReview {
+    /// Verdict submitted to the forge.
+    pub event: crate::forge::types::ReviewEvent,
+    /// Reviewed head when the decision was last evaluated.
+    pub head_sha: String,
+    /// Stable identities of the findings that contribute to a blocking verdict.
+    pub blocking_findings: Vec<String>,
 }
 
 /// The key a pull request's state is stored under.
@@ -89,6 +106,7 @@ mod tests {
             hub_comment_id: Some(42),
             summary: None,
             summary_transcript: vec![],
+            published_review: None,
         };
         let encoded = serde_json::to_string(&state).expect("serialises");
         let decoded: ReviewedState = serde_json::from_str(&encoded).expect("deserialises");
@@ -106,6 +124,7 @@ mod tests {
             r#"{"head_sha":"abc123","evidence":"","fingerprints":[],"titles":["Guard the index"]}"#;
         let decoded: ReviewedState = serde_json::from_str(old).expect("deserialises");
         assert!(decoded.severities.is_empty());
+        assert!(decoded.published_review.is_none());
         assert_eq!(decoded.titles, vec!["Guard the index".to_string()]);
     }
 }

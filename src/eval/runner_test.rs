@@ -501,6 +501,11 @@ async fn a_recording_ceiling_cannot_be_replenished_by_rerunning() {
             physical_calls.load(std::sync::atomic::Ordering::SeqCst),
             ceiling
         );
+        let denied_tail = corpus.cases[0]
+            .cassette_dir(&corpus.root)
+            .join("denied-attempt-must-not-archive.json");
+        std::fs::write(&denied_tail, "still active until reservation succeeds")
+            .expect("seed active take before denied rerun");
 
         let second = run(
             &corpus,
@@ -522,6 +527,10 @@ async fn a_recording_ceiling_cannot_be_replenished_by_rerunning() {
         assert_eq!(
             physical_calls.load(std::sync::atomic::Ordering::SeqCst),
             ceiling
+        );
+        assert!(
+            denied_tail.exists(),
+            "an exhausted reservation must not alter active takes"
         );
     }
 }

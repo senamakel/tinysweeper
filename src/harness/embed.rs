@@ -3194,6 +3194,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blank_global_effort_disables_reasoning_on_the_actual_request() {
+        use crate::ports::model::Model;
+
+        for global in ["", "   "] {
+            let (mut model, gateway, request) = admission_fixture().await;
+            model.reasoning_effort = global.into();
+            model.complete(request).await.expect("completion succeeds");
+
+            let requests = gateway.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0]["reasoning"],
+                json!({"enabled": false}),
+                "global effort {global:?} must preserve the adapter's disabled policy"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn an_explicit_request_effort_reaches_the_actual_gateway_request() {
         use crate::ports::model::Model;
 

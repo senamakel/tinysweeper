@@ -152,8 +152,10 @@ review worktrees are removed when the run ends. The cache is disposable
 optimization state. To reclaim it manually, stop the service first, then
 remove the configured `TINYSWEEPER_REPOSITORY_CACHE_DIR` (or the default
 private cache directory); do not clean it while workers may hold checkouts.
-Allowed changed gitlinks and missing submodules actually read by a lane are
-fetched lazily under the existing host and submodule allowlist policy.
+Review checkouts fetch allowlisted gitlinks changed between base and head;
+unchanged or unavailable submodule content is read through the forge API.
+Indexing recursively fetches allowed gitlinks under the configured host and
+submodule allowlist policy.
 
 ### Closed pull requests stop before review work
 

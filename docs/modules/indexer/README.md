@@ -45,11 +45,10 @@ remote URL puts a credential in the process table for anything on the host to
 read; git's `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` protocol carries the same
 `http.extraHeader` through the environment instead.
 
-Allowed changed gitlinks are fetched lazily at their parent's pinned commit,
-with `retrieval.submodules` checked at every level; unchanged gitlinks reuse
-existing objects without a network fetch. If a lane actually reads a missing
-allowed submodule file, the same policy-controlled fetch path supplies it.
-Cycles, paths through
+Indexing fetches allowlisted gitlinks recursively at each parent's pinned
+commit, with `retrieval.submodules` checked at every level. Reviews fetch only
+allowlisted gitlinks changed between the base and head; unchanged or unavailable
+submodule content falls back to the forge reader. Cycles, paths through
 symlinks and chains beyond 16 levels are refused. Denied and failed nested
 fetches retain their full root-relative paths so stale index entries can be
 handled under the existing revocation and retry policy.

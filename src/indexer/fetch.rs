@@ -1227,7 +1227,11 @@ mod tests {
             .await
             .expect("the cancelled Git child should be reaped promptly")
             .unwrap();
-        assert!(waited.is_err_and(|err| err.to_string().contains("cancelled")));
+        let Err(wait_error) = waited else {
+            panic!("cancellation must terminate the wait with an error");
+        };
+        assert!(wait_error.error.to_string().contains("cancelled"));
+        assert!(wait_error.process_exited);
         assert!(
             reaped.is_some(),
             "the helper returns only after Git is reaped"

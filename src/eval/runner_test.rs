@@ -92,6 +92,70 @@ fn config() -> Config {
         .unwrap()
 }
 
+fn cassette_request(prompt: &str) -> crate::ports::model::ModelRequest {
+    use crate::ports::model::{Message, ModelRequest};
+
+    ModelRequest {
+        model: "test/review-only".into(),
+        messages: vec![Message::user(prompt)],
+        schema: serde_json::json!({"type": "object"}),
+        schema_name: "test_response".into(),
+        reasoning_effort: None,
+        max_tokens: 128,
+    }
+}
+
+#[tokio::test]
+async fn a_short_recording_archives_the_previous_cassette_tail() {
+    use crate::ports::model::Model;
+
+    let dir = tempfile::tempdir().expect("temporary corpus");
+    let cassette_dir = dir.path().join("cassettes/ts-0001");
+    let audit_dir = dir.path().join("recording-attempts/ts-0001");
+    let old_requests = ["old-1", "old-2", "old-3"];
+
+    let old_recorder =
+        crate::harness::cassette::Cassette::record(Arc::new(MockModel::silent()), &cassette_dir);
+    for prompt in old_requests {
+        old_recorder
+            .complete(cassette_request(prompt))
+            .await
+            .expect("old response recorded");
+    }
+    assert_eq!(old_recorder.flush().expect("old takes flushed"), 3);
+
+    let reservation = crate::eval::recording_budget::Reservation::begin(&audit_dir, 1, 1)
+        .expect("new attempt admitted");
+    let reservation_id = reservation.id().to_owned();
+    archive_prior_takes(&cassette_dir, reservation.directory(), reservation.id())
+        .expect("prior takes archived");
+    let new_recorder =
+        crate::harness::cassette::Cassette::record(Arc::new(MockModel::silent()), &cassette_dir);
+    new_recorder
+        .complete(cassette_request("new-only"))
+        .await
+        .expect("new response recorded");
+    assert_eq!(new_recorder.flush().expect("new take flushed"), 1);
+    reservation.finish(1).expect("attempt count finalized");
+
+    let mut replay = crate::harness::cassette::Cassette::replay(
+        &cassette_dir,
+        crate::harness::cassette::Mode::Strict,
+    )
+    .expect("strict replay loads only the new take");
+    replay
+        .complete(cassette_request("new-only"))
+        .await
+        .expect("the current take replays");
+    assert!(replay.complete(cassette_request("old-3")).await.is_err());
+    assert_eq!(replay.strict_misses(), 1);
+
+    let archived = std::fs::read_dir(audit_dir.join("prior-takes").join(reservation_id))
+        .expect("attempt archive exists")
+        .count();
+    assert_eq!(archived, 3, "all old takes remain auditable");
+}
+
 #[test]
 fn live_recording_candidate_pins_provider_price_and_output_bounds() {
     let loaded = crate::config::load_validated(

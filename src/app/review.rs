@@ -4704,7 +4704,14 @@ mod tests {
         );
         let proposal = result.unwrap().expect("Large-mode review succeeds");
         assert_eq!(proposal.lanes.len(), 2);
-        assert!(timing.snapshot().lanes_ms.contains_key("critique"));
+        let record = timing.snapshot();
+        assert!(record.lanes_ms.contains_key("critique"));
+        let yield_one = record
+            .pass_yields
+            .get("critique:1")
+            .expect("effective one-pass Large mode records its completed group");
+        assert_eq!(yield_one.groups, 1);
+        assert!(!record.pass_yields.contains_key("critique:2"));
     }
 
     #[tokio::test]

@@ -82,6 +82,51 @@ pub(crate) struct ReviewRunContext {
     logical_models: Mutex<Vec<String>>,
 }
 
+/// One review shares this ceiling across physical turns, retries and turns
+/// started by read-only agents.
+const MAX_CONCURRENT_MODEL_DISPATCHES: usize = 8;
+
+struct BoundedExecutionControl {
+    inner: Arc<dyn ModelExecutionControl>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+struct BoundedExecutionPermit {
+    inner: Box<dyn ModelExecutionPermit>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[async_trait::async_trait]
+impl ModelExecutionControl for BoundedExecutionControl {
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<Box<dyn ModelExecutionPermit>, ModelExecutionRefusal> {
+        // Wait for shared dispatch capacity before reserving the review's
+        // finite call budget, so queued work does not occupy admission slots.
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("the review dispatch semaphore is never closed");
+        match self.inner.acquire().await {
+            Ok(inner) => Ok(Box::new(BoundedExecutionPermit {
+                inner,
+                _permit: permit,
+            })),
+            Err(refusal) => Err(refusal),
+        }
+    }
+
+    fn on_terminal(&self, terminal: ModelExecutionTerminal) {
+        self.inner.on_terminal(terminal);
+    }
+}
+
+impl ModelExecutionPermit for BoundedExecutionPermit {
+    fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
+        self.inner.mark_dispatched()
+    }
+}
+
 impl ReviewRunContext {
     /// Create the shared scope from the run's original absolute clock window.
     pub(crate) fn new(options: ReviewExecutionOptions) -> Self {
@@ -106,7 +151,12 @@ impl ReviewRunContext {
             #[cfg(test)]
             let review_budget_bound = rooted.is_some();
             let rooted = rooted.unwrap_or(base);
-            let execution: Arc<dyn ModelExecutionControl> = self.execution.clone();
+            let execution: Arc<dyn ModelExecutionControl> = Arc::new(BoundedExecutionControl {
+                inner: self.execution.clone(),
+                permits: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_CONCURRENT_MODEL_DISPATCHES,
+                )),
+            });
             let controlled = rooted.with_execution_control(execution);
             let execution_control_bound = controlled.is_some();
             ReviewModelBinding {

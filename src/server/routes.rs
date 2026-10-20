@@ -2492,6 +2492,12 @@ impl Run {
         Ok(())
     }
 
+    fn cancel_for_ownership_fence(&self, error: &Error) {
+        if matches!(error, Error::ReviewOwnershipLost | Error::ReviewSuperseded) {
+            self.execution.execution().cancel();
+        }
+    }
+
     async fn check_owner(&self, state: &AppState) -> Result<()> {
         if !self.local_owner_valid() {
             return Err(Error::ReviewOwnershipLost);
@@ -3159,6 +3165,7 @@ async fn handle_review(
     let mut attempt = 1;
     let err = loop {
         if let Err(err) = run.check_work(&state).await {
+            run.cancel_for_ownership_fence(&err);
             match classify_retry_boundary_error(
                 &err,
                 state.review_jobs.as_ref(),
@@ -3214,6 +3221,7 @@ async fn handle_review(
                 // where it is not: an earlier attempt opened the check and this
                 // one declined.
                 if let Err(err) = run.check_work(&state).await {
+                    run.cancel_for_ownership_fence(&err);
                     if matches!(err, Error::ReviewSuperseded)
                         && let Some(owned) = &owned
                         && run.check_owner(&state).await.is_ok()
@@ -3245,7 +3253,8 @@ async fn handle_review(
                 }
                 let published = findings.is_some();
                 let conclusion = review_conclusion(findings);
-                if run.check_owner(&state).await.is_err() {
+                if let Err(err) = run.check_owner(&state).await {
+                    run.cancel_for_ownership_fence(&err);
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;
                 }
@@ -3266,7 +3275,8 @@ async fn handle_review(
                 });
             }
             Ok(InnerReview::Busy) => {
-                if run.check_owner(&state).await.is_err() {
+                if let Err(err) = run.check_owner(&state).await {
+                    run.cancel_for_ownership_fence(&err);
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;
                 }
@@ -3291,6 +3301,7 @@ async fn handle_review(
                 return disposition;
             }
             Err(err) => {
+                run.cancel_for_ownership_fence(&err);
                 if matches!(err, Error::ReviewOwnershipLost) {
                     drop(permit);
                     return WorkerDisposition::OwnershipLost;

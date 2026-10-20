@@ -5855,6 +5855,10 @@ mod tests {
             Err(Error::ReviewSuperseded)
         ));
         assert!(a_dropped.load(Ordering::SeqCst));
+        assert!(execution.is_cancelled());
+        let replacement_execution = test_execution_scope();
+        assert!(!Arc::ptr_eq(&execution, &replacement_execution));
+        assert!(replacement_execution.acquire().await.is_ok());
         assert!(
             permits.try_acquire().is_ok(),
             "A releases its permit on yield"
@@ -6187,25 +6191,30 @@ mod tests {
         store.admit_batch(vec![request]).await.unwrap();
         assert!(!store.should_continue(&active, now + 4).await.unwrap());
 
+        let started_at = tokio::time::Instant::now();
+        let deadline = started_at + REVIEW_DEADLINE;
         let run = Run {
             mode: Mode::Incremental,
             timing: crate::review_timing::ReviewTiming::new("owner/repo", 7, "Incremental"),
             slot: Arc::new(std::sync::Mutex::new(None)),
-            deadline: tokio::time::Instant::now() + REVIEW_DEADLINE,
-            execution: test_execution_context(
-                tokio::time::Instant::now(),
-                tokio::time::Instant::now() + REVIEW_DEADLINE,
-            ),
+            deadline,
+            execution: test_execution_context(started_at, deadline),
             expected_head: Some("head-b".into()),
             owned: Some(active.clone()),
             owner_lost: None,
             owner_until: None,
             lease_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        let retry_attempt = run.clone();
+        assert!(Arc::ptr_eq(&run.execution, &retry_attempt.execution));
+        assert_eq!(run.deadline, retry_attempt.deadline);
+        assert_eq!(run.execution.execution().started_at(), started_at);
         let boundary_error = check_owned_work(&store, &active, || run.local_owner_valid())
             .await
             .expect_err("the production retry-boundary check sees the durable yield");
         assert!(matches!(boundary_error, Error::ReviewSuperseded));
+        run.cancel_for_ownership_fence(&boundary_error);
+        assert!(run.execution.execution().is_cancelled());
         let disposition =
             classify_retry_boundary_error(&boundary_error, &store, Some(&active), || {
                 run.local_owner_valid()
@@ -6232,6 +6241,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let replacement_started = tokio::time::Instant::now();
+        let replacement_execution = test_execution_context(
+            replacement_started,
+            replacement_started + REVIEW_DEADLINE,
+        );
+        assert!(!Arc::ptr_eq(&run.execution, &replacement_execution));
+        assert!(replacement_execution.execution().acquire().await.is_ok());
         assert!(
             store
                 .confirm_head(&resumed, "head-b", now + 7)

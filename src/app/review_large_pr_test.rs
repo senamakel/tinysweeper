@@ -19,11 +19,13 @@ struct LargeReviewModel {
     attempts: Arc<Mutex<Vec<ModelRequest>>>,
     calls: Arc<Mutex<Vec<ModelRequest>>>,
     finding: bool,
+    advance_after: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
 impl Model for LargeReviewModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let advance_after = self.advance_after == Some(request.schema_name.as_str());
         self.attempts
             .lock()
             .expect("attempt list lock")
@@ -92,6 +94,9 @@ impl Model for LargeReviewModel {
             schema => return Err(Error::Model(format!("unexpected schema {schema}"))),
         };
         drop(permit);
+        if advance_after {
+            tokio::time::advance(std::time::Duration::from_secs(80)).await;
+        }
         Ok(ModelResponse {
             value,
             model: request.model,
@@ -257,6 +262,7 @@ async fn run_large_fixture(finding: bool) -> (Proposal, MockForge, Arc<LargeRevi
         attempts: Arc::new(Mutex::new(Vec::new())),
         calls: Arc::new(Mutex::new(Vec::new())),
         finding,
+        advance_after: None,
     });
     let proposal = review(
         &forge,
@@ -268,6 +274,91 @@ async fn run_large_fixture(finding: bool) -> (Proposal, MockForge, Arc<LargeRevi
     .await
     .expect("the bounded large review returns a proposal");
     (proposal, forge, model, config)
+}
+
+fn all_default_lanes_config() -> Config {
+    let mut config: Config = crate::config::DEFAULTS
+        .parse::<toml::Table>()
+        .expect("default config parses")
+        .try_into()
+        .expect("default config converts");
+    config.review.large_pr.files = 1;
+    config.review.large_pr.max_groups = 2;
+    config.review.large_pr.max_calls = 3;
+    config.grouping.enabled = false;
+    config.knowledge.extract = false;
+    config.retrieval.enabled = false;
+    config.summary.enabled = false;
+    config.threads.resolve_fixed = false;
+    config.threads.ask_model = false;
+    config.wireframe.enabled = false;
+    config.review.approve_when_clean = true;
+    config.automerge.enabled = true;
+    config
+}
+
+fn two_file_public_api_forge() -> MockForge {
+    let mut state = MockState::default();
+    state.pull_requests.insert(
+        7,
+        PullRequest {
+            number: 7,
+            title: "feat: expose an API result".into(),
+            body: "Review the public API change and its behavior.".into(),
+            head_sha: "abc123".into(),
+            ..PullRequest::default()
+        },
+    );
+    state.files.insert(
+        7,
+        vec![
+            ChangedFile {
+                path: "src/z_api.rs".into(),
+                status: FileStatus::Modified,
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -0,0 +1,1 @@\n+pub fn z_api() -> bool { true }\n".into()),
+                ..ChangedFile::default()
+            },
+            ChangedFile {
+                path: "src/plain.rs".into(),
+                status: FileStatus::Modified,
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -0,0 +1,1 @@\n+fn plain() {}\n".into()),
+                ..ChangedFile::default()
+            },
+        ],
+    );
+    MockForge::with_state(state)
+}
+
+async fn run_all_default_lanes(
+    forge: &MockForge,
+    model: Arc<dyn Model>,
+    config: &Config,
+    execution: Arc<crate::app::review_execution::ReviewRunContext>,
+    timing: crate::review_timing::ReviewTiming,
+) -> Result<Proposal> {
+    let model = execution
+        .bind_model(model, config.models.budget_usd_per_pr)
+        .model
+        .clone();
+    crate::app::review::review_with_tree_observed_at_head_in_run(
+        forge,
+        model,
+        config,
+        &RepoId::parse("tinyhumansai/tinysweeper").expect("repo id"),
+        7,
+        None,
+        None,
+        None,
+        None,
+        None,
+        execution,
+        Some(timing),
+    )
+    .await
 }
 
 fn selected_lane_paths(requests: &[ModelRequest]) -> std::collections::BTreeSet<(String, String)> {

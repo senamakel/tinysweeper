@@ -693,6 +693,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_fanout_folds_out_of_order_completions_in_input_order() {
+        use tokio::sync::{mpsc, watch};
+
+        let started_at = tokio::time::Instant::now();
+        let execution = Arc::new(crate::app::review_execution::ReviewExecution::new(
+            crate::app::review_execution::ReviewExecutionOptions {
+                started_at,
+                hard_deadline: started_at + std::time::Duration::from_secs(100),
+                mode: crate::lanes::large_pr::ReviewMode::Normal,
+                max_calls: None,
+                soft_deadline_percent: 80,
+                drain_seconds: 5,
+            },
+        ));
+        let units = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+        let (release_tx, release_rx) = watch::channel(false);
+        let task = tokio::spawn({
+            let execution = execution.clone();
+            async move {
+                per_unit_bounded(
+                    &units,
+                    |unit| unit.clone(),
+                    |unit| vec![unit.clone()],
+                    move |unit| {
+                        let started_tx = started_tx.clone();
+                        let finished_tx = finished_tx.clone();
+                        let mut release_rx = release_rx.clone();
+                        async move {
+                            started_tx
+                                .send(unit.clone())
+                                .expect("start observer stays open");
+                            if unit == "first" {
+                                while !*release_rx.borrow() {
+                                    if release_rx.changed().await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            finished_tx
+                                .send(unit.clone())
+                                .expect("completion observer stays open");
+                            Ok(review_of(&unit))
+                        }
+                    },
+                    execution,
+                )
+                .await
+            }
+        });
+
+        let completion_order = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut started = Vec::new();
+            for _ in 0..3 {
+                started.push(started_rx.recv().await.expect("all units are polled"));
+            }
+            let mut finished = Vec::new();
+            for _ in 0..2 {
+                finished.push(
+                    finished_rx
+                        .recv()
+                        .await
+                        .expect("later units complete first"),
+                );
+            }
+            (started, finished)
+        })
+        .await;
+        release_tx.send_replace(true);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("the released first unit completes")
+            .expect("fan-out task stays alive");
+        let (started, finished) = completion_order.expect("later units finish before first");
+        assert_eq!(started, ["first", "second", "third"]);
+        assert_eq!(finished, ["second", "third"]);
+        assert_eq!(
+            result
+                .reviews
+                .into_iter()
+                .map(|(_, review)| review.summary)
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+    }
+
+    #[tokio::test]
     async fn a_single_file_keeps_its_own_verdict() {
         let paths = vec!["only.rs".to_string()];
         let outcome = per_file(&paths, |_| async { Ok(review_of("Looks fine.")) })

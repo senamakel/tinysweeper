@@ -757,7 +757,6 @@ fn proposal_accounting(
     }
 }
 
-/// One lane's verdict.
 fn partial_review_metadata(
     plan: &crate::lanes::large_pr::ReviewPlan,
     lanes: &[LaneProposal],
@@ -843,6 +842,7 @@ fn partial_review_metadata(
     (partial, unreviewed)
 }
 
+/// One lane's verdict.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneProposal {

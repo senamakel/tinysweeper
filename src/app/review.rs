@@ -4566,7 +4566,12 @@ mod tests {
             review(&forge, model_trait, &config, &repo(), 7),
         )
         .await
-        .expect("independent optional artifacts reach the barrier together")
+        .unwrap_or_else(|_| {
+            panic!(
+                "independent optional artifacts reached barrier {} times",
+                arrivals.load(std::sync::atomic::Ordering::SeqCst)
+            )
+        })
         .expect("review succeeds");
 
         assert_eq!(arrivals.load(std::sync::atomic::Ordering::SeqCst), 3);

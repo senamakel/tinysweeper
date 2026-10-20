@@ -5910,7 +5910,8 @@ mod tests {
         request_a.number = 7;
         request_a.head_sha = Some("head-a".into());
         store.admit_batch(vec![request_a.clone()]).await.unwrap();
-        seed_previously_published_queue_checks(&*store, now).await;
+        let forge = MockForge::new();
+        publish_test_queued_statuses_through_forge(&*store, forge.clone(), now).await;
         let owned_a = store.claim_next("worker-a", now).await.unwrap().unwrap();
         assert!(store.confirm_head(&owned_a, "head-a", now).await.unwrap());
         let owned_a_for_status = owned_a.clone();
@@ -5994,9 +5995,6 @@ mod tests {
             permits.try_acquire().is_ok(),
             "A releases its permit on yield"
         );
-        let forge = MockForge::new();
-        publish_test_queued_statuses_through_forge(&*store, forge.clone(), unix_time_ms()).await;
-
         let queued_a = forge
             .writes()
             .into_iter()

@@ -60,7 +60,7 @@ async fn a_partial_large_review_is_published_without_approval_and_keeps_host_gap
     config.review.large_pr.files = 1;
     config.review.large_pr.max_groups = 1;
     config.review.large_pr.max_calls = 8;
-    config.approve_when_clean = true;
+    config.review.approve_when_clean = true;
 
     let repo = RepoId::parse("tinyhumansai/tinysweeper").expect("repo id");
     let proposal = review(&forge, model, &config, &repo, 7)

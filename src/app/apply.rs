@@ -1148,6 +1148,7 @@ mod tests {
             overview: None,
             wireframe: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
             version: crate::app::review::PROPOSAL_VERSION,
             repo: "tinyhumansai/tinysweeper".into(),
@@ -2792,6 +2793,7 @@ mod tests {
                 reviewed: 2,
                 total: 3,
                 unreviewed: vec!["README.md".into()],
+                partial_review: None,
             }),
             ..crate::summary::ReviewSummary::default()
         });

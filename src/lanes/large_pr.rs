@@ -9,13 +9,16 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::types::{Config, LaneId, LargePr};
 use crate::evidence::diff::FileDiff;
 use crate::forge::types::ChangedFile;
 use crate::lanes::grouping::FileGroup;
 
 /// Whether a review follows the ordinary or large-pull-request policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewMode {
     /// Preserve the existing review policy and candidate order.
     Normal,
@@ -24,7 +27,7 @@ pub enum ReviewMode {
 }
 
 /// Host-derived size of one pull request and its eligible model work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewEstimate {
     /// Changed files reported by the forge, including missing patches.
     pub files: usize,
@@ -65,7 +68,7 @@ pub struct ReviewPlan {
 /// Fields are compared lexicographically from scanner evidence down to capped
 /// file size. The planner uses descending risk, then ascending path, then
 /// security before critique when scores tie.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RiskScore {
     /// A deterministic scanner finding names this path.
     pub scanner: bool,

@@ -199,6 +199,7 @@ mod tests {
             completion_accounting: None,
             logical_usage: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
         }
     }

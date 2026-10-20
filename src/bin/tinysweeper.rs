@@ -1860,6 +1860,7 @@ mod tests {
             overview: None,
             wireframe: None,
             unreviewed: vec![],
+            partial_review: None,
             skipped: None,
             version: tinysweeper::app::review::PROPOSAL_VERSION,
             repo: repo.into(),

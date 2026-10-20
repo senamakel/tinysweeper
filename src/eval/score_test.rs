@@ -103,6 +103,7 @@ fn proposal(findings: Vec<Finding>) -> Proposal {
             overflow: vec![],
         }],
         unreviewed: vec![],
+        partial_review: None,
         skipped: None,
         cost_usd: 0.004,
         input_tokens: 1000,

@@ -359,6 +359,7 @@ mod tests {
             summary: None,
             prior_findings: vec![],
             unreviewed: unreviewed.iter().map(|path| (*path).to_string()).collect(),
+            partial_review: None,
             skipped: None,
             cost_usd: 0.0,
             input_tokens: 0,

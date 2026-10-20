@@ -4215,6 +4215,9 @@ mod tests {
         barrier_arrivals: std::sync::atomic::AtomicUsize,
         critique_delay: std::time::Duration,
         security_delay: std::time::Duration,
+        execution: Option<Arc<dyn crate::ports::model_execution::ModelExecutionControl>>,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl ReviewSchedulingModel {
@@ -4225,15 +4228,38 @@ mod tests {
                 barrier_arrivals: std::sync::atomic::AtomicUsize::new(0),
                 critique_delay: std::time::Duration::ZERO,
                 security_delay: std::time::Duration::ZERO,
+                execution: None,
+                active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
         }
 
-        async fn schedule(&self, request: &crate::ports::model::ModelRequest) {
+        async fn schedule(
+            &self,
+            request: &crate::ports::model::ModelRequest,
+        ) -> Result<Option<Box<dyn crate::ports::model_execution::ModelExecutionPermit>>> {
             let delay = match request.schema_name.as_str() {
                 "tinysweeper_critique" => self.critique_delay,
                 "tinysweeper_security" => self.security_delay,
-                _ => return,
+                _ => return Ok(None),
             };
+            let permit = if let Some(control) = &self.execution {
+                let permit = control.acquire().await.map_err(|refusal| Error::ModelExecutionRefused {
+                    refusal,
+                    usage: None,
+                    accounting_complete: true,
+                })?;
+                permit.mark_dispatched().map_err(|refusal| Error::ModelExecutionRefused {
+                    refusal,
+                    usage: None,
+                    accounting_complete: true,
+                })?;
+                Some(permit)
+            } else {
+                None
+            };
+            let active = self.active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, std::sync::atomic::Ordering::SeqCst);
             if let Some(barrier) = &self.barrier {
                 let arrival = self
                     .barrier_arrivals
@@ -4245,6 +4271,48 @@ mod tests {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
+            Ok(permit)
+        }
+
+        async fn invoke(
+            &self,
+            request: crate::ports::model::ModelRequest,
+        ) -> Result<crate::ports::model::ModelResponse> {
+            let requested_model = request.model.clone();
+            let permit = self.schedule(&request).await?;
+            let result = self.inner.complete(request).await;
+            if permit.is_some() {
+                self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(control) = &self.execution {
+                    let (outcome, answered_model, usage) = match &result {
+                        Ok(response) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
+                            Some(response.model.clone()),
+                            Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                                input_tokens: response.usage.input_tokens,
+                                output_tokens: response.usage.output_tokens,
+                                reasoning_tokens: response.usage.reasoning_tokens,
+                                cached_tokens: response.usage.cached_tokens,
+                                cost_usd: Some(response.usage.cost_usd),
+                            }),
+                        ),
+                        Err(_) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Failed,
+                            None,
+                            None,
+                        ),
+                    };
+                    control.on_terminal(crate::ports::model_execution::ModelExecutionTerminal {
+                        requested_model,
+                        answered_model,
+                        outcome,
+                        refused: false,
+                        usage,
+                    });
+                }
+            }
+            drop(permit);
+            result
         }
     }
 
@@ -4254,8 +4322,7 @@ mod tests {
             &self,
             request: crate::ports::model::ModelRequest,
         ) -> Result<crate::ports::model::ModelResponse> {
-            self.schedule(&request).await;
-            self.inner.complete(request).await
+            self.invoke(request).await
         }
 
         async fn review(
@@ -4264,9 +4331,63 @@ mod tests {
             tree: &dyn crate::ports::tree::TreeReader,
             policy: &crate::config::types::LookupPolicy,
         ) -> Result<crate::ports::model::ModelResponse> {
-            self.schedule(&request).await;
-            self.inner.review(request, tree, policy).await
+            let requested_model = request.model.clone();
+            let permit = self.schedule(&request).await?;
+            let result = self.inner.review(request, tree, policy).await;
+            if permit.is_some() {
+                self.active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(control) = &self.execution {
+                    let (outcome, answered_model, usage) = match &result {
+                        Ok(response) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Succeeded,
+                            Some(response.model.clone()),
+                            Some(crate::ports::model_execution::ModelExecutionTerminalUsage {
+                                input_tokens: response.usage.input_tokens,
+                                output_tokens: response.usage.output_tokens,
+                                reasoning_tokens: response.usage.reasoning_tokens,
+                                cached_tokens: response.usage.cached_tokens,
+                                cost_usd: Some(response.usage.cost_usd),
+                            }),
+                        ),
+                        Err(_) => (
+                            crate::ports::model_execution::ModelExecutionTerminalOutcome::Failed,
+                            None,
+                            None,
+                        ),
+                    };
+                    control.on_terminal(crate::ports::model_execution::ModelExecutionTerminal {
+                        requested_model,
+                        answered_model,
+                        outcome,
+                        refused: false,
+                        usage,
+                    });
+                }
+            }
+            drop(permit);
+            result
         }
+
+        fn with_execution_control(
+            &self,
+            control: Arc<dyn crate::ports::model_execution::ModelExecutionControl>,
+        ) -> Option<Arc<dyn Model>> {
+            Some(Arc::new(Self {
+                inner: self.inner.clone(),
+                barrier: self.barrier.clone(),
+                barrier_arrivals: std::sync::atomic::AtomicUsize::new(
+                    self.barrier_arrivals.load(std::sync::atomic::Ordering::SeqCst),
+                ),
+                critique_delay: self.critique_delay,
+                security_delay: self.security_delay,
+                execution: Some(control),
+                active: self.active.clone(),
+                peak: self.peak.clone(),
+            }))
+        }
+
+        fn complete_reports_physical_calls(&self) -> bool { true }
+        fn review_reports_physical_calls(&self) -> bool { true }
     }
 
     fn scheduling_config() -> Config {
@@ -4301,6 +4422,36 @@ mod tests {
         );
         let proposal = result.unwrap().expect("review succeeds");
         assert_eq!(proposal.lanes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn all_enabled_lanes_share_eight_physical_dispatch_slots() {
+        let files = (0..10)
+            .map(|index| ChangedFile {
+                path: format!("src/{index}.rs"),
+                status: FileStatus::Modified,
+                patch: Some(format!("@@ -0,0 +1 @@\n+fn file_{index}() {{}}\n")),
+                ..ChangedFile::default()
+            })
+            .collect();
+        let forge = forge_with(files, vec![]);
+        let mut model = ReviewSchedulingModel::new();
+        model.critique_delay = std::time::Duration::from_millis(15);
+        model.security_delay = std::time::Duration::from_millis(15);
+        let peak = model.peak.clone();
+        let model_trait: Arc<dyn Model> = Arc::new(model);
+        let config = scheduling_config();
+
+        let proposal = review(&forge, model_trait, &config, &repo(), 7)
+            .await
+            .expect("review succeeds");
+
+        assert_eq!(proposal.lanes.len(), 2);
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "both lanes must fill, but never exceed, the review-wide dispatch cap"
+        );
     }
 
     #[tokio::test]

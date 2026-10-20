@@ -447,9 +447,8 @@ mod tests {
             }],
             ..crate::forge::types::ReviewThread::default()
         };
-        let explicitly_resolved = std::collections::BTreeSet::from([
-            "Old finding title".to_string(),
-        ]);
+        let explicitly_resolved =
+            std::collections::BTreeSet::from(["Old finding title".to_string()]);
         assert!(matches!(
             crate::threads::decide(&outdated_thread, &explicitly_resolved),
             crate::threads::Decision::Resolve(_)

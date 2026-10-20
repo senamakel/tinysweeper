@@ -6167,6 +6167,13 @@ mod tests {
             1,
             "B's completed review updates its queued check once: {writes:#?}"
         );
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CheckUpdate { check, .. }
+                if check.head_sha == "head-a"
+                    && check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
+                    && check.title == "Not reviewed"
+        )), "the explicit ownership-fence writer emits a neutral A status");
         assert!(
             writes.iter().all(|write| match write {
                 crate::forge::Write::Check(check) if check.head_sha == "head-a" => {

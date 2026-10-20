@@ -204,9 +204,16 @@ async fn an_advisory_deadline_keeps_prior_deterministic_thread_decisions() {
     let calls = Arc::new(AtomicUsize::new(0));
     let model = DeadlineModel(calls.clone());
 
-    let (plan, spend) = plan(&forge, Some(&model), &config, &repo(), 7, &BTreeSet::new())
-        .await
-        .expect("an optional advisory deadline does not discard deterministic decisions");
+    let (plan, spend) = plan(
+        &forge,
+        Some(&model),
+        &config,
+        &repo(),
+        7,
+        &resolved_titles(&[TITLE]),
+    )
+    .await
+    .expect("an optional advisory deadline does not discard deterministic decisions");
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(plan.resolve.len(), 1);

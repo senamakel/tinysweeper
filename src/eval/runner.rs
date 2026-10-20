@@ -195,7 +195,7 @@ pub async fn run(
             // A path supplied on disk is not proof that its contents are the
             // fixture's head. Leave the reader's revision unknown; callers
             // that verify a checkout can provide a reader with a real pin.
-            .map(|path| crate::ports::tree::DirTree::new(path));
+            .map(crate::ports::tree::DirTree::new);
         let recorded = crate::ports::tree::MockTree::from_recorded(case.fixture.lookups.clone());
         let recording = dir_tree
             .as_ref()

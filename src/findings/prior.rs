@@ -418,6 +418,7 @@ pub async fn load(read: &dyn ForgeRead, repo: &RepoId, number: u64) -> Result<Pr
     for comment in read.comments(repo, number).await? {
         if is_own_login(&comment.author)
             && let Some(sha) = marker_value(&comment.body, STATE_KEY)
+                .and_then(|value| value.split_ascii_whitespace().next())
             && is_sha(sha)
         {
             prior.last_sha = Some(sha.to_string());

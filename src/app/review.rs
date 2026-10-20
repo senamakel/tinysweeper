@@ -170,7 +170,6 @@ impl ObservedModel {
                     refusal,
                     crate::ports::model_execution::ModelExecutionRefusal::CallLimit
                         | crate::ports::model_execution::ModelExecutionRefusal::SoftDeadline
-                        | crate::ports::model_execution::ModelExecutionRefusal::DrainDeadline
                 ) {
                     record.calls_refused += 1;
                 }

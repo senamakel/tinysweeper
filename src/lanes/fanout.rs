@@ -404,6 +404,13 @@ mod tests {
     fn partial_group_does_not_resolve_threads_for_unreviewed_members() {
         let paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
         let outcome = FanOut {
+            reviews: vec![(
+                vec!["src/complete.rs".to_string()],
+                FileReview {
+                    resolved: vec!["Completed sibling finding".to_string()],
+                    ..FileReview::default()
+                },
+            )],
             partial: vec![(
                 paths.clone(),
                 FileReview {
@@ -428,8 +435,24 @@ mod tests {
         }
         .into_outcome();
 
-        assert!(outcome.resolved.is_empty());
-        assert!(!outcome.completed);
+        assert_eq!(outcome.resolved, ["Completed sibling finding"]);
+        let resolved = std::collections::BTreeSet::from_iter(outcome.resolved.iter().cloned());
+        let outdated_thread = crate::forge::types::ReviewThread {
+            id: "PRRT_old-finding".to_string(),
+            is_outdated: true,
+            comments: vec![crate::forge::types::ThreadComment {
+                author: "tinysweeper[bot]".to_string(),
+                body: "**Old finding title**\n\n<!-- tinysweeper:fp=old -->".to_string(),
+                bot: true,
+                ..crate::forge::types::ThreadComment::default()
+            }],
+            ..crate::forge::types::ReviewThread::default()
+        };
+        assert!(matches!(
+            crate::threads::decide(&outdated_thread, &resolved),
+            crate::threads::Decision::Leave(_)
+        ));
+        assert!(outcome.completed, "the completed sibling remains completed");
         assert_eq!(outcome.unanswered, paths);
         assert_eq!(outcome.spend.usage.input_tokens, 7);
         assert_eq!(outcome.spend.usage.output_tokens, 2);

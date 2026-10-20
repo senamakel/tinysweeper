@@ -6624,7 +6624,7 @@ mod tests {
             7,
             PullRequest {
                 number: 7,
-                head_sha: "failed-apply-head".into(),
+                head_sha: "previous-good-head".into(),
                 ..PullRequest::default()
             },
         );
@@ -6650,11 +6650,21 @@ mod tests {
         let forge = MockForge::with_state(state);
         let last_good_model = Arc::new(MockModel::always(json!({
             "summary": "LAST-GOOD-REPORT-ONLY",
+            "executive_summary": "The change updates the reviewed source files.",
+            "changes": "The source files gain a small behavior update.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {"critique": []},
             "findings": [],
             "resolved": []
         })));
         let partial_model = Arc::new(MockModel::always(json!({
             "summary": "PARTIAL-ATTEMPT-REPORT-ONLY",
+            "executive_summary": "The change updates two reviewed source files.",
+            "changes": "The source files gain a small behavior update.",
+            "features": [],
+            "tests": [],
+            "positive_observations": {"critique": []},
             "findings": [],
             "resolved": []
         })));
@@ -6665,7 +6675,7 @@ mod tests {
         config.overview.enabled = false;
         config.automerge.enabled = false;
         config.review.large_pr.files = 99;
-        let mut last_good = crate::app::review::review_with_tree(
+        let last_good = crate::app::review::review_with_tree(
             &forge,
             last_good_model,
             &config,
@@ -6679,6 +6689,7 @@ mod tests {
         .await
         .expect("the baseline review completes");
         assert!(last_good.complete());
+        assert_eq!(last_good.head_sha, "previous-good-head");
         // The prior body is a real app-rendered publication with a distinct
         // model-authored summary, so replacement by the next report is visible.
         crate::app::apply::apply(&forge, &forge, &config, &last_good, None)
@@ -6699,6 +6710,11 @@ mod tests {
 
         // A second real app review is partial by large-review selection. Its
         // failed apply must not replace the previously completed report.
+        forge.replace_pull_request(PullRequest {
+            number: 7,
+            head_sha: "failed-apply-head".into(),
+            ..PullRequest::default()
+        });
         config.review.large_pr.files = 1;
         config.review.large_pr.groups = 1;
         config.review.large_pr.max_groups = 1;
@@ -6717,6 +6733,7 @@ mod tests {
         .expect("the partial review still produces an applicable proposal");
         assert!(!partial.complete());
         assert!(partial.partial_review.is_some());
+        assert_eq!(partial.head_sha, "failed-apply-head");
         assert_eq!(partial.unreviewed.len(), 1);
         assert!(partial.summary.as_ref().is_some_and(|summary| {
             summary
@@ -6782,7 +6799,7 @@ mod tests {
         });
         let failed_hub = failed_hub.expect("the existing hub is updated in place");
         assert!(failed_hub.contains("Last completed report"), "{failed_hub}");
-        assert_eq!(failed_hub.matches("LAST-GOOD-REPORT-ONLY").count(), 1);
+        assert_eq!(failed_hub.matches(&last_good_report).count(), 1);
         assert!(failed_hub.contains(&last_good_report), "{failed_hub}");
         assert!(
             !failed_hub.contains("PARTIAL-ATTEMPT-REPORT-ONLY"),
@@ -6807,7 +6824,7 @@ mod tests {
             .into_iter()
             .find(|comment| comment.id == Some(hub_comment_id))
             .expect("the same bot comment remains persisted");
-        assert_eq!(persisted_hub.body, failed_hub);
+        assert_eq!(persisted_hub.body.as_str(), failed_hub.as_str());
     }
 
     #[tokio::test(start_paused = true)]

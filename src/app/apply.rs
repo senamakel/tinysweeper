@@ -2842,6 +2842,7 @@ mod tests {
             forge.push(7, head, vec![]);
             let mut partial = proposal(head, vec![]);
             partial.unreviewed.push("src/withheld.rs".into());
+            partial.lanes[0].conclusion = CheckConclusion::Neutral;
             partial.lanes[0].unanswered.push("src/withheld.rs".into());
             apply(&forge, &forge, &config(), &partial, Some(&store))
                 .await

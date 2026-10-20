@@ -6969,7 +6969,7 @@ mod tests {
                 ..crate::config::Lane::default()
             },
         );
-        let mut high = Finding {
+        let high = Finding {
             lane: LaneId::Security,
             severity: Severity::High,
             confidence: 0.95,

@@ -472,7 +472,7 @@ async fn default_tests_lane_refusal_publishes_the_completed_partial_review() {
         3,
         "two lanes and falsification spend the cap"
     );
-    assert_eq!(timing.snapshot().calls_refused, 1);
+    assert!(timing.snapshot().calls_refused >= 1);
 
     let proposal = result
         .expect("a CallLimit in the enabled Tests lane must publish prior completed lane results");

@@ -230,6 +230,10 @@ impl ModelExecutionPermit for BoundedExecutionPermit {
     fn mark_dispatched(&self) -> std::result::Result<(), ModelExecutionRefusal> {
         self.inner.mark_dispatched()
     }
+
+    fn mark_physical_attempt(&self) -> std::result::Result<(), ModelExecutionRefusal> {
+        self.inner.mark_physical_attempt()
+    }
 }
 
 fn refusal_error(refusal: ModelExecutionRefusal) -> crate::error::Error {

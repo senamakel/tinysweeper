@@ -373,6 +373,7 @@ impl ReviewExecution {
     }
 
     /// Cancel this review's remaining execution and wake pending acquisitions.
+    #[cfg(any(test, feature = "serve"))]
     pub(crate) fn cancel(&self) {
         let mut state = lock(&self.inner.state);
         if !state.cancelled {
@@ -385,6 +386,7 @@ impl ReviewExecution {
     }
 
     /// Whether an ownership fence has stopped this review's remaining work.
+    #[cfg(any(test, feature = "serve"))]
     pub(crate) fn is_cancelled(&self) -> bool {
         lock(&self.inner.state).cancelled
     }

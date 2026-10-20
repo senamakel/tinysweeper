@@ -10408,12 +10408,17 @@ mod tests {
             "the Incremental completion remains recorded while Full starts"
         );
 
-        let mut base = Config::default();
+        let mut base: Config = crate::config::DEFAULTS
+            .parse::<toml::Table>()
+            .unwrap()
+            .try_into()
+            .unwrap();
         base.review.incremental = true;
         base.review.lanes = vec!["critique".into()];
         base.review.passes = 3;
         base.review.large_pr.files = 1;
         base.review.large_pr.max_groups = 1;
+        base.review.large_pr.max_calls = 1;
         base.models.budget_usd_per_pr = 4.25;
         base.grouping.enabled = false;
         base.summary.enabled = false;

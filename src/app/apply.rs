@@ -290,7 +290,10 @@ pub async fn apply(
     let redundant_decision = same_published_decision
         && previous_known
         && previous_review.is_some()
-        && comments.is_empty()
+        && previous_review
+            .as_ref()
+            .and_then(|review| review.head_sha.as_deref())
+            == published_before.as_ref().map(|published| published.head_sha.as_str())
         && match event {
             ReviewEvent::Approve => proposal.complete() && previous == Some(ReviewEvent::Approve),
             ReviewEvent::RequestChanges => previous == Some(ReviewEvent::RequestChanges),
@@ -653,15 +656,17 @@ async fn record_apply_state(
 ) {
     let Some(store) = store else { return };
     let key = crate::state::key(&proposal.repo, proposal.number);
-    let mut state = store
-        .load_state(&key)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| crate::state::ReviewedState {
+    let mut state = match store.load_state(&key).await {
+        Ok(Some(state)) => state,
+        Ok(None) => crate::state::ReviewedState {
             head_sha: proposal.head_sha.clone(),
             ..crate::state::ReviewedState::default()
-        });
+        },
+        Err(err) => {
+            tracing::warn!(%err, "could not load review state to record the published decision");
+            return;
+        }
+    };
     state.latest_usage = Some(crate::state::ReviewUsage {
         cost_usd: proposal.usage().cost_usd.to_string(),
         input_tokens: proposal.usage().input_tokens,

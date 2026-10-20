@@ -65,15 +65,27 @@ impl OutputHistory {
 
 /// A fresh monetary ledger. Invalid limits admit no paid work.
 pub(crate) fn ledger(limit_usd: f64) -> Budget {
-    let micros = if limit_usd.is_finite() && limit_usd > 0.0 {
+    Budget::new(SpendLimits {
+        tokens: None,
+        cost_micros: Some(limit_micros(limit_usd)),
+    })
+}
+
+/// A lane ledger charged atomically to the review root and capped locally.
+pub(crate) fn child_ledger(parent: &Budget, limit_usd: f64) -> Budget {
+    parent.child(SpendLimits {
+        tokens: None,
+        cost_micros: Some(limit_micros(limit_usd)),
+    })
+}
+
+/// Convert both root and lane limits with the same conservative rounding.
+fn limit_micros(limit_usd: f64) -> u64 {
+    if limit_usd.is_finite() && limit_usd > 0.0 {
         (limit_usd * 1_000_000.0).floor() as u64
     } else {
         0
-    };
-    Budget::new(SpendLimits {
-        tokens: None,
-        cost_micros: Some(micros),
-    })
+    }
 }
 
 /// Reserve against a configured alias bound or the public model rate table,

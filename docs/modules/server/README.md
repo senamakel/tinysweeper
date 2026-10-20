@@ -36,12 +36,30 @@ receives GitHub credentials; write-token ordering remains independent of model
 construction. Credentials and provider policy are fixed for the server's
 lifetime; restart to pick up a rotated model key.
 
+## Review timing logs
+
+The server emits a structured `review timing` info event when a worker exits.
+Its `repo`, `pr`, `head_sha`, and `mode` identify the run; `outcome` is
+`success`, `failure`, `deadline`, `declined`, `superseded`, or `cancelled`.
+`total_ms` is worker wall time and `queue_wait_ms` is time waiting for a
+review permit. `phases_ms` and `lanes_ms` are JSON maps, while call counts,
+token totals, and answered/unanswered file counts are individual fields. Filter for the event in
+the container logs, for example `docker compose logs tinysweeper | grep 'review timing'`.
+The `review_inner` tracing span also carries the repository, PR number, head
+SHA, and mode, so phase spans can be correlated to a specific push.
+
+Model-call events include `latency_ms` alongside token usage and model ID.
+
 ## Bounded review scheduling
 
+Separate review and triage pools, queued check identity and status recovery,
+including the status-only pre-permit ordering, are documented in
+[Review queue status and capacity](review-queue-status.md).
+
 Webhook and manual reviews are atomically admitted to one bounded Mongo
-scheduler document before the server acknowledges them. The 256 queued and
-four running records are durable; the in-memory channel carries wakeup hints
-only, and a polling dispatcher recovers work when a hint is lost or a process
+scheduler document before the server acknowledges them. Up to 260 unfinished
+records, queued or running, are durable; the in-memory channel carries wakeup
+hints only, and a polling dispatcher recovers work when a hint is lost or a process
 restarts. Admission also reserves space for seven days of dedupe tombstones
 under an 8 MiB BSON limit. If either bound is full, the webhook returns `503`
 without acknowledging the delivery; GitHub does not retry automatically, so an
@@ -54,9 +72,10 @@ pull requests. Its final whole-batch admission is still authoritative, so a
 concurrent admission can fill the scheduler after the preflight and cause the
 manual batch to be refused without partial jobs.
 
-At most four jobs may hold a durable 45-second owner lease across the server
-fleet. A heartbeat extends the lease every 15 seconds. Generation checks fence
-claims, renewals, and completion; local expiry checks stop a paused process
+`[server].review_concurrency` bounds the jobs holding a durable 45-second owner
+lease across the server fleet (four by default). A heartbeat extends the lease
+every 15 seconds. Generation checks fence claims, renewals, and completion;
+local expiry checks stop a paused process
 before it resumes model work, and model dispatches also verify ownership. A
 shutdown stops new claims and leaves unfinished jobs in Mongo for the next
 process. If shutdown lands while the initial status check is being opened, that
@@ -145,13 +164,16 @@ bounded number of times, and then leaves it to the holder, who is doing the same
 work anyway. A worker blocked on that claim would be a worker not indexing
 anything else, and with a bounded pool a few of those are the whole pool.
 
-`MAX_CONCURRENT_INDEXES` is lower than the review cap and for a different
-reason: a review is mostly waiting on one model, while a full index is a fetch,
-a tree in memory and thousands of embedding calls.
+The default `MAX_CONCURRENT_INDEXES` limit of two is lower than the default
+review limit of four, and for a different reason: a review is mostly waiting
+on one model, while a full index is a fetch, a tree in memory and thousands of
+embedding calls. The index limit is independent of the operator-configured
+review pool.
 
 ## Concurrency and failure
 
-`MAX_CONCURRENT_REVIEWS` bounds how many reviews run at once. The limit is about
+`[server].review_concurrency` (default four) bounds how many reviews run at
+once. The limit is about
 spend and rate limits rather than CPU: a force-push across a repository delivers
 a burst, and an unbounded worker pool turns that into an unbounded bill.
 
@@ -160,12 +182,14 @@ the lease release below it. Leases also carry a TTL in Mongo, which is the only
 thing that covers a killed process — a stranded lease would otherwise mean that
 pull request can never be reviewed again.
 
-`REVIEW_DEADLINE` bounds one review's wall clock, retries included. Each model
-call is capped on its own by the gateway client, but a review is dozens of
-them in sequence and nothing capped the sum: on 2026-09-15 one sat "in
-progress" for over two hours holding a permit. A review that misses it
-concludes its check as `ActionRequired` with "ran out of time", and is not
-retried: the deadline is the budget, and a retry would spend it again.
+`REVIEW_DEADLINE` is 900 seconds from the worker's permit acquisition, including
+metadata, checkout and retries. The default soft cutoff at 720 seconds stops new
+work; admitted groups drain for at most 30 seconds, ending at least five seconds
+before the hard deadline. A published partial review is terminal `Published`
+without requeueing or resetting paid attempts. A genuine hard timeout remains
+`ActionRequired` with "ran out of time" and is not retried. See
+[bounded review planning](../lanes/large-pr.md) for selection, coverage and
+Normal custom-model limitations.
 
 How it is enforced differs by phase, because cancellation is only safe where
 nothing non-idempotent is in flight:
@@ -352,7 +376,8 @@ operator did not ask for.
 
 The manual run takes its own lease (`…@{sha}!full`) rather than the webhook
 path's, since the ordinary review of that head has usually already happened and
-sharing the key would make the button a silent no-op.
+sharing the key would make the button a silent no-op. Full retains the same
+Large selection, shared call limit and original-clock deadline policy.
 
 **Installation.** A webhook delivery names the installation; an operator does
 not. The route asks GitHub which installation covers the repository, using the

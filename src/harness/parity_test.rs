@@ -42,6 +42,9 @@ fn models(base_url: &str) -> Models {
         routes: vec![],
         max_tokens: 1000,
         reasoning_effort: "high".into(),
+        reviewer_reasoning_effort: "medium".into(),
+        falsify_reasoning_effort: "low".into(),
+        summary_reasoning_effort: "low".into(),
         structured_output: StructuredOutput::Schema,
         budget_usd_per_pr: 1.0,
         budget_prices: Default::default(),
@@ -57,6 +60,7 @@ fn request(model: &str) -> ModelRequest {
         ],
         schema: crate::harness::schema::json_schema(),
         schema_name: "tinysweeper_critique".into(),
+        reasoning_effort: None,
         max_tokens: 1000,
     }
 }
@@ -283,8 +287,82 @@ async fn truncated_attempts_are_included_in_returned_usage_and_cost() {
     assert_eq!(response.usage.input_tokens, 240);
     assert_eq!(response.usage.output_tokens, 60);
     assert_eq!(response.usage.cached_tokens, 200);
+    assert_eq!(response.usage.calls_attempted, 2);
+    assert_eq!(response.usage.calls_succeeded, 2);
+    assert_eq!(response.usage.calls_errored, 0);
     assert!((response.usage.cost_usd - 0.0042).abs() < 1e-12);
     assert_eq!(gateway.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_completed_paid_attempt_is_observed_before_a_later_attempt_is_cancelled() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Calls(Mutex<(crate::ports::model::Usage, Vec<Duration>)>);
+
+    impl crate::ports::model::ModelCallObserver for Calls {
+        fn completed(
+            &self,
+            usage: crate::ports::model::Usage,
+            _succeeded: bool,
+            _refused: bool,
+            latency: Duration,
+        ) {
+            let mut calls = self.0.lock().unwrap();
+            calls.0.add(usage);
+            calls.1.push(latency);
+        }
+    }
+
+    let (gateway, releases) = FakeGateway::start_paused(vec![
+        Reply::completion("vendor/deep", r#"{"summary":"Lo""#, "length", usage()),
+        Reply::completion("vendor/deep", ANSWER, "stop", usage()),
+    ])
+    .await;
+    let model = adapter(&models(&gateway.base_url));
+    let calls = Arc::new(Calls::default());
+    let request = crate::ports::model::with_model_call_observer(
+        calls.clone(),
+        model.complete(request("vendor/deep")),
+    );
+    tokio::pin!(request);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            result = &mut request => panic!("review completed before first response: {result:?}"),
+            _ = async { while gateway.requests().is_empty() { tokio::task::yield_now().await; } } => (),
+        }
+    })
+    .await
+    .expect("first completion reaches the fake gateway");
+    releases.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            result = &mut request => panic!("review completed before retry response: {result:?}"),
+            _ = async { while gateway.requests().len() < 2 { tokio::task::yield_now().await; } } => (),
+        }
+    })
+    .await
+    .expect("the truncation retry reaches the fake gateway");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut request)
+            .await
+            .is_err(),
+        "the second provider response remains paused until cancellation"
+    );
+    let calls = calls.0.lock().unwrap();
+    assert_eq!(
+        calls.1.len(),
+        1,
+        "the completed dispatch is flushed at once"
+    );
+    assert_eq!(calls.0.input_tokens, 120);
+    assert_eq!(calls.0.output_tokens, 30);
+    assert_eq!(calls.0.calls_attempted, 1);
+    assert_eq!(calls.0.calls_succeeded, 1);
+    assert_eq!(calls.0.calls_errored, 0);
 }
 
 #[tokio::test]
@@ -305,6 +383,9 @@ async fn exhausted_truncation_retains_paid_usage_and_ceiling_diagnostic() {
     assert_eq!(paid.input_tokens, 360);
     assert_eq!(paid.output_tokens, 90);
     assert_eq!(paid.cached_tokens, 300);
+    assert_eq!(paid.calls_attempted, 3);
+    assert_eq!(paid.calls_succeeded, 3);
+    assert_eq!(paid.calls_errored, 0);
     assert!((paid.cost_usd - 0.0063).abs() < 1e-12);
     assert_eq!(
         error.to_string(),

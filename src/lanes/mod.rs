@@ -14,7 +14,9 @@ pub mod description;
 pub mod e2e;
 pub mod fanout;
 pub mod grouping;
+pub mod large_pr;
 pub mod mechanical;
+pub(crate) mod preparation;
 pub mod security;
 pub mod tests;
 pub mod triage;
@@ -34,6 +36,15 @@ use crate::harness::schema::LaneResponse;
 use crate::ports::model::Spend;
 use crate::ports::tree::TreeReader;
 use crate::scan::types::{Finding as ScanFinding, ScanKind};
+
+/// Receives bounded yield counters when one review pass finishes.
+///
+/// Implementations aggregate by lane and pass number; they must not retain
+/// group paths, prompts, or findings.
+pub trait PassYieldObserver: Send + Sync {
+    /// Record one group's candidate and surviving finding counts for a pass.
+    fn record_pass_yield(&self, lane: LaneId, pass: u8, candidates: usize, survivors: usize);
+}
 
 /// Everything a lane is given.
 pub struct LaneInput<'a> {
@@ -102,6 +113,20 @@ pub struct LaneInput<'a> {
     /// heuristics alone, which is what every offline golden test does and
     /// what a forge-only review without a graph store does too.
     pub graph: Option<&'a crate::index::types::Neighbourhood>,
+    /// Optional terminal-review telemetry sink for completed adaptive passes.
+    /// Optional sink for completed adaptive-pass yield totals. Set to `None`
+    /// when the caller does not collect terminal review timing.
+    ///
+    /// External lane callers can leave it unset with struct update syntax:
+    ///
+    /// ```
+    /// use tinysweeper::lanes::LaneInput;
+    ///
+    /// fn without_timing<'a>(input: LaneInput<'a>) -> LaneInput<'a> {
+    ///     LaneInput { pass_yield_observer: None, ..input }
+    /// }
+    /// ```
+    pub pass_yield_observer: Option<&'a dyn PassYieldObserver>,
 }
 
 impl<'a> LaneInput<'a> {
@@ -144,12 +169,12 @@ impl<'a> LaneInput<'a> {
 
     /// Whether any file has a reviewable diff at all.
     pub fn has_reviewable_content(&self) -> bool {
-        self.diffs.iter().any(|d| !d.changed_lines.is_empty())
+        self.preparation().has_reviewable_content()
     }
 
     /// Every changed path, for selecting the path rules that apply.
     pub fn changed_paths(&self) -> Vec<String> {
-        self.diffs.iter().map(|d| d.path.clone()).collect()
+        self.preparation().changed_paths()
     }
 
     /// The scanner findings of the given kinds.
@@ -158,10 +183,7 @@ impl<'a> LaneInput<'a> {
     /// lanes discussing the same scanner match is the double-reporting this
     /// whole design exists to avoid.
     pub fn scanner_findings_of(&self, kinds: &[ScanKind]) -> Vec<&ScanFinding> {
-        self.scan_findings
-            .iter()
-            .filter(|f| kinds.contains(&f.kind))
-            .collect()
+        self.preparation().scanner_findings_of(kinds)
     }
 
     /// Group `paths` deterministically under `bounds`, using this input's own
@@ -171,16 +193,24 @@ impl<'a> LaneInput<'a> {
         paths: &[String],
         bounds: &crate::lanes::grouping::GroupBounds,
     ) -> Vec<crate::lanes::grouping::FileGroup> {
-        crate::lanes::grouping::group(paths, self.diffs, self.graph, bounds)
+        self.preparation().group(paths, bounds)
     }
 
     /// Whether the pull request should be skipped as an unreviewed draft.
     pub fn skip_as_draft(&self) -> Option<LaneOutcome> {
-        (self.pull_request.draft && !self.config.review.draft_prs).then(|| {
-            LaneOutcome::skipped(
-                "Draft pull request; set `review.draft_prs = true` to review drafts.",
-            )
-        })
+        self.preparation().skip_as_draft()
+    }
+
+    /// Borrow the evidence needed to prepare a lane without model work.
+    pub(crate) fn preparation(&self) -> crate::lanes::preparation::LanePreparationInput<'a> {
+        crate::lanes::preparation::LanePreparationInput {
+            config: self.config,
+            pull_request: self.pull_request,
+            diffs: self.diffs,
+            scan_findings: self.scan_findings,
+            reviewed_evidence: self.reviewed_evidence,
+            graph: self.graph,
+        }
     }
 }
 
@@ -234,6 +264,8 @@ pub struct LaneOutcome {
     /// change. A review that consulted no model once approved a pull request
     /// with "found nothing blocking · $0.0000 · 0 in / 0 out".
     pub unanswered: Vec<String>,
+    /// Planned groups omitted by host-side execution policy, with their reason.
+    pub omissions: Vec<fanout::OmittedGroup>,
     /// Per-file review coverage, when this lane fans out over changed files.
     pub coverage: Option<FileCoverage>,
 }
@@ -350,6 +382,7 @@ impl LaneOutcome {
             skipped: None,
             pending: Vec::new(),
             unanswered: Vec::new(),
+            omissions: Vec::new(),
             coverage: None,
         }
     }
@@ -374,6 +407,48 @@ impl LaneOutcome {
         }
         CheckConclusion::Success
     }
+}
+
+/// A whole-pull-request lane whose reviewer work stopped at a host budget
+/// boundary. The changed paths remain explicitly uncovered; this does not
+/// claim per-file coverage for a lane that reasons about the whole pull request.
+pub(crate) fn stopped_by_execution_policy(
+    lane: LaneId,
+    paths: Vec<String>,
+    spend: Spend,
+    refusal: crate::ports::model_execution::ModelExecutionRefusal,
+) -> Option<LaneOutcome> {
+    use crate::lanes::fanout::{OmissionReason, OmittedGroup};
+    use crate::ports::model_execution::ModelExecutionRefusal;
+
+    let (reason, message) = match refusal {
+        ModelExecutionRefusal::CallLimit => (
+            OmissionReason::CallLimit,
+            "Review stopped at the shared physical-call limit.",
+        ),
+        ModelExecutionRefusal::SoftDeadline => (
+            OmissionReason::SoftDeadline,
+            "Review stopped at the original soft deadline.",
+        ),
+        ModelExecutionRefusal::DrainDeadline => (
+            OmissionReason::DrainDeadline,
+            "Review stopped at the original drain deadline.",
+        ),
+        ModelExecutionRefusal::Cancelled => return None,
+    };
+
+    Some(LaneOutcome {
+        summary: message.into(),
+        spend,
+        skipped: Some(message.into()),
+        unanswered: vec![lane.check_name()],
+        omissions: if paths.is_empty() {
+            Vec::new()
+        } else {
+            vec![OmittedGroup { paths, reason }]
+        },
+        ..LaneOutcome::default()
+    })
 }
 
 /// One response that was both received and valid for its lane's schema.
@@ -403,8 +478,16 @@ pub fn reviewer_responses(
     answers: &[Answer],
 ) -> Result<Vec<ReviewerResponse>> {
     let mut responses = Vec::with_capacity(reviewers.len());
+    let mut execution_refusal = None;
     for (reviewer, answer) in reviewers.iter().zip(answers) {
         let Some(value) = answer.value.clone() else {
+            if let Some(refusal) = answer.execution_refusal {
+                execution_refusal = Some((
+                    refusal,
+                    answer.execution_usage.clone(),
+                    answer.execution_accounting_complete.unwrap_or(false),
+                ));
+            }
             tracing::warn!(
                 agent = reviewer.id,
                 err = answer.error.as_deref().unwrap_or("no answer"),
@@ -426,6 +509,15 @@ pub fn reviewer_responses(
             model: answer.model.clone(),
             response,
             looked_up: answer.looked_up.clone(),
+        });
+    }
+    if responses.is_empty()
+        && let Some((refusal, usage, accounting_complete)) = execution_refusal
+    {
+        return Err(crate::error::Error::ModelExecutionRefused {
+            refusal,
+            usage,
+            accounting_complete,
         });
     }
     Ok(responses)

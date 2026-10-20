@@ -157,6 +157,8 @@ pub struct MockState {
     pub review_threads_fail: bool,
     /// Check runs, keyed by the commit they report on and then by check name.
     pub checks: BTreeMap<String, BTreeMap<String, CheckStatus>>,
+    /// Check-run IDs indexed by commit and stable external recovery key.
+    pub check_run_ids: BTreeMap<(String, String), u64>,
     /// Reviews, oldest first, keyed by pull request number.
     pub reviews: BTreeMap<u64, Vec<ReviewVerdict>>,
     /// Review conversations, keyed by pull request number.
@@ -249,6 +251,10 @@ pub struct MockForge {
         Arc<Mutex<std::collections::BTreeMap<u64, std::collections::VecDeque<PullRequest>>>>,
     writes: Arc<Mutex<Vec<Write>>>,
     next_id: Arc<Mutex<u64>>,
+    fail_check_publishes: Arc<Mutex<usize>>,
+    fail_after_check_publishes: Arc<Mutex<usize>>,
+    fail_after_terminal_check_publishes: Arc<Mutex<usize>>,
+    fail_check_updates: Arc<Mutex<usize>>,
     /// When true, every write is dropped rather than recorded as applied.
     ///
     /// Reads still work. This is what `--dry-run` sets.
@@ -268,6 +274,36 @@ impl MockForge {
     /// An empty forge.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Fail the next `count` check-run creates before recording a remote write.
+    pub fn fail_next_check_publishes(&self, count: usize) {
+        *self.fail_check_publishes.lock().expect("mock failure lock") = count;
+    }
+
+    /// Record the next `count` check-run creates remotely, then return an error
+    /// to model a lost response after the forge accepted the write.
+    pub fn fail_after_check_publishes(&self, count: usize) {
+        *self
+            .fail_after_check_publishes
+            .lock()
+            .expect("mock failure lock") = count;
+    }
+
+    /// Record terminal check-run creates remotely, then lose their responses.
+    pub fn fail_after_terminal_check_publishes(&self, count: usize) {
+        *self
+            .fail_after_terminal_check_publishes
+            .lock()
+            .expect("mock terminal-response lock") = count;
+    }
+
+    /// Fail the next `count` check-run updates before recording the write.
+    pub fn fail_next_check_updates(&self, count: usize) {
+        *self
+            .fail_check_updates
+            .lock()
+            .expect("mock update failure lock") = count;
     }
 
     /// A forge serving `state`.
@@ -528,6 +564,21 @@ impl MockForge {
 
 #[async_trait]
 impl ForgeRead for MockForge {
+    async fn pull_request_metadata(
+        &self,
+        repo: &RepoId,
+        number: u64,
+    ) -> Result<crate::forge::types::PullRequestMetadata> {
+        let pull_request = self.pull_request(repo, number).await?;
+        Ok(crate::forge::types::PullRequestMetadata {
+            number: pull_request.number,
+            author: pull_request.author,
+            head_sha: pull_request.head_sha,
+            open: pull_request.open,
+            draft: pull_request.draft,
+        })
+    }
+
     async fn pull_request(&self, _repo: &RepoId, number: u64) -> Result<PullRequest> {
         if let Some(read) = self
             .pull_request_reads
@@ -607,6 +658,21 @@ impl ForgeRead for MockForge {
             .get(sha)
             .map(|checks| checks.values().cloned().collect())
             .unwrap_or_default())
+    }
+
+    async fn check_run_by_external_id(
+        &self,
+        _repo: &RepoId,
+        sha: &str,
+        external_id: &str,
+    ) -> Result<Option<u64>> {
+        Ok(self
+            .state
+            .lock()
+            .expect("mock state lock")
+            .check_run_ids
+            .get(&(sha.to_owned(), external_id.to_owned()))
+            .copied())
     }
 
     async fn reviews(&self, _repo: &RepoId, number: u64) -> Result<Vec<ReviewVerdict>> {
@@ -753,11 +819,57 @@ impl ForgeRead for MockForge {
 #[async_trait]
 impl ForgeWrite for MockForge {
     async fn publish_check(&self, _repo: &RepoId, check: CheckRun) -> Result<u64> {
+        let mut failures = self.fail_check_publishes.lock().expect("mock failure lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(Error::Forge(
+                "simulated check-run publication failure".into(),
+            ));
+        }
+        drop(failures);
+        let id = self.allocate_id();
+        if let Some(external_id) = check.external_id.as_ref() {
+            self.state
+                .lock()
+                .expect("mock state lock")
+                .check_run_ids
+                .insert((check.head_sha.clone(), external_id.clone()), id);
+        }
+        let terminal = check.conclusion.is_some();
         self.record(Write::Check(check));
-        Ok(self.allocate_id())
+        let mut failures = self
+            .fail_after_check_publishes
+            .lock()
+            .expect("mock lost-response lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(Error::Forge("simulated lost check-run response".into()));
+        }
+        if terminal {
+            let mut failures = self
+                .fail_after_terminal_check_publishes
+                .lock()
+                .expect("mock terminal-response lock");
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(Error::Forge(
+                    "simulated lost terminal check-run response".into(),
+                ));
+            }
+        }
+        Ok(id)
     }
 
     async fn update_check(&self, _repo: &RepoId, check_id: u64, check: CheckRun) -> Result<()> {
+        let mut failures = self
+            .fail_check_updates
+            .lock()
+            .expect("mock update failure lock");
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(Error::Forge("simulated check-run update failure".into()));
+        }
+        drop(failures);
         self.record(Write::CheckUpdate { check_id, check });
         Ok(())
     }
@@ -1120,6 +1232,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_reads_only_the_fields_needed_for_queue_admission() {
+        let forge = MockForge::new().with_pull_request(
+            PullRequest {
+                number: 7,
+                author: "contributor".into(),
+                head_sha: "head-a".into(),
+                open: true,
+                draft: false,
+                ..PullRequest::default()
+            },
+            vec![],
+            vec![],
+        );
+
+        let metadata = forge
+            .pull_request_metadata(&repo(), 7)
+            .await
+            .expect("metadata is available");
+        assert_eq!(metadata.number, 7);
+        assert_eq!(metadata.author, "contributor");
+        assert_eq!(metadata.head_sha, "head-a");
+        assert!(metadata.open);
+        assert!(!metadata.draft);
+    }
+
+    #[tokio::test]
     async fn setting_an_issue_type_is_recorded_and_applied_to_state() {
         let forge = MockForge::new().with_issue(Issue {
             number: 5,
@@ -1182,6 +1320,8 @@ mod tests {
                     conclusion: Some(CheckConclusion::Success),
                     title: "No findings".into(),
                     summary: String::new(),
+                    status: None,
+                    external_id: None,
                     images: vec![],
                 },
             )
@@ -1210,6 +1350,8 @@ mod tests {
                     conclusion: Some(CheckConclusion::Failure),
                     title: "1 high finding".into(),
                     summary: String::new(),
+                    status: None,
+                    external_id: None,
                     images: vec![],
                 },
             )
@@ -1220,6 +1362,60 @@ mod tests {
         assert_eq!(
             checks["tinysweeper/security"].conclusion,
             Some(CheckConclusion::Failure)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_queued_review_check_can_be_updated_by_its_original_run_id() {
+        let forge = MockForge::new();
+        let queued = CheckRun {
+            name: "tinysweeper/review".into(),
+            head_sha: "abc123".into(),
+            conclusion: None,
+            title: "Queued".into(),
+            summary: "accepted".into(),
+            status: Some(crate::forge::types::CheckRunStatus::Queued),
+            external_id: Some("review:job-7:abc123".into()),
+            images: vec![],
+        };
+        let in_progress = CheckRun {
+            status: None,
+            title: "Reviewing".into(),
+            summary: "running".into(),
+            ..queued.clone()
+        };
+        let completed = CheckRun {
+            conclusion: Some(CheckConclusion::Success),
+            title: "Reviewed".into(),
+            summary: "done".into(),
+            ..in_progress.clone()
+        };
+        let id = forge
+            .publish_check(&repo(), queued.clone())
+            .await
+            .expect("queued run is published");
+        forge
+            .update_check(&repo(), id, in_progress.clone())
+            .await
+            .expect("same run moves to in-progress");
+        forge
+            .update_check(&repo(), id, completed.clone())
+            .await
+            .expect("same run completes");
+
+        assert_eq!(
+            forge.writes(),
+            vec![
+                Write::Check(queued),
+                Write::CheckUpdate {
+                    check_id: id,
+                    check: in_progress
+                },
+                Write::CheckUpdate {
+                    check_id: id,
+                    check: completed
+                },
+            ]
         );
     }
 

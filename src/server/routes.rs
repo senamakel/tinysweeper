@@ -2828,6 +2828,62 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
         return;
     };
 
+    use crate::ports::forge::ForgeWrite;
+    let write = match state
+        .auth
+        .installation_token(open.installation)
+        .await
+        .and_then(|token| crate::forge::github::GitHubWrite::new(&token))
+    {
+        Ok(write) => write,
+        Err(err) => {
+            tracing::error!(
+                %err, repo = %open.repo, check_id = open.check_id,
+                "could not authenticate to conclude the in-progress check"
+            );
+            return;
+        }
+    };
+
+    let (concluded, hub_updated) = conclude_status_with_writer(&open, conclusion, &write).await;
+    if let Err(err) = concluded {
+        // Worth an error rather than a warning: the check is now stuck
+        // in-progress, and a pending check refuses auto-merge on this commit
+        // until somebody pushes again.
+        tracing::error!(
+            %err, repo = %open.repo, check_id = open.check_id,
+            "could not conclude the in-progress check; it will block auto-merge until the next push"
+        );
+    } else if let Some(owned) = &open.owned {
+        let _ = state
+            .review_jobs
+            .set_check_stage(
+                owned,
+                &open.head_sha,
+                open.check_id,
+                crate::ports::review_job::ReviewCheckStage::Completed,
+                unix_time_ms(),
+            )
+            .await;
+    }
+    if let Some(Err(err)) = hub_updated {
+        // The check conclusion is already durable. A comment retry must not
+        // turn that successful terminal write into a failed review attempt.
+        tracing::warn!(
+            %err, repo = %open.repo, comment_id = open.hub_comment_id,
+            "could not conclude the review hub; the check conclusion was preserved"
+        );
+    }
+}
+
+/// Apply the already-decided conclusion through a caller-owned forge writer.
+/// Keeping payload selection here lets offline route tests exercise the same
+/// terminal check and hub writes as `close_status` without minting credentials.
+async fn conclude_status_with_writer(
+    open: &ReviewStatus,
+    conclusion: Conclusion<'_>,
+    write: &dyn crate::ports::forge::ForgeWrite,
+) -> (Result<()>, Option<Result<()>>) {
     let check = match conclusion {
         Conclusion::Reviewed {
             findings,
@@ -2851,55 +2907,14 @@ async fn close_status(state: &AppState, slot: &StatusSlot, conclusion: Conclusio
             open.prior_hub_body.as_deref(),
         )),
     };
-
-    use crate::ports::forge::ForgeWrite;
-    let write = match state
-        .auth
-        .installation_token(open.installation)
-        .await
-        .and_then(|token| crate::forge::github::GitHubWrite::new(&token))
-    {
-        Ok(write) => write,
-        Err(err) => {
-            tracing::error!(
-                %err, repo = %open.repo, check_id = open.check_id,
-                "could not authenticate to conclude the in-progress check"
-            );
-            return;
-        }
-    };
-
     let concluded = write.update_check(&open.repo, open.check_id, check).await;
-    if let Err(err) = concluded {
-        // Worth an error rather than a warning: the check is now stuck
-        // in-progress, and a pending check refuses auto-merge on this commit
-        // until somebody pushes again.
-        tracing::error!(
-            %err, repo = %open.repo, check_id = open.check_id,
-            "could not conclude the in-progress check; it will block auto-merge until the next push"
-        );
-    } else if let Some(owned) = &open.owned {
-        let _ = state
-            .review_jobs
-            .set_check_stage(
-                owned,
-                &open.head_sha,
-                open.check_id,
-                crate::ports::review_job::ReviewCheckStage::Completed,
-                unix_time_ms(),
-            )
-            .await;
-    }
-    if let (Some(comment_id), Some(body)) = (open.hub_comment_id, hub_body)
-        && let Err(err) = write.update_comment(&open.repo, comment_id, &body).await
-    {
-        // The check conclusion is already durable. A comment retry must not
-        // turn that successful terminal write into a failed review attempt.
-        tracing::warn!(
-            %err, repo = %open.repo, comment_id,
-            "could not conclude the review hub; the check conclusion was preserved"
-        );
-    }
+    let hub_updated = match (open.hub_comment_id, hub_body) {
+        (Some(comment_id), Some(body)) => {
+            Some(write.update_comment(&open.repo, comment_id, &body).await)
+        }
+        _ => None,
+    };
+    (concluded, hub_updated)
 }
 
 /// Create or migrate the durable hub before the first model call.
@@ -5565,7 +5580,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_terminal_budget_error_rechecks_durable_ownership_before_failure_publication() {
+    async fn an_uncancelled_durable_supersession_precedes_a_terminal_lane_error() {
+        use crate::forge::MockForge;
+        use crate::ports::forge::ForgeWrite;
+
         let store = Arc::new(crate::ports::review_job_mock::MockReviewJobStore::default());
         let now = unix_time_ms();
         let mut first = queued_test_review(74);
@@ -5600,6 +5618,38 @@ mod tests {
         assert!(execution.is_cancelled());
         assert!(store.owns(&owned, now + 4).await.unwrap());
         assert!(!store.should_continue(&owned, now + 4).await.unwrap());
+
+        let forge = MockForge::new();
+        let open = ReviewStatus {
+            repo: RepoId::parse("owner/repo").unwrap(),
+            check_id: 417,
+            head_sha: "head-a".into(),
+            installation: 1,
+            stage: crate::ports::review_job::ReviewCheckStage::InProgress,
+            owned: Some(owned),
+            hub_comment_id: Some(418),
+            prior_hub_body: Some("previous review body".into()),
+        };
+        let (concluded, hub_updated) =
+            conclude_status_with_writer(&open, Conclusion::NotReviewed, &forge).await;
+        concluded.expect("the stale head receives a neutral terminal check");
+        hub_updated
+            .expect("the open review hub is also retired")
+            .expect("the review hub update succeeds");
+        let writes = forge.writes();
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CheckUpdate { check_id: 417, check }
+                if check.head_sha == "head-a"
+                    && check.conclusion == Some(crate::forge::CheckConclusion::Neutral)
+                    && check.title == "Review incomplete"
+        )));
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            crate::forge::Write::CommentUpdate { comment_id: 418, body }
+                if body.contains("stopped before a review could be completed")
+                    && body.contains("previous review body")
+        )));
     }
 
     #[tokio::test]

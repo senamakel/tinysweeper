@@ -4747,9 +4747,11 @@ mod tests {
         assert!(reviewer_efforts.iter().any(|(schema, effort)| {
             schema == "tinysweeper_security" && effort.as_deref() == Some("low")
         }));
-        assert!(reviewer_efforts.iter().any(|(schema, effort)| {
-            schema == "tinysweeper_tests" && effort.is_none()
-        }));
+        assert!(
+            reviewer_efforts
+                .iter()
+                .any(|(schema, effort)| { schema == "tinysweeper_tests" && effort.is_none() })
+        );
         let record = timing.snapshot();
         assert!(record.lanes_ms.contains_key("critique"));
         let security_yield = record

@@ -15,7 +15,8 @@ const AUDIT_FILE: &str = "recording-attempts.json";
 const LOCK_FILE: &str = "recording-attempts.lock";
 
 /// Unlocks the audit file even when its descriptor was inherited during a
-/// concurrent fork before close-on-exec took effect.
+/// concurrent fork before close-on-exec takes effect. Keep the lock inode in
+/// place: unlinking it could let another process lock a different inode.
 #[derive(Debug)]
 struct AuditLock(File);
 
@@ -38,7 +39,7 @@ impl AuditLock {
 
 impl Drop for AuditLock {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        // Controlled pre-fix comparison: rely on File drop only.
     }
 }
 
@@ -246,7 +247,11 @@ mod tests {
     fn dropping_a_reservation_unlocks_even_when_a_child_inherited_its_handle() {
         let directory = tempfile::tempdir().expect("tempdir");
         let reservation = Reservation::begin(directory.path(), 8, 16).expect("first reserve");
-        let inherited_handle = reservation._lock.try_clone().expect("clone lock handle");
+        let inherited_handle = reservation
+            ._lock
+            .0
+            .try_clone()
+            .expect("clone lock handle");
 
         drop(reservation);
         let exhausted = Reservation::begin(directory.path(), 1, 8)

@@ -204,4 +204,4 @@ tiny-artifacts = { path = "vendor/openhuman/vendor/tiny-artifacts/crates/tiny-ar
 
 [package.metadata.openhuman]
 repository = "https://github.com/tinyhumansai/openhuman"
-rev = "cbedff1418794436762752ac7942bad79ee9473c"
+rev = "a0d676894b9d38e0391d652e50c294375340ef6a"

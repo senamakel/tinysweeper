@@ -39,7 +39,7 @@ impl AuditLock {
 
 impl Drop for AuditLock {
     fn drop(&mut self) {
-        // Controlled pre-fix comparison: rely on File drop only.
+        let _ = self.0.unlock();
     }
 }
 
@@ -247,11 +247,7 @@ mod tests {
     fn dropping_a_reservation_unlocks_even_when_a_child_inherited_its_handle() {
         let directory = tempfile::tempdir().expect("tempdir");
         let reservation = Reservation::begin(directory.path(), 8, 16).expect("first reserve");
-        let inherited_handle = reservation
-            ._lock
-            .0
-            .try_clone()
-            .expect("clone lock handle");
+        let inherited_handle = reservation._lock.0.try_clone().expect("clone lock handle");
 
         drop(reservation);
         let exhausted = Reservation::begin(directory.path(), 1, 8)

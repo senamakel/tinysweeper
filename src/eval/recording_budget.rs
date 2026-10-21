@@ -14,6 +14,34 @@ use crate::error::{Error, Result};
 const AUDIT_FILE: &str = "recording-attempts.json";
 const LOCK_FILE: &str = "recording-attempts.lock";
 
+/// Unlocks the audit file even when its descriptor was inherited during a
+/// concurrent fork before close-on-exec took effect.
+#[derive(Debug)]
+struct AuditLock(File);
+
+impl AuditLock {
+    fn acquire(directory: &Path) -> Result<Self> {
+        fs::create_dir_all(directory).map_err(|err| Error::path(directory, err))?;
+        let lock_path = directory.join(LOCK_FILE);
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|err| Error::path(&lock_path, err))?;
+        lock.try_lock()
+            .map_err(|err| Error::path(&lock_path, err))?;
+        Ok(Self(lock))
+    }
+}
+
+impl Drop for AuditLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Audit {
     #[serde(default)]
@@ -33,7 +61,7 @@ pub(crate) struct Reservation {
     directory: PathBuf,
     id: String,
     reserved_calls: usize,
-    _lock: File,
+    _lock: AuditLock,
 }
 
 impl Reservation {
@@ -45,18 +73,16 @@ impl Reservation {
         requested_calls: usize,
         total_limit: usize,
     ) -> Result<Self> {
-        fs::create_dir_all(directory).map_err(|err| Error::path(directory, err))?;
-        let lock_path = directory.join(LOCK_FILE);
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|err| Error::path(&lock_path, err))?;
-        lock.try_lock()
-            .map_err(|err| Error::path(&lock_path, err))?;
+        let lock = AuditLock::acquire(directory)?;
+        Self::reserve_locked(directory, lock, requested_calls, total_limit)
+    }
 
+    fn reserve_locked(
+        directory: &Path,
+        lock: AuditLock,
+        requested_calls: usize,
+        total_limit: usize,
+    ) -> Result<Self> {
         let audit_path = directory.join(AUDIT_FILE);
         let mut audit = read_audit(&audit_path)?;
         let used = audit.reservations.iter().fold(0usize, |used, record| {
@@ -126,17 +152,6 @@ impl Reservation {
     }
 }
 
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        // A forked child can briefly inherit this open-file-description lock
-        // before close-on-exec takes effect. Unlock explicitly so that child
-        // cannot extend a completed reservation's critical section. A crashed
-        // owner still relies on descriptor closure; keep the lock inode so a
-        // later process cannot race an unlink and lock a different file.
-        let _ = self._lock.unlock();
-    }
-}
-
 fn read_audit(path: &Path) -> Result<Audit> {
     match fs::read(path) {
         Ok(raw) => serde_json::from_slice(&raw).map_err(Error::from),
@@ -182,6 +197,41 @@ mod tests {
         let exhausted = Reservation::begin(directory.path(), 8, 8)
             .expect_err("dropped reservation remains charged");
         assert!(exhausted.to_string().contains("exhausted"));
+    }
+
+    #[test]
+    fn an_exhausted_reservation_releases_its_lock_without_refunding_calls() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let initial = Reservation::begin(directory.path(), 8, 8).expect("initial reserve");
+        initial.finish(8).expect("record all calls");
+
+        let exhausted = Reservation::begin(directory.path(), 1, 8)
+            .expect_err("the committed attempt used the full allowance");
+        assert!(exhausted.to_string().contains("exhausted"));
+
+        let still_exhausted = Reservation::begin(directory.path(), 1, 8)
+            .expect_err("an exhausted request must not strand the audit lock");
+        assert!(still_exhausted.to_string().contains("exhausted"));
+    }
+
+    #[test]
+    fn an_error_path_unlocks_even_if_a_child_inherited_the_audit_handle() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        Reservation::begin(directory.path(), 8, 8)
+            .expect("initial reserve")
+            .finish(8)
+            .expect("record all calls");
+
+        let lock = AuditLock::acquire(directory.path()).expect("acquire audit lock");
+        let inherited_handle = lock.0.try_clone().expect("clone inherited handle");
+        let exhausted = Reservation::reserve_locked(directory.path(), lock, 1, 8)
+            .expect_err("committed calls exhaust the allowance");
+        assert!(exhausted.to_string().contains("exhausted"));
+
+        let lock_after_error = AuditLock::acquire(directory.path())
+            .expect("error return explicitly unlocks inherited descriptor");
+        drop(lock_after_error);
+        drop(inherited_handle);
     }
 
     #[test]

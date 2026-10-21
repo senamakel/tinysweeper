@@ -4567,7 +4567,7 @@ dependencies = [
 
 [[package]]
 name = "tinychannels-bus"
-version = "0.1.36"
+version = "0.1.38"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6406,7 +6406,7 @@ version = "0.1.6"
 
 [[patch.unused]]
 name = "tinychannels"
-version = "0.1.36"
+version = "0.1.38"
 
 [[patch.unused]]
 name = "tinyflows"
